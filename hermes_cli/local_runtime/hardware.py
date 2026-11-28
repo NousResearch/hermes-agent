@@ -226,6 +226,14 @@ def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
+def _nvidia_gpus() -> list[tuple[int, int]] | None:
+    """Per-card (total, free) bytes from the shared nvidia-smi query, or None."""
+    query = _cached_nvidia_gpu_query()
+    if query is None:
+        return None
+    return [(gpu["total_bytes"], gpu["free_bytes"]) for gpu in query["gpus"]]
+
+
 _gpu_query_cache: tuple[float, dict | None] | None = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
@@ -238,8 +246,8 @@ _GPU_QUERY_TTL_S = 4.0
 def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
     """One nvidia-smi read shared by the budget probe and the hardware endpoint.
 
-    Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
-    gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
+    Returns aggregate facts plus ``gpus`` (one fact dictionary per valid card), or None when
+    nvidia-smi is absent, fails, or reports no valid NVIDIA cards.
     Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
     """
     global _gpu_query_cache
@@ -262,18 +270,35 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
         if out.returncode != 0 or not out.stdout.strip():
             _gpu_query_cache = (now, None)
             return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-        pci_id = None
-        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-            pci_id = int(raw_id, 16)
+        gpus = []
+        for row in csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True):
+            if len(row) != 6:
+                continue
+            total_mib, free_mib, name, raw_id, used_mib, util = row
+            try:
+                total_bytes, free_bytes = int(total_mib) << 20, int(free_mib) << 20
+                used_bytes, gpu_util_percent = int(used_mib) << 20, int(util)
+            except ValueError:
+                continue
+            if total_bytes <= 0:
+                continue
+            pci_id = None
+            with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+                pci_id = int(raw_id, 16)
+            gpus.append({
+                "gpu_name": name.strip(), "total_bytes": total_bytes, "free_bytes": free_bytes,
+                "used_bytes": used_bytes, "gpu_util_percent": gpu_util_percent, "gpu_pci_id": pci_id,
+            })
+        if not gpus:
+            _gpu_query_cache = (now, None)
+            return None
+        first = gpus[0]
         data = {
-            "gpu_name": name.strip(),
-            "total_bytes": int(total_mib) << 20,
-            "free_bytes": int(free_mib) << 20,
-            "used_bytes": int(used_mib) << 20,
-            "gpu_util_percent": int(util),
-            "gpu_pci_id": pci_id,
+            **first,
+            "total_bytes": sum(gpu["total_bytes"] for gpu in gpus),
+            "free_bytes": sum(gpu["free_bytes"] for gpu in gpus),
+            "used_bytes": sum(gpu["used_bytes"] for gpu in gpus),
+            "gpus": gpus,
         }
         _gpu_query_cache = (now, data)
         return data
@@ -410,6 +435,18 @@ def _unified_pool_bytes(smi_total: int, ram_total: int) -> int | None:
     return None
 
 
+def tensor_split_ratios(usables: list[int]) -> tuple[float, ...] | None:
+    """llama.cpp --tensor-split weights, or None for one card or no usable VRAM."""
+    if len(usables) < 2:
+        return None
+    total = sum(usables)
+    return tuple(usable / total for usable in usables) if total > 0 else None
+
+
+def _card_margin(total_bytes: int) -> int:
+    return max(_MARGIN_FLOOR, int(total_bytes * _MARGIN_FRACTION))
+
+
 def _uma_budget(base: int, total: int, *, gpu_name: str = "",
                 gpu_pci_id: int | None = None, lazy_reads: bool = True) -> HardwareBudget:
     usable = max(0, int(base * (1 - _UMA_HEADROOM_FRACTION)))
@@ -506,26 +543,31 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """
     ram_total, ram_avail = _ram_bytes()
     vram = _nvidia_vram()
+    gpus = _nvidia_gpus()
+    # Preserve the long-standing _nvidia_vram seam for callers and tests that mock it.
+    if gpus is None and vram is not None:
+        gpus = [(vram[0], vram[1])]
+    first = gpus[0] if gpus else None
 
     # Unified-memory NVIDIA: the CUDA allocator pool is the real capacity. Classification comes
     # from the driver API/engine and must not require nvidia-smi (stripped-PATH sessions lose smi
     # but nvcuda loads via the system loader). Deliberately NOT clamped to OS RAM: carved-out
     # memory is invisible to GlobalMemoryStatusEx, so a RAM clamp would throw away exactly that
     # capacity. On Windows, commit narrows the launch window instead (``launch_budget``).
-    unified = _unified_pool_bytes(vram[0] if vram else 0, ram_total)
+    unified = _unified_pool_bytes(first[0] if first else 0, ram_total)
     if unified is not None:
         logger.info(
             "unified-memory NVIDIA device: allocator pool %.1f GiB "
             "(nvidia-smi carve-out: %s); budgeting from the pool",
             unified / _GIB,
-            f"{vram[0] / _GIB:.1f} GiB" if vram else "unavailable")
+            f"{first[0] / _GIB:.1f} GiB" if first else "unavailable")
         if planning:
             base = unified
         else:
             # Live: dedicated-free plus what the OS can still give. smi's free saturates at the
             # carve-out so this under-counts a bit — the safe direction (the pool edge is a
             # measured soft cliff: decode collapses ~3.5x when concurrent demand hits it).
-            live = (vram[1] + ram_avail) if vram else ram_avail
+            live = (first[1] + ram_avail) if first else ram_avail
             base = min(unified, live)
         return _uma_budget(base, unified, gpu_name=vram[2] if vram else "",
                            gpu_pci_id=vram[3] if vram else None)
@@ -548,12 +590,14 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
         return _uma_budget(pool if planning else min(pool, ram_avail), pool,
                            lazy_reads=gpu_class() not in ("amd", "intel"))
 
-    total, free, gpu_name, gpu_pci_id = vram
-    margin = max(_MARGIN_FLOOR, int(total * _MARGIN_FRACTION))
-    return HardwareBudget(usable_vram_bytes=max(0, (total if planning else free) - margin),
-                          total_device_bytes=total,
+    usables = []
+    for total, free in gpus:
+        usables.append(max(0, (total if planning else free) - _card_margin(total)))
+    return HardwareBudget(usable_vram_bytes=sum(usables),
+                          total_device_bytes=sum(total for total, _ in gpus),
                           ram_available_bytes=ram_total if planning else ram_avail,
-                          uma=False, gpu_name=gpu_name, platform=sys.platform, gpu_pci_id=gpu_pci_id)
+                          uma=False, gpu_name=vram[2], platform=sys.platform, gpu_pci_id=vram[3],
+                          tensor_split=tensor_split_ratios(usables), gpu_usable_bytes=tuple(usables))
 
 
 def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBudget | None:
@@ -577,15 +621,29 @@ def launch_budget(capacity: HardwareBudget, *, own_bytes: int = 0) -> HardwareBu
             return None
         usable = min(capacity.usable_vram_bytes, int(room * (1 - _UMA_HEADROOM_FRACTION)))
         return replace(capacity, usable_vram_bytes=usable, commit_room_bytes=room)
+    gpus = _nvidia_gpus()
+    if gpus is not None and capacity.gpu_usable_bytes is not None:
+        if len(gpus) != len(capacity.gpu_usable_bytes):
+            return None
+        ratios = capacity.tensor_split or tensor_split_ratios(list(capacity.gpu_usable_bytes))
+        own = ([own_bytes * ratio for ratio in ratios] if ratios is not None
+               else [own_bytes / len(gpus)] * len(gpus))
+        usables = []
+        for (total, free), capacity_usable, own_on_card in zip(gpus, capacity.gpu_usable_bytes, own):
+            others = max(0, total - free - max(0, own_on_card))
+            usables.append(min(capacity_usable, max(0, total - others - _LAUNCH_HEADROOM)))
+        return replace(capacity, usable_vram_bytes=sum(usables), tensor_split=tensor_split_ratios(usables),
+                       gpu_usable_bytes=tuple(usables))
+
     vram = _nvidia_vram()
-    if vram is not None:
-        total, free = vram[0], vram[1]
-    else:
+    if vram is None:
         # A discrete card behind Vulkan/HIP: the driver's free count includes other programs.
         device = _accelerator_device(fresh=True)
         if device is None or device["type"] != GGML_DEVICE_GPU:
             return None
         total, free = device["total"], device["free"]
+    else:
+        total, free = vram[0], vram[1]
     others = max(0, total - free - max(0, own_bytes))
     usable = min(capacity.usable_vram_bytes, max(0, total - others - _LAUNCH_HEADROOM))
     return replace(capacity, usable_vram_bytes=usable)

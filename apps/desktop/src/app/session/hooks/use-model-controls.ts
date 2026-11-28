@@ -302,7 +302,11 @@ export function useModelControls({
         }
 
         sessionTileDelegate()?.updateSession(liveSessionId, state => {
-          if (state.model === model && state.provider === provider && state.reasoningEffortWire === reasoningEffortWire) {
+          if (
+            state.model === model &&
+            state.provider === provider &&
+            state.reasoningEffortWire === reasoningEffortWire
+          ) {
             return state
           }
 
@@ -520,7 +524,9 @@ export function useModelControls({
               if (repaint) {
                 restoreSnapshot(
                   repaint,
-                  retryToken === null ? restored.repaintUi : !(touchesPrimary && $activeSessionId.get() !== liveSessionId)
+                  retryToken === null
+                    ? restored.repaintUi
+                    : !(touchesPrimary && $activeSessionId.get() !== liveSessionId)
                 )
               }
             }

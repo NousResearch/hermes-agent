@@ -777,6 +777,7 @@ describe('useModelControls', () => {
       provider: 'workbuddy',
       reasoningEffortWire: 'high'
     }
+
     tile.delegate = {
       updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
         primaryState = update(primaryState)
@@ -805,6 +806,7 @@ describe('useModelControls', () => {
       provider: 'workbuddy',
       reasoningEffortWire: 'high'
     }
+
     tile.delegate = {
       updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
         primaryState = update(primaryState)
@@ -817,9 +819,11 @@ describe('useModelControls', () => {
     setCurrentModel('fast-model')
     setCurrentProvider('workbuddy')
     setCurrentReasoningEffortWire('high')
+
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
     })
+
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
 
     try {
@@ -848,9 +852,11 @@ describe('useModelControls', () => {
         return updated
       }
     }
+
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
     })
+
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
 
     try {
@@ -896,6 +902,7 @@ describe('useModelControls', () => {
         return updated
       }
     }
+
     // First answer asks for confirmation; the confirmed resend is then refused.
     const requestGateway = vi
       .fn()
@@ -906,6 +913,7 @@ describe('useModelControls', () => {
         value: 'muse-spark-1.2-contributor'
       })
       .mockRejectedValueOnce(new Error('no such model'))
+
     confirmMock.mockResolvedValueOnce(true)
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
 
@@ -962,9 +970,11 @@ describe('useModelControls', () => {
       }
     }
     const switchAttempt = deferred()
+
     const requestGateway = vi.fn((_method: string, _params?: Record<string, unknown>) =>
       switchAttempt.promise.then(() => ({}) as never)
     )
+
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
 
     try {
@@ -1012,9 +1022,11 @@ describe('useModelControls', () => {
         return updated
       }
     }
+
     const requestGateway = vi.fn(async () => {
       throw new Error('no such model')
     })
+
     const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway }))
 
     try {

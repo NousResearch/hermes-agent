@@ -1,0 +1,19 @@
+name: linkzoid
+title: LinkZoid
+repo: https://github.com/edkdev/linkzoid-skills
+sha: 8efc12ee6bc10ad7bdf09bb30bca045e232e2f5c
+description: "Audit and fix a website's internal linking through the hosted LinkZoid MCP server (Streamable HTTP, OAuth 2.1 + DCR), with the linkzoid workflow skill bundled: crawl a site from its sitemap, find orphan and under-linked pages and broken links, map topics, run an AI analysis that suggests links with anchor text, and approve the links so the LinkZoid script places them on the live site. Portable Agent Plugins v1 package (skills/ only; the server is added by the sign-in command below). Disclosure — hosted-only connector with no local code: every tool call goes to the vendor's remote MCP server at linkzoid.xyz/mcp. LinkZoid fetches the public pages of the sites added to the account. start_analysis spends credits from the user's LinkZoid plan (1 per page analyzed); the skill tells Hermes to show estimate_analysis and wait for the user's go-ahead first. review_opportunities with approve changes the user's live website: the LinkZoid script on that site inserts the approved links; the skill tells Hermes to confirm before approving. The server and its OAuth sign-in are added with `hermes mcp add linkzoid --url https://linkzoid.xyz/mcp --auth oauth --connect-timeout 300`."
+maintainer: edkdev
+tier: community
+category: tools
+version: "1.0.0"
+docs_url: https://linkzoid.xyz/mcp-server
+image: https://raw.githubusercontent.com/edkdev/linkzoid-skills/8efc12ee6bc10ad7bdf09bb30bca045e232e2f5c/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Sign-in needs one extra command after install, because a portable plugin cannot declare an OAuth MCP server: hermes mcp add linkzoid --url https://linkzoid.xyz/mcp --auth oauth --connect-timeout 300"

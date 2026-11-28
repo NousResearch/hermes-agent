@@ -33,6 +33,46 @@ _PRE_UPDATE_SNAPSHOT_KEEP = 1
 # small hard-to-regenerate state, not a multi-GB state.db (24 GB cost ~60s + 24 GB/update).
 _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE = 1 << 30  # 1 GiB
 
+
+def _resolve_pre_update_snapshot_max_file_size() -> int:
+    """Per-file cap in bytes for the quick pre-update snapshot.
+
+    ``updates.pre_update_snapshot_max_mb`` (MiB): missing/invalid/negative → 1 GiB;
+    positive → that many MiB; ``0`` → sentinel 0 (no copy cap; integrity checks stay bounded).
+    """
+    raw = _load_updates_cfg().get("pre_update_snapshot_max_mb", None)
+    if raw is None:
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    # YAML true/false become bool; int(True)==1 would silently cap at 1 MiB.
+    if isinstance(raw, bool):
+        logger.warning(
+            "Ignoring boolean updates.pre_update_snapshot_max_mb %r — using default 1 GiB cap",
+            raw,
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid updates.pre_update_snapshot_max_mb %r — using default 1 GiB cap", raw,
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    if value < 0:
+        logger.warning(
+            "Ignoring negative updates.pre_update_snapshot_max_mb %d — using default 1 GiB cap", value,
+        )
+        return _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
+    if value == 0:
+        return 0
+    return value << 20
+
+
+def _quick_snapshot_max_file_size_arg(resolved: int):
+    """``0`` (uncapped) → ``None`` for ``create_quick_snapshot``; otherwise the byte count."""
+    if resolved == 0:
+        return None
+    return resolved
+
 #: Reinstalling through the official installer swaps in a Python whose SQLite is safe; the
 #: one-liner differs per OS (mirrors ``uninstall._REINSTALL_HINT``). windows -> command
 _REINSTALL_ONE_LINER = {
@@ -634,17 +674,24 @@ def _resolve_pre_update_backup_mode(args) -> str:
     return mode
 
 
-def _verify_state_db_after_snapshot(snapshot_id: str) -> None:
+def _verify_state_db_after_snapshot(snapshot_id: str, snap_cap: int | None = None) -> None:
     """Verify live state.db after the snapshot: a concurrent process (antivirus, killed
-    gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently."""
+    gateway, Windows filter driver) can corrupt it and we'd otherwise exit 0 silently.
+
+    Integrity ``max_bytes`` stays at the 1 GiB default even when the copy cap is raised.
+    A raised copy cap must not switch the live check from the O(1) schema probe to a full
+    ``PRAGMA integrity_check`` (measured minutes on a ~1 GiB ``state.db`` during update).
+    ``snap_cap`` is kept for call-site compatibility; it does not scale the verify bound.
+    """
     from hermes_cli.backup import _quick_snapshot_root, verify_sqlite_integrity
     from hermes_cli.config import get_hermes_home
     from persistence_assembly import profile_scope, store_location
     _src_path = store_location(profile_scope(home=get_hermes_home()))
     if _src_path is None or not _src_path.exists():
         return
+    _integrity_max = _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE
     _integrity = verify_sqlite_integrity(
-        _src_path, check_header=True, run_pragma=True, max_bytes=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+        _src_path, check_header=True, run_pragma=True, max_bytes=_integrity_max,
     )
     if _integrity.get("valid"):
         return
@@ -664,11 +711,14 @@ def _run_quick_snapshots() -> Optional[str]:
     """Quick snapshot of the root home plus every sibling profile; returns the root snapshot id."""
     from hermes_cli.update_cmd import _record_update_step
     from hermes_cli.backup import create_quick_snapshot
+    # Same cap for every profile: a tiered set would restore some homes without state.db.
+    _snap_cap = _resolve_pre_update_snapshot_max_file_size()
+    _max_file_size = _quick_snapshot_max_file_size_arg(_snap_cap)
     snapshot_id = create_quick_snapshot(
-        label="pre-update", keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+        label="pre-update", keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_max_file_size,
     )
     if snapshot_id:
-        _verify_state_db_after_snapshot(snapshot_id)
+        _verify_state_db_after_snapshot(snapshot_id, _snap_cap)
         print(f"◆ Pre-update snapshot: {snapshot_id}")
 
     # The code swap + fleet restart touch EVERY profile, so each gets the same snapshot
@@ -676,7 +726,7 @@ def _run_quick_snapshots() -> Optional[str]:
     with _best_effort('Sibling profile snapshots failed: %s'):
         from hermes_cli.backup import create_pre_update_snapshots_all_profiles
         _sibling_snaps = create_pre_update_snapshots_all_profiles(
-            keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
+            keep=_PRE_UPDATE_SNAPSHOT_KEEP, max_file_size=_max_file_size,
         )
         if _sibling_snaps:
             print("◆ Sibling profile snapshot(s): " + ", ".join(sorted(_sibling_snaps)))
@@ -744,7 +794,8 @@ def _run_pre_update_backup(args) -> Optional[str]:
     """Run the pre-update backup; return the quick-snapshot id (None when off/failed). Never raises.
 
     ``off`` — nothing. ``quick`` (default) — snapshot of critical small files under
-    ``state-snapshots/``, files over 1 GiB skipped so a bloated state.db can't stall the update.
+    ``state-snapshots/``, files over ``updates.pre_update_snapshot_max_mb`` (default 1 GiB)
+    skipped so a bloated state.db can't stall the update.
     ``full`` — quick snapshot PLUS a zip of HERMES_HOME under ``backups/`` (``hermes import``).
 
     Explicit user opt-out is honored fully. See #34600.

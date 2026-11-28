@@ -1681,6 +1681,59 @@ The other doors (`openExternal`, `revealPath`, `writeClipboard`) resolve
 `false` instead of throwing when the capability isn't available (older desktop
 shell, plain browser) — branch on the result rather than sniffing the bridge.
 
+`ctx.os.pickOpenPath` and `ctx.os.pickSavePath` are native dialogs. In a
+browser-hosted Desktop there is no OS file dialog, and `pickSavePath` answers
+`null` there.
+
+`pickOpenPath` is the one door that does not: the page's picker uploads the
+file and the door answers the copy the app staged inside the Hermes home,
+which is **not** the path the user picked ([#156470]). It is left that way
+for now because plugins already read that copy deliberately, and gating it
+before they move would turn a working import into a button that does nothing.
+Prefer `pickBrowserFile` in a browser, which says what the path is.
+
+To reach a picked file in **both** renderers, ask the browser door first:
+
+```ts
+const options = { filters: [{ extensions: ['csv'], name: 'CSV' }], title: 'Open a sheet' }
+
+try {
+  // Browser-hosted: the page picks, the app uploads, and you get the copy the
+  // backend holds plus the name the file had. Native: null, nothing staged.
+  const upload = await ctx.os.pickBrowserFile?.(options)
+
+  // Native: the OS dialog names the user's own file. Browser-hosted: only
+  // reached if the browser door was absent, and then it is a staged copy.
+  const path = upload?.path ?? (await ctx.os.pickOpenPath(options))
+
+  if (path) {
+    // Read it through your own rest backend.
+  }
+} catch (error) {
+  // The browser upload failed (too large, or the gateway refused it).
+  // Not a cancel — tell the user.
+}
+```
+
+`pickBrowserFile` resolves `{ name, path }`: `path` is on the **backend's**
+filesystem and inside the Hermes home (`<profile home>/uploads/`), so read it
+through your own `rest` backend and expect a guard that refuses the home to
+refuse it. `name` is what the file was called where the user picked it, which
+is what to show them — the `web-<hex>-` prefix the staging adds is stripped
+whether or not the bridge can name the file itself.
+
+It resolves `null` when there is nothing to describe (the native app, where
+`pickOpenPath` is the door) and when the user cancels, and it **rejects** when
+the upload fails — a file over the browser's 16 MiB cap, a gateway that
+refused it, a dropped connection. Catch it: a rejected pick is not a cancel,
+and treating the two alike is how an import button ends up doing nothing.
+
+Feature-detect it on older hosts (`ctx.os.pickBrowserFile?.(…)` — the member is
+optional for exactly that reason). Asking it first costs one call in the native
+app and never opens two dialogs.
+
+[#156470]: https://github.com/NousResearch/hermes-agent/issues/156470
+
 ### Files — `ctx.files` {#plugin-files}
 
 `ctx.files` is the one sanctioned way for a plugin to touch files on the

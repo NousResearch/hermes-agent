@@ -44,14 +44,32 @@ export async function runExportBoardFlow(os: PluginOs, k: KanbanText, slug: stri
 /** Pick an archive and import it as a new board. Returns the new board's slug,
  *  or null when cancelled or failed. */
 export async function runImportBoardFlow(os: PluginOs, k: KanbanText): Promise<null | string> {
-  const archive = await os.pickOpenPath({ title: k.importBoardTitle, filters: ARCHIVE_FILTERS })
+  const options = { title: k.importBoardTitle, filters: ARCHIVE_FILTERS }
 
-  if (!archive) {
+  // The browser door answers the copy the app staged, which is a path this
+  // backend reads, and it is the only door that says so. In the native app it
+  // answers null and the OS dialog names the user's own file, so asking it
+  // first costs nothing and never opens two dialogs.
+  //
+  // It rejects when the upload fails — a board archive over the browser's size
+  // cap, or a gateway that refused it — and that has to reach the user as an
+  // error, not as the silence a cancel produces.
+  let picked: null | string
+
+  try {
+    picked = (await os.pickBrowserFile?.(options))?.path ?? (await os.pickOpenPath(options))
+  } catch (error) {
+    host.notify({ kind: 'error', message: errText(error) })
+
+    return null
+  }
+
+  if (!picked) {
     return null
   }
 
   try {
-    const result = await importBoard(archive)
+    const result = await importBoard(picked)
     host.notify({ kind: 'success', message: k.boardImported(result.name) })
 
     // The slug auto-suffixes on collision, and warnings cover tasks parked

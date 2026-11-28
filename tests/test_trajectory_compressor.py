@@ -1,6 +1,8 @@
 """Tests for trajectory_compressor.py — config, metrics, and compression logic."""
 
+import asyncio
 import importlib
+import json
 import os
 import sys
 from types import SimpleNamespace
@@ -462,3 +464,134 @@ class TestCompressionNetSavingsGuard:
         assert sum(tc.count_turn_tokens(compressed)) == before
         tc._generate_summary.assert_not_called()
 
+
+
+def _rows_json(n=6):
+    return json.dumps([{"very_long_field_name": f"row-{i}", "score_value": i / 10, "ok": i % 2 == 0}
+                       for i in range(n)])
+
+
+class TestToonEncodeJsonArray:
+    def test_uniform_array_round_trips_into_a_shorter_table(self):
+        from trajectory_compressor import toon_encode_json_array
+
+        value = _rows_json(3)
+        encoded = toon_encode_json_array(value)
+        assert encoded is not None and len(encoded) < len(value)
+        lines = encoded.splitlines()
+        assert lines[0] == "[TOON_ENCODED_TOOL_RESULT]" and lines[-1] == "[/TOON_ENCODED_TOOL_RESULT]"
+        assert lines[1] == "rows[3]{very_long_field_name,score_value,ok}"
+        assert lines[2] == "row-0|0.0|true"
+
+    def test_cells_stay_on_one_line(self):
+        from trajectory_compressor import toon_encode_json_array
+
+        value = json.dumps([{"long_text_field": "a|b\nc", "other_long_field": None}] * 3)
+        rows = toon_encode_json_array(value).splitlines()[2:-1]
+        assert rows == [r"a\|b\nc|"] * 3
+
+    @pytest.mark.parametrize("value", [
+        '[{"a": 1}, {"b": 2}]',             # keys differ
+        '[{"a": 1}, 2]',                     # not all objects
+        '{"a": 1}',                          # not an array
+        'not json',
+        json.dumps([{"a,b": 1}] * 5),        # ambiguous field name
+        json.dumps([{"a": 1}, {"a": 2}]),    # table would not be shorter
+    ])
+    def test_unsuitable_values_are_left_alone(self, value):
+        from trajectory_compressor import toon_encode_json_array
+
+        assert toon_encode_json_array(value) is None
+
+    def test_min_rows(self):
+        from trajectory_compressor import toon_encode_json_array
+
+        assert toon_encode_json_array(_rows_json(2), min_rows=3) is None
+        assert toon_encode_json_array(_rows_json(3), min_rows=3) is not None
+
+
+def _compress(tc, trajectory, mode):
+    if mode == "async":
+        return asyncio.run(tc.compress_trajectory_async(trajectory))
+    return tc.compress_trajectory(trajectory)
+
+
+@pytest.mark.parametrize("mode", ["sync", "async"])
+class TestToonToolResultPass:
+    def _trajectory(self):
+        return [
+            {"from": "system", "value": "tools"},
+            {"from": "human", "value": "Find records."},
+            {"from": "gpt", "value": "<tool_call>a</tool_call>"},
+            {"from": "tool", "value": _rows_json()},  # protected: first tool
+            {"from": "gpt", "value": "<tool_call>b</tool_call>"},
+            {"from": "tool", "value": _rows_json()},  # compressible middle
+            {"from": "gpt", "value": "<tool_call>c</tool_call>"},
+            {"from": "tool", "value": _rows_json()},  # protected: last turn
+        ]
+
+    def _config(self, **kw):
+        return CompressionConfig(toon_encode_tool_results=True, protect_last_n_turns=1, **kw)
+
+    def test_only_unprotected_tool_results_are_encoded(self, mode):
+        tc = _make_compressor(self._config(target_max_tokens=100_000))
+        trajectory = self._trajectory()
+        out, metrics = _compress(tc, trajectory, mode)
+
+        assert out[3] == trajectory[3] and out[7] == trajectory[7]
+        assert out[5]["value"].startswith("[TOON_ENCODED_TOOL_RESULT]")
+        assert metrics.toon_encoded_tool_results == 1
+        assert metrics.skipped_under_target is True and metrics.was_compressed is False
+        assert metrics.original_tokens == tc.count_trajectory_tokens(trajectory)
+        assert metrics.compressed_tokens == tc.count_trajectory_tokens(out)
+        assert metrics.tokens_saved == metrics.original_tokens - metrics.compressed_tokens > 0
+        assert trajectory[5]["value"] == _rows_json()  # input not mutated
+
+    def test_encoding_can_make_the_summary_unnecessary(self, mode):
+        tc = _make_compressor(self._config())
+        tc._generate_summary = MagicMock(return_value="[CONTEXT SUMMARY]: s")
+        tc._generate_summary_async = AsyncMock(return_value="[CONTEXT SUMMARY]: s")
+        trajectory = self._trajectory()
+        tc.config.target_max_tokens = tc.count_trajectory_tokens(trajectory) - 10  # just over budget
+
+        _out, metrics = _compress(tc, trajectory, mode)
+
+        assert metrics.skipped_under_target is True
+        tc._generate_summary.assert_not_called()
+        tc._generate_summary_async.assert_not_called()
+
+        tc.config.toon_encode_tool_results = False
+        _out, metrics = _compress(tc, trajectory, mode)
+        assert metrics.skipped_under_target is False and metrics.toon_encoded_tool_results == 0
+
+    def test_off_by_default(self, mode):
+        tc = _make_compressor(CompressionConfig(protect_last_n_turns=1, target_max_tokens=100_000))
+        trajectory = self._trajectory()
+        out, metrics = _compress(tc, trajectory, mode)
+        assert out == trajectory and metrics.toon_encoded_tool_results == 0
+
+    def test_only_from_value_trajectories_are_handled(self, mode):
+        tc = _make_compressor(self._config(target_max_tokens=100_000))
+        trajectory = [{"role": "user", "content": "x"}] + [{"role": "tool", "content": _rows_json()}] * 3
+        out, metrics = _compress(tc, trajectory, mode)
+        assert out == trajectory and metrics.toon_encoded_tool_results == 0
+
+
+def test_process_entry_attaches_metrics_when_only_encoded():
+    tc = _make_compressor(CompressionConfig(toon_encode_tool_results=True, protect_last_n_turns=1,
+                                            target_max_tokens=100_000))
+    entry = {"conversations": TestToonToolResultPass()._trajectory()}
+    processed, metrics = asyncio.run(tc.process_entry_async(entry))
+    assert processed["compression_metrics"]["toon_encoded_tool_results"] == 1
+    assert processed["compression_metrics"]["was_compressed"] is False
+
+    agg = AggregateMetrics()
+    agg.add_trajectory_metrics(metrics)
+    assert agg.to_dict()["tool_result_encoding"]["toon_encoded_tool_results"] == 1
+
+
+def test_from_yaml_reads_toon_keys(tmp_path):
+    path = tmp_path / "c.yaml"
+    path.write_text("compression:\n  toon_encode_tool_results: true\n  toon_min_rows: 3\n", encoding="utf-8")
+    config = CompressionConfig.from_yaml(str(path))
+    assert config.toon_encode_tool_results is True and config.toon_min_rows == 3

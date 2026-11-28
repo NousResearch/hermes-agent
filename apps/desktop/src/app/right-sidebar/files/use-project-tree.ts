@@ -7,7 +7,8 @@ import { $connection } from '@/store/session'
 import { $workspaceChangeTick, consumeWorkspaceChange } from '@/store/workspace-events'
 
 import { clearProjectDirCache, type ProjectTreeEntry, readProjectDir } from './ipc'
-import { $showIgnoredRoots, setShowIgnoredFiles, showsIgnoredFiles } from './prefs'
+import { $folderSortPrefs, $showIgnoredRoots, folderSortPreference, setShowIgnoredFiles, showsIgnoredFiles } from './prefs'
+import { sortFileEntries } from './sort'
 
 export interface TreeNode {
   /** Absolute filesystem path. Doubles as react-arborist node id. */
@@ -23,13 +24,70 @@ export interface TreeNode {
   placeholder?: 'error' | 'loading'
   /** Last error code from readDir (e.g. EACCES). Cleared on next successful load. */
   error?: string
+  /** Epoch ms from the listing backend; drives date sort when present. */
+  mtimeMs?: number
+  /** Byte size from the listing backend; drives size sort when present. */
+  size?: number
 }
 
 const PLACEHOLDER_ID = '__loading__'
 const ERROR_PLACEHOLDER_ID = '__error__'
 
-function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
-  return { id: path, isDirectory, name }
+function makeNode(path: string, name: string, isDirectory: boolean, meta?: { mtimeMs?: number; size?: number }): TreeNode {
+  return {
+    id: path,
+    isDirectory,
+    name,
+    ...(typeof meta?.mtimeMs === 'number' ? { mtimeMs: meta.mtimeMs } : {}),
+    ...(typeof meta?.size === 'number' ? { size: meta.size } : {})
+  }
+}
+
+function entryMeta(entry: ProjectTreeEntry): { mtimeMs?: number; size?: number } {
+  return {
+    ...(typeof entry.mtimeMs === 'number' ? { mtimeMs: entry.mtimeMs } : {}),
+    ...(typeof entry.size === 'number' ? { size: entry.size } : {})
+  }
+}
+
+function nodeFromEntry(entry: ProjectTreeEntry): TreeNode {
+  return makeNode(entry.path, entry.name, entry.isDirectory, entryMeta(entry))
+}
+
+/** Sort real children of a folder; placeholders stay at the end. */
+function sortFolderChildren(folderPath: string, children: TreeNode[]): TreeNode[] {
+  const real: TreeNode[] = []
+  const placeholders: TreeNode[] = []
+
+  for (const child of children) {
+    if (child.placeholder) {
+      placeholders.push(child)
+    } else {
+      real.push(child)
+    }
+  }
+
+  return [...sortFileEntries(real, folderSortPreference(folderPath)), ...placeholders]
+}
+
+function entriesToNodes(folderPath: string, entries: ProjectTreeEntry[]): TreeNode[] {
+  return sortFolderChildren(
+    folderPath,
+    entries.map(entry => nodeFromEntry(entry))
+  )
+}
+
+/** Re-apply each folder's sort preference without re-reading disk. */
+function resortTree(nodes: TreeNode[], parentPath: string): TreeNode[] {
+  const sorted = sortFolderChildren(parentPath, nodes)
+
+  return sorted.map(node => {
+    if (!node.isDirectory || !node.children || node.placeholder) {
+      return node
+    }
+
+    return { ...node, children: resortTree(node.children, node.id) }
+  })
 }
 
 function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: TreeNode) => TreeNode): TreeNode[] {
@@ -70,11 +128,29 @@ function findNode(nodes: TreeNode[], id: string): null | TreeNode {
 
 // Merge a freshly-read dir's entries into its existing children: keep surviving
 // nodes (subtrees intact), add new, drop deleted. Non-recursive — a grandchild
-// dir only re-reads when it's itself in the change set.
-function mergeChildren(existing: TreeNode[], entries: ProjectTreeEntry[]): TreeNode[] {
+// dir only re-reads when it's itself in the change set. Result is sorted for
+// the parent folder so a fresh render lands at the top under date sort.
+function mergeChildren(folderPath: string, existing: TreeNode[], entries: ProjectTreeEntry[]): TreeNode[] {
   const byId = new Map(existing.filter(node => !node.placeholder).map(node => [node.id, node]))
 
-  return entries.map(entry => byId.get(entry.path) ?? makeNode(entry.path, entry.name, entry.isDirectory))
+  const merged = entries.map(entry => {
+    const prev = byId.get(entry.path)
+
+    if (prev) {
+      // Refresh sort metadata from the latest listing; keep open subtrees.
+      return {
+        ...prev,
+        isDirectory: entry.isDirectory,
+        name: entry.name,
+        ...(typeof entry.mtimeMs === 'number' ? { mtimeMs: entry.mtimeMs } : { mtimeMs: undefined }),
+        ...(typeof entry.size === 'number' ? { size: entry.size } : { size: undefined })
+      }
+    }
+
+    return nodeFromEntry(entry)
+  })
+
+  return sortFolderChildren(folderPath, merged)
 }
 
 function placeholderChild(parentId: string): TreeNode {
@@ -266,7 +342,7 @@ async function loadRoot(
 
     return {
       ...latest,
-      data: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory)),
+      data: error ? [] : entriesToNodes(resolvedCwd || cwd, entries),
       loaded: true,
       resolvedCwd,
       rootError: error || null,
@@ -344,9 +420,9 @@ async function revalidateTree(
 
         data =
           dir === rootPath
-            ? mergeChildren(data, entries)
+            ? mergeChildren(dir, data, entries)
             : patchNode(data, dir, node =>
-                node.children ? { ...node, children: mergeChildren(node.children, entries) } : node
+                node.children ? { ...node, children: mergeChildren(dir, node.children, entries) } : node
               )
       }
 
@@ -367,17 +443,34 @@ async function revalidateTree(
 
     const byId = new Map(existing.filter(node => !node.placeholder).map(node => [node.id, node]))
 
-    return Promise.all(
+    const next = await Promise.all(
       entries.map(async entry => {
         const prev = byId.get(entry.path)
 
         if (prev?.isDirectory && prev.children) {
-          return { ...prev, children: await reconcile(prev.id, prev.children) }
+          return {
+            ...prev,
+            isDirectory: entry.isDirectory,
+            name: entry.name,
+            ...(typeof entry.mtimeMs === 'number' ? { mtimeMs: entry.mtimeMs } : { mtimeMs: undefined }),
+            ...(typeof entry.size === 'number' ? { size: entry.size } : { size: undefined }),
+            children: await reconcile(prev.id, prev.children)
+          }
         }
 
-        return prev ?? makeNode(entry.path, entry.name, entry.isDirectory)
+        return prev
+          ? {
+              ...prev,
+              isDirectory: entry.isDirectory,
+              name: entry.name,
+              ...(typeof entry.mtimeMs === 'number' ? { mtimeMs: entry.mtimeMs } : { mtimeMs: undefined }),
+              ...(typeof entry.size === 'number' ? { size: entry.size } : { size: undefined })
+            }
+          : nodeFromEntry(entry)
       })
     )
+
+    return sortFolderChildren(dirPath, next)
   }
 
   const nextData = await reconcile(rootPath, state.data)
@@ -408,9 +501,26 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   // Subscribed so a toggle re-renders the header; the roots list itself is read
   // through showsIgnoredFiles so every caller shares one resolver.
   useStore($showIgnoredRoots)
+  // Re-render + re-order when the user changes a folder's sort preference.
+  const folderSortPrefs = useStore($folderSortPrefs)
 
   const effectiveCwd = state.cwd === cwd && state.resolvedCwd ? state.resolvedCwd : cwd
   const showIgnored = showsIgnoredFiles(effectiveCwd)
+
+  // Sort prefs change in place: re-order the already-loaded tree without
+  // touching the filesystem so a new choice is instant.
+  useEffect(() => {
+    setProjectTree(current => {
+      if (!current.loaded || current.cwd !== cwd || !current.data.length) {
+        return current
+      }
+
+      const parent = current.resolvedCwd || current.cwd
+      const data = resortTree(current.data, parent)
+
+      return data === current.data ? current : { ...current, data }
+    })
+  }, [cwd, folderSortPrefs])
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { connectionKey, force: true }), [connectionKey, cwd])
 
@@ -519,7 +629,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
             ...n,
             loading: false,
             error: error || undefined,
-            children: error ? [errorChild(n.id, error)] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+            children: error ? [errorChild(n.id, error)] : entriesToNodes(n.id, entries)
           }))
         }
       })

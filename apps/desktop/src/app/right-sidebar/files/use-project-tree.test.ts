@@ -27,7 +27,9 @@ afterEach(() => {
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
 
-function ok(entries: { name: string; path: string; isDirectory: boolean }[]): HermesReadDirResult {
+function ok(
+  entries: { name: string; path: string; isDirectory: boolean; mtimeMs?: number; size?: number }[]
+): HermesReadDirResult {
   return { entries }
 }
 
@@ -55,12 +57,28 @@ describe('useProjectTree', () => {
     await waitFor(() => expect(result.current.data.length).toBe(2))
 
     expect(readDir).toHaveBeenCalledWith('/p')
-    // Hook trusts main-process sort order; folders/files preserved as supplied.
-    expect(result.current.data.map(n => n.name)).toEqual(['README.md', 'src'])
+    // Renderer re-sorts: directories first, then name ascending within each group.
+    expect(result.current.data.map(n => n.name)).toEqual(['src', 'README.md'])
     // Folder children start undefined (lazy load on first expand).
     expect(result.current.data.find(n => n.name === 'src')?.children).toBeUndefined()
     expect(result.current.data.find(n => n.name === 'src')?.isDirectory).toBe(true)
     expect(result.current.data.find(n => n.name === 'README.md')?.isDirectory).toBe(false)
+  })
+
+  it('puts newest files first for media folders using mtime metadata', async () => {
+    readDir.mockResolvedValueOnce(
+      ok([
+        { name: 'old.png', path: '/ws/renders/old.png', isDirectory: false, mtimeMs: 100, size: 10 },
+        { name: 'new.png', path: '/ws/renders/new.png', isDirectory: false, mtimeMs: 300, size: 30 },
+        { name: 'mid.png', path: '/ws/renders/mid.png', isDirectory: false, mtimeMs: 200, size: 20 }
+      ] as never)
+    )
+
+    const { result } = renderHook(() => useProjectTree('/ws/renders'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(3))
+
+    expect(result.current.data.map(n => n.name)).toEqual(['new.png', 'mid.png', 'old.png'])
   })
 
   it('records rootError when readDir returns an error', async () => {
@@ -139,7 +157,7 @@ describe('useProjectTree', () => {
     })
 
     const src = result.current.data[0]
-    expect(src.children?.map(n => n.name)).toEqual(['index.ts', 'lib'])
+    expect(src.children?.map(n => n.name)).toEqual(['lib', 'index.ts'])
     expect(src.loading).toBe(false)
     expect(src.error).toBeUndefined()
   })

@@ -1758,12 +1758,8 @@ class _AnthropicCompletionsAdapter:
         _nr = get_transport("anthropic_messages").normalize_response(response, strip_tool_prefix=self._is_oauth)
         usage = None
         if hasattr(response, "usage") and response.usage:
-            prompt_tokens = getattr(response.usage, "input_tokens", 0) or 0
-            completion_tokens = getattr(response.usage, "output_tokens", 0) or 0
-            usage = SimpleNamespace(
-                prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
-                total_tokens=getattr(response.usage, "total_tokens", 0) or (prompt_tokens + completion_tokens),
-            )
+            from agent.anthropic_adapter import chat_usage
+            usage = chat_usage(response.usage)
         # ToolCall already duck-types as OpenAI shape via properties.
         choice = SimpleNamespace(
             index=0,

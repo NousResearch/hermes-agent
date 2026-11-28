@@ -142,6 +142,51 @@ class TestDisabledManager:
 # =========================================================================
 
 class TestTakeCheckpoint:
+    def test_cold_staging_budget_is_limited_to_the_first_import(self, mgr, work_dir, monkeypatch):
+        from agent.checkpoints import manager
+
+        monkeypatch.setattr(manager, "_dir_file_count", lambda path: 12_000)
+        monkeypatch.setattr(manager, "_GIT_TIMEOUT", 30)
+        deadlines = []
+
+        def observe(args, *a, **kwargs):
+            if "add" in args:
+                deadlines.append(kwargs["timeout"])
+            return _run_git(args, *a, **kwargs)
+
+        monkeypatch.setattr(manager, "_run_git", observe)
+        assert mgr.ensure_checkpoint(str(work_dir))
+        mgr.new_turn()
+        (work_dir / "main.py").write_text("changed\n")
+        assert mgr.ensure_checkpoint(str(work_dir))
+        assert deadlines == [240, 60]
+
+    def test_first_capture_packs_blobs_and_preserves_native_tree(self, mgr, work_dir, checkpoint_base):
+        (work_dir / ".gitattributes").write_bytes(b"*.txt text eol=lf\n*.bin -text\n")
+        (work_dir / "lines.txt").write_bytes(b"first\r\nsecond\r\n")
+        (work_dir / "empty.bin").touch()
+        (work_dir / "bytes.bin").write_bytes(b"binary\x00payload\r\n")
+        (work_dir / ".gitignore").write_text("ignored.bin\n")
+        (work_dir / "ignored.bin").write_bytes(b"ignored")
+        assert mgr.ensure_checkpoint(str(work_dir))
+        store = _store_path(checkpoint_base)
+        ref = _ref_name(_project_hash(str(work_dir)))
+        baseline = _run_git(["rev-parse", ref + "^{tree}"], store, str(work_dir))[1]
+
+        # Stage independently with Git's default storage settings and compare
+        # the actual tree, including normalized bytes, modes and ignored files.
+        native_index = store / "expected-index"
+        assert _run_git(["add", "-A"], store, str(work_dir), index_file=native_index)[0]
+        assert _run_git(["write-tree"], store, str(work_dir), index_file=native_index)[:2] == (True, baseline)
+        packs = set((store / "objects" / "pack").glob("*.pack"))
+        assert packs
+
+        mgr.new_turn()
+        (work_dir / "bytes.bin").write_bytes(b"changed\x00payload")
+        assert mgr.ensure_checkpoint(str(work_dir))
+        assert set((store / "objects" / "pack").glob("*.pack")) == packs
+        assert _run_git(["rev-parse", ref + "^" + "^{tree}"], store, str(work_dir))[:2] == (True, baseline)
+
     def test_first_checkpoint_dedups_and_skips_unsafe_dirs(self, mgr, work_dir):
         assert mgr.ensure_checkpoint(str(work_dir), "first") is True
         assert mgr.ensure_checkpoint(str(work_dir), "second") is False  # dedup'd

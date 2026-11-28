@@ -1559,7 +1559,8 @@ class CheckpointManager:
         _touch_project(store, working_dir)
 
         # Quick size guard — don't try to snapshot enormous directories
-        if _dir_file_count(working_dir) > _MAX_FILES:
+        file_count = _dir_file_count(working_dir)
+        if file_count > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
@@ -1567,31 +1568,19 @@ class CheckpointManager:
         index_file = _index_path(store, dir_hash)
         ref = _ref_name(dir_hash)
 
-        # Seed the per-project index from the last checkpoint, if any, so the
-        # diff/commit machinery sees only changes since then.  On first call,
-        # clear the index so ``git add -A`` produces a clean tree.
-        if index_file.exists():
-            # Reset index to current ref tip to avoid accumulating stale paths.
-            ok_ref, ref_commit, _ = _run_git(
-                ["rev-parse", "--verify", ref + "^{commit}"],
-                store, working_dir,
-                allowed_returncodes={128},
-            )
-            if ok_ref and ref_commit:
-                _run_git(
-                    ["read-tree", ref_commit],
-                    store, working_dir,
-                    index_file=index_file,
-                    allowed_returncodes={128},
-                )
-            else:
-                try:
-                    index_file.unlink()
-                except OSError:
-                    pass
+        # The project ref is the authority for both the staging mode and parent.
+        has_ref, ref_commit, ref_error = _run_git(
+            ["rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+            store, working_dir, allowed_returncodes={1},
+        )
+        if not has_ref and ref_error:
+            return False
+        index_file.parent.mkdir(parents=True, exist_ok=True)
+        if has_ref:
+            if not _run_git(["read-tree", ref_commit], store, working_dir, index_file=index_file)[0]:
+                return False
         else:
-            # First snapshot for this project.
-            index_file.parent.mkdir(parents=True, exist_ok=True)
+            index_file.unlink(missing_ok=True)
 
         # Drop entries the old tree carries but this build excludes BEFORE staging: ``add -A``
         # re-reads every tracked path, and a locked browser-profile file would fail it each time.
@@ -1599,7 +1588,9 @@ class CheckpointManager:
         if not _unstage_excluded(store, working_dir, index_file):
             logger.debug("Checkpoint could not drop newly excluded paths from the index")
             return False
-        ok, err = self._stage_with_oversize_preflight(store, working_dir, index_file)
+        ok, err = self._stage_with_oversize_preflight(
+            store, working_dir, index_file, first_import_files=None if has_ref else file_count,
+        )
         if not ok:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
@@ -1612,13 +1603,6 @@ class CheckpointManager:
         # Compare against the current ref tip (not HEAD — HEAD points to a
         # branch that doesn't exist on a bare store, so ``diff --cached``
         # against HEAD would always show "new file" for every staged path).
-        ok_ref, ref_commit, _ = _run_git(
-            ["rev-parse", "--verify", ref + "^{commit}"],
-            store, working_dir,
-            allowed_returncodes={128},
-        )
-        has_ref = ok_ref and bool(ref_commit)
-
         if has_ref:
             ok_diff, _, _ = _run_git(
                 ["diff-index", "--cached", "--quiet", ref_commit],
@@ -1678,9 +1662,7 @@ class CheckpointManager:
             return False
 
         # Update the per-project ref.
-        update_args = ["update-ref", ref, new_sha]
-        if has_ref:
-            update_args = ["update-ref", ref, new_sha, ref_commit]
+        update_args = ["update-ref", ref, new_sha, ref_commit if has_ref else ""]
         ok_update, _, err = _run_git(
             update_args, store, working_dir,
         )
@@ -1713,7 +1695,7 @@ class CheckpointManager:
             return False
 
     def _stage_with_oversize_preflight(
-        self, store: Path, working_dir: str, index_file: Path,
+        self, store: Path, working_dir: str, index_file: Path, *, first_import_files: int | None,
     ) -> tuple[bool, str]:
         """Stage the worktree without opening files already over the size cap."""
         add_args = _stage_all_args(store.parent, working_dir)
@@ -1732,10 +1714,18 @@ class CheckpointManager:
                     f"--pathspec-from-file={oversize_pathspec}",
                     "--pathspec-file-nul",
                 ])
+        timeout = _GIT_TIMEOUT * 2
+        if first_import_files is not None:
+            # Git packs eligible blobs directly. Text normalization and clean
+            # filters still run, and can require ordinary loose-object writes.
+            add_args = ["-c", "core.bigFileThreshold=1", *add_args]
+            # Cold staging measured up to 19 ms per file in #127857. The
+            # workspace guard above bounds this one-time allowance.
+            timeout = max(timeout, first_import_files * 0.020)
         try:
             ok, _, err = _run_git(
                 add_args, store, working_dir,
-                timeout=_GIT_TIMEOUT * 2, index_file=index_file,
+                timeout=timeout, index_file=index_file,
             )
             return ok, err
         finally:

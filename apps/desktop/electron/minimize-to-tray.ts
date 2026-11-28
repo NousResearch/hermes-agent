@@ -24,11 +24,13 @@ export function createMinimizeToTray(options: Options) {
   let stopWatchingHost: (() => void) | undefined
   let dockHidden = false
   let hostGeneration = 0
+  let hostReady = true
   let pending = Promise.resolve()
   const windows = new Set<BrowserWindow>()
   const hidden = new Set<BrowserWindow>()
 
-  const status = (): MinimizeToTrayStatus => ({ enabled, available: !!tray && !tray.isDestroyed() })
+  const trayAlive = () => !!tray && !tray.isDestroyed()
+  const status = (): MinimizeToTrayStatus => ({ enabled, available: trayAlive() && hostReady })
 
   const broadcast = () => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -124,11 +126,17 @@ export function createMinimizeToTray(options: Options) {
     tray = null
   }
 
-  const hostLost = () => {
-    // Losing the shell/tray must never strand an invisible app.
-    hostGeneration += 1
-    restoreHidden()
-    destroyTray(true)
+  const hostChanged = (available: boolean) => {
+    hostReady = available
+
+    if (!available) {
+      // Losing the shell/tray must never strand an invisible app. Keep the
+      // Tray itself: this process cannot export another one (#126353), and the
+      // host comes back after a GNOME screen lock (#145282).
+      hostGeneration += 1
+      restoreHidden()
+    }
+
     broadcast()
   }
 
@@ -138,30 +146,34 @@ export function createMinimizeToTray(options: Options) {
     if (!on) {
       restoreHidden()
       destroyTray()
-    } else if (!quitting && status().available && process.platform === 'linux' && !stopWatchingHost) {
+    } else if (!quitting && trayAlive() && process.platform === 'linux' && !stopWatchingHost) {
       try {
         const { watchLinuxTrayHost } = await import('./tray-host')
         const generation = hostGeneration
-        stopWatchingHost = await watchLinuxTrayHost(hostLost)
+        stopWatchingHost = await watchLinuxTrayHost(hostChanged)
 
         if (generation !== hostGeneration) {
           throw new Error('System tray host disappeared')
         }
+
+        hostReady = true
       } catch (error) {
         restoreHidden()
         destroyTray(true)
         options.log(`[tray] unavailable; ordinary window behavior retained: ${error}`)
       }
-    } else if (!status().available && !quitting) {
+    } else if (!trayAlive() && !quitting) {
       try {
         if (process.platform === 'linux') {
           const { watchLinuxTrayHost } = await import('./tray-host')
           const generation = hostGeneration
-          stopWatchingHost = await watchLinuxTrayHost(hostLost)
+          stopWatchingHost = await watchLinuxTrayHost(hostChanged)
 
           if (generation !== hostGeneration) {
             throw new Error('System tray host disappeared')
           }
+
+          hostReady = true
         }
 
         if (quitting) {

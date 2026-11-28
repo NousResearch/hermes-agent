@@ -16,7 +16,7 @@ sidebar_position: 1
 |----------|-------|
 | **Nous Portal** | `hermes model`（OAuth，订阅制） |
 | **OpenAI Codex** | `hermes model` → **ChatGPT or Codex Subscription**（ChatGPT OAuth，使用 Codex 模型） |
-| **Anthropic** | `hermes model`（Claude Max + 额外用量积分，通过 OAuth；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
+| **Anthropic** | `hermes model`（通过 OAuth 使用 Claude Pro 或 Max 订阅；也支持 Anthropic API key 或手动 setup-token——见下方说明） |
 | **OpenRouter** | `~/.hermes/.env` 中的 `OPENROUTER_API_KEY` |
 | **NovitaAI** | `~/.hermes/.env` 中的 `NOVITA_API_KEY`（provider: `novita`，200+ 模型，Model API、Agent Sandbox、GPU Cloud） |
 | **AI Gateway** | `~/.hermes/.env` 中的 `AI_GATEWAY_API_KEY`（provider: `ai-gateway`） |
@@ -109,10 +109,14 @@ Hermes 有**两个**模型命令，用途不同：
 
 通过 Anthropic API 直接使用 Claude 模型——无需 OpenRouter 代理。支持三种认证方式：
 
-:::caution 需要 Claude Max"额外用量"积分
-通过 `hermes model` → Anthropic OAuth（或 `hermes auth add anthropic --type oauth`）认证时，Hermes 以 Claude Code 身份路由到你的 Anthropic 账户。**仅当你订阅了 Claude Max 计划且购买了额外用量积分时才有效。** Claude Max 基础计划的配额（Claude Code 默认包含的用量）不会被 Hermes 消耗——只有你额外购买的超额积分才会被使用。Claude Pro 订阅者无法使用此路径。
+:::caution "Out of extra usage" 并不总是计费问题
+通过 `hermes model` → Anthropic OAuth（或 `hermes auth add anthropic --type oauth`）认证时，Hermes 使用你的 Claude 订阅。**Claude Pro 和 Claude Max** 均可使用：请求计入计划内包含的会话和每周用量限额（可用 `hermes usage` 查看），无需额外用量积分。
 
-如果你没有 Max + 额外积分，请改用 `ANTHROPIC_API_KEY`——请求将按 token 计费，从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关）。
+如果请求返回 HTTP 400 "You're out of extra usage"，而 [claude.ai/settings/usage](https://claude.ai/settings/usage) 仍显示有剩余配额，很可能是 Anthropic 的服务端过滤器拒绝了请求中的部分内容，而不是余额不足。运行 `hermes auth reset anthropic` 清除缓存的失败状态；如果问题再次出现，请附上 `hermes debug share` 的输出提交 issue。
+
+能否使用与是否被允许是两个不同的问题。订阅 OAuth 受 Anthropic 消费者条款约束，Anthropic 的[认证与凭证使用政策](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use)限制第三方应用提供 Claude.ai 登录或通过订阅凭证转发请求。Hermes 原生 OAuth 路径是否属于该限制范围仍是未决问题（[#146767](https://github.com/NousResearch/hermes-agent/issues/146767)）；请阅读该政策，并自行判断是否适用于你的账户。
+
+如果希望按 token 付费，请改用 `ANTHROPIC_API_KEY`——请求将从该 key 所属组织扣费（标准 API 定价，与任何 Claude 订阅无关），这也是 Anthropic 政策建议开发者使用的认证方式。
 :::
 
 ```bash

@@ -100,7 +100,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ## 提供商认证（OAuth）
 
-对于原生 Anthropic 认证，Hermes 在 Claude Code 自身凭证文件存在时优先使用，因为这些凭证可以自动刷新。**针对 Anthropic 的 OAuth 需要购买了额外使用额度的 Claude Max 计划**——Hermes 以 Claude Code 身份路由，仅消耗 Max 计划的额外/超额额度，不消耗基础 Max 配额，且不适用于 Claude Pro。没有 Max + 额外额度时，请改用 API 密钥。`ANTHROPIC_TOKEN` 等环境变量作为手动覆盖仍然有用，但不再是 Claude Max 登录的首选路径。
+对于原生 Anthropic 认证，Hermes 在 Claude Code 自身凭证文件存在时优先使用，因为这些凭证可以自动刷新。**针对 Anthropic 的 OAuth 适用于 Claude Pro 或 Max 订阅**，消耗计划内包含的用量限额，无需额外用量积分。如果希望按 token 付费，请改用 API 密钥。`ANTHROPIC_TOKEN` 等环境变量作为手动覆盖仍然有用，但不再是 Claude Pro/Max 登录的首选路径。
 
 | 变量 | 描述 |
 |----------|-------------|

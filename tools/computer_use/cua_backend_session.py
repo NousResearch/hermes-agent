@@ -179,7 +179,7 @@ class _CuaDriverSession:
     # Idempotent reads, safe to replay after a broken transport. Mutations stay out: a lost response does not
     # prove they failed.
     _TRANSPORT_REPLAY_SAFE_TOOLS = frozenset({"get_cursor_position", "get_displays", "get_screen_size",
-                                              "get_window_state", "list_apps", "list_windows"})
+                                              "get_window_state", "list_apps", "list_windows", "screenshot", "get_desktop_state"})
     # A timed-out MCP session is wedged for later calls, so it is recreated before the next non-lifecycle
     # call_tool. Class-level default: tests that bypass __init__ see healthy.
     # See #74799.
@@ -401,7 +401,17 @@ class _CuaDriverSession:
     def _is_closed_session_error(exc: Exception) -> bool:
         """True for MCP/stdio failures that are recoverable by reconnecting."""
         name, module = exc.__class__.__name__, getattr(exc.__class__, "__module__", "")
-        return (name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
+        # Newer MCP SDKs signal a disconnected JSON-RPC dispatcher with MCPError
+        # instead of an anyio ClosedResourceError. Match the SDK's exact transport
+        # sentinel, not arbitrary server errors or exception text. call_tool still
+        # replays only idempotent reads; mutations retain outcome-unknown semantics.
+        error = getattr(exc, "error", None)
+        mcp_closed = (
+            module == "mcp.shared.exceptions" and name in {"MCPError", "McpError"}
+            and getattr(error, "code", None) == -32000
+            and getattr(error, "message", "") == "Connection closed"
+        )
+        return (mcp_closed or name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
                 or (module.startswith("anyio") and "Resource" in name)
                 or isinstance(exc, (BrokenPipeError, EOFError)))
 
@@ -478,6 +488,21 @@ class _CuaDriverSession:
                 with contextlib.suppress(OSError):
                     os.remove(shot_file)
 
+    def _recover_closed_call(self, name: str, args: dict[str, Any], timeout: float,
+                             error: Exception) -> dict[str, Any]:
+        """Reconnect once; losing recovery too cannot make a possibly delivered mutation retryable."""
+        replay_safe = name in self._TRANSPORT_REPLAY_SAFE_TOOLS
+        try:
+            self._recreate_session(name, timeout, "cua-driver MCP session closed during %s; reconnecting once")
+        except Exception:
+            if replay_safe:
+                raise
+            self._notify_transport_reset()
+            logger.warning("cua-driver reconnect after %s failed; preserving unknown outcome", name, exc_info=True)
+        if not replay_safe:
+            return _outcome_unknown(name, error, "transport_outcome_unknown")
+        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+
     def call_tool(self, name: str, args: dict[str, Any], timeout: float = 30.0) -> dict[str, Any]:
         if name not in self._LIFECYCLE_CALLS:
             # A prior MCP timeout marks the session suspect (possibly wedged): recreate it so one timeout never
@@ -513,10 +538,7 @@ class _CuaDriverSession:
                 return self._call_tool_via_cli(name, args, timeout)
             if not self._is_closed_session_error(e):
                 raise
-            self._recreate_session(name, timeout, "cua-driver MCP session closed during %s; reconnecting once")
-            if name not in self._TRANSPORT_REPLAY_SAFE_TOOLS:
-                return _outcome_unknown(name, e, "transport_outcome_unknown")
-            result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+            result = self._recover_closed_call(name, args, timeout, e)
         # Remember only a SUCCESSFULLY declared identity: no stale recovery state.
         declared_id, ok = args.get("session"), result.get("isError") is not True
         if name == "start_session" and ok and isinstance(declared_id, str) and declared_id:

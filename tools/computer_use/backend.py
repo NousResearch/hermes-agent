@@ -56,6 +56,23 @@ class CaptureResult:
     # ``len(elements) >= ax_max_elements > 0`` means the tree may be truncated.
     ax_max_elements: int = 0
 
+    # Capture success is not input readiness: a locked Mac can still return window pixels.
+    # Keep these additive diagnostics independent of the requested display modality.
+    degraded: Optional[bool] = None
+    degraded_reason: Optional[str] = None
+    background_input: Optional[dict[str, Any]] = None
+    escalation: Optional[dict[str, Any]] = None
+    code: Optional[str] = None
+
+    @property
+    def input_blocked(self) -> bool:
+        """An explicit lock diagnosis forbids every input rung until a fresh unlocked read."""
+        exact = (self.background_input or {}).get("exact_window")
+        return (self.code == "screen_locked"
+                or (self.degraded_reason or "").startswith("screen_locked")
+                or (isinstance(exact, dict) and exact.get("status") == "screen_locked")
+                or (self.escalation or {}).get("recommended") == "wait_for_unlock")
+
 
 @dataclass
 class ActionResult:
@@ -90,6 +107,9 @@ class ComputerUseBackend(ABC):
     ``button`` is left | right | middle; ``modifiers`` a list of key names. ``element`` args
     are 1-based SOM indices from a prior capture. `direction` is up | down | left | right and
     `amount` is wheel ticks; `keys` is a combo such as 'cmd+s', 'ctrl+alt+t', 'return'."""
+
+    # Tool-level safety evidence, scoped to this session-owned backend instance.
+    _last_capture_result: Optional[CaptureResult] = None
 
     @abstractmethod
     def start(self) -> None: ...

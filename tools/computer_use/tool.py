@@ -17,6 +17,7 @@ import sys
 import threading
 import uuid
 from collections import namedtuple
+from dataclasses import replace
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
@@ -401,6 +402,7 @@ def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_)
     # pid/window_id forwarded only when given so older backends keep their defaults.
     cap = backend.capture(mode=mode, app=args.get("app"), **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None})
     fence()
+    cap = _remember_capture_result(backend, cap)
     return _capture_response(cap, session_id=session_id)
 
 def _do_listing(backend, action, args, key, **_):
@@ -460,6 +462,15 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
                                                                  if (hint := _ACTION_SUGGESTIONS.get(str(action))) else "")})
+    # A screenshot can succeed while the Mac is locked. Do not interpret it as input
+    # authority, including foreground focus. Only a new capture can clear this latch;
+    # the driver still independently revalidates every action when it is dispatched.
+    last_capture = getattr(backend, "_last_capture_result", None)
+    if spec.destructive and isinstance(last_capture, CaptureResult) and last_capture.input_blocked:
+        return _text_response(ActionResult(
+            ok=False, action=action, code="screen_locked", effect="refused",
+            message="Screen is locked: observation-only. Ask the user to wake/unlock the Mac, then capture again; do not send input.",
+            escalation={"recommended": "wait_for_unlock", "reason": "No input delivery mode is safe while locked."}))
     # app= guard: input goes to the sticky target from the last capture/focus_app and the backend drops app=
     # silently — refuse a clear mismatch rather than type into the wrong window while reporting ok:true.
     if (spec.input and isinstance(requested_app := args.get("app"), str) and requested_app.strip()
@@ -480,10 +491,13 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: dict[str, Any], fe
 def _classify_action_result(res: ActionResult) -> dict[str, Any]:
     """Next ladder step from semantic evidence, in precedence order. Escalation is advisory: it never overrides
     a confirmed effect nor licenses repeating input."""
+    if res.code == "screen_locked" or (res.escalation or {}).get("recommended") == "wait_for_unlock":
+        return {"decision": "wait_for_unlock", "recommended": "wait_for_unlock",
+                "hint": "Stop input. Ask the user to wake/unlock the Mac and take a fresh capture; do not escalate to foreground."}
     if res.effect == "confirmed" or res.verified is True:
         return {"decision": "done"}
-    if res.effect == "unverifiable":
-        return {"decision": "verify_fresh_state", "hint": ("Input was delivered but not confirmed. Re-capture and check the "
+    if res.effect == "unverifiable" or res.code in {"transport_outcome_unknown", "timeout_outcome_unknown"}:
+        return {"decision": "verify_fresh_state", "hint": ("Input may have been delivered but is not confirmed. Re-capture and check the "
                 "result BEFORE any retry — do not repeat the input on an escalation recommendation alone.")}
     if res.effect == "suspected_noop" or not res.ok or res.code is not None:
         meta = res.meta if isinstance(res.meta, dict) else {}
@@ -617,7 +631,19 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
 def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
     """Human-readable capture summary; line ORDER is contract. Lists only what `elements` surfaces, otherwise the
     summary names indices the model can't find."""
+    background = v.cap.background_input or {}
+    exact = background.get("exact_window") or {}
+    background_warning = (isinstance(exact, dict) and exact.get("status") not in {None, "matched"}) or any(
+        isinstance(route, dict) and route.get("status") == "refused" for route in background.get("routes", []))
     notes = (
+        v.cap.input_blocked and ("screen_locked: observation-only; wait_for_unlock. Screenshots may still show app content, "
+                                "but no input is safe. Ask the user to wake/unlock the Mac, then capture again; "
+                                "do not click, type, or escalate to foreground."),
+        v.cap.degraded is True and "capture degraded=true",
+        v.cap.degraded_reason,
+        v.cap.escalation and "capture escalation=" + json.dumps(_capture_status_payload(v.cap).get("escalation")),
+        background_warning and "background_input=" + json.dumps(background),
+        v.cap.code and "capture code=" + v.cap.code,
         v.bounds_note and v.bounds_note + (f"; estimated scale ~{v.bounds_scale}x (screenshot position x "
                                            f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
         v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
@@ -637,12 +663,36 @@ def _capture_summary_lines(v: SimpleNamespace) -> list[str]:
            f"{_MIN_PROVIDER_IMAGE_DIMENSION}x{_MIN_PROVIDER_IMAGE_DIMENSION} provider minimum)"] if v.dims_omitted else []),
     ]
 
+def _capture_status_payload(cap: CaptureResult) -> dict[str, Any]:
+    """Shared diagnostics for text, auxiliary vision and native-image responses."""
+    status = {key: value for key in ("degraded", "degraded_reason", "background_input", "escalation", "code")
+              if (value := getattr(cap, key)) is not None}
+    if cap.input_blocked:
+        # Explicit lock evidence outranks another delivery recommendation.
+        status["escalation"] = (cap.escalation if (cap.escalation or {}).get("recommended") == "wait_for_unlock"
+                                else {"recommended": "wait_for_unlock", "reason": "Screen is locked; do not send input."})
+    return status
+
+
+def _remember_capture_result(backend: ComputerUseBackend, cap: CaptureResult) -> CaptureResult:
+    """Only a fresh actionable read may retire explicit lock evidence, never an empty/preview frame."""
+    previous = getattr(backend, "_last_capture_result", None)
+    exact = (cap.background_input or {}).get("exact_window")
+    unlocked_read = bool(cap.elements) or (isinstance(exact, dict) and exact.get("status") == "matched")
+    if isinstance(previous, CaptureResult) and previous.input_blocked and not cap.input_blocked and not unlocked_read:
+        cap = replace(cap, **_capture_status_payload(previous),
+                      note="Unlock has not been verified by this capture; take a fresh app/window capture after waking/unlocking.")
+    backend._last_capture_result = cap
+    return cap
+
+
 def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[dict[str, Any]] = None) -> str:
     """JSON text payload shared by the AX, vision-unavailable and aux-vision branches. Key order is contract:
     fixed fields, ``extra`` branch markers, then set optionals."""
     return json.dumps({
         "mode": v.cap.mode, "width": v.width, "height": v.height, "app": v.cap.app, "window_title": v.cap.window_title,
         "elements": [_element_to_dict(e) for e in v.visible], "total_elements": v.total, "summary": summary,
+        **_capture_status_payload(v.cap),
         **(extra or {}),
         **_present(truncated_elements=v.truncated, elements_file=v.elements_file, screenshot_path=v.screenshot_path,
                    bounds_scale=v.bounds_scale),
@@ -663,7 +713,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # the text metadata is fresh and the note says which earlier result still applies.
         lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
                      "capture's screenshot/analysis still shows the current state. Element indices below are fresh "
-                     "and remain the preferred way to act.)")
+                     "and remain the preferred way to act.)" if not cap.input_blocked else
+                     "  (image unchanged; capture is still observation-only — wait_for_unlock, then capture again.)")
         extra = {"screen_unchanged": True}
     elif v.has_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
@@ -674,7 +725,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 "content": [{"type": "text", "text": summary},
                             {"type": "image_url", "image_url": {"url": f"data:{_capture_image_format(cap)[0]};base64,{cap.png_b64}"}}],
                 "text_summary": summary,
+                **_capture_status_payload(cap),
                 "meta": {"mode": cap.mode, "width": v.width, "height": v.height, "elements": v.total, "png_bytes": cap.png_bytes_len,
+                         **_capture_status_payload(cap),
                          **_present(screenshot_path=v.screenshot_path, elements_file=v.elements_file, bounds_scale=v.bounds_scale)},
             }
         # Decide whether to hand the screenshot to the auxiliary.vision pipeline (text-only result) or keep
@@ -689,7 +742,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # Aux routing requested but failed (vision node down, empty analysis...): the multimodal envelope could
         # now break with a provider error, so degrade to text.
         lines.append("  (vision unavailable: the auxiliary vision model could not be reached; screenshot "
-                     "omitted. Element-index actions still work — drive via the element list above.)")
+                     "omitted. Element-index actions still work — drive via the element list above.)" if not cap.input_blocked else
+                     "  (vision unavailable; capture remains observation-only — wait_for_unlock.)")
         extra = {"vision_unavailable": True}
     if v.truncated:  # text paths carry the `elements` array, so the truncation note applies
         lines.append(f"  (response truncated to {len(v.visible)} of {v.total} elements; the full tree is in "
@@ -711,13 +765,19 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
     fence()  # a frame taken after a takeover never reaches the dedup cache nor the model
+    cap = _remember_capture_result(backend, cap)
     resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
+    capture_status = _capture_status_payload(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]
         resp["action_result"] = payload
+        if capture_status:
+            resp["capture_status"] = capture_status
         return resp
-    return json.dumps({**json.loads(resp), **payload})  # text capture: merge the action payload in
+    # Action and observation escalations are separate facts, neither may erase the other.
+    return json.dumps({**json.loads(resp), **payload,
+                       **({"capture_status": capture_status} if capture_status else {})})
 
 # ── Cache files (screenshots, element spills, vision temps) ─────────────────
 def _secure_dir_policy(cache_dir) -> None:

@@ -967,6 +967,32 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
     assert captured.get("max_tokens") is None
 
 
+def test_review_fork_marks_truncated_turn_incomplete(curator_env, monkeypatch):
+    curator = curator_env["curator"]
+    import importlib
+
+    importlib.reload(curator)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", dict)
+
+    class _StubAgent:
+        def __init__(self, **_kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            return {
+                "final_response": "The model's reply was cut off before it finished.",
+                "failure_reason": "truncated",
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["incomplete"] is True
+    assert result["error"] == "review response was truncated"
+    assert "truncated" in result["summary"]
 
 
 def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch):

@@ -44,13 +44,23 @@ logger = logging.getLogger(__name__)
 _GITHUB_HOSTS = {"github.com", "gist.github.com"}
 
 
+_UNSAFE_CREDENTIAL_CHARS = ("\r", "\n", "\x00")
+_RAW_UNSAFE_CREDENTIAL_CHARS = (*_UNSAFE_CREDENTIAL_CHARS, "\t")
+
+
 def _https_origin(url: str) -> Optional[str]:
-    parsed = urllib.parse.urlsplit(url)
+    if any(ch in url for ch in _RAW_UNSAFE_CREDENTIAL_CHARS):
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError:
+        return None
     if parsed.scheme != "https" or not parsed.hostname:
         return None
     host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
+    if port is not None:
+        host = f"{host}:{port}"
     return f"https://{host}"
 
 
@@ -86,8 +96,37 @@ def _github_token() -> Optional[str]:
     return _env_github_token() or _gh_cli_token()
 
 
-def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
+def _credential_lookup_url(url: str) -> Optional[tuple[str, str]]:
+    """Return ``(origin, sanitized_url)`` for ``git credential fill``, or ``None``.
+
+    Preserves the HTTPS origin, optional encoded username, and encoded path while stripping any
+    embedded password, query string, or fragment. Rejects literal CR/LF/NUL/TAB and
+    percent-encoded CR/LF/NUL bytes in retained URL components that could inject extra attributes
+    into git's line-oriented credential protocol.
+    """
+    origin = _https_origin(url)
+    if origin is None:
+        return None
+    parsed = urllib.parse.urlsplit(url)
+    userinfo, sep, _hostport = parsed.netloc.rpartition("@")
+    raw_user = userinfo.partition(":")[0] if sep else ""
+    if "@" in raw_user:
+        return None
+    host_part = origin.removeprefix("https://")
+    for component in (raw_user, host_part, parsed.path):
+        decoded = urllib.parse.unquote(component)
+        if any(ch in decoded for ch in _UNSAFE_CREDENTIAL_CHARS):
+            return None
+    authority = f"{raw_user}@{host_part}" if raw_user else host_part
+    return origin, f"https://{authority}{parsed.path}"
+
+
+def _credential_fill(url: str) -> Optional[tuple[str, str]]:
     """``(username, password)`` from the user's own git credential helpers, never prompting."""
+    lookup = _credential_lookup_url(url)
+    if lookup is None:
+        return None
+    origin, lookup_url = lookup
     git = resolve_usable_git()
     if not git:
         return None
@@ -97,8 +136,7 @@ def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
     # A GUI askpass (VS Code, ssh-askpass) would block on a dialog nobody sees.
     env.pop("GIT_ASKPASS", None)
     env.pop("SSH_ASKPASS", None)
-    parsed = urllib.parse.urlsplit(origin)
-    request = f"protocol=https\nhost={parsed.netloc}\n\n"
+    request = f"url={lookup_url}\n\n"
     try:
         result = subprocess.run(
             [git, "-c", "core.askPass=", "credential", "fill"], input=request, capture_output=True,
@@ -116,20 +154,21 @@ def _credential_fill(origin: str) -> Optional[tuple[str, str]]:
 
 
 def iter_git_basic_auth(url: str) -> Iterator[tuple[str, tuple[str, str]]]:
-    """``(source, (username, password))`` for every credential the user owns for *url*'s host,
+    """``(source, (username, password))`` for every credential the user owns for *url*,
     in precedence order and without duplicates. The remote decides which one works: an expired
     ``GITHUB_TOKEN`` left in ``.env`` must not shadow a live ``gh auth login`` (#115257)."""
-    origin = _https_origin(url)
-    if origin is None:
+    lookup = _credential_lookup_url(url)
+    if lookup is None:
         return
+    origin, _lookup_url = lookup
     seen: set[tuple[str, str]] = set()
     sources = []
     if urllib.parse.urlsplit(origin).hostname in _GITHUB_HOSTS:
         sources += [("GITHUB_TOKEN/GH_TOKEN", lambda: _token_pair(_env_github_token())),
                     ("gh auth token", lambda: _token_pair(_gh_cli_token()))]
-    sources.append(("git credential helper", lambda: _credential_fill(origin)))
-    for source, lookup in sources:
-        auth = lookup()
+    sources.append(("git credential helper", lambda: _credential_fill(url)))
+    for source, lookup_fn in sources:
+        auth = lookup_fn()
         if auth is not None and auth not in seen:
             seen.add(auth)
             yield source, auth

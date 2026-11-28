@@ -22,6 +22,29 @@ _MP4_AUDIO_BRANDS = (b"m4a ", b"m4b ")
 # Unambiguous fixed prefixes (checked after ftyp/RIFF, which need bytes 8-11).
 _PREFIX_CONTAINERS = ((b"OggS", "ogg"), (b"fLaC", "flac"), (b"ID3", "mp3"))
 
+# Codec identification headers, matched at the start of an Ogg stream's FIRST page payload.
+# An ``OggS`` prefix only proves the container: voice bubbles need Opus *inside* it, and the
+# two ways to get the codec wrong are routine — ffmpeg's ``.ogg`` muxer default is Vorbis, and a
+# build without libvorbis silently writes Ogg/FLAC instead.
+_OGG_CODEC_MAGICS = (
+    (b"OpusHead", "opus"), (b"\x01vorbis", "vorbis"), (b"\x7fFLAC", "flac"),
+    (b"\x80theora", "theora"), (b"Speex   ", "speex"),
+)
+
+
+def sniff_ogg_codec(data: bytes) -> Optional[str]:
+    """Codec id of an Ogg stream from its first page's identification header, or ``None`` when
+    the bytes are not Ogg or the codec is unrecognized (callers treat unknown as "don't touch")."""
+    if len(data) < 28 or not data.startswith(b"OggS"):
+        return None
+    # 27-byte page header, then one lacing byte per segment: the payload starts after the table.
+    payload_start = 27 + data[26]
+    payload = data[payload_start:payload_start + 64]
+    for magic, codec in _OGG_CODEC_MAGICS:
+        if payload.startswith(magic):
+            return codec
+    return None
+
 
 def sniff_container(data: bytes) -> Optional[str]:
     """Return a CONTAINER_TO_EXT key from magic bytes, or ``None`` when unknown."""

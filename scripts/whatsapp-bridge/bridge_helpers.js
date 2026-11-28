@@ -649,6 +649,15 @@ export function deliveryStatusEvent({ key, update, receipt, isOwnSend }) {
   return event;
 }
 
+// True only for Ogg whose first page carries the Opus identification header: an Ogg
+// container (or a .ogg/.opus name) can hold Vorbis or FLAC, which WhatsApp cannot play as
+// a voice note even when labelled codecs=opus.
+export function isOggOpus(buffer) {
+  if (!buffer || buffer.length < 28 || buffer.toString('latin1', 0, 4) !== 'OggS') return false;
+  const payloadStart = 27 + buffer[26];
+  return buffer.toString('latin1', payloadStart, payloadStart + 8) === 'OpusHead';
+}
+
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
   const ext = filePath.toLowerCase().split('.').pop();
   const type = mediaType || inferMediaType(ext);

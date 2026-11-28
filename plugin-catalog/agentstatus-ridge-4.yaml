@@ -1,0 +1,19 @@
+name: agentstatus-ridge-4
+title: "Ridge 2"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 680ab33c42182bbcac78dc4634c640261627cc77
+subdir: plugins/ridge-4
+version: "1.0.0"
+description: "Public MCP for Ridge 2, hosted by AgentStatus at https://ridge-4.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://ridge-4.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

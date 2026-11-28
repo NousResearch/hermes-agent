@@ -1,0 +1,19 @@
+name: agentstatus-c22tech
+title: "C22Tech - Chicago And Denver Small Business Tech Support"
+repo: https://github.com/Carmel-Labs-Inc/agentstatus-mcp-index
+sha: 19683d33e558bbc5471e1df2574df8c30f76adab
+subdir: plugins/c22tech
+version: "1.0.0"
+description: "Public MCP for C22Tech - Chicago And Denver Small Business Tech Support, hosted by AgentStatus at https://c22tech.mcp.agentstatus.dev/. No authentication and no keys. Disclosure: tool calls go to that host. The tool list is served at runtime and is not covered by the pinned sha. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only."
+maintainer: AgentStatus
+tier: community
+category: tools
+docs_url: https://c22tech.mcp.agentstatus.dev/
+requires_hermes: ">=0.21.6"
+readme: false
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

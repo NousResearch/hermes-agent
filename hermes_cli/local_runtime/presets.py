@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from hermes_cli.local_runtime.context_policy import (
-    RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
+    FLOOR, RUNTIME_OVERHEAD_BYTES, fit_to_free_memory, launch_args, plan_launch, ub_logits_bytes)
 from hermes_cli.local_runtime.estimator import (
     HardwareBudget, PhysicsRefusal, as_loaded, ctx_bytes, footprint_bytes, profile_from_gguf)
 from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
@@ -180,7 +180,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
     release runs.
     """
     from hermes_cli.local_runtime.catalog import entry_for_model
-    from hermes_cli.local_runtime.growth import load_window_overrides
+    from hermes_cli.local_runtime.growth import (
+        load_cpu_block_overrides, load_sampling_overrides, load_window_overrides)
 
     model_id = model_id_from_stem(gguf.stem)
     try:
@@ -214,7 +215,19 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         profile, decision, mtp_capable=is_mtp and dflash is None, uma=budget.uma,
         mtp_prefill=plan.mtp_prefill,
         mtp_draft_depth=entry.mtp_draft_depth if entry is not None else 3))
+    if requested is not None and 0 < requested < FLOOR:
+        # An explicit sub-floor cap is a constrained-memory launch; one slot keeps its KV budget
+        # proportional to the requested window rather than multiplying it by the server default.
+        keys["parallel"] = "1"
     keys["model"] = str(gguf)
+    cpu_blocks = load_cpu_block_overrides().get(model_id)
+    if cpu_blocks is not None and profile.moe:
+        keys.pop("override-tensor", None)
+        blocks = range(min(cpu_blocks, len(profile.layers)))
+        if cpu_blocks:
+            pattern = r"blk\.\d+\.ffn_.*_exps\.weight=CPU" if cpu_blocks >= len(profile.layers) else (
+                r"blk\.({})\.ffn_.*_exps\.weight=CPU".format("|".join(map(str, blocks))))
+            keys["override-tensor"] = pattern
     from hermes_cli.local_runtime.hardware import prompt_cache_bytes
     cache = prompt_cache_bytes(live, footprint_bytes(plan.profile, decision.window,
                                                      overhead_bytes=plan.overhead_bytes), residents)
@@ -257,6 +270,8 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
             keys["spec-type"] = "draft-dspark"
             # Unsloth's measured cliff: acceptance 83% at 2-3 drafts, collapses at 4.
             keys["spec-draft-n-max"] = "3"
+    # Runtime-owned overrides deliberately win over GGUF and catalog sampling defaults.
+    keys.update(load_sampling_overrides().get(model_id, {}))
     return PresetEntry(model_id=model_id, window=decision.window,
                        spilled=decision.spilled, keys=keys)
 

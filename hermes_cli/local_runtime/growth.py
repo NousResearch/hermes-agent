@@ -19,13 +19,53 @@ def window_overrides_path():
     return runtimes_root() / "window_overrides.json"
 
 
+def sampling_overrides_path():
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "sampling_overrides.json"
+
+
+def cpu_block_overrides_path():
+    from hermes_cli.local_runtime.binaries import runtimes_root
+
+    return runtimes_root() / "cpu_block_overrides.json"
+
+
+def load_cpu_block_overrides() -> dict[str, int]:
+    """model_id -> number of MoE blocks whose expert tensors stay on CPU."""
+    try:
+        with open(cpu_block_overrides_path(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        return {str(model_id): max(0, int(count)) for model_id, count in data.items()}
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
+
+
+def load_sampling_overrides() -> dict[str, dict[str, str]]:
+    """model_id -> explicit sampling preset keys. Empty on any read problem."""
+    allowed = {"temp", "top-k", "top-p", "min-p", "chat-template-kwargs"}
+    try:
+        with open(sampling_overrides_path(), encoding="utf-8-sig") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
+        return {str(model_id): {str(k): str(v) for k, v in values.items() if k in allowed}
+                for model_id, values in data.items() if isinstance(values, dict)}
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
+
+
 def load_window_overrides() -> dict:
     """model_id -> granted window (int). Empty on any read problem."""
     try:
         with open(window_overrides_path(), encoding="utf-8-sig") as fh:
             data = json.load(fh)
+        if not isinstance(data, dict):
+            return {}
         return {str(k): int(v) for k, v in data.items()}
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
         return {}
 
 
@@ -95,7 +135,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
 
     try:
         server_idle = sup.is_idle(model_id)
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
         server_idle = False
 
     budget = probe_budget(planning=True)

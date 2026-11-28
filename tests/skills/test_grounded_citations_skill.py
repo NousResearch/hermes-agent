@@ -527,6 +527,66 @@ def test_render_replace_in_appends_when_no_block_exists(sources_mod, tmp_path: P
     capsys.readouterr()
 
 
+def test_render_replace_in_keeps_lines_after_the_block(sources_mod, tmp_path: Path, capsys) -> None:
+    """A closing line after the Sources block (an eval's ANSWER line, a
+    sign-off) survives the rewrite, and a second run is still a no-op."""
+    ledger = tmp_path / "tl.json"
+    page = tmp_path / "p.txt"
+    page.write_text(_PAGE, encoding="utf-8")
+    args = ["--ledger", str(ledger)]
+    sources_mod.main(args + ["add", "https://a.example"])
+    sources_mod.main(
+        args + ["quote", "1", "--text", "Water expands when it freezes.", "--from", str(page)]
+    )
+    draft = tmp_path / "d.md"
+    draft.write_text(
+        "A claim resting on the first source.[1]\n\n## Sources\n\n"
+        "[1] https://stale.example\n    > \"an old quote line\"\n\nANSWER: B\n",
+        encoding="utf-8",
+    )
+    assert sources_mod.main(args + ["render", "--style", "evidence", "--replace-in", str(draft)]) == 0
+    first = draft.read_text(encoding="utf-8")
+    assert first.rstrip("\n").splitlines()[-1] == "ANSWER: B"
+    assert "stale.example" not in first and "an old quote line" not in first
+    assert first.count("## Sources") == 1
+    assert sources_mod.main(args + ["render", "--style", "evidence", "--replace-in", str(draft)]) == 0
+    assert draft.read_text(encoding="utf-8") == first, "second run must be a no-op"
+    capsys.readouterr()
+    assert sources_mod.main(args + ["verify", str(draft), "--evidence"]) == 0
+
+
+def test_render_replace_in_replaces_a_hand_written_list_block(sources_mod, tmp_path: Path, capsys) -> None:
+    """Bulleted or numbered hand-written entries belong to the old block and
+    are replaced; only the line after them is kept."""
+    ledger = tmp_path / "hw.json"
+    args = ["--ledger", str(ledger)]
+    sources_mod.main(args + ["add", "https://a.example"])
+    draft = tmp_path / "d.md"
+    draft.write_text(
+        "A claim resting on the first source.[1]\n\nSources:\n"
+        "- https://old.example/one\n2. Old Title https://old.example/two\n\nThanks for reading.\n",
+        encoding="utf-8",
+    )
+    assert sources_mod.main(args + ["render", "--replace-in", str(draft)]) == 0
+    body = draft.read_text(encoding="utf-8")
+    assert "old.example" not in body
+    assert body.rstrip("\n").splitlines()[-1] == "Thanks for reading."
+    capsys.readouterr()
+
+
+def test_sources_block_url_with_parentheses_matches_ledger(sources_mod, ledger: Path, tmp_path: Path) -> None:
+    url = "https://www.cell.com/cell/fulltext/S0092-8674(23)00593-7"
+    sources_mod.add_sources(ledger, [url])
+    text = f"A claim resting on a Cell paper here.[1]\n\nSources:\n[1] {url} — Cell\n"
+    code, errors, _ = _verify(sources_mod, ledger, tmp_path, text)
+    assert (code, errors) == (0, [])
+
+
+def test_url_in_text_stops_at_an_unbalanced_closing_paren(sources_mod) -> None:
+    m = sources_mod._URL_IN_TEXT_RE.search("[1] (see https://a.example/x) for details")
+    assert m is not None and m.group(0) == "https://a.example/x"
+
+
 # ---------------------------------------------------------------------------
 # Output legibility
 # ---------------------------------------------------------------------------

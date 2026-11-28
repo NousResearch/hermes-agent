@@ -459,10 +459,46 @@ def _open_zip(path: str, kind: str) -> Iterator[zipfile.ZipFile]:
         raise ExtractionError(f"Not a valid {kind}: {exc}" if bad_zip else str(exc)) from exc
 
 
-def _zip_xml(zf: zipfile.ZipFile, name: str, optional: bool = False) -> Any:
+_MAX_ZIP_MEMBER_BYTES = 25 * 1024 * 1024
+_MAX_ZIP_TOTAL_BYTES = 100 * 1024 * 1024
+_MAX_EXTRACTED_TEXT_CHARS = 10 * 1024 * 1024
+
+
+def _read_zip_member_bounded(
+    zf: zipfile.ZipFile,
+    name: str,
+    *,
+    max_member_bytes: int = _MAX_ZIP_MEMBER_BYTES,
+    budget: Optional[list[int]] = None,
+) -> bytes:
+    """Read a zip member with strict decompressed size bounds to prevent zip bombs."""
+    info = zf.getinfo(name)
+    remaining = budget[0] if budget is not None else _MAX_ZIP_TOTAL_BYTES
+    limit = min(max_member_bytes, remaining)
+    if info.file_size > limit or limit <= 0:
+        raise ExtractionError(
+            f"Archive member '{name}' exceeds safe decompressed size limit ({info.file_size} > {max(limit, 0)} bytes)"
+        )
+    chunks: list[bytes] = []
+    total = 0
+    with zf.open(info, "r") as fp:
+        while True:
+            chunk = fp.read(min(65536, limit - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > limit:
+                raise ExtractionError(f"Archive member '{name}' exceeds safe decompressed size limit ({limit} bytes)")
+            chunks.append(chunk)
+    if budget is not None:
+        budget[0] = max(0, budget[0] - total)
+    return b"".join(chunks)
+
+
+def _zip_xml(zf: zipfile.ZipFile, name: str, optional: bool = False, *, budget: Optional[list[int]] = None) -> Any:
     """Parse a package part; ``optional`` parts yield an empty element when absent or malformed."""
     try:
-        return ET.fromstring(zf.read(name))
+        return ET.fromstring(_read_zip_member_bounded(zf, name, budget=budget))
     except (KeyError, ET.ParseError) as exc:
         if optional:
             return ET.Element("missing")
@@ -472,17 +508,37 @@ def _zip_xml(zf: zipfile.ZipFile, name: str, optional: bool = False) -> Any:
 
 
 def _extract_docx(path: str) -> str:
+    budget = [_MAX_ZIP_TOTAL_BYTES]
     with _open_zip(path, "DOCX") as zf:
-        root = _zip_xml(zf, "word/document.xml")
+        root = _zip_xml(zf, "word/document.xml", budget=budget)
     w = f"{{{_NS_W}}}"
+    p_tag, t_tag, rt_tag = f"{w}p", f"{w}t", f"{w}rt"
     breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n"}
     lines: list[str] = []
-    for para in root.iter(f"{w}p"):
-        # w:rt is the ruby (phonetic) guide over w:rubyBase; it annotates the text, it is not text.
-        guide = {n for rt in para.iter(f"{w}rt") for n in rt.iter()}
-        text = "".join(
-            (n.text or "") if n.tag == f"{w}t" else breaks.get(n.tag, "")
-            for n in para.iter() if n not in guide)
+    emitted_chars = 0
+    for para in root.iter(p_tag):
+        # Collect only this paragraph's own text runs without descending into nested <w:p>
+        # (prevents O(depth * N) quadratic amplification on nested paragraphs) or <w:rt> ruby guides.
+        parts: list[str] = []
+        stack = list(reversed(para))
+        while stack:
+            node = stack.pop()
+            tag = node.tag
+            if tag == p_tag or tag == rt_tag:
+                continue
+            if tag == t_tag:
+                if node.text:
+                    parts.append(node.text)
+            elif tag in breaks:
+                parts.append(breaks[tag])
+            if len(node):
+                stack.extend(reversed(node))
+        text = "".join(parts)
+        emitted_chars += len(text) + 1
+        if emitted_chars > _MAX_EXTRACTED_TEXT_CHARS:
+            raise ExtractionError(
+                f"DOCX extracted text exceeds safe output size limit ({_MAX_EXTRACTED_TEXT_CHARS:,} chars)"
+            )
         lines.extend(text.split("\n"))
     return _joined(lines, "DOCX contains no extractable text")
 
@@ -496,21 +552,27 @@ def _xlsx_string_text(item: ET.Element, s: str) -> str:
 
 def _extract_xlsx(path: str) -> str:
     s, r, pr = f"{{{_NS_S}}}", f"{{{_NS_REL}}}", f"{{{_NS_PKG_REL}}}"
+    budget = [_MAX_ZIP_TOTAL_BYTES]
+    char_budget = [_MAX_EXTRACTED_TEXT_CHARS]
     with _open_zip(path, "XLSX") as zf:
         names = set(zf.namelist())
-        sst = _zip_xml(zf, "xl/sharedStrings.xml", optional=True)
+        sst = _zip_xml(zf, "xl/sharedStrings.xml", optional=True, budget=budget)
         shared = [_xlsx_string_text(item, s) for item in sst.iter(f"{s}si")]
-        rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True)
+        rels_root = _zip_xml(zf, "xl/_rels/workbook.xml.rels", optional=True, budget=budget)
         rels = {rel.get("Id", ""): rel.get("Target", "")
                 for rel in rels_root.iter(f"{pr}Relationship") if rel.get("Id")}
         out: list[str] = []
-        for sheet in _zip_xml(zf, "xl/workbook.xml").iter(f"{s}sheet"):
+        for sheet in _zip_xml(zf, "xl/workbook.xml", budget=budget).iter(f"{s}sheet"):
             target = rels.get(sheet.get(f"{r}id", ""), "").lstrip("/")
             part = posixpath.normpath(target if target.startswith("xl/") else f"xl/{target}")
             if sheet.get("state", "visible") in {"hidden", "veryHidden"} or part not in names:
                 continue
             with contextlib.suppress(ET.ParseError):
-                rows = _sheet_rows(zf.read(part), shared)
+                rows = _sheet_rows(
+                    _read_zip_member_bounded(zf, part, budget=budget),
+                    shared,
+                    char_budget=char_budget,
+                )
                 out += [f"# ── Sheet: {sheet.get('name', 'Sheet')} ──",
                         *(["\t".join(row) for row in rows] or ["(empty)"]), ""]
     return _joined(out, "XLSX has no visible sheets with content")
@@ -523,7 +585,9 @@ def _col_index(ref: str) -> int:
     return max(idx - 1, 0)
 
 
-def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
+def _sheet_rows(
+    xml_bytes: bytes, shared: list[str], *, char_budget: Optional[list[int]] = None,
+) -> list[list[str]]:
     root = ET.fromstring(xml_bytes)
     s = f"{{{_NS_S}}}"
     rows: list[list[str]] = []
@@ -533,7 +597,14 @@ def _sheet_rows(xml_bytes: bytes, shared: list[str]) -> list[list[str]]:
         for cell in row.iter(f"{s}c"):
             col = _col_index(cell.get("r", "")) if cell.get("r") else max_col + 1
             if col < _MAX_XLSX_COLS:
-                cells[col] = _cell_value(cell, shared, s)
+                val = _cell_value(cell, shared, s)
+                if char_budget is not None:
+                    char_budget[0] -= len(val) + 1
+                    if char_budget[0] < 0:
+                        raise ExtractionError(
+                            f"XLSX extracted text exceeds safe output size limit ({_MAX_EXTRACTED_TEXT_CHARS:,} chars)"
+                        )
+                cells[col] = val
                 max_col = max(max_col, col)
         rows.append([cells.get(i, "") for i in range(max_col + 1)])
     while rows and not any(value.strip() for value in rows[-1]):

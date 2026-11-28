@@ -1086,14 +1086,15 @@ def _auto_api_mode(base_url: str) -> str:
     return _detect_api_mode_for_url(base_url) or "chat_completions"
 
 
-async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> str:
-    """POST a 1-token request to ``mode``'s route; return a failure message when the host does
-    not serve it (404/405/501), ``""`` otherwise. Any other status — 200, 400 (bad body), 401,
-    422, 429 — means the route exists, which is all the check needs to know; a network error or
-    timeout (a local server still loading the model) is inconclusive and does not block."""
+_ROUTE_MISSING = (404, 405, 501)
+
+
+async def _transport_route_status(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> Optional[int]:
+    """HTTP status of a 1-token POST to ``mode``'s route; ``None`` when inconclusive (unknown mode,
+    network error, timeout — a local server still loading the model)."""
     route = _TRANSPORT_ROUTES.get(mode)
     if route is None:
-        return ""
+        return None
     if mode == "anthropic_messages":
         payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
         token = headers.get("Authorization", "").removeprefix("Bearer ")
@@ -1102,14 +1103,33 @@ async def _probe_transport_route(client, base_url: str, mode: str, model: str, h
         payload = {"model": model, "input": "hi", "max_output_tokens": 16}
     else:
         payload = {"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]}
+    import httpx
     try:
         resp = await client.post(base_url + route, json=payload, headers=headers)
-    except Exception:
+    except (httpx.HTTPError, OSError):
+        return None
+    return resp.status_code
+
+
+async def _probe_transport_route(client, base_url: str, mode: str, model: str, headers: dict[str, str]) -> str:
+    """Return a failure message when the host does not serve ``mode``'s route (404/405/501), ``""``
+    otherwise. Any other status — 200, 400 (bad body), 401, 422, 429 — means the route exists,
+    which is all the check needs to know; an inconclusive probe does not block. On a miss, the
+    other transports are probed so the message names the API mode the host does serve instead
+    of leaving the user to guess (Roomote#3729)."""
+    missing = await _transport_route_status(client, base_url, mode, model, headers)
+    if missing not in _ROUTE_MISSING:
         return ""
-    if resp.status_code not in (404, 405, 501):
-        return ""
-    return (f"{base_url}/models answered, but POST {route} returned HTTP {resp.status_code}: this host "
-            f"does not serve the {_TRANSPORT_LABELS[mode]} API. Pick the API mode it does serve.")
+    message = (f"{base_url}/models answered, but POST {_TRANSPORT_ROUTES[mode]} returned HTTP "
+               f"{missing}: this host does not serve the {_TRANSPORT_LABELS[mode]} API.")
+    for other, route in _TRANSPORT_ROUTES.items():
+        if other == mode:
+            continue
+        status = await _transport_route_status(client, base_url, other, model, headers)
+        if status is not None and status not in _ROUTE_MISSING:
+            return (f"{message} It does serve {_TRANSPORT_LABELS[other]} (POST {route}): "
+                    f"set API mode to {_TRANSPORT_LABELS[other]}.")
+    return f"{message} Pick the API mode it does serve."
 
 
 def _endpoint_probe_client(url: str, timeout: float):

@@ -1799,10 +1799,10 @@ CONFIG_SCHEMA = ProviderConfigSchema(
                 "name": "x", "base_url": "https://gw.example.com/v1", "model": "", "api_mode": api_mode}).json()
             assert body["ok"] is False and body["reachable"] is True
             assert body["transport_checked"] == "chat_completions"
-            assert body["message"]
+            assert "It does serve Responses API (POST /responses): set API mode to Responses API." in body["message"]
             assert body["models"] == ["gpt-5.6-sol"], "discovered models still returned so the user can re-pick"
-        assert posted[-1][0] == "https://gw.example.com/v1/chat/completions"
-        assert posted[-1][1]["model"] == "gpt-5.6-sol"
+        assert [p for p in posted if "/chat/" in p[0]][-1] == ("https://gw.example.com/v1/chat/completions", {
+            "model": "gpt-5.6-sol", "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]})
 
     def test_custom_endpoint_validate_passes_when_the_pinned_transport_is_served(self, monkeypatch):
         posted = []

@@ -328,7 +328,21 @@ def request_elicitation_consent(message: str, description: str, *,
         and not _ctx._is_cron_approval_context()
         and not _ctx._is_single_query_approval_context()
     )
-    if _ctx._is_gateway_approval_context() or api_run_context:
+    gateway_context = _ctx._is_gateway_approval_context() or api_run_context
+    # A selected plugin transport replaces the built-in surfaces here exactly as it does for the command and
+    # execute_code gates; it is offered only where a person could have answered, so cron and unattended
+    # workers still fail closed below.
+    if gateway_context or not _ctx._no_user_can_answer():
+        attempt = _present_with_selected_transport(
+            command=message, description=description, pattern_key="mcp_elicitation",
+            pattern_keys=["mcp_elicitation"], session_key=session_key, surface=surface,
+            allow_session=scoped, allow_permanent=scoped)
+        choice, denied = _transport_choice(attempt, pattern_key="mcp_elicitation", description=description)
+        if denied is not None or choice == "deny":
+            return "decline"
+        if choice is not None:
+            return _remembered_consent(session_key, choice, remember_key, "decline")
+    if gateway_context:
         notify_cb = _a._gateway_notify_cb(session_key)
         if notify_cb is None:
             logger.warning("Elicitation requested in gateway session %s but no "

@@ -25,6 +25,13 @@ def validate_contract(value: str | None) -> str:
         return "local-only"
     if not isinstance(value, str) or not (_REPO.fullmatch(value) or _PR.fullmatch(value)):
         raise ValueError("completion_contract must be local-only, OWNER/REPO, or an exact GitHub PR URL")
+    # OWNER is the documented placeholder, not an owner. Acceptance compares the persisted
+    # contract with the published PR's repository, so a stored placeholder can never be
+    # satisfied (#143828). GitHub logins are case-insensitive, so every spelling is refused.
+    pr = _PR.fullmatch(value)
+    if (pr[1] if pr else value).split("/", 1)[0].lower() == "owner":
+        raise ValueError(f"completion_contract {value} uses the OWNER placeholder, not a repository; "
+                         "use the real owner/repo, local-only, or an exact GitHub PR URL")
     return value
 
 

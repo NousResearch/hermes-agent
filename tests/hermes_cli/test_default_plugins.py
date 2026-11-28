@@ -36,6 +36,33 @@ def installs(monkeypatch):
     return calls
 
 
+def test_a_tree_the_left_core_migrator_could_not_enable_is_owed_not_settled(tmp_path, installs):
+    """The left-core migrator placed a default plugin's tree but its enable was refused (its ``left-core.placed-*``
+    marker); nobody enabled or disabled it since. The default pass retries it instead of recording that tree as
+    an install the home already has, which would stop both installers retrying and leave the plugin off."""
+    home = tmp_path / "home"
+    (home / "plugins" / "accent-picker").mkdir(parents=True)
+    lcm._placed(home, "accent-picker").parent.mkdir(parents=True)
+    lcm._placed(home, "accent-picker").touch()
+
+    assert default_plugins.install_defaults(home, entries=[_entry("accent-picker")])["installed"] == ["accent-picker"]
+    assert installs == [(home, "accent-picker")]
+
+
+@pytest.mark.parametrize("name", ["platforms/qqbot", "qqbot-platform"])
+def test_a_core_era_disable_keeps_the_tree_the_left_core_migrator_could_not_enable(tmp_path, installs, name):
+    """The same refused-enable tree, in a home whose ``plugins.disabled`` names QQ Bot by its core-era key: the
+    user chose it off, so the default pass keeps that copy as it is (never discards it to retry a download)."""
+    home = tmp_path / "home"
+    (home / "plugins" / "qqbot").mkdir(parents=True)
+    (home / "config.yaml").write_text(f"plugins:\n  disabled: [{name}]\n", encoding="utf-8")
+    lcm._placed(home, "qqbot").parent.mkdir(parents=True)
+    lcm._placed(home, "qqbot").touch()
+
+    assert default_plugins.install_defaults(home, entries=[_entry("qqbot")])["installed"] == []
+    assert installs == [] and (home / "plugins" / "qqbot").is_dir()
+
+
 def test_default_is_installed_once_and_a_removal_sticks(tmp_path, installs):
     home = tmp_path / "home"
     home.mkdir()

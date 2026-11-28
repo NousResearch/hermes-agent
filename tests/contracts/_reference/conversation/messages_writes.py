@@ -13,6 +13,8 @@ from persistence.conversation.messages import (
     BatchAppendResult,
     CooldownSnapshot,
     DelegationDelivery,
+    DeleteMessageScope,
+    DeleteMessagesResult,
     MarkerPurgeReport,
     NewMessage,
     Reaction,
@@ -264,6 +266,115 @@ class MessageWritesMixin(MessageBase):
         if transcript is not None:
             transcript.rows = []
             transcript.recount()
+
+    def delete_message(self, session_id: SessionId, message_id: MessageId, *,
+                       scope: DeleteMessageScope = DeleteMessageScope.MESSAGE,
+                       reject_active_turn_lease: bool = True,
+                       reject_active_compression_lock: bool = True) -> DeleteMessagesResult:
+        p_scope = self._backend.scope
+        reject_live: tuple[str, ...] = tuple(
+            k for k, on in (("compaction", reject_active_compression_lock), ("turn", reject_active_turn_lease)) if on
+        )
+        bookkeeping = ("system", "session_meta")
+
+        def _row_tc_ids(row: _StoredRow) -> set[str]:
+            ids: set[str] = set()
+            for tc in row.message.tool_calls:
+                if isinstance(tc, Mapping):
+                    raw_id = tc.get("id")
+                    if isinstance(raw_id, str) and raw_id:
+                        ids.add(raw_id)
+            return ids
+
+        with self._write_transaction(p_scope):
+            self._write_guards(p_scope, session_id, reject_live=reject_live, insert=False)
+            transcript = self._transcript(p_scope, session_id)
+            if transcript is None or not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
+                return DeleteMessagesResult(deleted_ids=(), remaining_message_count=0, has_compressed_summary=False)
+            all_rows = sorted(transcript.rows, key=lambda r: int(r.id))
+            active = [r for r in all_rows if r.visibility is RowVisibility.ACTIVE]
+            target_row = next((r for r in all_rows if int(r.id) == int(message_id)), None)
+            if target_row is None:
+                return DeleteMessagesResult(
+                    deleted_ids=(),
+                    remaining_message_count=len(active),
+                    has_compressed_summary=any(r.message.compressed_summary for r in active),
+                )
+
+            if scope is DeleteMessageScope.EXCHANGE:
+                if target_row.message.role in bookkeeping:
+                    initial_ids: set[int] = {int(target_row.id)}
+                else:
+                    partition = active if target_row.visibility is RowVisibility.ACTIVE else [
+                        r for r in all_rows if r.visibility is not RowVisibility.ACTIVE
+                    ]
+                    target_idx = next(i for i, r in enumerate(partition) if int(r.id) == int(message_id))
+                    start = target_idx
+                    while start > 0 and partition[start].message.role != "user":
+                        if partition[start - 1].message.role in bookkeeping:
+                            break
+                        start -= 1
+                    end = target_idx + 1
+                    while end < len(partition) and partition[end].message.role not in ("user", *bookkeeping):
+                        end += 1
+                    initial_ids = {int(partition[i].id) for i in range(start, end)}
+            else:
+                initial_ids = {int(target_row.id)}
+
+            all_delete_ids: set[int] = set(initial_ids)
+            tc_ids: set[str] = set()
+            uids: set[str] = set()
+            row_tc_map: dict[int, set[str]] = {
+                int(r.id): _row_tc_ids(r) for r in all_rows if r.message.role == "assistant"
+            }
+
+            changed = True
+            while changed:
+                changed = False
+                for r in all_rows:
+                    rid = int(r.id)
+                    if rid not in all_delete_ids:
+                        continue
+                    if r.message.message_uid and r.message.message_uid not in uids:
+                        uids.add(r.message.message_uid)
+                        changed = True
+                    if r.message.role == "assistant":
+                        r_tcs = row_tc_map.get(rid, set())
+                        if not r_tcs.issubset(tc_ids):
+                            tc_ids.update(r_tcs)
+                            changed = True
+                    elif r.message.role == "tool" and r.message.tool_call_id:
+                        if r.message.tool_call_id not in tc_ids:
+                            tc_ids.add(r.message.tool_call_id)
+                            changed = True
+
+                for r in all_rows:
+                    rid = int(r.id)
+                    if rid in all_delete_ids:
+                        continue
+                    if r.message.message_uid and r.message.message_uid in uids:
+                        all_delete_ids.add(rid)
+                        changed = True
+                        continue
+                    if r.message.role == "assistant":
+                        r_tcs = row_tc_map.get(rid, set())
+                        if r_tcs and (r_tcs & tc_ids):
+                            all_delete_ids.add(rid)
+                            tc_ids.update(r_tcs)
+                            changed = True
+                    elif r.message.role == "tool" and r.message.tool_call_id and r.message.tool_call_id in tc_ids:
+                        all_delete_ids.add(rid)
+                        changed = True
+
+            transcript.rows = [r for r in transcript.rows if int(r.id) not in all_delete_ids]
+            transcript.recount()
+            self._bump_transcript_revision(p_scope, session_id)
+            remaining = transcript.active()
+            return DeleteMessagesResult(
+                deleted_ids=tuple(MessageId(i) for i in sorted(all_delete_ids)),
+                remaining_message_count=len(remaining),
+                has_compressed_summary=any(r.message.compressed_summary for r in remaining),
+            )
 
     def _active_row(self, scope: ProfileScope, session_id: SessionId, message_id: MessageId, role: Optional[str] = None) -> Optional[_StoredRow]:
         row = self._row_in_session(scope, session_id, message_id)

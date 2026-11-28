@@ -147,6 +147,22 @@ def build_sessions_parser(subparsers, *, cmd_sessions: Callable) -> None:
     sessions_delete.add_argument("session_id", help="Session ID to delete")
     add_yes_flag(sessions_delete, "Skip confirmation")
 
+    sessions_delete_msg = sessions_subparsers.add_parser(
+        "delete-message",
+        help="Delete a specific message (or exchange) from a session without removing later messages",
+        description="Permanently delete a single message (or its enclosing user/assistant exchange with --exchange) "
+            "from a session while preserving all subsequent messages and their order. Deleting an assistant "
+            "tool-call message or tool result removes the paired tool-call group so the transcript stays valid.",
+    )
+    sessions_delete_msg.add_argument("session_id", help="Session ID or unique prefix")
+    sessions_delete_msg.add_argument("message_id", type=int, help="Message row ID to delete")
+    _flag(sessions_delete_msg, "--exchange",
+          help="Delete the entire user-initiated exchange containing this message")
+    _flag(sessions_delete_msg, "--dry-run",
+          help="Preview which message(s) would be deleted without modifying the database")
+    add_yes_flag(sessions_delete_msg, "Skip confirmation")
+    add_json_flag(sessions_delete_msg, "Machine-readable JSON output")
+
     sessions_prune = sessions_subparsers.add_parser(
         "prune", help="Delete old sessions (filterable by time window, source, title, ...)")
     _add_session_filter_args(

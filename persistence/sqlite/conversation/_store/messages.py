@@ -682,6 +682,162 @@ def clear_messages(holder: StoreHolder, session_id: str) -> None:
     holder._execute_write(_do)
 
 
+def _extract_tool_call_ids(raw_tool_calls: Any) -> set[str]:
+    """Return all non-empty string tool-call ids declared by an assistant row's ``tool_calls`` column."""
+    parsed = _parse_tool_calls(raw_tool_calls)
+    if not isinstance(parsed, list):
+        return set()
+    ids: set[str] = set()
+    for tc in parsed:
+        if isinstance(tc, dict):
+            tc_id = tc.get("id")
+            if isinstance(tc_id, str) and tc_id:
+                ids.add(tc_id)
+    return ids
+
+
+_DELETE_BOOKKEEPING_ROLES = ("system", "session_meta")
+
+
+def _select_exchange_ids(rows: list[Any], target_idx: int) -> set[int]:
+    """Select the exchange row ids containing *target_idx* without consuming ``system``/``session_meta`` rows."""
+    target = rows[target_idx]
+    if target["role"] in _DELETE_BOOKKEEPING_ROLES:
+        return {int(target["id"])}
+    start = target_idx
+    while start > 0 and rows[start]["role"] != "user":
+        if rows[start - 1]["role"] in _DELETE_BOOKKEEPING_ROLES:
+            break
+        start -= 1
+    end = target_idx + 1
+    while end < len(rows) and rows[end]["role"] not in ("user", *_DELETE_BOOKKEEPING_ROLES):
+        end += 1
+    return {int(rows[i]["id"]) for i in range(start, end)}
+
+
+def _expand_delete_ids(all_rows: list[Any], initial_ids: set[int]) -> set[int]:
+    """Expand *initial_ids* across all session rows (active and archived) to preserve tool-call pairing
+    and remove copies sharing ``message_uid``."""
+    all_delete_ids: set[int] = set(initial_ids)
+    tc_ids: set[str] = set()
+    uids: set[str] = set()
+    row_tc_map: dict[int, set[str]] = {
+        int(row["id"]): _extract_tool_call_ids(row["tool_calls"])
+        for row in all_rows
+        if row["role"] == "assistant"
+    }
+
+    changed = True
+    while changed:
+        changed = False
+        for row in all_rows:
+            rid = int(row["id"])
+            if rid not in all_delete_ids:
+                continue
+            uid = row["message_uid"]
+            if uid and str(uid) not in uids:
+                uids.add(str(uid))
+                changed = True
+            role = row["role"]
+            if role == "assistant":
+                r_tcs = row_tc_map.get(rid, set())
+                if not r_tcs.issubset(tc_ids):
+                    tc_ids.update(r_tcs)
+                    changed = True
+            elif role == "tool" and row["tool_call_id"]:
+                tc_id = str(row["tool_call_id"])
+                if tc_id not in tc_ids:
+                    tc_ids.add(tc_id)
+                    changed = True
+
+        for row in all_rows:
+            rid = int(row["id"])
+            if rid in all_delete_ids:
+                continue
+            uid = row["message_uid"]
+            if uid and str(uid) in uids:
+                all_delete_ids.add(rid)
+                changed = True
+                continue
+            role = row["role"]
+            if role == "assistant":
+                r_tcs = row_tc_map.get(rid, set())
+                if r_tcs and (r_tcs & tc_ids):
+                    all_delete_ids.add(rid)
+                    tc_ids.update(r_tcs)
+                    changed = True
+            elif role == "tool" and row["tool_call_id"] and str(row["tool_call_id"]) in tc_ids:
+                all_delete_ids.add(rid)
+                changed = True
+
+    return all_delete_ids
+
+
+def delete_message(
+    holder: StoreHolder, session_id: str, row_id: int, *, scope: str = "message",
+    reject_active_turn_lease: bool = True, reject_active_compression_lock: bool = True,
+) -> dict[str, Any]:
+    """Permanently delete a specific message (or its enclosing user exchange when ``scope='exchange'``)
+    from *session_id* without removing later messages. Preserves tool-call pairing across active and
+    archived rows, preserves interleaved ``system``/``session_meta`` bookkeeping rows, removes any
+    compaction-archived copies sharing the same ``message_uid``, recomputes session counters, and
+    bumps ``transcript_revision`` in one write transaction under the transcript write guards."""
+    if scope not in ("message", "exchange"):
+        raise ValueError(f"Unsupported delete scope {scope!r}; expected 'message' or 'exchange'")
+    if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+        return {"deleted_ids": [], "remaining_message_count": 0, "has_compressed_summary": False}
+
+    def _do(conn) -> dict[str, Any]:
+        _check_transcript_write_guards(
+            holder, conn, session_id, None,
+            reject_active_turn_lease=reject_active_turn_lease,
+            reject_active_compression_lock=reject_active_compression_lock,
+        )
+        all_rows = conn.execute(
+            "SELECT id, active, role, tool_calls, tool_call_id, message_uid, _compressed_summary "
+            "FROM messages WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+        active_rows = [r for r in all_rows if r["active"]]
+        target_row = next((r for r in all_rows if int(r["id"]) == row_id), None)
+        if target_row is None:
+            return {
+                "deleted_ids": [],
+                "remaining_message_count": len(active_rows),
+                "has_compressed_summary": any(bool(r["_compressed_summary"]) for r in active_rows),
+            }
+
+        if scope == "exchange":
+            partition = active_rows if target_row["active"] else [r for r in all_rows if not r["active"]]
+            target_idx = next(i for i, r in enumerate(partition) if int(r["id"]) == row_id)
+            initial_ids = _select_exchange_ids(partition, target_idx)
+        else:
+            initial_ids = {row_id}
+
+        all_delete_ids = _expand_delete_ids(all_rows, initial_ids)
+
+        ordered_delete_ids = sorted(all_delete_ids)
+        conn.execute(
+            f"DELETE FROM messages WHERE session_id = ? AND id IN ({_placeholders(ordered_delete_ids)})",
+            [session_id, *ordered_delete_ids],
+        )
+
+        remaining_active = [r for r in active_rows if int(r["id"]) not in all_delete_ids]
+        remaining_tool_calls = sum(_tool_calls_len(r["tool_calls"], scalar=1) for r in remaining_active)
+        conn.execute(
+            "UPDATE sessions SET message_count = ?, tool_call_count = ?, "
+            "transcript_revision = transcript_revision + 1 WHERE id = ?",
+            (len(remaining_active), remaining_tool_calls, session_id),
+        )
+        return {
+            "deleted_ids": ordered_delete_ids,
+            "remaining_message_count": len(remaining_active),
+            "has_compressed_summary": any(bool(r["_compressed_summary"]) for r in remaining_active),
+        }
+
+    return holder._execute_write(_do)
+
+
 def replace_messages_in_transaction(holder: StoreHolder, conn, session_id: str, messages: list[dict[str, Any]], *,
                                     active_only: bool = False, archive_dropped: bool = False,
                                     reject_active_turn_lease: bool = False,

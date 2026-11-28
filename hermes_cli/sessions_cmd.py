@@ -745,6 +745,109 @@ def _cmd_delete(args, *, persistence=None):
     print(f"Deleted session '{resolved_session_id}'.")
 
 
+def _preview_message_text(content, *, max_len: int = 80) -> str:
+    if content is None:
+        return "(no content)"
+    text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+    one_line = " ".join(text.split())
+    return one_line if len(one_line) <= max_len else one_line[: max_len - 1] + "…"
+
+
+def _cmd_delete_message(args, *, persistence=None):
+    from persistence.conversation.messages import DeleteMessageScope, TranscriptRead, TranscriptView
+    from persistence.core.errors import CompressionClosed, CompressionInProgress, TurnLeaseLost
+    from persistence.core.identity import MessageId
+
+    resolved_session_id = persistence.sessions.resolve_id(args.session_id)
+    if not resolved_session_id:
+        return _not_found(args.session_id)
+
+    scope = DeleteMessageScope.EXCHANGE if getattr(args, "exchange", False) else DeleteMessageScope.MESSAGE
+    msg_id = int(args.message_id)
+    emit_json = getattr(args, "json", False)
+
+    rows = [
+        row.as_wire_row()
+        for row in persistence.messages.read_transcript(resolved_session_id, TranscriptRead(view=TranscriptView.ALL))
+    ]
+    target = next((r for r in rows if int(r.get("id", 0)) == msg_id), None)
+    if target is None:
+        msg = f"No message {msg_id} in session '{resolved_session_id}'."
+        if emit_json:
+            print(json.dumps({"ok": False, "error": msg, "session_id": resolved_session_id, "message_id": msg_id}))
+        else:
+            print(msg)
+        return 1
+
+    if getattr(args, "dry_run", False):
+        preview = {
+            "ok": True,
+            "dry_run": True,
+            "session_id": resolved_session_id,
+            "message_id": msg_id,
+            "role": target.get("role"),
+            "scope": scope.value,
+            "preview": _preview_message_text(target.get("content")),
+        }
+        if emit_json:
+            print(json.dumps(preview))
+        else:
+            print(f"Would delete {scope.value} for message #{msg_id} ({target.get('role')}) in session "
+                  f"'{resolved_session_id}': {preview['preview']}")
+            print("Dry run — nothing deleted.")
+        return 0
+
+    if not getattr(args, "yes", False):
+        desc = f"message #{msg_id} ({target.get('role')})"
+        if scope is DeleteMessageScope.EXCHANGE:
+            desc = f"the entire exchange containing {desc}"
+        refused = _confirm_or_exit_code(
+            f"Permanently delete {desc} from session '{resolved_session_id}'? "
+            f"[{_preview_message_text(target.get('content'), max_len=60)}] [y/N] "
+        )
+        if refused is not None:
+            return refused
+
+    try:
+        result = persistence.messages.delete_message(
+            resolved_session_id, MessageId(msg_id), scope=scope,
+        )
+    except (SessionWriteGuarded, TurnLeaseLost, CompressionInProgress, CompressionClosed) as exc:
+        if emit_json:
+            print(json.dumps({"ok": False, "error": str(exc), "session_id": resolved_session_id}))
+        else:
+            print(f"Cannot delete message from active session: {exc}")
+        return 1
+
+    if not result.deleted_ids:
+        msg = f"No message {msg_id} in session '{resolved_session_id}'."
+        if emit_json:
+            print(json.dumps({"ok": False, "error": msg, "session_id": resolved_session_id, "message_id": msg_id}))
+        else:
+            print(msg)
+        return 1
+
+    payload = {
+        "ok": True,
+        "session_id": resolved_session_id,
+        "scope": scope.value,
+        "deleted_ids": [int(i) for i in result.deleted_ids],
+        "deleted_count": len(result.deleted_ids),
+        "remaining_message_count": result.remaining_message_count,
+        "has_compressed_summary": result.has_compressed_summary,
+    }
+    if emit_json:
+        print(json.dumps(payload))
+    else:
+        ids_str = ", ".join(str(i) for i in payload["deleted_ids"])
+        print(f"Deleted {payload['deleted_count']} message(s) [{ids_str}] from session '{resolved_session_id}' "
+              f"({result.remaining_message_count} active remaining).")
+        if result.has_compressed_summary:
+            print("Note: this session contains a compressed summary; deleting messages does not "
+                  "retroactively remove content already incorporated into that summary.")
+    return 0
+
+
 #: Age floor for `prune --never-active`; generous: a young never-active row may be a chat nobody replied to yet.
 _NEVER_ACTIVE_DEFAULT_DAYS = 30.0
 
@@ -1463,7 +1566,8 @@ _PRE_DB_HANDLERS = {
 }
 _OBSERVATIONAL_DB_ACTIONS = frozenset({"list", "stats", "pinned"})
 _DB_HANDLERS = {
-    "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "rename": _cmd_rename, "pinned": _cmd_pinned,
+    "list": _cmd_list, "export": _cmd_export, "delete": _cmd_delete, "delete-message": _cmd_delete_message,
+    "rename": _cmd_rename, "pinned": _cmd_pinned,
     "prune": partial(_cmd_prune_or_archive, action="prune"), "pin": partial(_cmd_pin, pinning=True),
     "archive": partial(_cmd_prune_or_archive, action="archive"), "unpin": partial(_cmd_pin, pinning=False),
     "retitle-skills": _cmd_retitle_skills, "browse": _cmd_browse, "optimize": _cmd_optimize,

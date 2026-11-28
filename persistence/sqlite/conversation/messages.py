@@ -13,6 +13,7 @@ from persistence import (
 from persistence.conversation.messages import (
     AnchoredView, AnchoredWindow, BatchAppendProgress, BatchAppendResult, CompactionResult, CompressionCooldown, ConversationMessage,
     ConversationPeer, ConversationRequest, ConversationRevision, CooldownSnapshot, DelegationDelivery,
+    DeleteMessageScope, DeleteMessagesResult,
     HeldCoverage, HeldMessage, MarkerPurgeReport, MessageRecord, MessageStorageState, NewMessage, PagedMessage, PromptPage,
     PrUrlHit, PrunedRowChange, PruneRewriteResult, Reaction, ReadCheck, ReplaceMode, ReplaceResult, ResumeConversations,
     RewindPlan, RowDisposition, RowOutcome, RowStamp, RowUids, SegmentPage, SessionTimeline, TimelineEntry, TranscriptRead, TranscriptRow,
@@ -36,7 +37,8 @@ from ._store.identity import _restore_row_identity
 from ._store.messages import (
     _append_messages_in_transaction, _ensure_display_order, _execute_transcript_write,
     _row_to_message_dict, _stamp_tool_call_uids, append_message, append_messages_batch, archive_and_compact, assert_resume_safe,
-    clear_messages, conversation_revision, deactivate_message, deactivate_messages_by_display_kind, display_message_count,
+    clear_messages, conversation_revision, deactivate_message, deactivate_messages_by_display_kind, delete_message,
+    display_message_count,
     find_pr_url_messages, get_active_message_ids, get_active_message_watermark, get_message_role, get_messages,
     get_messages_around, get_messages_as_conversation, get_resume_conversations, has_gateway_input_owner,
     has_platform_message_id, latest_conversation_boundary, latest_conversation_role, latest_message_row_id,
@@ -356,6 +358,23 @@ class SQLiteMessageRepository:
         holder = self._store.holder()
         with _refusals(holder, session_id):
             clear_messages(holder, session_id)
+
+    def delete_message(self, session_id: SessionId, message_id: MessageId, *,
+                       scope: DeleteMessageScope = DeleteMessageScope.MESSAGE,
+                       reject_active_turn_lease: bool = True,
+                       reject_active_compression_lock: bool = True) -> DeleteMessagesResult:
+        holder = self._store.holder()
+        with _refusals(holder, session_id):
+            outcome = delete_message(
+                holder, session_id, int(message_id), scope=scope.value,
+                reject_active_turn_lease=reject_active_turn_lease,
+                reject_active_compression_lock=reject_active_compression_lock,
+            )
+        return DeleteMessagesResult(
+            deleted_ids=tuple(MessageId(i) for i in outcome["deleted_ids"]),
+            remaining_message_count=int(outcome["remaining_message_count"]),
+            has_compressed_summary=bool(outcome["has_compressed_summary"]),
+        )
 
     def rewind_user_turn(self, session_id: SessionId, user_ordinal: int, *,
                          warm_history: Optional[Sequence[Mapping[str, Any]]] = None, require_retryable: bool = False,

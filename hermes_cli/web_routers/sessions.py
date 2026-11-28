@@ -29,9 +29,13 @@ from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, corrupt_store_status, log as _log, destructive_profile, http_failure,
     is_transient_store_error,
 )
-from persistence.conversation.messages import TranscriptRead, TranscriptView
+from persistence.conversation.messages import DeleteMessageScope, TranscriptRead, TranscriptView
 from persistence.conversation.sessions import SessionCountQuery, SessionOrder, SessionQuery, SessionWindow
-from persistence.core.errors import CorruptStoreError, PersistenceError, SearchIndexCorrupt, StoreReplaced
+from persistence.core.errors import (
+    CompressionClosed, CompressionInProgress, CorruptStoreError, PersistenceError, SearchIndexCorrupt,
+    SessionWriteGuarded, StoreReplaced, TurnLeaseLost,
+)
+from persistence.core.identity import MessageId
 from persistence.core.health import StorageState
 from persistence.housekeeping.maintenance import PruneCriteria
 from persistence_assembly import profile_scope, storage_health, store_location
@@ -943,6 +947,48 @@ async def delete_session_endpoint(session_id: str, request: Request, profile: Op
     for sid in result.get('deleted_ids') or ():
         await asyncio.to_thread(remove_session_files, sessions_dir, str(sid))
     return result
+
+
+@manage_router.delete("/api/sessions/{session_id}/messages/{message_id}")
+async def delete_session_message_endpoint(
+    session_id: str,
+    message_id: int,
+    request: Request,
+    scope: str = Query("message", pattern="^(message|exchange)$"),
+    profile: Optional[str] = None,
+):
+    """Delete a specific message (or its enclosing exchange) without removing later conversation."""
+    delete_scope = DeleteMessageScope(scope)
+
+    def _run(store):
+        sid = _resolve_session_id(store, session_id)
+        if not sid:
+            return None
+        return sid, store.messages.delete_message(sid, MessageId(message_id), scope=delete_scope)
+
+    try:
+        owner_store = _owner_store_for(request, profile)
+        if owner_store is not None:
+            outcome = await asyncio.to_thread(_run, owner_store)
+        else:
+            outcome = await asyncio.to_thread(_with_db, profile, _run, read_only=False)
+    except (SessionWriteGuarded, TurnLeaseLost, CompressionInProgress, CompressionClosed) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if outcome is None:
+        raise HTTPException(status_code=404, detail=_NOT_FOUND)
+    sid, result = outcome
+    if not result.deleted_ids:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return {
+        "ok": True,
+        "session_id": sid,
+        "scope": delete_scope.value,
+        "deleted_ids": [int(i) for i in result.deleted_ids],
+        "deleted_count": len(result.deleted_ids),
+        "remaining_message_count": result.remaining_message_count,
+        "has_compressed_summary": result.has_compressed_summary,
+    }
 
 
 def _owner_store_for(request: Request, profile: Optional[str]):

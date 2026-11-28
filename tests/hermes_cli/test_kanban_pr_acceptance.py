@@ -110,6 +110,92 @@ def test_pr_completion_requires_current_required_evidence(github):
 
 
 @pytest.mark.platforms("linux")
+def test_triage_resolution_still_enforces_pr_completion_contract(github):
+    with connect() as conn:
+        accepted = kb.create_task(conn, title="adopt accepted PR", completion_contract="acme/repo")
+        assert kb.block_task(conn, accepted, reason="owner active", kind="needs_input")
+        assert kb.unblock_task(conn, accepted)
+        assert kb.block_task(conn, accepted, reason="owner active", kind="needs_input")
+        assert kb.complete_task(
+            conn,
+            accepted,
+            result="adopted verified handoff",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+            force=True,
+            _triage_capability=kb._TRIAGE_RESOLUTION_CAPABILITY,
+        )
+        task = kb.get_task(conn, accepted)
+        assert task is not None
+        assert task.status == "done"
+        assert any(event.kind == "pr_acceptance" for event in kb.list_events(conn, accepted))
+
+        github["conclusion"] = "failure"
+        rejected = kb.create_task(conn, title="reject failed PR", completion_contract="acme/repo")
+        assert kb.block_task(conn, rejected, reason="owner active", kind="needs_input")
+        assert kb.unblock_task(conn, rejected)
+        assert kb.block_task(conn, rejected, reason="owner active", kind="needs_input")
+        assert not kb.complete_task(
+            conn,
+            rejected,
+            result="adopted verified handoff",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+            force=True,
+            _triage_capability=kb._TRIAGE_RESOLUTION_CAPABILITY,
+        )
+        task = kb.get_task(conn, rejected)
+        assert task is not None
+        assert task.status == "triage"
+        receipts = [
+            event for event in kb.list_events(conn, rejected)
+            if event.kind == "pr_acceptance"
+        ]
+        assert len(receipts) == 1
+        payload = receipts[0].payload
+        assert payload is not None
+        assert payload["ok"] is False
+
+
+def test_triage_acceptance_rejects_status_aba_during_external_check(monkeypatch):
+    from hermes_cli import kanban_pr_acceptance_store as acceptance_store
+
+    with connect() as conn:
+        task_id = kb.create_task(conn, title="reject ABA", completion_contract="acme/repo")
+        assert kb.block_task(conn, task_id, reason="owner active", kind="needs_input")
+        assert kb.unblock_task(conn, task_id)
+        assert kb.block_task(conn, task_id, reason="owner active", kind="needs_input")
+
+        def mutate_and_accept(*args, **kwargs):
+            with connect() as other:
+                with acceptance_store.write_txn(other):
+                    other.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+                    kb._append_event(other, task_id, "unblocked")
+                    other.execute(
+                        "UPDATE tasks SET status='triage', block_recurrences=block_recurrences+1 "
+                        "WHERE id=?",
+                        (task_id,),
+                    )
+                    kb._append_event(other, task_id, "block_loop_detected")
+            return {"ok": True, "classification": "accepted", "recovery": ""}
+
+        monkeypatch.setattr(acceptance_store, "collect_acceptance", mutate_and_accept)
+        assert not kb.complete_task(
+            conn,
+            task_id,
+            result="stale acceptance",
+            metadata={"published_pr": "https://github.com/acme/repo/pull/7"},
+            force=True,
+            _triage_capability=kb._TRIAGE_RESOLUTION_CAPABILITY,
+        )
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.status == "triage"
+        assert not any(
+            event.kind in {"triage_resolved", "completed"}
+            for event in kb.list_events(conn, task_id)
+        )
+
+
+@pytest.mark.platforms("linux")
 def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
     with connect() as conn:
         for conclusion in ("success", "failure"):

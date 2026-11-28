@@ -1,0 +1,26 @@
+name: babelaz-pareto-aaa
+repo: https://github.com/babelaz/babelaz-pareto-aaa
+sha: dc969f0c4d319b2c5dbfb29efbc126811be81852
+description: "One line in (/aaa make me a brick-breaker); a small web game out, built in rounds by a fresh worker, checked in a real browser (FPS, sound, layout, accessibility, win or lose, restart) and scored 0-10 by a vision judge against reference pictures, until it reaches 8/10 or says why it stopped. The plugin runs the checks and writes the STATUS line, so the model cannot fake the result. MIT. Disclosure: needs Playwright (installed on enable) and an installed Chrome or Edge; sends game screenshots and code to your own model provider; a run can take an hour and several million (mostly cached) input tokens."
+maintainer: babelaz
+tier: community
+category: automation
+requires_hermes: ">=0.22.7"
+version: "0.3.1"
+title: Pareto AAA
+docs_url: https://github.com/babelaz/babelaz-pareto-aaa
+image: ""
+screenshots:
+  - https://raw.githubusercontent.com/babelaz/babelaz-pareto-aaa/dc969f0c4d319b2c5dbfb29efbc126811be81852/docs/proof-brick.jpg
+known_issues:
+  - "One validate warning: reads Hermes's interrupt flag through a private import (tools.interrupt) so Ctrl+C can stop a round."
+  - "Tested with a real model on Windows only; games only (no apps)."
+capabilities:
+  provides_tools:
+    - aaa_round
+  provides_hooks:
+    - pre_tool_call
+    - pre_verify
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

@@ -33,13 +33,14 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
-import { ExternalLink } from '@/lib/external-link'
+import { ExternalLink, openExternalLink } from '@/lib/external-link'
 import { Check, Pencil, X } from '@/lib/icons'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { isComposerChord } from '@/lib/keybinds/chords'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { normalizeFilePreviewMath } from '@/lib/markdown-preprocess'
+import { mediaExternalUrl, resolveMediaPlaybackSrc } from '@/lib/media'
 import {
   decodeHashFragment,
   noteDirectory,
@@ -739,6 +740,138 @@ export function SourceView({ filePath, language, text }: { filePath?: string; la
 }
 
 export type PreviewViewMode = 'diff' | 'rendered' | 'source'
+
+/**
+ * Plays an audio file in the preview rail.
+ *
+ * The source goes through `resolveMediaPlaybackSrc`, NOT a data URL: it yields
+ * the `hermes-media://stream/…` protocol, which serves the file with Range
+ * support so the scrubber can seek and playback does not load the whole file
+ * into memory. Against a remote gateway the same helper proxies the bytes
+ * through the connection's own auth.
+ *
+ * `reloadKey` is the preview watch's change counter: when the file is rewritten
+ * in place the source is re-resolved and the <audio> element remounted, since an
+ * unchanged `src` string would never make Chromium re-request the bytes.
+ */
+function AudioPreviewPlayer({
+  filePath,
+  label,
+  reloadKey,
+  sessionId
+}: {
+  filePath: string
+  label: string
+  reloadKey: number
+  sessionId?: string
+}) {
+  const { t } = useI18n()
+
+  const [player, setPlayer] = useState<{ src: string; status: 'failed' | 'loading' | 'ready' }>({
+    src: '',
+    status: 'loading'
+  })
+
+  useEffect(() => {
+    let active = true
+    let objectUrl = ''
+
+    setPlayer({ src: '', status: 'loading' })
+
+    // The tab's session goes with the stream: a Docker agent's /workspace clip lives in that
+    // session's sandbox, as the text reads below already route it.
+    void resolveMediaPlaybackSrc(filePath, undefined, sessionId)
+      .then(src => {
+        if (src.startsWith('blob:')) {
+          objectUrl = src
+        }
+
+        if (active) {
+          setPlayer(src ? { src, status: 'ready' } : { src: '', status: 'failed' })
+        } else if (objectUrl) {
+          URL.revokeObjectURL(objectUrl)
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setPlayer({ src: '', status: 'failed' })
+        }
+      })
+
+    return () => {
+      active = false
+
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+      }
+    }
+  }, [filePath, reloadKey, sessionId])
+
+  // Resolving the source is async, so the first commit is always `loading`;
+  // only a rejected resolve or an <audio> error counts as a failure.
+  if (player.status === 'loading') {
+    return <PageLoader label={t.preview.loading} />
+  }
+
+  // The bridge can be absent (older Electron main, or a non-desktop host);
+  // resolveMediaPlaybackSrc then returns a plain file:// path, which the app
+  // origin cannot load. Fail visibly with a way out rather than an inert player.
+  if (player.status === 'failed') {
+    return (
+      <div className="grid max-w-sm justify-items-center gap-3 text-center">
+        <div className="truncate text-sm font-medium text-foreground">{label}</div>
+        <div className="text-xs leading-relaxed text-muted-foreground">{t.preview.audioUnavailable}</div>
+        <button
+          className="rounded-full border border-border bg-background px-3.5 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+          onClick={() => openExternalLink(mediaExternalUrl(filePath))}
+          type="button"
+        >
+          {t.preview.openInExternal}
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="w-full max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
+      <div className="mb-2 truncate text-xs font-medium text-muted-foreground">{label}</div>
+      <audio
+        className="block w-full"
+        controls
+        key={reloadKey}
+        onError={() => setPlayer({ src: '', status: 'failed' })}
+        preload="metadata"
+        src={player.src}
+      />
+    </div>
+  )
+}
+
+/**
+ * The rail body for an audio file (`previewKind === 'audio'`). Audio is played,
+ * never read: the text sniff is what used to refuse it as binary, so this kind is
+ * routed here by the pane before `LocalFilePreview` would read it.
+ */
+export function AudioFilePreview({
+  reloadKey,
+  sessionId,
+  target
+}: {
+  reloadKey: number
+  sessionId?: string
+  target: PreviewTarget
+}) {
+  return (
+    <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
+      <AudioPreviewPlayer
+        filePath={filePathForTarget(target)}
+        label={target.label}
+        reloadKey={reloadKey}
+        sessionId={sessionId}
+      />
+    </div>
+  )
+}
 
 export function LocalFilePreview({
   onClose,

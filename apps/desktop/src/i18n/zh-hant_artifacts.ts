@@ -80,6 +80,7 @@ export const zhHantArtifacts = {
     unknownSize: '大小未知',
     binaryTitle: '這看起來像二進位檔案',
     binaryBody: label => `預覽 ${label} 可能會顯示無法讀取的文字。`,
+    audioUnavailable: '無法載入此音訊檔案進行播放。',
     largeTitle: '此檔案較大',
     largeBody: (label, size) => `${label} 大小為 ${size}。Hermes 只會顯示前 512 KB。`,
     previewAnyway: '仍然預覽',

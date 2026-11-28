@@ -4783,6 +4783,7 @@ export const esOverrides = {
     unknownSize: 'tamaño desconocido',
     binaryTitle: 'Esto parece un archivo binario',
     binaryBody: label => `Previsualizar ${label} puede mostrar texto ilegible.`,
+    audioUnavailable: 'No se pudo cargar este archivo de audio para reproducirlo.',
     largeTitle: 'Este archivo es grande',
     largeBody: (label, size) => `${label} pesa ${size}. Hermes solo mostrará los primeros 512 KB.`,
     previewAnyway: 'Previsualizar de todos modos',

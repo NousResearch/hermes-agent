@@ -3206,6 +3206,7 @@ export const jaOverrides = {
     unknownSize: 'サイズ不明',
     binaryTitle: 'これはバイナリファイルのようです',
     binaryBody: label => `${label} をプレビューすると読み取り不能なテキストが表示される場合があります。`,
+    audioUnavailable: 'この音声ファイルを再生用に読み込めませんでした。',
     largeTitle: 'このファイルは大きいです',
     largeBody: (label, size) => `${label} は ${size} です。Hermes は最初の 512 KB のみを表示します。`,
     previewAnyway: 'とにかくプレビュー',

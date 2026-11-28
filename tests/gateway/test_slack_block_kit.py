@@ -24,6 +24,67 @@ class TestRenderBlocksBasics:
         assert blocks[0]["text"]["type"] == "plain_text"
         assert blocks[0]["text"]["text"] == "Title"
 
+    def test_header_preserves_literal_markup_characters(self):
+        blocks = render_blocks("# **SERVICE_US** `SA-03` _current status_ ***active***")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "SERVICE_US SA-03 current status active"
+
+    def test_header_does_not_treat_identifier_underscores_as_emphasis(self):
+        blocks = render_blocks("# SERVICE_US_EAST")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "SERVICE_US_EAST"
+
+    def test_header_does_not_treat_double_identifier_underscores_as_strong(self):
+        blocks = render_blocks("# SERVICE__US__EAST")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "SERVICE__US__EAST"
+
+    def test_header_requires_matching_strong_delimiters(self):
+        blocks = render_blocks("# **SERVICE_US__")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "**SERVICE_US__"
+
+    def test_header_strips_valid_underscore_strong_markup(self):
+        blocks = render_blocks("# __current status__")
+
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "current status"
+
+    def test_header_preserves_visible_link_and_mention_text(self):
+        blocks = render_blocks(
+            "# [docs_index](https://example.com/docs_index) "
+            "<https://example.com/run_book|run_book> <mailto:qa_team@example.com> "
+            "<#C123|dev_ops_alerts> <@U123> <!here>"
+        )
+        assert blocks is not None
+        assert _types(blocks) == ["header"]
+        assert blocks[0]["text"] == {
+            "type": "plain_text",
+            "text": (
+                "docs_index run_book mailto:qa_team@example.com "
+                "<#C123|dev_ops_alerts> <@U123> <!here>"
+            ),
+            "emoji": True,
+        }
+
+    def test_header_flattens_emphasis_around_inline_tokens(self):
+        blocks = render_blocks(
+            "# **See [docs_index](https://example.com) `*_ENV_*` <#C123|dev_ops>** \ufffc"
+        )
+        assert blocks is not None
+        assert blocks[0]["text"]["text"] == "See docs_index *_ENV_* <#C123|dev_ops> \ufffc"
+
+    def test_header_clamps_visible_text_and_skips_empty_markup(self):
+        prefix = "SERVICE_US "
+        blocks = render_blocks(f"# ***\n# **{prefix + 'x' * 150}**")
+        assert blocks is not None
+        assert _types(blocks) == ["header"]
+        assert blocks[0]["text"]["text"] == prefix + "x" * (149 - len(prefix)) + "…"
+
 
 class TestNestedLists:
     def test_nested_bullets_produce_increasing_indent(self):
@@ -38,6 +99,35 @@ class TestNestedLists:
 
 
 class TestInlineFormatting:
+
+    def test_identifiers_stay_literal_in_rich_text_body(self):
+        identifiers = "build_status_report SERVICE__US__EAST"
+        blocks = render_blocks(
+            f"- {identifiers}\n\n> {identifiers}\n\n"
+            f"| Name | Value |\n| --- | --- |\n| keys | {identifiers} |"
+        )
+        assert blocks is not None
+        assert _types(blocks) == ["rich_text", "rich_text", "table"]
+        expected = [{"type": "text", "text": identifiers}]
+        assert blocks[0]["elements"][0]["elements"][0]["elements"] == expected
+        assert blocks[1]["elements"][0]["elements"] == expected
+        assert blocks[2]["rows"][1][1]["elements"][0]["elements"] == expected
+
+    def test_rich_text_requires_matching_emphasis_delimiters(self):
+        blocks = render_blocks(
+            "- *star* _underscore_ __strong__ ___combined___ `build_status_report`\n"
+            "- *mixed_ **not bold__"
+        )
+        assert blocks is not None
+        formatted, malformed = blocks[0]["elements"][0]["elements"]
+        assert [el for el in formatted["elements"] if el.get("style")] == [
+            {"type": "text", "text": "star", "style": {"italic": True}},
+            {"type": "text", "text": "underscore", "style": {"italic": True}},
+            {"type": "text", "text": "strong", "style": {"bold": True}},
+            {"type": "text", "text": "combined", "style": {"bold": True, "italic": True}},
+            {"type": "text", "text": "build_status_report", "style": {"code": True}},
+        ]
+        assert malformed["elements"] == [{"type": "text", "text": "*mixed_ **not bold__"}]
 
     def test_slack_mrkdwn_link_in_bullet_becomes_link_element(self):
         """rich_text lists must parse Slack <url|label>, not emit it as text.

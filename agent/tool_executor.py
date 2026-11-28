@@ -181,13 +181,53 @@ class _BatchAbandoned(BaseException):
     so ``except Exception`` handlers in the middleware chain can't swallow it."""
 
 
-def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
+_UNWRAP_ARGUMENTS_EXEMPT_TOOLS = frozenset({"tool_call"})
+_UNWRAP_ARGUMENTS_MAX_LAYERS = 16
+
+
+def _unwrap_nested_arguments(arguments: dict, tool_name: str = "?") -> dict:
+    """Peel model-emitted ``{"arguments": {...}}`` wrappers (bounded).
+
+    Some models (observed with certain OpenAI-compatible relays on long
+    JSON-dense contexts; nesting up to 11 layers) wrap tool-call arguments
+    in one or more extra ``arguments`` layers. The wrapper is valid JSON, so
+    syntax-level repairs never fire; the tool then fails with missing
+    required params and the failure-retry loop self-reinforces via history
+    imitation. Peel sole-key ``arguments`` wrappers before dispatch. Every
+    unwrap is logged at WARNING so false positives (a tool that
+    legitimately declares a sole ``arguments`` object param) are diagnosable;
+    such tools can be added to ``_UNWRAP_ARGUMENTS_EXEMPT_TOOLS``.
+    """
+    if tool_name in _UNWRAP_ARGUMENTS_EXEMPT_TOOLS:
+        return arguments
+    peeled = 0
+    cur = arguments
+    while (
+        isinstance(cur, dict)
+        and len(cur) == 1
+        and isinstance(cur.get("arguments"), dict)
+        and peeled < _UNWRAP_ARGUMENTS_MAX_LAYERS
+    ):
+        cur = cur["arguments"]
+        peeled += 1
+    if peeled:
+        logger.warning(
+            "Unwrapped %d nested 'arguments' layer(s) for tool %s; keys now: %s",
+            peeled,
+            tool_name,
+            list(cur.keys())[:8],
+        )
+    return cur
+
+
+def _parse_tool_arguments(raw_arguments: Any, tool_name: str = "?") -> tuple[dict, Optional[str]]:
     """Parse model-emitted arguments without repairing or coercing them."""
     try:
         arguments = json.loads(raw_arguments)
     except (json.JSONDecodeError, TypeError):
         arguments = None
     if isinstance(arguments, dict):
+        arguments = _unwrap_nested_arguments(arguments, tool_name)
         return arguments, None
     return {}, json.dumps(
         {"error": "Invalid tool arguments", "message": "Tool arguments must be a valid JSON object; tool was not executed."},
@@ -458,7 +498,7 @@ class _ParsedCall:
 
 def _parse_tool_call(agent, tool_call, *, flatten_probe: bool = False) -> _ParsedCall:
     name = _canonical_tool_name(tool_call.function.name)
-    args, parse_error = _parse_tool_arguments(tool_call.function.arguments)
+    args, parse_error = _parse_tool_arguments(tool_call.function.arguments, name)
     scope_block = None
     if parse_error is None:
         name, args, scope_block = _unwrap_tool_search_call(agent, name, args, flatten_probe=flatten_probe)

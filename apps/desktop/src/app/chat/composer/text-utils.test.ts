@@ -11,6 +11,11 @@ describe('detectTrigger', () => {
     expect(detectTrigger('/skill')).toEqual({ kind: '/', query: 'skill', tokenLength: 6, value: 'skill' })
   })
 
+  it('detects a slash query using non-Latin letters', () => {
+    expect(detectTrigger('/두레이')).toEqual({ kind: '/', query: '두레이', tokenLength: 4, value: '두레이' })
+    expect(detectTrigger('/搜索')).toEqual({ kind: '/', query: '搜索', tokenLength: 3, value: '搜索' })
+  })
+
   it('detects a bare at-mention trigger with an empty query', () => {
     expect(detectTrigger('@')).toEqual({ kind: '@', query: '', tokenLength: 1, value: '' })
   })
@@ -47,6 +52,7 @@ describe('detectTrigger', () => {
   it('does not treat file-style paths as slash triggers', () => {
     expect(detectTrigger('src/foo/bar')).toBeNull()
     expect(detectTrigger('/path/to/file')).toBeNull()
+    expect(detectTrigger('/项目/文档')).toBeNull()
     // Mid-message paths stay excluded too: a path keeps going past the command
     // token, so the trailing-anchored inline trigger never matches it.
     expect(detectTrigger('check src/foo/bar')).toBeNull()
@@ -155,6 +161,16 @@ describe('detectTrigger', () => {
       query: 'skill',
       tokenLength: 6,
       value: 'skill'
+    })
+  })
+
+  it('detects an inline slash query with combining marks', () => {
+    expect(detectTrigger('look up /किताब')).toEqual({
+      inline: true,
+      kind: '/',
+      query: 'किताब',
+      tokenLength: 6,
+      value: 'किताब'
     })
   })
 

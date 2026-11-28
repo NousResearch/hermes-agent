@@ -58,18 +58,28 @@ def test_in_process_consent_title_replaces_the_dangerous_command_header(monkeypa
 
 
 def test_gateway_projected_consent_keeps_its_title_in_the_cli_panel(monkeypatch):
-    """Gateway queue entry -> pending-prompt projection -> CLI gateway client -> panel."""
+    """request_elicitation_consent (gateway branch) -> queue payload -> pending-prompt projection ->
+    CLI gateway client -> panel. Only the gateway wait itself is replaced, by a recorder."""
     from gateway.session_pending_controls import PendingControls
     from hermes_cli.gateway_agent import GatewayAgent
+    from tools import approval, approval_context, approval_gateway_wait
+    from tools.approval_prompt import request_elicitation_consent
     from tools.terminal_tool import set_approval_callback
     from tui_gateway.contracts.canonical_sessions import CanonicalPendingPrompt
+
+    queued = []
+    monkeypatch.setattr(approval_context, "_is_single_query_approval_context", lambda: False)
+    monkeypatch.setattr(approval_context, "_is_gateway_approval_context", lambda: True)
+    monkeypatch.setattr(approval, "_gateway_notify_cb", lambda _key: object())
+    monkeypatch.setattr(approval_gateway_wait, "_await_gateway_decision",
+                        lambda key, cb, data, **kw: queued.append(data) or {"resolved": True, "choice": "once"})
+    assert request_elicitation_consent("Load MCP skill 'review'?", "Untrusted server input.",
+                                       title="Load remote skill?") == "accept"
 
     published = []
     events = SimpleNamespace(lock=threading.RLock(),
                              publish=lambda sid, prompt, event_type: published.append(prompt))
-    PendingControls(events).register("s", SimpleNamespace(), 1, {
-        "request_id": "r1", "command": "Load MCP skill 'review'?", "description": "Untrusted server input.",
-        "title": "Load remote skill?", "allow_session": False, "allow_permanent": False})
+    PendingControls(events).register("s", SimpleNamespace(), 1, {**queued[0], "request_id": "r1"})
     prompt = CanonicalPendingPrompt.model_validate(published[0]).model_dump(exclude_none=True)
     assert prompt["title"] == "Load remote skill?"
 

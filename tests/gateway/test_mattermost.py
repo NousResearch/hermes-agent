@@ -87,13 +87,13 @@ class TestMattermostConfigLoading:
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
 
-def _make_adapter():
+def _make_adapter(**extra):
     """Create a MattermostAdapter with mocked config."""
     from plugins.platforms.mattermost.adapter import MattermostAdapter
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        extra={"url": "https://mm.example.com", **extra},
     )
     adapter = MattermostAdapter(config)
     return adapter
@@ -316,6 +316,39 @@ class TestMattermostWebSocketParsing:
         await self.adapter._handle_ws_event(event)
 
         assert self.adapter.handle_message.await_args.args[0].source.is_bot is True
+
+    async def _dispatch_dm_post(self, adapter):
+        """Feed one top-level DM post through the adapter and return the captured event."""
+        adapter._bot_user_id = "bot_user_id"
+        adapter._reply_mode = "thread"
+        adapter._download_attachments = AsyncMock(return_value=([], []))
+        handle_message = AsyncMock()
+        adapter.handle_message = handle_message
+        post_data = {
+            "id": "dm_post", "user_id": "user_123", "channel_id": "dm_456", "message": "hoi",
+        }
+        event = {
+            "event": "posted",
+            "data": {"post": json.dumps(post_data), "channel_type": "D", "sender_name": "@alice"},
+        }
+
+        await adapter._handle_ws_event(event)
+
+        return handle_message.await_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_top_level_dm_post_keeps_the_long_dm_session_by_default(self):
+        """Without dm_thread_sessions a fresh DM message still continues the single DM session."""
+        msg_event = await self._dispatch_dm_post(self.adapter)
+
+        assert msg_event.source.thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_dm_thread_sessions_make_a_top_level_dm_post_its_own_root(self):
+        """dm_thread_sessions gives a DM topic its own session, so thread replies stay together."""
+        msg_event = await self._dispatch_dm_post(_make_adapter(dm_thread_sessions=True))
+
+        assert msg_event.source.thread_id == "dm_post"
 
 
     @pytest.mark.asyncio

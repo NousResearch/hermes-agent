@@ -51,6 +51,21 @@ Shared sessions can be useful for a collaborative channel, but they also mean:
 - one person's long tool-heavy task can bloat everyone else's context
 - one person's in-flight run can interrupt another person's follow-up in the same channel
 
+With `MATTERMOST_REPLY_MODE=thread` each thread is a separate session, but a DM still keeps one long
+session: a new topic you start in the same DM continues the transcript of the previous one. Set
+`dm_thread_sessions` to give every top-level DM message its own session, so a DM conversation
+started in a thread stays together from the first message:
+
+```yaml
+platforms:
+  mattermost:
+    extra:
+      reply_mode: thread
+      dm_thread_sessions: true
+```
+
+Leave it off if you chat with Hermes in one long DM and want that DM to keep its context.
+
 This guide walks you through the full setup process — from creating your bot on Mattermost to sending your first message.
 
 ## Step 1: Enable Bot Accounts

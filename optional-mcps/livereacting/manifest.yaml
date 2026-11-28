@@ -1,0 +1,38 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: livereacting
+description: 24/7 live streams of pre-recorded videos, scheduling, and multistreaming from LiveReacting.
+source: https://developers.livereacting.com/mcp/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). API key auth: Hermes sends
+# `Authorization: Bearer ${MCP_LIVEREACTING_API_KEY}`. The server has no
+# Dynamic Client Registration, so the API key is the supported path here.
+
+transport:
+  type: http
+  url: https://mcp.livereacting.com/mcp
+
+auth:
+  type: api_key
+  env:
+    - name: MCP_LIVEREACTING_API_KEY
+      prompt: "LiveReacting API key (starts with lr_, from Studio > Developer)"
+      required: true
+      secret: true
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - livereacting
+    - 24/7 live stream
+  hosts:
+    - livereacting.com
+
+post_install: |
+  Create an API key in the Developer section of LiveReacting Studio:
+  https://studio.livereacting.com/developer
+  API access is included with every paid plan. Restart the session so
+  tools load.

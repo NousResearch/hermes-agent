@@ -3218,8 +3218,38 @@ def _default_to_chat(args) -> None:
     cmd_chat(args)
 
 
+def _exit_on_closed_pipe(code: int = 141) -> None:
+    """Exit quietly when the reader on stdout went away (``hermes … | head``).
+
+    POSIX shells give a pipeline's writers SIGPIPE; CPython ignores it and turns each
+    write into ``BrokenPipeError``, so a capped listing dies mid-render *and* again
+    while flushing ``sys.stdout`` at interpreter shutdown ("Exception ignored while
+    flushing sys.stdout"). Point the fd at /dev/null so the shutdown flush cannot fail
+    and exit with the conventional SIGPIPE status instead of a traceback.
+    """
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        sys.stdout = open(os.devnull, "w")
+    except OSError:
+        pass
+    sys.exit(code)
+
+
 def main():
     """Main entry point for hermes CLI."""
+    try:
+        return _main()
+    except BrokenPipeError:
+        _exit_on_closed_pipe()
+
+
+def _main():
+    """Body of :func:`main` (kept separate so pipe errors are handled in one place)."""
     _set_process_title()
     _warn_if_unsupervised_pid1()
     _advertise_agent_env()

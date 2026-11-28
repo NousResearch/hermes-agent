@@ -1199,16 +1199,17 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
 
     ``allow_incomplete`` is the install-time exception: tools are published
     before the venv sync, so the venv verdict is not computed at all.
+    A bare bootstrap interpreter can also check only the installed tools.
 
     This is the ONE sanctioned global PATH write: PATH is the discovery
     contract every `which` reads, not a tool-specific env leak. Store-first
     unconditionally — pinned bundled versions win on dev machines too.
     """
     import os
+    from pm.extras import _importable
 
-    # The venv verdict is discarded here, and computing it imports application
-    # config readers (ruamel) that the bare update interpreter does not carry.
-    problems = check(include_venv=not allow_incomplete)
+    # The venv stamp includes configured plugins, whose reader needs ruamel.yaml.
+    problems = check(include_venv=not allow_incomplete and _importable("ruamel.yaml"))
     path = os.environ.get("PATH", "")
     first = store_first_path(path)
     if first != path:

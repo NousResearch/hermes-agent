@@ -1148,6 +1148,9 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         # write guards (external/bundled/hub) fire; turn_context binds this onto
         # the write-origin ContextVar at turn start.
         review_agent._memory_write_origin = "background_review"
+        # Same write origin as the post-turn review fork, so the skill ledger needs this tag to
+        # record the curator, not the review fork, as the origin of its writes.
+        review_agent._ledger_origin = "curator"
         # Seed a shared read-before-write marks store in THIS context before any
         # tool worker spawns: workers run on copied contexts, so a store
         # auto-created later stays private to one worker and every patch is

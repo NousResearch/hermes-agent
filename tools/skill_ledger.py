@@ -36,6 +36,9 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 # support files first, so a disk-only capture would restore a hollow skill.
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
+# Write origins that mean "a user-directed turn": the main agent binds ``assistant_tool`` at turn
+# start; ``foreground`` is the ContextVar default outside any turn (CLI, tests).
+_FOREGROUND_WRITE_ORIGINS = frozenset({"foreground", "assistant_tool"})
 _DEFAULT_LEDGER_MAX_BYTES = 5 * 1024 * 1024  # skills.ledger_max_bytes default (5 MB)
 _BLOB_GC_GRACE_SECS = 3600  # blobs younger than this may belong to an in-flight capture: never GC them
 _NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
@@ -75,6 +78,64 @@ def derive_actor() -> str:
         if is_background_review():
             return "curator"
     return "agent"
+
+
+def _turn_agent() -> Any:
+    """The agent running the current turn (``bind_subagent_parent`` in turn_facade), or None."""
+    from agent.subagent_lifecycle import get_active_subagent_parent
+    return get_active_subagent_parent()
+
+
+def derive_origin(actor: Optional[str] = None) -> str:
+    """Which writer made the mutation: ``foreground``, ``background_review``, ``curator``, or another
+    fork's own write-origin tag (``plugin_fork:<id>``, ``side_question``) kept verbatim.
+
+    ``actor`` disambiguates nothing between the two review forks (both are ``curator``, #143624), so
+    this reads provenance directly. An explicit actor (argument, else the context override) wins:
+    ``curator`` is the curator walk, ``user`` a CLI command. A main-agent turn binds
+    ``assistant_tool`` and no turn leaves the default ``foreground``; both are ``foreground``. A
+    background-review write is the curator's consolidation fork when the turn's agent carries
+    ``_ledger_origin == "curator"``, else the post-turn review fork."""
+    explicit = actor if actor in _VALID_ACTORS else _actor_override.get()
+    if explicit == "curator":
+        return "curator"
+    if explicit == "user":
+        return "foreground"
+    from tools.skill_provenance import BACKGROUND_REVIEW, get_current_write_origin
+    write_origin = get_current_write_origin()
+    if write_origin != BACKGROUND_REVIEW:
+        return "foreground" if not write_origin or write_origin in _FOREGROUND_WRITE_ORIGINS else str(write_origin)
+    return "curator" if getattr(_turn_agent(), "_ledger_origin", None) == "curator" else "background_review"
+
+
+def review_route(origin: str) -> Optional[dict[str, Any]]:
+    """``{model, provider, routed}`` of the review fork running this turn, or None.
+
+    Only a fork built by ``build_cache_parity_fork`` (it sets a boolean ``_review_routed``) has a
+    route. Model and provider are read at write time, not fork time, so a mid-review provider
+    fallback is attributed to the model that issued the tool call."""
+    if origin != "background_review":
+        return None
+    agent = _turn_agent()
+    routed = getattr(agent, "_review_routed", None)
+    if not isinstance(routed, bool):
+        return None
+    return {"model": str(getattr(agent, "model", "") or ""), "provider": str(getattr(agent, "provider", "") or ""),
+            "routed": routed}
+
+
+def _provenance_fields(actor: Optional[str]) -> dict[str, Any]:
+    """``origin`` and, when known, ``route`` for a new entry. Origin and route are optional detail:
+    a failure deriving them must cost only the field it could not derive, never the audit entry,
+    and an unknown origin is omitted rather than guessed."""
+    fields: dict[str, Any] = {}
+    try:
+        fields["origin"] = origin = derive_origin(actor)
+        if (route := review_route(origin)) is not None:
+            fields["route"] = route
+    except Exception:  # deliberate boundary: optional detail must never cost the audit entry
+        logger.warning("skill_ledger: could not derive origin/route; entry recorded without them", exc_info=True)
+    return fields
 
 
 def _skills_dir() -> Path:
@@ -308,7 +369,7 @@ def append_entry(
             before, after = _delta(before or [], after or [])
         entry = {
             "id": uuid.uuid4().hex[:12], "ts": datetime.now(UTC).isoformat(),
-            "actor": actor if actor in _VALID_ACTORS else derive_actor(),
+            "actor": actor if actor in _VALID_ACTORS else derive_actor(), **_provenance_fields(actor),
             "action": action, "skill": skill, "evidence": evidence or {},
             "before": before or [], "after": after or []}
         path = ledger_path()

@@ -20,6 +20,9 @@ def _agent(switches: bool) -> MagicMock:
     agent.provider, agent.model = "nous", "anthropic/claude-opus-5.5"
     agent._fallback_chain, agent._fallback_index = [{"provider": "custom", "model": "fb"}], 0
     agent._try_activate_fallback.return_value = switches
+    agent._refusal_rephrase_tried = False
+    agent._refusal_rephrase_saved_esp = None
+    agent.ephemeral_system_prompt = ""
     return agent
 
 
@@ -49,7 +52,9 @@ def test_declined_fallback_logs_no_switch(caplog):
     assert _switch_lines(caplog) == []
 
 
-def test_content_filter_stream_fallback_names_reason_and_logs(caplog):
+def test_content_filter_stream_stall_retries_with_rephrase_no_switch(caplog):
+    """A content-filter stream stall never switches providers (#160728):
+    it arms the same-provider rephrase retry on the first pass and says so in the log."""
     from agent.turn_truncation import _Trunc, _content_filter_fallback
 
     agent = _agent(switches=True)
@@ -62,8 +67,9 @@ def test_content_filter_stream_fallback_names_reason_and_logs(caplog):
     with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
         verdict = _content_filter_fallback(st, TurnRetryState())
     assert verdict is not None and verdict.action == "break"
-    agent._try_activate_fallback.assert_called_once_with(reason=FailoverReason.content_policy_blocked)
-    assert _switch_lines(caplog) == ["Content filter terminated the stream — switched to fallback"]
+    agent._try_activate_fallback.assert_not_called()
+    assert [r.getMessage() for r in caplog.records if "rephrase directive" in r.getMessage()] == [
+        "Content filter terminated the stream — retrying with rephrase directive (no provider switch)"]
 
 
 def test_nous_rate_guard_fallback_logs(monkeypatch, caplog):

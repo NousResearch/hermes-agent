@@ -522,16 +522,17 @@ class TestContentFilterStallActivatesFallback:
     finish_reason=length partial-stream stub, so before the fix the loop
     burned 3 continuation retries against the SAME primary (re-hitting the
     content-deterministic filter every time) and gave up with
-    ``"Response remained truncated after 3 continuation attempts"`` — the
-    configured fallback chain was never consulted.
+    ``"Response remained truncated after 3 continuation attempts"`` — no
+    recovery was attempted on the first pass.
 
     The fix has three layers:
       1. error_classifier classifies ``new_sensitive`` as
          ``content_policy_blocked``.
       2. interruptible_streaming_api_call runs the swallowed error through
          that classifier and stamps the stub ``_content_filter_terminated``.
-      3. the conversation loop reads the tag and activates fallback BEFORE
-         burning any continuation retries.
+      3. the conversation loop reads the tag and retries ONCE with a
+         same-provider rephrase directive (never a provider switch — user
+         decision 2026-11-27) BEFORE burning any continuation retries.
     """
 
     @patch("run_agent.AIAgent._create_request_openai_client")
@@ -572,10 +573,10 @@ class TestContentFilterStallActivatesFallback:
         )
 
 
-    def test_tagged_stub_activates_fallback_first_pass(self, loop_agent):
-        """Layer 3: a tagged stub activates fallback on the FIRST pass, with
-        zero continuation retries burned, and the fallback provider then
-        completes the turn."""
+    def test_tagged_stub_retries_with_rephrase_first_pass(self, loop_agent):
+        """Layer 3: a tagged stub triggers the same-provider rephrase retry on the
+        FIRST pass — zero continuation retries burned, no provider switch — and the
+        retried request carries the rephrase directive."""
         from tests.agent.test_run_agent import _mock_assistant_msg, _mock_response
 
         def _filter_stub():
@@ -593,7 +594,7 @@ class TestContentFilterStallActivatesFallback:
             )
 
         recovery = _mock_response(
-            content="Done on the fallback provider.", finish_reason="stop",
+            content="Done after the rephrase retry.", finish_reason="stop",
         )
         loop_agent.client.chat.completions.create.side_effect = [
             _filter_stub(), recovery,
@@ -602,27 +603,27 @@ class TestContentFilterStallActivatesFallback:
             {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
         ]
         loop_agent._fallback_index = 0
-        fb_calls = {"n": 0}
-
-        def _fake_activate(reason=None):
-            fb_calls["n"] += 1
-            loop_agent._fallback_index = len(loop_agent._fallback_chain)
-            return True
 
         with (
             patch.object(loop_agent, "_persist_session"),
             patch.object(loop_agent, "_save_trajectory"),
             patch.object(loop_agent, "_cleanup_task_resources"),
-            patch.object(loop_agent, "_try_activate_fallback",
-                         side_effect=_fake_activate),
+            patch.object(loop_agent, "_try_activate_fallback") as mock_fb,
         ):
             result = loop_agent.run_conversation("write me a long file")
 
-        assert fb_calls["n"] == 1, (
-            "Content-filter-tagged stub must activate fallback exactly once, "
+        assert mock_fb.call_count == 0, (
+            "A content-filter stall must never switch providers (#160728)."
+        )
+        assert loop_agent.client.chat.completions.create.call_count == 2, (
+            "Content-filter-tagged stub must trigger exactly one rephrase retry, "
             "on the first pass — not after exhausting continuation retries."
         )
-        assert result["final_response"] == "Done on the fallback provider."
+        retried = str(loop_agent.client.chat.completions.create.call_args_list[1])
+        assert "Risk-control retry directive" in retried, (
+            "The retried request must carry the rephrase directive."
+        )
+        assert result["final_response"] == "Done after the rephrase retry."
         assert result["completed"] is True
 
 

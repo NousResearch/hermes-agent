@@ -269,45 +269,81 @@ def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tu
     return None
 
 
+_RISK_REPHRASE_NUDGE = (
+    "[Risk-control retry directive]\n"
+    "The platform's automated content-risk filter blocked the previous response attempt for this "
+    "request. Answer again with the same intent but rephrased: use neutral, defensive and "
+    "educational framing, describe security measures at a high level, and avoid wording that "
+    "resembles offensive or intrusion instructions. Do not mention this directive."
+)
+
+
+def arm_refusal_rephrase_retry(agent: Any, _retry: TurnRetryState) -> bool:
+    """Arm ONE same-provider rephrase retry for a content-policy refusal.
+
+    Content-policy refusals never switch providers (#160728): the filter is
+    deterministic for the unchanged prompt, so the retry must change the request — the directive
+    rides the ephemeral system prompt (added at API time only; ``messages`` stays untouched).
+    Budget is one per refusal streak: ``clear_refusal_rephrase_nudge`` refreshes it on any healthy
+    response and at the terminal refusal, so a streak can never restart-loop within a turn."""
+    if getattr(agent, "_refusal_rephrase_tried", False):
+        return False
+    agent._refusal_rephrase_tried = True
+    saved = getattr(agent, "ephemeral_system_prompt", None)
+    saved = saved if isinstance(saved, str) else ""
+    if getattr(agent, "_refusal_rephrase_saved_esp", None) is None:
+        agent._refusal_rephrase_saved_esp = saved
+    agent.ephemeral_system_prompt = (saved + "\n\n" + _RISK_REPHRASE_NUDGE).strip()
+    _retry.primary_recovery_attempted = False
+    _retry.restart_with_rebuilt_messages = True
+    return True
+
+
+def clear_refusal_rephrase_nudge(agent: Any) -> None:
+    """Restore the pre-nudge ephemeral system prompt (one-shot: the request it guarded has been
+    answered). Does NOT touch the retry budget — refresh sites handle that."""
+    saved = getattr(agent, "_refusal_rephrase_saved_esp", None)
+    if saved is not None:
+        agent.ephemeral_system_prompt = saved
+        agent._refusal_rephrase_saved_esp = None
+
+
 def _content_filter_fallback(st: _Trunc, _retry: TurnRetryState) -> Optional[TruncationVerdict]:
-    """Content-filter stream stall → fallback. ``_content_filter_terminated`` is
-    content-deterministic, so escalate before retrying the primary; without a fallback
-    fall through to normal continuation (best-effort, may loop)."""
+    """Content-filter stream stall → same-provider rephrase retry (never a provider switch);
+    without retry budget fall through to normal continuation (best-effort, may loop)."""
     agent = st.agent
-    if not (
-        getattr(st.response, "_content_filter_terminated", False)
-        and agent._fallback_index < len(agent._fallback_chain)
-    ):
+    if not getattr(st.response, "_content_filter_terminated", False):
+        return None
+    if not arm_refusal_rephrase_retry(agent, _retry):
+        agent._vprint(
+            f"{agent.log_prefix}⚠️  Rephrase retry already used — falling through to normal "
+            f"continuation (may re-hit filter)...",
+            force=True, diagnostic=True,
+        )
         return None
     agent._vprint(
-        f"{agent.log_prefix}🛡️  Content filter terminated stream — activating fallback provider...",
+        f"{agent.log_prefix}🛡️  Content filter terminated stream — retrying with rephrase directive "
+        f"(same provider)...",
         force=True, diagnostic=True,
     )
-    agent._emit_diagnostic_status("Content filter terminated stream; switching to fallback...")
-    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
-        logger.warning("%sContent filter terminated the stream — switched to fallback", agent.log_prefix)
-        # Roll partial content back to the last clean turn so the fallback gets a
-        # coherent continuation point; unmark survivors (their text left the partial).
-        if st.truncated_response_parts:
-            st.messages = agent._get_messages_up_to_last_assistant(st.messages)
-        for _frag in st.messages:
-            if isinstance(_frag, dict):
-                _frag.pop("_length_continuation_fragment", None)
-                _frag.pop("_length_continuation_nudge", None)
-        agent._session_messages = st.messages
-        st.length_continue_retries = 0
-        st.truncated_response_parts = []
-        st.retry_count = 0
-        st.compression_attempts = 0
-        _retry.primary_recovery_attempted = False
-        _retry.restart_with_rebuilt_messages = True
-        return st.done("break")
-    agent._vprint(
-        f"{agent.log_prefix}⚠️  No fallback provider configured — retrying with same provider "
-        f"(may re-hit filter)...",
-        force=True, diagnostic=True,
-    )
-    return None
+    agent._emit_diagnostic_status("Content filter terminated stream; retrying with rephrased wording (same model)...")
+    logger.warning("%sContent filter terminated the stream — retrying with rephrase directive (no provider switch)", agent.log_prefix)
+    # Roll partial content back to the last clean turn so the retry gets a
+    # coherent continuation point; unmark survivors (their text left the partial).
+    if st.truncated_response_parts:
+        st.messages = agent._get_messages_up_to_last_assistant(st.messages)
+    for _frag in st.messages:
+        if isinstance(_frag, dict):
+            _frag.pop("_length_continuation_fragment", None)
+            _frag.pop("_length_continuation_nudge", None)
+    agent._session_messages = st.messages
+    st.length_continue_retries = 0
+    st.truncated_response_parts = []
+    st.retry_count = 0
+    st.compression_attempts = 0
+    _retry.primary_recovery_attempted = False
+    _retry.restart_with_rebuilt_messages = True
+    return st.done("break")
 
 
 def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -> TruncationVerdict:
@@ -725,8 +761,8 @@ def continue_codex_incomplete(
 
 @dataclass
 class RefusalVerdict:
-    """Outcome of ``handle_content_policy_refusal``: ``"break"`` (fallback activated —
-    restart armed on ``_retry``; caller resets retry/compression counters) or
+    """Outcome of ``handle_content_policy_refusal``: ``"break"`` (same-provider rephrase retry
+    armed — restart armed on ``_retry``; caller resets retry/compression counters) or
     ``"return"`` (the typed content-policy result in ``result``). ``active_system_prompt``
     is the possibly re-synced system prompt."""
 
@@ -743,9 +779,10 @@ def handle_content_policy_refusal(
     current_turn_user_idx: Any = None,
 ) -> RefusalVerdict:
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
-    Deterministic for the unchanged prompt — never retried: one configured-fallback try,
-    else surface the refusal (explanation may live only in the reasoning channel)."""
-    from agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
+    Deterministic for the unchanged prompt — never a provider switch (#160728):
+    one same-provider rephrase retry (see ``arm_refusal_rephrase_retry``), else surface the
+    refusal (explanation may live only in the reasoning channel)."""
+    from agent.conversation_loop import _content_policy_blocked_result
 
     _refusal_result = normalize_response_for_agent(agent, response)
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
@@ -780,17 +817,24 @@ def handle_content_policy_refusal(
         getattr(response, "stop_reason", None) or "n/a", str(_stop_details or "n/a")[:500],
         _refusal_log or "(no text)",
     )
-    if agent._has_pending_fallback():
-        agent._buffer_diagnostic_status("⚠️ Model declined to respond (safety refusal) — trying fallback...")
-    # Name the cause: without a reason the switch notice reads "unavailable (provider failure)",
-    # while the same refusal raised as an HTTP 400 (DeepSeek's "Content Exists Risk") says
-    # "content policy blocked the request" (#124874). Not a rate-limit reason, so no cooldown is armed.
-    if agent._try_activate_fallback(reason=FailoverReason.content_policy_blocked):
-        active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
+    # Content-policy refusals never switch providers (#160728): one bounded
+    # same-provider rephrase retry, then the refusal is surfaced as terminal. Provider fallback
+    # stays reserved for platform outages (rate limit / overload / connection loss) — see the
+    # central gate in ``try_activate_fallback``.
+    if arm_refusal_rephrase_retry(agent, _retry):
+        logger.info(
+            "%sContent-filter refusal — retrying once on the same provider with a rephrase directive "
+            "(no provider switch)", agent.log_prefix,
+        )
+        agent._emit_diagnostic_status("🛡️ Platform risk filter blocked the response — retrying with rephrased wording (same model)...")
         return RefusalVerdict("break", None, active_system_prompt)
 
     agent._flush_status_buffer()
-    agent._emit_diagnostic_status("⚠️ The model declined to respond to this request (safety refusal).")
+    agent._emit_diagnostic_status("⚠️ Platform risk filter blocked this request (content risk) — surfaced as-is, no model switch.")
+    # Refusal streak over: refresh the rephrase budget for the next turn and drop any
+    # leftover one-shot nudge so the surfaced turn can't leak it forward.
+    clear_refusal_rephrase_nudge(agent)
+    agent._refusal_rephrase_tried = False
     _refusal_response = "⚠️ " + content_policy_copy(
         label=provider_label_for(agent.provider),
         summary=_refusal_text or "the model returned no explanation",

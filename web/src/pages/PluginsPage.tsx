@@ -273,7 +273,7 @@ export default function PluginsPage() {
   const [loading, setLoading] = useState(true);
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(true);
-  const [catalogSearch, setCatalogSearch] = useState("");
+  const [search, setSearch] = useState("");
   const [catalogConfirm, setCatalogConfirm] = useState<CatalogEntry | null>(null);
   const [catalogBusy, setCatalogBusy] = useState<string | null>(null);
   const [installId, setInstallId] = useState("");
@@ -529,12 +529,20 @@ export default function PluginsPage() {
     }
   };
 
-  const rows = hub?.plugins ?? [];
   const providers = hub?.providers;
+
+  const rows = useMemo(() => {
+    const installed = hub?.plugins ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return installed;
+    return installed.filter((row) =>
+      [row.name, row.description].some((haystack) => haystack.toLowerCase().includes(q)),
+    );
+  }, [hub, search]);
 
   const catalogEntries = useMemo(() => {
     const entries = catalog?.entries ?? [];
-    const q = catalogSearch.trim().toLowerCase();
+    const q = search.trim().toLowerCase();
     if (!q) return entries;
     return entries.filter((entry) =>
       [
@@ -544,7 +552,7 @@ export default function PluginsPage() {
         ...entry.capabilities.provides_tools,
       ].some((haystack) => haystack.toLowerCase().includes(q)),
     );
-  }, [catalog, catalogSearch]);
+  }, [catalog, search]);
 
   const removedByName = useMemo(() => {
     const map = new Map<string, CatalogRemovedEntry>();
@@ -879,62 +887,17 @@ export default function PluginsPage() {
           </CardContent>
         </Card>
 
-        <div className="flex flex-col gap-3" data-testid="plugin-catalog-section">
-
-          <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
-            {t.pluginsPage.catalogHeading ?? "Plugin catalog"}
-          </h3>
-
-          <p className="text-xs tracking-[0.06em] text-text-tertiary">
-            {t.pluginsPage.catalogHint ??
-              "Curated, Nous-reviewed plugins pinned to exact commits."}
-          </p>
-
-          <Input
-            className="max-w-md"
-            placeholder={t.pluginsPage.catalogSearchPlaceholder ?? "Search catalog..."}
-            value={catalogSearch}
-            onChange={(e) => setCatalogSearch(e.target.value)}
-            aria-label={t.pluginsPage.catalogSearchPlaceholder ?? "Search catalog..."}
-          />
-
-          {catalogLoading ? (
-            <div className="flex items-center gap-2 py-4 text-xs text-text-tertiary">
-              <Spinner />
-              <span>{t.common.loading}</span>
-            </div>
-          ) : catalogEntries.length === 0 ? (
-            <p className="text-xs text-text-tertiary">
-              {t.pluginsPage.catalogEmpty ?? "No catalog entries match."}{" "}
-              <a
-                className="underline"
-                href="https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog"
-                target="_blank"
-                rel="noreferrer"
-              >
-                {t.pluginsPage.catalogEmptyDocsLink ?? "Learn about Hermes plugins"}
-              </a>
-            </p>
-          ) : (
-            <ul className="flex flex-col gap-3">
-              {catalogEntries.map((entry) => (
-                <li key={entry.name}>
-                  <CatalogEntryCard
-                    busy={catalogBusy === entry.name}
-                    entry={entry}
-                    onInstall={() => setCatalogConfirm(entry)}
-                    removed={removedByName.get(entry.name) ?? null}
-                    t={t}
-                  />
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+        <Input
+          className="max-w-md"
+          placeholder={t.pluginsPage.catalogSearchPlaceholder ?? "Search plugins..."}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          aria-label={t.pluginsPage.catalogSearchPlaceholder ?? "Search plugins..."}
+        />
 
         <div className="flex flex-col gap-3">
 
-          <InstalledPluginsHeader pluginCount={rows.length} {...{ loading, loadHub, showToast, t }} />
+          <InstalledPluginsHeader pluginCount={hub?.plugins.length ?? 0} {...{ loading, loadHub, showToast, t }} />
 
           {loading ? (
 
@@ -952,7 +915,7 @@ export default function PluginsPage() {
 
               {rows.map((row: HubAgentPluginRow) => (
 
-                <li key={row.name}>
+                <li key={row.path || row.name}>
 
 
                   <PluginRowCard
@@ -1000,6 +963,51 @@ export default function PluginsPage() {
             </ul>
           </div>
         ) : null}
+
+        <div className="flex flex-col gap-3" data-testid="plugin-catalog-section">
+
+          <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
+            {t.pluginsPage.catalogHeading ?? "Plugin catalog"}
+          </h3>
+
+          <p className="text-xs tracking-[0.06em] text-text-tertiary">
+            {t.pluginsPage.catalogHint ??
+              "Curated, Nous-reviewed plugins pinned to exact commits."}
+          </p>
+
+          {catalogLoading ? (
+            <div className="flex items-center gap-2 py-4 text-xs text-text-tertiary">
+              <Spinner />
+              <span>{t.common.loading}</span>
+            </div>
+          ) : catalogEntries.length === 0 ? (
+            <p className="text-xs text-text-tertiary">
+              {t.pluginsPage.catalogEmpty ?? "No catalog entries match."}{" "}
+              <a
+                className="underline"
+                href="https://hermes-agent.nousresearch.com/docs/user-guide/features/plugin-catalog"
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t.pluginsPage.catalogEmptyDocsLink ?? "Learn about Hermes plugins"}
+              </a>
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-3">
+              {catalogEntries.map((entry) => (
+                <li key={entry.name}>
+                  <CatalogEntryCard
+                    busy={catalogBusy === entry.name}
+                    entry={entry}
+                    onInstall={() => setCatalogConfirm(entry)}
+                    removed={removedByName.get(entry.name) ?? null}
+                    t={t}
+                  />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
 
       <Toast toast={toast} />

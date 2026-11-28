@@ -531,6 +531,10 @@ tts:
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"    # Adam
     model_id: "eleven_multilingual_v2"   # or eleven_v3, eleven_flash_v2_5, ... (Desktop Settings → Voice accepts any model id)
+    language_code: "en"                  # Not supported by eleven_multilingual_v2
+    voice_settings:
+      stability: 0.5
+      similarity_boost: 0.8
   openai:
     model: "gpt-4o-mini-tts"
     voice: "alloy"                 # alloy, echo, fable, onyx, nova, shimmer
@@ -548,6 +552,15 @@ tts:
 ```
 
 Blank provider language settings inherit the global `stt.language` value (default `"en"`) before consulting the environment. See [STT language resolution](../configuration.md#speech-to-text-stt) for the auto-detection conditions and command-backend limits.
+
+For Eleven v4 quality, set `model_id: eleven_v4`. For real-time playback, additionally set
+`streaming_model_id: eleven_v4_turbo`. Hermes forwards the ElevenLabs options you configure to the
+selected model without filtering them by model name; whether the model supports, ignores or
+rejects an option is ElevenLabs' decision. `language_code` is documented as not supported for
+`eleven_multilingual_v2` (see the
+[convert reference](https://elevenlabs.io/docs/api-reference/text-to-speech/convert)), so it is
+still passed, but do not rely on it for that model. This server-side option forwarding does not apply to Desktop's
+client-direct ElevenLabs wire, which currently sends only voice and model configuration.
 
 ### Environment Variables
 

@@ -227,6 +227,14 @@ capabilities:
   requires_env: []
 ```
 
+Only the keys above are valid. Any other top-level key **fails** the structural gate
+(`scripts/validate_plugin_catalog.py`, run by `plugin-catalog-ci.yml`): the loader
+(`hermes_cli/plugin_catalog.py`) and the docs build drop keys they do not know, so an
+unknown key ships as dead metadata — a field nobody renders, and a typo (`required_env` for
+`requires_env`) nobody sees. If an entry genuinely needs a field this contract does not
+define, prefix it with `x-` (`x-internal-id`): extension keys are accepted and ignored, so a
+newer entry still validates under an older validator.
+
 `tier` says who stands behind an entry. `official`: maintained by NousResearch.
 `verified`: verified by the Nous team to come from the company that makes what
 the plugin integrates into Hermes, and that company is well known or reputable.

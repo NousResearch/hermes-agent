@@ -316,6 +316,7 @@ export type DesktopFeatureToggle =
   | 'native_notifications'
   | 'notification_kind'
   | 'reactions'
+  | 'sticky_user_message'
   | 'thread_timeline'
   | 'tips'
   | 'tours'

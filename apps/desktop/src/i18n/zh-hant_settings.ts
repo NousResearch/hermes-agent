@@ -313,6 +313,8 @@ export const zhHantSettings = {
       hideCodeDiffsDesc: '將檔案編輯顯示為附有新增和刪除行數的行內工具列，不顯示程式碼。',
       hideThreadTimelineTitle: '隱藏對話時間軸列',
       hideThreadTimelineDesc: '隱藏每個對話右側邊緣的導覽列。',
+      stickyUserMessageTitle: '捲動時釘選我的訊息',
+      stickyUserMessageDesc: '當對應一輪對話在畫面內時，將你傳送的每則訊息釘選在對話頂端。關閉後將與其他訊息一樣正常捲動。',
       reasoningCollapsedTitle: '預設摺疊推理過程',
       reasoningCollapsedDesc: '保留串流推理內容，但在您開啟前維持摺疊。',
       uiScaleTitle: '介面縮放',

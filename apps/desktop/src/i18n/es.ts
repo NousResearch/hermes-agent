@@ -1012,6 +1012,9 @@ export const esOverrides = {
         'Muestra las ediciones de archivos como filas de herramienta con el recuento de líneas añadidas/eliminadas, sin el código.',
       hideThreadTimelineTitle: 'Ocultar las barras de la línea de tiempo',
       hideThreadTimelineDesc: 'Oculta las barras de navegación del borde derecho de cada conversación.',
+      stickyUserMessageTitle: 'Fijar mis mensajes al desplazar',
+      stickyUserMessageDesc:
+        'Fija cada uno de tus mensajes en la parte superior de la conversación mientras su turno esté en pantalla. Desactívalo para que se desplacen como cualquier otro mensaje.',
       reasoningCollapsedTitle: 'Contraer el razonamiento por defecto',
       reasoningCollapsedDesc: 'Mantiene disponible el razonamiento transmitido sin expandirlo hasta que lo abras.',
       uiScaleTitle: 'Escala de la interfaz',

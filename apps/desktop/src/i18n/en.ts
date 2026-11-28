@@ -979,6 +979,9 @@ export const en: Translations = {
       hideCodeDiffsDesc: 'Show file edits as inline tool rows with added/removed line counts, without the code.',
       hideThreadTimelineTitle: 'Hide thread timeline bars',
       hideThreadTimelineDesc: 'Hide the navigation bars along the right edge of each conversation.',
+      stickyUserMessageTitle: 'Pin my messages while scrolling',
+      stickyUserMessageDesc:
+        'Pin each of your messages to the top of the conversation while its turn is on screen. Turn off to let them scroll like every other message.',
       reasoningCollapsedTitle: 'Collapse thinking by default',
       reasoningCollapsedDesc: 'Keep streamed reasoning available without expanding it until you open it.',
       uiScaleTitle: 'UI Scale',

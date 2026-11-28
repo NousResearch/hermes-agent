@@ -799,6 +799,8 @@ export interface Translations extends NoticeTranslations {
       hideCodeDiffsDesc: string
       hideThreadTimelineTitle: string
       hideThreadTimelineDesc: string
+      stickyUserMessageTitle: string
+      stickyUserMessageDesc: string
       reasoningCollapsedTitle: string
       reasoningCollapsedDesc: string
       chatTextScaleTitle: string

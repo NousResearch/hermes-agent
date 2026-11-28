@@ -192,7 +192,7 @@ const OWNER_CONNECTION_VERBS = new Set([
 // Shift+click global yolo zap).
 const CANONICAL_CONFIG_KEYS = new Set([
   'busy', 'verbose', 'yolo', 'model', 'reasoning', 'fast', 'daybreak', 'personality', 'approvals.mode', 'voice.voice_chat_mode',
-  'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours'
+  'display.message_reactions', 'display.in_app_tips', 'display.in_app_tours', 'display.sticky_user_message'
 ])
 
 const SCOPED_CONFIG_KEYS = new Set(['reasoning', 'yolo'])

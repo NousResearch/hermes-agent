@@ -348,6 +348,9 @@ export const arSettings = {
       hideCodeDiffsDesc: 'عرض تعديلات الملفات كسطور أدوات مضمّنة مع عدد الأسطر المضافة والمحذوفة، دون عرض الكود.',
       hideThreadTimelineTitle: 'إخفاء أشرطة المخطط الزمني للمحادثة',
       hideThreadTimelineDesc: 'إخفاء أشرطة التنقل على الحافة اليمنى لكل محادثة.',
+      stickyUserMessageTitle: 'تثبيت رسائلي أثناء التمرير',
+      stickyUserMessageDesc:
+        'يثبّت كل رسالة من رسائلك في أعلى المحادثة ما دام دورها معروضًا. أوقفه لتتمرّ كأي رسالة أخرى.',
       reasoningCollapsedTitle: 'طي التفكير افتراضيًا',
       reasoningCollapsedDesc: 'أبقِ التفكير المتدفق متاحًا دون توسيعه حتى تفتحه.',
       translucencyTitle: 'شفافية النافذة',

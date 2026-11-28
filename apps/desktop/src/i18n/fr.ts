@@ -1013,6 +1013,9 @@ export const frOverrides = {
         'Afficher les modifications de fichiers sous forme de lignes d’outil avec le nombre de lignes ajoutées/supprimées, sans le code.',
       hideThreadTimelineTitle: 'Masquer les barres de chronologie',
       hideThreadTimelineDesc: 'Masquer les barres de navigation le long du bord droit de chaque conversation.',
+      stickyUserMessageTitle: 'Épingler mes messages pendant le défilement',
+      stickyUserMessageDesc:
+        "Épingle chacun de vos messages en haut de la conversation tant que son tour est à l'écran. Désactivez pour qu'ils défilent comme les autres messages.",
       reasoningCollapsedTitle: 'Réduire le raisonnement par défaut',
       reasoningCollapsedDesc:
         "Conserver le raisonnement diffusé en continu sans le développer tant que vous ne l'ouvrez pas.",

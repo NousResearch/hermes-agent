@@ -742,6 +742,8 @@ export const zhOverrides = {
       hideCodeDiffsDesc: '将文件编辑显示为带有新增和删除行数的内联工具行，不显示代码。',
       hideThreadTimelineTitle: '隐藏对话时间线条',
       hideThreadTimelineDesc: '隐藏每个对话右侧边缘的导航条。',
+      stickyUserMessageTitle: '滚动时置顶我的消息',
+      stickyUserMessageDesc: '当对应一轮对话在屏幕内时，把你发送的每条消息置顶在会话顶部。关闭后将与其他消息一样正常滚动。',
       reasoningCollapsedTitle: '默认折叠推理过程',
       reasoningCollapsedDesc: '保留流式推理内容，但在您打开前保持折叠。',
       uiScaleTitle: '界面缩放',

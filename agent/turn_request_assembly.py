@@ -13,7 +13,10 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
-from agent.message_sanitization import _sanitize_messages_surrogates
+from agent.message_sanitization import (
+    _sanitize_messages_media_markers,
+    _sanitize_messages_surrogates,
+)
 from agent.usage_anchor import anchored_context_tokens
 from agent.prompt_caching import build_prompt_cache_plan, effective_cache_ttl
 from agent.turn_context import build_api_messages
@@ -226,6 +229,15 @@ def assemble_api_request(
     _sanitize_messages_surrogates(api_messages)
 
     _empty_retry_suffix = add_empty_response_retry_hint(agent, api_messages)
+
+    # Drop llama.cpp media placeholders quoted in transcript text (a /props dump read
+    # into a tool result is the usual way one gets there). The server splits the prompt
+    # on its own marker before tokenizing and rejects a marker with no bitmap behind it
+    # with a non-retryable HTTP 400 "Failed to tokenize prompt", identically on every
+    # endpoint it serves — so one poisoned message wedges the session and failover
+    # cannot route around it. API copy only: the stored transcript keeps the real text.
+    if _sanitize_messages_media_markers(api_messages):
+        logger.debug("Neutralized llama.cpp media marker(s) in outgoing messages")
 
     # No send-time pad loop here: ``repair_empty_non_final_messages`` (inside
     # ``_sanitize_api_messages``) is the single owner of empty-turn repair.

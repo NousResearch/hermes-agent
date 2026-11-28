@@ -30,6 +30,19 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 # The durable snapshot is an immutable compare-and-swap version, not message payload.
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role", DB_ROW_SNAPSHOT})
 
+# llama-server's multimodal placeholder. It randomizes the suffix per process start
+# (``media_marker`` in /props) so a prompt cannot forge one, then splits every prompt
+# on that exact string before tokenizing and demands an attached bitmap per piece.
+# Text carrying a marker with no image behind it fails in mtmd, and the server answers
+# HTTP 400 "Failed to tokenize prompt" in ~0.2s — before the model runs, non-retryable,
+# and identical on every endpoint of that server, so failover cannot route around it.
+# A session poisons itself just by reading the server's own /props into a tool result.
+# ``<__media__>`` is the fixed spelling older builds use; ``<__image__>`` was the
+# tokenizer's image alias on the b8799-era builds (replaced by the media marker
+# before splitting — same 400). Limitation: a server pinned with LLAMA_MEDIA_MARKER
+# to arbitrary text is unknowable from here; the /props-dump vector is covered.
+_MEDIA_MARKER_RE = re.compile(r'<__(?:media|image)(?:_[A-Za-z0-9_-]+)?__>')
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD; no-op when none present."""
@@ -64,6 +77,31 @@ def _strip_non_ascii(text: str) -> str:
     if text.isascii():
         return text
     return text.encode('ascii', errors='ignore').decode('ascii')
+
+
+def _neutralize_media_markers(text: str) -> str:
+    """Drop llama.cpp media placeholders from *text*; no-op when none present.
+
+    Removed rather than escaped: the only thing that reaches this is text quoting a
+    marker (a /props dump, a log line), never a real image reference — genuine images
+    travel as structured ``image_url`` parts and the server inserts its own marker.
+    """
+    return _MEDIA_MARKER_RE.sub('[media-marker removed]', text)
+
+
+def _media_marker_in_structure(payload: Any) -> bool:
+    """True when any string leaf in nested dict/list ``payload`` carries a marker (early exit)."""
+    stack = [payload]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, str):
+            if _MEDIA_MARKER_RE.search(node):
+                return True
+        elif isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return False
 
 
 def _fix_str_field(container: Any, key: Any, fix: Callable[[str], str]) -> bool:
@@ -133,6 +171,10 @@ _sanitize_messages_surrogates = partial(_sanitize_messages, fix=_sanitize_surrog
 _sanitize_structure_non_ascii = partial(_sanitize_structure, fix=_strip_non_ascii)
 _sanitize_messages_non_ascii = partial(_sanitize_messages, fix=_strip_non_ascii, deep=False)
 _sanitize_tools_non_ascii = _sanitize_structure_non_ascii
+# Same deep coverage as the surrogate fixer: content, name and tool_call arguments
+# (shallow already walks those) plus tool_call ids, function names and nested non-core
+# fields — a marker anywhere in the wire payload wedges the prompt.
+_sanitize_messages_media_markers = partial(_sanitize_messages, fix=_neutralize_media_markers, deep=True)
 
 
 def sanitize_outbound_kwargs(agent: Any, api_kwargs: dict) -> None:
@@ -512,7 +554,9 @@ __all__ = [
     "_SURROGATE_RE",
     "_escape_invalid_chars_in_json_strings",
     "_messages_carry_images",
+    "_neutralize_media_markers",
     "_repair_tool_call_arguments",
+    "_sanitize_messages_media_markers",
     "_sanitize_messages_non_ascii",
     "_sanitize_messages_surrogates",
     "_sanitize_structure_non_ascii",

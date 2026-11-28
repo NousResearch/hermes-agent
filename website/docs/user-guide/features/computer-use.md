@@ -683,8 +683,11 @@ wrapper carries opaque `element_token`s for stale detection — you'll
 see an explicit error rather than a wrong click.
 
 **"blocked pattern in type text"** — The text you tried to `type`
-matches the dangerous-shell-pattern list. Break the command up or
-reconsider.
+matches the dangerous-shell-pattern list. This is a safety refusal,
+not a delivery failure: don't split, re-encode, or retype the command
+to get it past the guard. If the task really needs that command, run
+it with `terminal` instead, where Hermes's dangerous-command approval
+puts it to the user; otherwise stop and ask the user.
 
 **Empty captures on Linux** — `DISPLAY` not set, or you're on pure
 Wayland without an XWayland bridge. `hermes computer-use doctor` will

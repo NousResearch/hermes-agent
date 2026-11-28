@@ -16,7 +16,7 @@ from agent.reasoning_effort import (
     clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
-from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
+from agent.message_sanitization import PROVIDER_ERROR_FINISH_REASONS, normalize_finish_reason as _normalize_finish_reason
 from session_rules.turns import coalesce_tool_call_id
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
@@ -714,6 +714,8 @@ class ChatCompletionsTransport(ProviderTransport):
         """Check that response has valid choices and is not a router failure shim."""
         if response is None or not getattr(response, "choices", None):
             return False
+        if _normalize_finish_reason(getattr(response.choices[0], "finish_reason", None)) in PROVIDER_ERROR_FINISH_REASONS:
+            return False  # the provider says this reply failed: retry it, never keep it as the answer
         return not is_router_timeout_shim(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:

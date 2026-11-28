@@ -26,6 +26,7 @@ from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.sandbox_egress import SandboxEgress, vercel_network_policy
 from utils import read_json_or_empty
 
 logger = logging.getLogger(__name__)
@@ -165,7 +166,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
                  persistent_filesystem: bool = True, task_id: str = "default",
-                 image: str | None = None):
+                 image: str | None = None, egress: SandboxEgress | None = None):
         super().__init__(cwd=cwd, timeout=timeout)
         if disk not in {0, _DEFAULT_CONTAINER_DISK_MB}:
             raise ValueError(
@@ -189,6 +190,8 @@ class VercelSandboxEnvironment(BaseEnvironment):
             "runtime": runtime or None,
             "image": None if runtime else (image or DEFAULT_VERCEL_IMAGE),
             "resources": Resources(vcpus=vcpus, memory=memory_mb) if (vcpus, memory_mb) != (None, None) else None}
+        if egress is not None:  # kept on snapshot restores too: restore_kwargs only drops runtime/image
+            self._create_kwargs["network_policy"] = vercel_network_policy(egress)
         self._attach_fresh_sandbox(cwd)
         self._sync_manager.sync(force=True)
         self.init_session()

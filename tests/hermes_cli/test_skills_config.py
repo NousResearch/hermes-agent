@@ -1,6 +1,8 @@
 """Tests for hermes_cli/skills_config.py and skills_tool disabled filtering."""
 from unittest.mock import patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # get_disabled_skills
@@ -176,3 +178,84 @@ class TestGetCategories:
         from hermes_cli.skills_config import _get_categories
         skills = [{"name": "a", "category": None, "description": ""}]
         assert "uncategorized" in _get_categories(skills)
+
+
+@pytest.mark.parametrize(
+    ("chosen", "expected_disabled"),
+    [
+        ({1}, {"alpha", "beta", "loose", "uninstalled"}),
+        ({0, 2}, {"deploy", "uninstalled"}),
+    ],
+)
+def test_category_selection_updates_groups_and_preserves_other_skills(
+    monkeypatch, chosen, expected_disabled
+):
+    """Category selection contracts for #36449, independent of persistence."""
+    from hermes_cli import skills_config
+
+    skills = [
+        {"name": "alpha", "category": "coding"},
+        {"name": "beta", "category": "coding"},
+        {"name": "deploy", "category": "ops"},
+        {"name": "loose", "category": None},
+    ]
+    disabled = {"alpha", "deploy", "uninstalled"}
+
+    def choose_categories(title, labels, pre_selected, *, cancel_returns):
+        assert [label.split(" (")[0] for label in labels] == [
+            "coding",
+            "ops",
+            "uncategorized",
+        ]
+        assert pre_selected == {0, 2}
+        assert cancel_returns == pre_selected
+        return chosen
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", choose_categories)
+
+    assert skills_config._toggle_by_category(skills, disabled) == expected_disabled
+    assert disabled == {"alpha", "deploy", "uninstalled"}
+
+
+@pytest.mark.parametrize(
+    ("selected", "expected_disabled"),
+    [(None, ["beta"]), ({1}, ["alpha", "omega"])],
+    ids=["cancel", "changed-selection"],
+)
+def test_individual_selection_cancels_or_persists_global_config(
+    tmp_path, monkeypatch, capsys, selected, expected_disabled
+):
+    """The real CLI orchestration preserves cancellation and saves changed choices."""
+    from hermes_cli import skills_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skills_config.save_config(
+        {"skills": {"disabled": ["beta"]}, "agent": {"max_turns": 7}}
+    )
+    skills = [
+        {"name": name, "category": "coding", "description": name}
+        for name in ("alpha", "beta", "omega")
+    ]
+    monkeypatch.setattr(skills_config, "_list_all_skills", lambda: skills)
+    answers = iter(["", ""])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+
+    def choose_skills(title, labels, pre_selected, *, cancel_returns):
+        assert pre_selected == {0, 2}
+        assert cancel_returns == pre_selected
+        return cancel_returns if selected is None else selected
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", choose_skills)
+    with patch.object(
+        skills_config, "save_config", wraps=skills_config.save_config
+    ) as save:
+        skills_config.skills_command()
+
+    if selected is None:
+        save.assert_not_called()
+        assert "No changes." in capsys.readouterr().out
+    else:
+        save.assert_called_once()
+    persisted = skills_config.load_config()
+    assert persisted["skills"]["disabled"] == expected_disabled
+    assert persisted["agent"]["max_turns"] == 7

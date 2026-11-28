@@ -68,7 +68,7 @@ def _harden_transparency(path: Path) -> Path:
     the chroma-key pass. Best-effort: a decode failure leaves the original untouched.
     """
     try:
-        keyed = atlas._clear_transparent_rgb(atlas.remove_background(atlas._load_rgba(path)))  # no halo on the dark UI
+        keyed = atlas.clear_transparent_rgb(atlas.remove_background(atlas._load_rgba(path)))  # no halo on the dark UI
         # PNGs (any case) are hardened in place: with_suffix(".png") on ".PNG" would
         # name the same file on case-insensitive filesystems and the unlink below
         # would delete the hardened output.

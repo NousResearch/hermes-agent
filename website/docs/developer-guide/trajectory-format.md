@@ -15,8 +15,9 @@ Trajectories are written to files in the current working directory:
 | `trajectory_samples.jsonl` | Conversations that completed successfully (`completed=True`) |
 | `failed_trajectories.jsonl` | Conversations that failed or were interrupted (`completed=False`) |
 
-The batch runner (`batch_runner.py`) writes to a custom output file per batch
-(e.g., `batch_001_output.jsonl`) with additional metadata fields.
+The batch runner (`batch_runner.py`) writes one file per batch under
+`data/<run_name>/` (e.g., `batch_1.jsonl`) with additional metadata fields, then
+combines them into `data/<run_name>/trajectories.jsonl`.
 
 You can override the filename via the `filename` parameter in `save_trajectory()`.
 

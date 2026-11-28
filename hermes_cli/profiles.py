@@ -2253,6 +2253,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         shutdown_mcp_servers(scope=hermes_home_key(old_dir))
         if live_mux and not wait_profile_unowned(old_dir):  # same owner wait as delete_profile
             raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
+        mark_named_profile_deleted(old_dir, incomplete=unfinished_delete)  # a writer bound to it can't rebuild it
         publish_staging(old_dir, new_dir, lambda: _profile_exists_error(new_canon, new_dir))  # a racing publish wins
         renamed = True
     finally:
@@ -2261,11 +2262,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             with contextlib.suppress(OSError):  # no new_dir: the move never landed
                 moved = os.path.samestat(new_dir.lstat(), old_identity)
         if moved:
-            clear_named_profile_deleted(old_dir)
             clear_named_profile_deleted(new_dir)
         elif not unfinished_delete:  # a delete that did not finish stays tombstoned and unregistered
+            clear_named_profile_deleted(old_dir)
             if live_mux:
-                clear_named_profile_deleted(old_dir)
                 _notify_multiplexer(old_canon)
             _maybe_register_gateway_service(old_canon)
             if service_removed:

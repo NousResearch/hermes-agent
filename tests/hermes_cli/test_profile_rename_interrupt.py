@@ -90,7 +90,7 @@ def test_interrupt_after_the_move_never_revives_the_old_name(mux, monkeypatch):
     new_dir = old_dir.parent / "after"
     assert not old_dir.exists() and new_dir.is_dir()
     assert _listed() == {"after"}
-    assert not named_profile_is_deleted(old_dir) and not named_profile_is_deleted(new_dir)
+    assert named_profile_is_deleted(old_dir) and not named_profile_is_deleted(new_dir)
     assert calls == [("notify", "before")]  # the unroute only: no re-serve or re-register of "before"
 
 

@@ -32,6 +32,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_logging import setup_logging
+from tests.fixtures.dead_profile_home import stale_writer_shell
 
 
 @pytest.fixture()
@@ -134,8 +135,7 @@ class TestDeletedProfileTombstone:
         ):
             delete_profile("worker", yes=True)
 
-        # Simulate a stale mkdir that only rebuilds the directory itself.
-        profile_dir.mkdir(parents=True)
+        stale_writer_shell(profile_dir)  # what a pre-guard stale mkdir left: the directory itself
         (profile_dir / "state.db").write_bytes(b"")
 
         assert "worker" not in _named_homes(profile_env)
@@ -153,7 +153,7 @@ class TestDeletedProfileTombstone:
             "hermes_cli.profiles._stop_profile_backends"
         ):
             delete_profile("worker", yes=True)
-        profile_dir.mkdir(parents=True)
+        stale_writer_shell(profile_dir)
 
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
@@ -192,7 +192,7 @@ class TestDeletedProfileTombstone:
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         assert profile_exists("worker") is True
         _delete("worker")
-        profile_dir.mkdir(parents=True)
+        stale_writer_shell(profile_dir)
 
         assert profile_exists("worker") is False
         with pytest.raises(FileNotFoundError, match="does not exist"):
@@ -203,7 +203,7 @@ class TestDeletedProfileTombstone:
     def test_backfill_skips_tombstoned_directory(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         _delete("worker")
-        profile_dir.mkdir(parents=True)
+        stale_writer_shell(profile_dir)
         (profile_env / ".hermes" / ".env").write_text(
             "OPENROUTER_API_KEY=root-key\n", encoding="utf-8"
         )
@@ -259,7 +259,7 @@ class TestDeletedProfileTombstone:
     def test_create_after_delete_replaces_empty_shell(self, profile_env):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         _delete("worker")
-        profile_dir.mkdir(parents=True)
+        stale_writer_shell(profile_dir)
         (profile_dir / "logs").mkdir()
 
         recreated = create_profile("worker", no_alias=True, no_skills=True)
@@ -272,7 +272,7 @@ class TestDeletedProfileTombstone:
     ):
         profile_dir = create_profile("worker", no_alias=True, no_skills=True)
         _delete("worker")
-        profile_dir.mkdir(parents=True)
+        stale_writer_shell(profile_dir)
         leftover_path = profile_dir / leftover
         leftover_path.write_text("keep-me\n", encoding="utf-8")
 

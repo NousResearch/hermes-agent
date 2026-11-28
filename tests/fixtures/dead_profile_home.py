@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from hermes_constants import mark_named_profile_deleted
+from hermes_constants import mark_named_profile_deleted, profile_tombstone_path
 
 MOVES = ("delete", "rename")
 
@@ -21,4 +21,18 @@ def dead_named_home(root: Path, move: str) -> Path:
         shutil.rmtree(home)
     else:
         home.rename(home.with_name("c"))
+    return home
+
+
+def stale_writer_shell(home: Path) -> Path:
+    """The directory a writer still bound to a deleted *home* re-created before the guard in
+    ``hermes_constants`` refused it. Hosts upgraded from such builds still carry these shells,
+    so ``profile create``, list and serve must keep handling them."""
+    record = profile_tombstone_path(home)
+    saved = record.read_bytes()
+    record.unlink()
+    try:
+        home.mkdir(parents=True)
+    finally:
+        record.write_bytes(saved)
     return home

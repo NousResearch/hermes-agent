@@ -4,6 +4,7 @@ Import-safe, stdlib-only — importable from anywhere without circular-import ri
 """
 
 import contextlib
+import contextvars
 import errno
 import os
 import re
@@ -478,6 +479,55 @@ def mark_named_profile_deleted(profile_home: str | Path, *, incomplete: bool = F
 
 def clear_named_profile_deleted(profile_home: str | Path) -> None:
     profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
+
+
+_RESTORING = contextvars.ContextVar("_RESTORING", default=False)
+
+
+@contextlib.contextmanager
+def restoring_profile_homes():
+    """A backup restore in this context writes into retired homes as it did before the guard below: it
+    does not bring them back (their record stays), and the guard does not refuse it. Other threads
+    and processes are still guarded."""
+    token = _RESTORING.set(True)
+    try:
+        yield
+    finally:
+        _RESTORING.reset(token)
+
+
+def _refuse_retired_profile_home(event: str, args: tuple) -> None:
+    """Audit hook: no ``os.mkdir`` in this process creates a missing named profile home whose delete or
+    rename left its record in ``profiles/.deleted/``. ``Path.mkdir``, ``os.makedirs``, ``shutil.copytree``
+    and ``make_user_dir`` all end in ``os.mkdir``, so a writer still bound to the old home gets
+    ``FileNotFoundError`` however it spelled the path. Create, import and distribution install clear the
+    record when they bring a name back, as before this guard. A backup restore runs with the guard off
+    (:func:`restoring_profile_homes`), as before it. Not covered: a
+    ``dir_fd``-relative mkdir, a path through a symlink to ``profiles/`` under another name, a process
+    that never imports this module, and a delete that lands between this check and the mkdir. A home
+    one of those makes keeps its record: list and serve skip it, and create replaces it (or names it as
+    an unfinished delete when it holds identity files)."""
+    if event != "os.mkdir" or _RESTORING.get():
+        return
+    try:
+        path = os.fsdecode(args[0])
+    except TypeError:
+        return
+    if args[2] != -1 and not os.path.isabs(path):  # relative to a dir_fd; no Hermes creator uses one
+        return
+    path = os.path.normpath(os.path.abspath(path))
+    parent, name = os.path.split(path)
+    if os.path.basename(parent) != "profiles" or name.startswith(".") or not name:
+        return
+    home = Path(path)  # an existing home is left to EEXIST: an unfinished delete keeps its home and record
+    if not os.path.lexists(path) and os.path.lexists(profile_tombstone_path(home)) and named_profile_home(home) == home:
+        raise FileNotFoundError(errno.ENOENT, f"Profile '{name}' was deleted or renamed; create it again with "
+                                f"`hermes profile create {name}`", path)
+
+
+if not getattr(sys, "_hermes_retired_profile_guard", False):  # once per process: tests reload this module
+    sys.addaudithook(_refuse_retired_profile_home)
+    sys._hermes_retired_profile_guard = True
 
 
 def assert_named_profile_home_live(path: str | Path) -> Path | None:

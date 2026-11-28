@@ -536,3 +536,26 @@ def test_a_failed_webapp_rebuild_in_update_marks_the_served_bundle_out_of_date(t
         assert "hermes webapp" in capsys.readouterr().out
     else:
         assert sorted(root.rglob("*")) == before
+
+
+@pytest.mark.platforms("posix")
+def test_freshness_cli_answers_through_a_symlinked_script_path(tmp_path):
+    """isMain compares argv[1] against Node's realpath'd import.meta.url. Resolve argv[1] the
+    same way, or a symlinked script path (macOS /var -> /private/var, /tmp -> /private/tmp)
+    turns the freshness CLI into a silent no-op: empty stdout reads as a stale product."""
+    import json
+
+    copy_freshness_scripts(tmp_path)
+    dist = tmp_path / "out"
+    dist.mkdir()
+    stamp_product(tmp_path, "desktop", dist)
+    entry = tmp_path / "entry-link" / "freshness.mjs"
+    entry.parent.mkdir()
+    entry.symlink_to(tmp_path / "scripts" / "build" / "freshness.mjs")
+    result = subprocess.run(
+        [shutil.which("node"), str(entry),
+         "--source", str(tmp_path), "--product", "desktop", "--out", str(dist)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "true", f"CLI produced no verdict: {result.stdout!r} {result.stderr!r}"

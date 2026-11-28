@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
+import Output from './output.js'
 import { cellAt, CellWidth, CharPool, createScreen, HyperlinkPool, setCellAt, StylePool } from './screen.js'
 import {
   applySelectionOverlay,
@@ -19,7 +20,32 @@ const screenWithText = () => {
   return { screen, styles }
 }
 
+const copiedRenderedText = (text: string, softWrap: Array<boolean | 'trimmed'>): string => {
+  const styles = new StylePool()
+  const lines = text.split('\n')
+  const screen = createScreen(12, lines.length, styles, new CharPool(), new HyperlinkPool())
+  const output = new Output({ height: lines.length, screen, stylePool: styles, width: 12 })
+  const selection = createSelectionState()
+
+  output.write(0, 0, text, softWrap)
+  output.get()
+  startSelection(selection, 0, 0)
+  updateSelection(selection, 11, lines.length - 1)
+
+  return getSelectedText(selection, screen)
+}
+
 describe('selection whitespace handling', () => {
+  it('restores the separator removed from a wrap-trim soft-wrap boundary', () => {
+    expect(copiedRenderedText('Let\nme', [false, 'trimmed'])).toBe('Let me')
+    expect(copiedRenderedText('foo \nbar', [false, 'trimmed'])).toBe('foo  bar')
+  })
+
+  it('keeps ordinary soft wraps joined and hard newlines separate', () => {
+    expect(copiedRenderedText('long\nword', [false, true])).toBe('longword')
+    expect(copiedRenderedText('  indented\nnext', [false, false])).toBe('  indented\nnext')
+  })
+
   it('does not copy whitespace-only selections', () => {
     const { screen } = screenWithText()
     const selection = createSelectionState()

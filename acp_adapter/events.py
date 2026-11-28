@@ -16,7 +16,7 @@ import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
 
 from .tools import (
-    _json_loads_maybe, build_tool_abandoned, build_tool_complete, build_tool_start, coerce_tool_args,
+    _json_loads_maybe, _text, build_tool_abandoned, build_tool_complete, build_tool_start, coerce_tool_args,
     make_tool_call_id,
 )
 
@@ -116,6 +116,93 @@ def flush_open_tool_calls(
     return flushed
 
 
+# ------------------------------------------------------------------
+# delegate_task children as ACP tool calls
+# ------------------------------------------------------------------
+
+SUBAGENT_EVENTS = frozenset({"subagent.start", "subagent.tool", "subagent.complete"})
+_SUBAGENT_TAIL = 12
+_SUBAGENT_FAILED = {"failed", "error", "timeout", "interrupted", "cancelled"}
+
+
+def _subagent_title(state: dict[str, Any]) -> str:
+    goal = " ".join(str(state.get("goal") or "").split())
+    goal = goal if len(goal) <= 90 else goal[:89] + "…"
+    head = f"Subagent {state['ordinal']}"
+    if state.get("model"):
+        head += f" ({state['model']})"
+    tools = state.get("tools", 0)
+    return f"{head}: {goal}" + (f" · {tools} tool{'s' if tools != 1 else ''}" if tools else "")
+
+
+def subagent_updates(
+    subagents: dict[str, dict[str, Any]], event_type: str, name: str | None, preview: str | None,
+    kwargs: dict[str, Any],
+) -> list[Any]:
+    """Project one child's lifecycle onto one ACP tool call: ``subagent.start`` opens it (in_progress),
+    each ``subagent.tool`` refreshes its title and a short tail of the child's tool calls, and
+    ``subagent.complete`` closes it with the child's status and summary. Children are keyed by
+    ``subagent_id`` (falling back to delegation + task index), so parallel children never mix.
+
+    No I/O: mutates ``subagents`` and returns the ACP updates to send, so the in-process server (``make_tool_progress_cb``) and the
+    gateway viewer (``GatewayACPAgent._project``, fed by the session stream's ``subagent.*`` frames) share it.
+    ``kwargs`` is the relayed identity (``subagent_id``, ``task_index``, ``task_count``, ``goal``, ``model``,
+    ``tool_count``, ``status``, ``summary``, ``duration_seconds``)."""
+    if event_type not in SUBAGENT_EVENTS:
+        return []
+    key = str(kwargs.get("subagent_id") or f"{kwargs.get('delegation_id', '')}:{kwargs.get('task_index', '')}")
+    state = subagents.get(key)
+    if state is None:
+        if event_type == "subagent.complete" and not kwargs.get("goal") and not preview:
+            return []
+        idx, count = kwargs.get("task_index"), kwargs.get("task_count")
+        ordinal = f"{idx + 1}/{count}" if isinstance(idx, int) and isinstance(count, int) and count > 1 else (
+            f"{idx + 1}" if isinstance(idx, int) else "")
+        state = subagents[key] = {
+            "tc_id": f"tc-sub-{uuid.uuid4().hex[:12]}",
+            "goal": kwargs.get("goal") or (preview if event_type == "subagent.start" else "") or "",
+            "model": kwargs.get("model"), "ordinal": ordinal or "#", "tools": 0,
+            "tail": deque(maxlen=_SUBAGENT_TAIL), "open": False,
+        }
+    out: list[Any] = []
+    if not state["open"]:
+        state["open"] = True
+        out.append(acp.start_tool_call(
+            state["tc_id"], _subagent_title(state), kind="other", status="in_progress",
+            content=[_text(str(state["goal"]))] if state["goal"] else None,
+        ))
+    if event_type == "subagent.tool":
+        state["tools"] = max(state["tools"] + 1, int(kwargs.get("tool_count") or 0))
+        line = str(name or kwargs.get("tool_name") or "tool")
+        if preview:
+            line += ": " + " ".join(str(preview).split())[:160]
+        state["tail"].append(line)
+        out.append(acp.update_tool_call(
+            state["tc_id"], title=_subagent_title(state), status="in_progress",
+            content=[_text("\n".join(state["tail"]))],
+        ))
+    elif event_type == "subagent.complete":
+        status = str(kwargs.get("status") or "completed").lower()
+        summary = str(kwargs.get("summary") or preview or "").strip()
+        body = summary[:4000] if summary else ("\n".join(state["tail"]) or status)
+        if kwargs.get("duration_seconds") is not None:
+            body += f"\n\n({status}, {kwargs['duration_seconds']}s)"
+        out.append(acp.update_tool_call(
+            state["tc_id"], title=_subagent_title(state),
+            status="failed" if status in _SUBAGENT_FAILED else "completed", content=[_text(body)],
+        ))
+        subagents.pop(key, None)
+    return out
+
+
+def _relay_subagent(
+    conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, subagents: dict[str, dict[str, Any]],
+    event_type: str, name: str | None, preview: str | None, kwargs: dict[str, Any],
+) -> None:
+    for update in subagent_updates(subagents, event_type, name, preview, kwargs):
+        _send_update(conn, session_id, loop, update)
+
+
 def make_tool_progress_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: dict[str, deque[str]],
     tool_call_meta: dict[str, dict[str, Any]],
@@ -128,9 +215,16 @@ def make_tool_progress_cb(
     Emits ``ToolCallStart`` for ``tool.started`` and tracks IDs in a FIFO per tool
     name so parallel same-name calls complete against the right ACP tool call.
     ``tool.completed`` closes that call with its own result — the step callback
-    only fires on the *next* step, which leaves a turn's last tools open."""
+    only fires on the *next* step, which leaves a turn's last tools open.
+
+    ``subagent.*`` events relayed from ``delegate_task`` children become one ACP
+    tool call per child (see ``_relay_subagent``), so clients can watch them run."""
+    subagents: dict[str, dict[str, Any]] = {}
 
     def _tool_progress(event_type: str, name: str | None = None, preview: str | None = None, args: Any = None, **kwargs) -> None:
+        if event_type in SUBAGENT_EVENTS:
+            _relay_subagent(conn, session_id, loop, subagents, event_type, name, preview, kwargs)
+            return
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True

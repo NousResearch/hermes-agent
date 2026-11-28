@@ -121,6 +121,8 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         self._configs = {}
         # Session -> the owner's latest usage dict (``session.usage`` / ``session.stats``).
         self._usage = {}
+        # Session -> live ``delegate_task`` children projected as tool calls (``_project_subagent``).
+        self._subagents = {}
         self._background = set()
 
     def on_connect(self, conn):
@@ -993,6 +995,9 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
         if kind in {"tool.start", "tool.complete"}:
             await self._project_tool(kind, sid, editor_id, aid, payload)
             return
+        if isinstance(kind, str) and kind.startswith("subagent."):
+            await self._project_subagent(kind, sid, editor_id, payload)
+            return
         if kind == "message.delta":
             text = _text(payload)
             self._streamed[aid] = self._streamed.get(aid, "") + text
@@ -1025,6 +1030,22 @@ class GatewayACPAgent(GatewayReplyMixin, acp.Agent):
                     self._changed.notify_all()
             finally:
                 self._settling.discard(aid)
+
+    async def _project_subagent(self, kind, sid, editor_id, payload):
+        """A ``delegate_task`` child's ``subagent.*`` frame as one ACP tool call per child: opened on start,
+        refreshed per tool, closed with the child's status and summary. Best-effort: a failed send never
+        breaks the pump."""
+        if not self._conn or not isinstance(payload, dict):
+            return
+        from acp_adapter.events import subagent_updates
+
+        state = self._subagents.setdefault(sid, {})
+        try:
+            updates = subagent_updates(state, kind, payload.get("tool_name"), payload.get("text"), payload)
+            for update in updates:
+                await self._conn.session_update(session_id=editor_id, update=update)
+        except Exception:
+            logger.debug("ACP viewer: subagent frame %s not projected for %s", kind, sid, exc_info=True)
 
     async def _gap_guard(self, kind, sid, aid):
         """What a replay gap changes in the projection; True when the frame is consumed here."""

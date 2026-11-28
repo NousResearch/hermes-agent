@@ -72,7 +72,7 @@ def test_restart_with_a_warm_probe_does_not_attach_to_the_stopped_gateway(manual
     warm = host_attach.host_gateway()
     assert warm is not None and warm.pid == child.pid and warm.serves(profile)
 
-    def stop():
+    def stop(**_kw):
         child.terminate()
         child.wait(timeout=10)
         return True

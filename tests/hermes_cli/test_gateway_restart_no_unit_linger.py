@@ -19,7 +19,7 @@ def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypat
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: True)
     monkeypatch.setattr(gw, "get_systemd_linger_status", lambda *a, **k: (False, "Linger=no"))
-    monkeypatch.setattr(gw, "stop_profile_gateway", lambda: True)
+    monkeypatch.setattr(gw, "stop_profile_gateway", lambda **kw: True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     started = []
     monkeypatch.setattr(gw, "run_gateway", lambda **k: started.append(k))
@@ -40,7 +40,7 @@ def test_detached_restart_without_service_never_runs_the_gateway_in_the_caller(m
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(gw, "stop_profile_gateway", lambda: True)
+    monkeypatch.setattr(gw, "stop_profile_gateway", lambda **kw: True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     foreground, detached = [], []
     monkeypatch.setattr(gw, "run_gateway", lambda **k: foreground.append(k))
@@ -88,7 +88,7 @@ def test_detached_restart_keeps_force_for_the_replacement(monkeypatch):
     monkeypatch.setattr(gw, "_dispatch_via_service_manager_if_s6", lambda *a, **k: False)
     monkeypatch.setattr(gw, "_installed_service_kind_for", lambda windows: None)
     monkeypatch.setattr(gw, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(gw, "stop_profile_gateway", lambda: True)
+    monkeypatch.setattr(gw, "stop_profile_gateway", lambda **kw: True)
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: pytest.fail("the caller became the gateway"))
     launched, real_popen = [], start.subprocess.Popen

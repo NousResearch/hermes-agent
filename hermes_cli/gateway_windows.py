@@ -1823,7 +1823,7 @@ def start() -> None:
     _report_gateway_start("direct spawn")
 
 
-def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
+def _drain_gateway_pid(pid: int, drain_timeout: float, *, restart: bool = False) -> bool:
     """Write the planned-stop marker and wait for the PID to exit. Windows can't deliver POSIX signals
     to an asyncio loop, so the marker is the ONLY way to ask the gateway to drain and persist."""
     if pid <= 0:
@@ -1834,7 +1834,7 @@ def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:
         return False
 
     try:
-        write_planned_stop_marker(pid)
+        write_planned_stop_marker(pid, restart=restart)
     except Exception:
         pass   # best-effort; caller escalates to a hard kill
 
@@ -1905,7 +1905,7 @@ def _collect_gateway_stop_pids(primary_pid: int | None = None) -> list[int]:
     return pids
 
 
-def stop() -> None:
+def stop(*, restart: bool = False) -> None:
     """Stop the gateway: planned-stop marker first so it can drain in-flight agents and persist
     ``resume_pending`` (Windows asyncio can't receive SIGTERM — the marker is our only IPC), then
     ``schtasks /End``, then a bounded hard-kill of known PIDs."""
@@ -1919,7 +1919,7 @@ def stop() -> None:
     stop_pids = _collect_gateway_stop_pids(pid)
     # Fingerprint before the drain: the kill below must refuse a PID recycled during the wait.
     identities = _gateway_pid_identities(stop_pids)
-    drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout())
+    drained = pid is not None and _drain_gateway_pid(pid, _windows_stop_drain_timeout(), restart=restart)
 
     stopped_any = drained
     if is_task_registered():
@@ -1975,7 +1975,7 @@ def restart() -> None:
     replaces it when it exits (a silent outage). Fails loudly on either side."""
     _assert_windows()
 
-    stop()
+    stop(restart=True)
 
     if not _wait_for_gateway_absent(timeout_s=30.0):
         print("⚠ Gateway still present after stop; forcing termination before restart...")

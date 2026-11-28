@@ -212,6 +212,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
     """Build the SIGINT/SIGTERM handler; ``_signal_initiated_shutdown[0]`` records an unplanned signal."""
     from gateway.run import (_best_effort, _hermes_home, asyncio, logger, signal)
     planned_stop_seen = [False]
+    planned_restart = [False]  # the CLI's stop + start: drain as a restart, so clients and chats read one
 
     def shutdown_signal_handler(received_signal=None):
         # Planned --replace takeover (sibling marked this PID): exit 0 so systemd won't revive us.
@@ -221,7 +222,8 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
 
         # Planned stop: CLI marks first, else its SIGTERM looks like an external kill. SIGINT = Ctrl+C.
         def _planned_stop() -> bool:
-            from gateway.status import consume_planned_stop_marker_for_self
+            from gateway.status import consume_planned_stop_marker_for_self, planned_stop_marker_targets_self
+            planned_restart[0] = planned_stop_marker_targets_self(restart=True)  # before the consume unlinks it
             return consume_planned_stop_marker_for_self()
 
         # Fast (<10ms) sync snapshot: stdlib + /proc, no subprocesses (`ps aux` here once blocked ~3s).
@@ -275,7 +277,7 @@ def _start_gateway_make_shutdown_signal_handler(runner, _signal_initiated_shutdo
             # here, and a sibling-driven --replace takeover is not launchd-timed either, so both
             # keep the configured drain. _stop_impl uses this to cap the drain to the live budget.
             runner._stop_requested_by_signal = True
-        asyncio.create_task(runner.stop())
+        asyncio.create_task(runner.stop(restart=True) if planned_stop and planned_restart[0] else runner.stop())
     return shutdown_signal_handler
 
 

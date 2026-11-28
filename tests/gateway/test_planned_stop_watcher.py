@@ -233,3 +233,34 @@ def test_cli_sigterm_after_watcher_consumed_the_marker_stays_planned(tmp_path, m
     bare, bare_flag = _handler()
     bare(signal.SIGTERM)
     assert bare_flag[0] is True
+
+
+def test_cli_restart_marker_drains_as_a_restart(tmp_path, monkeypatch):
+    """A manual ``hermes gateway restart`` is the CLI's stop + start: its marker carries ``restart`` so
+    the old process drains as a restart (state, chat notices, queued messages), while a plain stop and
+    an external SIGTERM still stop."""
+    import signal
+    from types import SimpleNamespace
+
+    import gateway.run as run_mod
+    import gateway.shutdown_forensics as forensics
+
+    marker = tmp_path / ".gateway-planned-stop.json"
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    monkeypatch.setattr(status_mod, "consume_takeover_marker_for_self", lambda: False)
+    monkeypatch.setattr(forensics, "snapshot_shutdown_context", lambda *a, **k: None)
+    monkeypatch.setattr(run_mod.asyncio, "create_task", lambda coro: coro.close())
+
+    def _drive(write_marker):
+        calls = []
+        runner = SimpleNamespace(_signal_initiated_shutdown=False,
+                                 stop=lambda **kw: calls.append(kw) or asyncio.sleep(0))
+        handler = run_mod._start_gateway_make_shutdown_signal_handler(runner, [False])
+        if write_marker:
+            write_marker()
+        handler(signal.SIGTERM)
+        return calls
+
+    assert _drive(lambda: status_mod.write_planned_stop_marker(os.getpid(), restart=True)) == [{"restart": True}]
+    assert _drive(lambda: status_mod.write_planned_stop_marker(os.getpid())) == [{}]
+    assert _drive(None) == [{}]

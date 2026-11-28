@@ -53,7 +53,7 @@ def test_stop_refuses_the_serving_host_when_the_socket_does_not_answer(homes, mo
     root, secondary = homes
     _live_host(monkeypatch, root)
     monkeypatch.setenv('HERMES_HOME', str(secondary))
-    monkeypatch.setattr(gw, '_mark_planned_stop', lambda *a: pytest.fail('planned-stop marker written for the host pid'))
+    monkeypatch.setattr(gw, '_mark_planned_stop', lambda *a, **kw: pytest.fail('planned-stop marker written for the host pid'))
     monkeypatch.setattr(gw.os, 'kill', lambda *a: pytest.fail('stop_profile_gateway SIGTERMed the host pid'))
     monkeypatch.setattr(gw, '_reap_unsupervised_gateway_orphans', lambda **kw: pytest.fail('host pid reached the reaper'))
 
@@ -76,7 +76,7 @@ def test_stop_from_the_hosts_own_home_still_stops_it(homes, monkeypatch):
     root, _secondary = homes
     _live_host(monkeypatch, root, socket_answers=True)
     killed = []
-    monkeypatch.setattr(gw, '_mark_planned_stop', lambda *a: None)
+    monkeypatch.setattr(gw, '_mark_planned_stop', lambda *a, **kw: None)
     monkeypatch.setattr(gw.os, 'kill', lambda pid, sig: killed.append(pid))
     monkeypatch.setattr(status, 'remove_pid_file', lambda: None)
     monkeypatch.setattr(status, '_pid_exists', lambda pid: False)

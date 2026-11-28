@@ -1891,7 +1891,7 @@ def _force_kill_survivors(survivors, *, kill=None) -> None:
 from hermes_cli.gateway_profile_lifecycle import mark_planned_stop as _mark_planned_stop
 
 
-def stop_profile_gateway() -> bool:
+def stop_profile_gateway(*, restart: bool = False) -> bool:
     """Stop only this profile's gateway via its PID file; True if a process was stopped. Without a
     supervisor the pidfile can be stale while a live orphan holds the webhook port, so fall back to
     the orphan-aware scan rather than stacking a duplicate.
@@ -1923,10 +1923,10 @@ def stop_profile_gateway() -> bool:
         # Capture identity BEFORE the drain (as _escalate_wedged_gateway does): if the PID is
         # recycled during the wait, terminate_pid's start-time mismatch refuses the taskkill.
         expected_start_time = get_process_start_time(pid)
-        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout()):
+        if not _drain_gateway_pid(pid, _windows_stop_drain_timeout(), restart=restart):
             _force_terminate_known_gateway_pids({pid: expected_start_time})
     else:
-        _mark_planned_stop(pid)
+        _mark_planned_stop(pid, restart=restart)
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -5430,7 +5430,7 @@ def _cmd_restart(args):
         return
     refuse_restart_of_service_managed_gateway(supervised_pid)
 
-    if stop_profile_gateway():
+    if stop_profile_gateway(restart=True):  # drains as a restart: state and chat notices say so
         print("✓ Stopped gateway for this profile")
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     _wait_for_api_server_port_free()

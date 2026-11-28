@@ -267,12 +267,10 @@ class Platform(Enum):
         value = value.strip().lower()
         if value in cls._value2member_map_:
             return cls._value2member_map_[value]
-        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
-        if _Platform__bundled_plugin_names is None:
-            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
-        registered = value in _Platform__bundled_plugin_names
+        bundled_names, bundled_aliases = cls._bundled_plugin_platforms()
+        registered = value in bundled_names
         if not registered:
-            alias = _Platform__bundled_plugin_aliases.get(value)
+            alias = bundled_aliases.get(value)
             if alias is not None:
                 # A bundled platform whose plugin.yaml ``name:`` differs from its directory (e.g. dir
                 # "a2a", name "a2a-platform") is configured under the manifest name — ``plugins
@@ -283,6 +281,14 @@ class Platform(Enum):
                 from gateway.platform_registry import platform_registry
                 registered = platform_registry.is_registered(value)
         return cls._add_pseudo_member(value) if registered else None
+
+    @classmethod
+    def _bundled_plugin_platforms(cls) -> tuple[set, dict]:
+        """:meth:`_scan_bundled_plugin_platforms`, scanned once per process."""
+        global _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
+        if _Platform__bundled_plugin_names is None:
+            _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases = cls._scan_bundled_plugin_platforms()
+        return _Platform__bundled_plugin_names, _Platform__bundled_plugin_aliases
 
     @classmethod
     def _add_pseudo_member(cls, value: str) -> "Platform":
@@ -315,6 +321,19 @@ class Platform(Enum):
             return names, aliases
         except Exception:
             return set(), {}
+
+
+def platform_value(key: Any) -> str:
+    """The platform a ``platforms`` map key names, by name alone (no plugin needs to be registered): what
+    ``Platform(key)`` resolves it to in ``GatewayConfig.from_dict`` (:meth:`Platform._missing_`): stripped and
+    lower-cased, a bundled plugin's manifest name mapped to its platform. ``""`` for a key that names nothing."""
+    if not isinstance(key, str) or not key.strip():
+        return ""
+    value = key.strip().lower()
+    if value in Platform._value2member_map_:
+        return Platform._value2member_map_[value].value
+    names, aliases = Platform._bundled_plugin_platforms()
+    return value if value in names else aliases.get(value, value)
 
 
 # Built-in values snapshotted before any dynamic _missing_ lookup.

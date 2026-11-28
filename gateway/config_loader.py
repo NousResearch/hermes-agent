@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional, TypeVar
 
@@ -595,6 +596,68 @@ def _load_yaml_layer(home: Path, gw_data: dict) -> None:
     apply_plugin_yaml_hooks(yaml_cfg, gateway_platforms, platforms_data, registry,
                             warned=warned, authored=authored, managed_extra=managed_extra, entries=entries)
     bridge_core_env_settings(yaml_cfg, platforms_data)
+
+
+@dataclass(frozen=True)
+class _UnregisteredPlatform:
+    """A bridge target for a platform no plugin registers here yet (one that left core, read before its plugin
+    loads): ``bridge_platform_shared_keys`` reads only its ``value``."""
+    value: str
+
+
+def platform_blocks(home: Path, *, also: frozenset = frozenset()) -> dict[str, dict]:
+    """Every saved platform block of *home* keyed by platform (``gateway.config.platform_value``), as
+    ``GatewayConfig.from_dict`` receives them: the legacy ``gateway.json`` base layer, then config.yaml's
+    top-level gateway keys (:func:`bridge_toplevel_keys`, the defaults a platform's shared keys fall back
+    to), its ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks (:func:`merge_platform_sections`),
+    the managed overlay and a top-level ``<name>:`` block bridged into its platform's own slot
+    (:func:`bridge_platform_shared_keys`), ``${VAR}`` expanded. ``from_dict`` maps every key through
+    ``Platform()``, case-blind and alias-aware, so the LAST key naming a platform in merged order is its block.
+    A config.yaml the loader cannot read or merge (a block with ``extra: null``) contributes nothing, as in
+    the gateway (:func:`with_yaml_fallback`: gateway.json alone). *also* names platforms whose
+    ``gateway.<name>`` shorthand counts while nothing registers them. Read-only: no discovery, no env writes,
+    no plugin YAML hooks. THE reader for a saved platform block outside the gateway (cron, left-core migration)."""
+    from gateway.config import platform_value
+
+    def gateway_json() -> dict:  # a fresh copy each time: a failed merge may have half-filled the last one
+        gw_data = load_legacy_gateway_json(home)
+        return gw_data if isinstance(gw_data, dict) else {}
+
+    platforms = with_yaml_fallback(home, lambda: _yaml_platform_blocks(home, frozenset(also), gateway_json()),
+                                   lambda: merge_platform_sections({}, None, gateway_json()))
+    blocks: dict[str, dict] = {}
+    for key, block in platforms.items():
+        if (value := platform_value(key)) and isinstance(block, dict):
+            blocks[value] = block
+    return blocks
+
+
+def _yaml_platform_blocks(home: Path, also: frozenset, gw_data: dict) -> dict:
+    """:func:`platform_blocks`' merged map over every layer, in the loader's order (:func:`_load_yaml_layer`);
+    raises where it would."""
+    from gateway.config import platform_value
+    from hermes_cli import managed_scope
+    yaml_cfg = read_yaml_layers(home)
+    yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
+    gateway_section = yaml_cfg.get("gateway")
+    bridge_toplevel_keys(yaml_cfg, gateway_section, gw_data)
+    shorthand = frozenset(k for k in (gateway_section if isinstance(gateway_section, dict) else {})
+                          if platform_value(k) in also)
+    platforms = merge_platform_sections(yaml_cfg, gateway_section, gw_data, also=shorthand)
+    authored = snapshot_authored_extra(merge_platform_sections(yaml_cfg, gateway_section, {}, also=shorthand))
+    managed = managed_scope.apply_managed_overlay({})
+    # Reconcile cross-shape pins before the root bridge, even before this platform is registered.
+    managed["platforms"] = merge_platform_sections(managed, managed.get("gateway"), {}, also=shorthand)
+    _apply_managed_extra(authored, managed, platforms)
+    # The gateway bridges every platform it loads (``shared_loop_targets``); here: the built-ins, every platform
+    # a block names, a bundled plugin platform's top-level block and *also*.
+    bundled = Platform._bundled_plugin_platforms()[0]
+    named = {platform_value(k) for k in platforms} | {k for k, v in yaml_cfg.items() if isinstance(v, dict) and k in bundled}
+    targets: list = list(Platform)
+    targets += [_UnregisteredPlatform(v) for v in sorted((named | also) - {t.value for t in targets} - {""})]
+    gateway_platforms = gateway_section.get("platforms") if isinstance(gateway_section, dict) else None
+    bridge_platform_shared_keys(yaml_cfg, gateway_platforms, gw_data, platforms, targets, authored=authored)
+    return platforms
 
 
 def load_gateway_config_file(gateway_config_file: str):

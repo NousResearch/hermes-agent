@@ -78,3 +78,23 @@ def test_unprovable_claim_denies_retry_and_goal_continuation(tmp_path, monkeypat
 
     assert result["failed"] and len(agent.calls) == 1 and goal_calls == []
     assert session_kanban.worker_exit_code(path, context) == kb.KANBAN_RATE_LIMIT_EXIT_CODE
+
+def test_gateway_goal_budget_persists_block_kind(tmp_path, monkeypatch):
+    """Managed workers use the same typed synthetic block as CLI workers (#157561)."""
+    from hermes_cli import goals
+
+    path, context, frame = _claimed_frame(tmp_path, monkeypatch, goal_mode=True)
+    context["goal_max_turns"] = 1
+    frame["policy"]["kanban_json"] = json.dumps(context)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(path))
+    monkeypatch.setattr(
+        goals, "judge_goal", lambda *_a, **_kw: ("continue", "more work", False, None, False),
+    )
+    agent = _Agent([{"completed": True, "final_response": "not yet"}])
+
+    session_kanban.run_worker_turns(agent, frame, [])
+    with connect_closing(path) as conn:
+        task = kb.get_task(conn, context["task_id"])
+    assert task is not None
+    assert (task.status, task.block_kind) == ("blocked", "needs_input")
+

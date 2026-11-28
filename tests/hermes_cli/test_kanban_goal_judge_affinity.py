@@ -103,7 +103,7 @@ def test_goal_loop_judge_binds_per_task_affinity_scope():
             goal_text="goal",
             run_turn=lambda prompt: "still working",
             task_status_fn=lambda: "running",
-            block_fn=lambda msg: None,
+            block_fn=lambda _reason, _kind: None,
             max_turns=2,
             first_response="first",
         )

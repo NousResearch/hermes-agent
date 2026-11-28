@@ -41,6 +41,9 @@ class _DispatcherSettings:
     reconcile_orphans: bool
     default_assignee: Optional[str]
     max_in_progress_per_profile: Optional[int]
+    # Opt-in fair-share allocation across boards; appended with a default so
+    # positional construction of this dataclass keeps working.
+    board_fair_share: bool = False
 
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
@@ -114,6 +117,8 @@ def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettin
         # Per-profile concurrency cap: no single profile's local model / API
         # quota / browser pool gets overwhelmed by a fan-out.
         max_in_progress_per_profile=_positive_int_setting(kanban_cfg, "max_in_progress_per_profile"),
+        # Opt-in cross-board fair-share allocation (see kanban.board_fair_share).
+        board_fair_share=bool(kanban_cfg.get("board_fair_share", False)),
     )
 
 
@@ -131,6 +136,9 @@ class _KanbanDispatcher:
     def __init__(self, kb: Any, settings: _DispatcherSettings) -> None:
         self.kb = kb
         self.settings = settings
+        # Round-robin cursor for fair-share board rotation; process-local and
+        # deliberately not persisted (fairness, not correctness).
+        self._fair_share_cursor = 0
         self.disabled_corrupt_boards: dict[str, tuple[tuple[str, int | None, int | None], float]] = {}
 
     def _board_slugs(self) -> list:
@@ -172,17 +180,21 @@ class _KanbanDispatcher:
         self.disabled_corrupt_boards.pop(slug, None)
         return True
 
-    def tick_once_for_board(self, slug: str) -> Optional[object]:
+    def tick_once_for_board(self, slug: str, *, max_in_progress_per_board: Optional[int] = None) -> Optional[object]:
         """Run one dispatch_once for a specific board.
 
         The per-board DB is opened explicitly so boards never share a
-        connection or claim across each other.
+        connection or claim across each other. ``max_in_progress_per_board``
+        is the fair-share allocation for this tick (None = no per-board cap).
         """
         conn = None
         fingerprint = self.board_db_fingerprint(slug)
         if not self._quarantine_lifted(slug, fingerprint):
             return None
-        kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
+        kwargs = {k: v for k, v in asdict(self.settings).items()
+                  if k not in ("interval", "board_fair_share")}
+        if max_in_progress_per_board is not None:
+            kwargs["max_in_progress_per_board"] = max_in_progress_per_board
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).
@@ -212,9 +224,54 @@ class _KanbanDispatcher:
                 with contextlib.suppress(Exception):
                     conn.close()
 
+    def _board_has_spawnable(self, slug: str) -> bool:
+        """True when *slug* has spawnable ready (or review) work right now."""
+        kbd = _kbd()
+        conn = None
+        try:
+            from hermes_cli import kanban_db as _kb
+            with _kb.pin_first_board_resolution():
+                conn = _kbc().connect(board=slug)
+                if kbd.has_spawnable_ready(conn):
+                    return True
+                return bool(kbd.review_dispatch_enabled()) and kbd.has_spawnable_review(conn)
+        except (sqlite3.Error, OSError, ImportError) as exc:
+            logger.debug(
+                "kanban dispatcher: fair-share eligibility check failed on board %s: %s",
+                slug, exc,
+            )
+            return False
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    conn.close()
+
     def tick_once(self) -> list[tuple[str, Optional[object]]]:
-        """Run one dispatch_once per board. Returns (slug, result) pairs."""
-        return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
+        """Run one dispatch_once per board. Returns (slug, result) pairs.
+
+        With ``kanban.board_fair_share`` enabled, boards with spawnable work
+        are served one worker each while more than one is contended; a sole
+        contended board may use the full host cap. Contended boards rotate
+        round-robin so enumeration order cannot starve a board.
+        """
+        slugs = self._board_slugs()
+        if not self.settings.board_fair_share:
+            return [(slug, self.tick_once_for_board(slug)) for slug in slugs]
+        eligible = [slug for slug in slugs if self._board_has_spawnable(slug)]
+        if not eligible:
+            return [(slug, self.tick_once_for_board(slug)) for slug in slugs]
+        per_board = 1 if len(eligible) > 1 else self.settings.max_in_progress
+        start = self._fair_share_cursor % len(eligible)
+        self._fair_share_cursor += 1
+        rotated = eligible[start:] + eligible[:start]
+        ordered = rotated + [slug for slug in slugs if slug not in eligible]
+        return [
+            (slug, self.tick_once_for_board(
+                slug,
+                max_in_progress_per_board=per_board if slug in eligible else None,
+            ))
+            for slug in ordered
+        ]
 
     def ready_nonempty(self) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?

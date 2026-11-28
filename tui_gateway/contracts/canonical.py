@@ -179,10 +179,12 @@ class SessionInventoryFields(Result):
 
 
 class CanonicalClientLabel(Result):
-    """The client a session's creator declared itself as (``session.create`` ``client``)."""
+    """The client a session's creator declared itself as (``session.create`` ``client``); ``kind`` only
+    when it named one this owner knows."""
 
     name: str
     version: str | None = None
+    kind: str | None = None
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):

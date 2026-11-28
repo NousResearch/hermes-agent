@@ -30,7 +30,7 @@ from tools.environments.local_env_policy import (
     _home_adapter_secret_env, _home_declared_key_env, _matches_terminal_first_party_prefix,
     _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env, _secret_source_bootstrap_env,
-    strip_profile_gate_env, strip_supervised_process_identity)
+    DEPLOYMENT_STAMP_ENV, strip_profile_gate_env, strip_supervised_process_identity)
 from tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 from tools.environments.base_session_env import (
@@ -452,7 +452,8 @@ def build_subprocess_env(
 
 def served_profile_child_env(
     base: Mapping[str, str] | None = None, *, target_home: str | Path | None = None,
-    inherit_credentials: bool = False,
+    inherit_credentials: bool = False, own_profile: bool | None = None,
+    template_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Child env for a process that acts FOR the active (possibly served) profile: ``hermes -p X``
     workers, ``key_cmd`` helpers, browser drivers. The process env is the LAUNCH profile's. When the
@@ -468,22 +469,44 @@ def served_profile_child_env(
     (``get_secret``'s fail-closed contract): minting with the launch environ would sign in as the wrong
     profile. ``False`` keeps the provider scrub; the caller re-adds the few keys the child needs via
     ``get_secret``. ``target_home`` defaults to the active override; ``base`` replaces the
-    ``hermes_subprocess_env`` snapshot."""
+    ``hermes_subprocess_env`` snapshot. The deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) are
+    removed last, whatever *base* or the profile overlay carried. ``own_profile`` is whether the target is the
+    launch profile, for a caller that decided it by another rule (the plugin host, by the key the process
+    remembered for its own path); by default ``_is_routed_home`` answers by where the process's own path
+    leads now. It decides the launch-residue strip, the credential scrub, the overlay's templates, the
+    bootstrap tokens and the bridge markers. ``template_env`` is what the launch profile's ``.env`` templates
+    resolve against in place of the live env (the plugin host passes the frozen env its launcher used)."""
+    return drop_deployment_stamps(_profile_child_env(base, target_home, inherit_credentials, own_profile,
+                                                     template_env))
+
+
+def drop_deployment_stamps(env: dict[str, str]) -> dict[str, str]:
+    """Remove ``DEPLOYMENT_STAMP_ENV`` from *env* in place, any casing (a Windows env block is not
+    case-sensitive), for a child built from an unscrubbed base that is not a gateway."""
+    for name in [key for key in env if key.upper() in DEPLOYMENT_STAMP_ENV]:
+        del env[name]
+    return env
+
+
+def _profile_child_env(
+    base: Mapping[str, str] | None, target_home: str | Path | None, inherit_credentials: bool,
+    own_profile: bool | None = None, template_env: dict[str, str] | None = None,
+) -> dict[str, str]:
     from agent.secret_scope import (
         UnscopedSecretError, build_profile_secret_scope, current_secret_scope, is_multiplex_active)
     from hermes_constants import apply_scratch_tmp_env, get_hermes_home_override
     env = dict(base) if base is not None else hermes_subprocess_env(inherit_credentials=inherit_credentials)
     target = str(target_home or get_hermes_home_override() or "")
-    routed = bool(target) and _is_routed_home(target)
+    routed = bool(target) and (_is_routed_home(target) if own_profile is None else not own_profile)
     if target:
         env["HERMES_HOME"] = target
         apply_scratch_tmp_env(env)  # TMPDIR follows the served home, like HOME does
         if routed:
-            strip_launch_profile_env(env, target)
+            strip_launch_profile_env(env, target, routed=True)
             _scrub_credentials(env, inherit_credentials=False)
     if inherit_credentials:
         if target:
-            secrets = build_profile_secret_scope(Path(target))
+            secrets = build_profile_secret_scope(Path(target), process_home=own_profile, template_env=template_env)
         else:
             secrets = current_secret_scope()
             if secrets is None and is_multiplex_active():
@@ -492,9 +515,20 @@ def served_profile_child_env(
                     "no profile secret scope bound while multiplexing is on; the child would inherit the "
                     "launch profile's credentials. Bind the profile scope (or pass target_home) at the spawn site.")
         env.update((k, v) for k, v in (secrets or {}).items() if v is not None)
-        if not (_is_routed_home(target) if target else secrets is not None):
+        if not (routed if target else secrets is not None):
             _restore_bootstrap_tokens(env, os.environ if base is None else base)
     _carry_bridge_markers(env, base if base is not None else os.environ, own_profile=not routed)
+    return env
+
+
+def keep_deployment_stamps(env: dict, source: Mapping[str, str] | None = None) -> dict:
+    """Put the deployment's launch stamps (``DEPLOYMENT_STAMP_ENV``) from *source* (the process env)
+    into the env of a gateway this process starts, where the scrub removed them. A value already in
+    *env* (the target profile's own ``GATEWAY_RELAY_SLEEP_URL``) is kept."""
+    source = os.environ if source is None else source
+    for name in DEPLOYMENT_STAMP_ENV:
+        if source.get(name) and not env.get(name):
+            env[name] = source[name]
     return env
 
 
@@ -522,6 +556,12 @@ def _restore_bootstrap_tokens(env: dict[str, str], source: Mapping[str, str]) ->
             env[name] = source[name]
 
 
+def gateway_child_env(target_home: str | Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Child env for a gateway this process starts on *target_home*: that profile's environment,
+    with each launch stamp it lacks filled from *base* (``keep_deployment_stamps``)."""
+    return keep_deployment_stamps(_profile_child_env(base, target_home, True), os.environ if base is None else base)
+
+
 def host_gateway_child_env(
     base: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
@@ -532,9 +572,7 @@ def host_gateway_child_env(
     multiplexer that owns the primary adapter map.
     """
     from hermes_constants import get_default_hermes_root
-    return served_profile_child_env(
-        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
-    )
+    return gateway_child_env(get_default_hermes_root(), base)
 
 
 def _is_routed_home(target_home: str | Path) -> bool:
@@ -550,7 +588,7 @@ def _is_routed_home(target_home: str | Path) -> bool:
         return True
 
 
-def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -> dict:
+def strip_launch_profile_env(env: dict, target_home: str | Path | None = None, *, routed: bool | None = None) -> dict:
     """Drop the LAUNCH profile's residue from a child env built for another served profile.
     ``os.environ`` holds the default profile's ``.env`` and its bridged ``TERMINAL_*`` settings;
     the secret scrub removes credentials but not settings (``HERMES_MODEL``, ``TERMINAL_ENV``,
@@ -559,11 +597,12 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     defaults to the active home override; no-op when there is no target or the target IS the
     launch profile. The authority test is "does this task serve a routed home", not "is the
     gateway-wide multiplex flag on": the Desktop/dashboard backend serves ``?profile=B`` by
-    installing a HERMES_HOME override without that flag."""
+    installing a HERMES_HOME override without that flag. *routed* is that answer from a caller that
+    decided it by another rule (``served_profile_child_env``'s *own_profile*)."""
     from agent.secret_scope import _is_global_env, load_env_file
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
     target = target_home or get_hermes_home_override()
-    if not target or not _is_routed_home(target):
+    if not target or not (_is_routed_home(target) if routed is None else routed):
         return env
     launch_home = get_routing_process_hermes_home()
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP

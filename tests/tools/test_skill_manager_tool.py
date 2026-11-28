@@ -1551,3 +1551,26 @@ class TestLockedGuard:
         assert autonomous["success"] is False, autonomous
         assert "could not be verified" in autonomous["error"], autonomous
         assert foreground["success"] is True, foreground
+
+
+
+def test_index_desc_limit_sets_the_skill_manage_description_budget(tmp_path, monkeypatch):
+    """A profile that widens its index accepts descriptions up to that width, and the tool schema the
+    model reads states the same budget; the default keeps 60 and the static schema bytes."""
+    from model_tools import get_tool_definitions
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    desc = "Use when pulling index weights, options chains or risk factors from the shared market data API."
+    content = f"---\nname: market-data\ndescription: {desc}\n---\n\nBody.\n"
+
+    def schema_desc():
+        return next(t["function"]["description"] for t in get_tool_definitions(["skills"], quiet_mode=True)
+                    if t["function"]["name"] == "skill_manage")
+
+    refused = json.loads(skill_manage(action="create", name="market-data", content=content))
+    assert refused["success"] is False and "60-char" in refused["error"]
+    assert "max 60 chars" in schema_desc()
+
+    (tmp_path / "config.yaml").write_text("skills:\n  index_desc_limit: 160\n", encoding="utf-8")
+    created = json.loads(skill_manage(action="create", name="market-data", content=content))
+    assert created["success"] is True, created
+    assert "max 160 chars" in schema_desc()

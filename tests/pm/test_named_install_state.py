@@ -1,0 +1,293 @@
+"""A launcher can name the folder a process keeps its install state in (``HERMES_INSTALL_STATE_DIR``).
+
+It does so when it starts Hermes on an interpreter it prepared, somewhere the install's own state cannot be
+used: a sandbox that may read the selected environment and nothing else of ``installs/<key>``. There the state
+folder is still seen, cannot be read or locked, and start-up ends on it.
+"""
+import base64
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+# Every OS lane collects this file: the folder is named for a sandbox on Windows.
+pytestmark = pytest.mark.platforms("any")
+
+
+def _site_of(venv: Path) -> Path:
+    return venv / ("Lib/site-packages" if os.name == "nt"
+                   else f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages")
+
+
+def _committed_environment(state: Path, name: str, version: str) -> Path:
+    """A state folder that records a committed environment whose ``probe_package`` says *version*."""
+    venv = state / "environments" / name / "venv"
+    _site_of(venv).mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = test", encoding="utf-8")
+    (_site_of(venv) / "probe_package.py").write_text(f"version = {version!r}", encoding="utf-8")
+    (state / "facts.json").write_text(json.dumps({"schema": 1, "packages": {"venv": {"environment": str(venv)}}}),
+                                      encoding="utf-8")
+    return venv
+
+
+def _entries(folder: Path) -> list[str]:
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*"))
+
+
+def test_a_process_with_a_named_state_folder_starts_on_the_interpreter_it_was_given(tmp_path, monkeypatch):
+    """It selects no environment, from the install's own state or from the named folder, and start-up writes
+    nothing into either."""
+    from pm import environments
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_INSTALL_STATE_DIR", raising=False)
+    own = environments.install_state_dir(root)
+    _committed_environment(own, "committed", "the install's")
+    named = tmp_path / "named"
+    _committed_environment(named, "placed", "placed in the named folder")
+    before, placed = _entries(own), _entries(named)
+
+    code = ("import importlib.util, sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+            "activate_dependencies(Path(sys.argv[1])); print(importlib.util.find_spec('probe_package') is None)")
+    process = subprocess.run([sys.executable, "-c", code, str(root)], text=True, capture_output=True, timeout=60,
+                             env={**os.environ, "HERMES_INSTALL_STATE_DIR": str(named)}, check=False)
+
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.splitlines() == ["True"]
+    assert _entries(own) == before
+    assert _entries(named) == placed
+
+
+def test_a_process_with_a_named_state_folder_does_not_repair_the_install(tmp_path, monkeypatch):
+    """The install's own state records an environment that is gone, which a process of that install repairs at
+    start. A process given another state folder leaves the repair, and the install's state, alone."""
+    from hermes_cli import _early_recovery
+    from pm import environments, recovery
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("HERMES_INSTALL_STATE_DIR", raising=False)
+    own = environments.install_state_dir(root)
+    own.mkdir(parents=True)
+    (own / "facts.json").write_text(json.dumps({"schema": 1, "packages": {
+        "venv": {"environment": str(own / "environments" / "gone" / "venv")}}}), encoding="utf-8")
+    before = _entries(own)
+    repaired = []
+    monkeypatch.setattr(recovery, "repair_dependencies", repaired.append)
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    assert _early_recovery.recover_if_needed(root, ["chat"]) is False
+    assert repaired == []
+    assert _entries(own) == before
+
+
+def test_a_process_with_a_named_state_folder_is_not_restarted_and_completes_no_source_update(tmp_path, monkeypatch):
+    """A self-managed install whose dependencies are out of date is synced at start and the process restarted on
+    the install's interpreter. A process given another state folder keeps the interpreter it was started with."""
+    import hermes_constants
+    import pm
+    import pm.client
+    from hermes_cli import _launchers, update_custody, venv_sync
+
+    monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: tmp_path / ".hermes")
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    root = tmp_path / ".hermes" / "hermes-agent"
+    (root / ".git").mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[project]\nname='example'\n", encoding="utf-8")
+    (root / "install-stamp.json").write_text(json.dumps({"updateMechanism": "self", "commit": "abc"}), encoding="utf-8")
+    synced, spawned = [], []
+    monkeypatch.setattr(pm.client, "ensure_tools_for_sync", lambda: None)
+    monkeypatch.setattr(pm, "venv_is_current", lambda **kw: bool(synced))
+    monkeypatch.setattr(pm, "sync_venv", lambda *a, **kw: synced.append(a))
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda _: Path(sys.executable))
+    monkeypatch.setattr(venv_sync, "publish_launchers", lambda r, **kw: None)
+    monkeypatch.setattr(update_custody, "run", lambda command, **kw: spawned.append(command)
+                        or subprocess.CompletedProcess(command, 0))
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    assert venv_sync.prepare_launch(root, []) is None
+    assert synced == [] and spawned == []
+    assert list(named.iterdir()) == []
+
+
+def test_a_process_with_a_named_state_folder_leaves_an_unfinished_update_to_the_install(tmp_path, monkeypatch):
+    """An update that stopped half way leaves a marker in the checkout, and the next process of the install
+    repairs its dependencies. A process given another state folder is not that process: it repairs nothing and
+    leaves the marker as it is."""
+    from hermes_cli import _early_recovery
+    from pm import recovery
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    repaired = []
+    monkeypatch.setattr(recovery, "repair_dependencies", repaired.append)
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    assert _early_recovery.recover_if_needed(root, ["chat"]) is False
+    assert repaired == []
+    assert marker.read_text(encoding="utf-8") == '{"attempts": 0}'
+    assert _entries(named) == []
+
+
+@pytest.mark.parametrize("journal", ["damaged", "rollback"])
+def test_a_journal_placed_in_the_named_folder_is_not_replayed_at_start(tmp_path, journal):
+    """An install replays an unfinished publication at start, which can put a config file back. The named folder
+    is one its process can write, so a journal placed there is never replayed and never stops a start."""
+    root = tmp_path / "repo"
+    root.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    config = home / "config.yaml"
+    config.write_bytes(b"model: kept\n")
+    named = tmp_path / "named"
+    named.mkdir()
+    row = "{" if journal == "damaged" else json.dumps({
+        "config": str(config), "previous": base64.b64encode(b"model: replaced\n").decode("ascii"),
+        "config_after": hashlib.sha256(config.read_bytes()).hexdigest(), "facts_before": None, "committed": False})
+    (named / "publication.json").write_text(row, encoding="utf-8")
+
+    code = ("import sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+            "activate_dependencies(Path(sys.argv[1]))")
+    process = subprocess.run([sys.executable, "-c", code, str(root)], text=True, capture_output=True, timeout=60,
+                             env={**os.environ, "HERMES_HOME": str(home), "HERMES_INSTALL_STATE_DIR": str(named)},
+                             check=False)
+
+    assert process.returncode == 0, process.stderr
+    assert config.read_bytes() == b"model: kept\n"
+    assert _entries(named) == ["publication.json"]
+
+
+def test_a_sealed_install_with_a_named_state_folder_still_runs_on_the_environment_it_ships(tmp_path):
+    """The environment a sealed install ships is part of its tree, named by the manifest beside it: no record of
+    install state, and its own interpreter carries no packages without it. A named state folder leaves it
+    selected, whatever is placed in the folder."""
+    payload = tmp_path / "payload"
+    root = payload / "repo"
+    root.mkdir(parents=True)
+    shipped = payload / "venv"
+    _site_of(shipped).mkdir(parents=True)
+    (shipped / "pyvenv.cfg").write_text("home = test", encoding="utf-8")
+    (_site_of(shipped) / "probe_package.py").write_text("version = 'shipped'", encoding="utf-8")
+    (payload / "manifest.json").write_text(json.dumps({"repo": "repo", "venv": "venv"}), encoding="utf-8")
+    named = tmp_path / "named"
+    _committed_environment(named, "placed", "placed in the named folder")
+
+    code = ("import sys; from pathlib import Path; from pm.environments import activate_dependencies; "
+            "activate_dependencies(Path(sys.argv[1])); import probe_package; print(probe_package.version)")
+    process = subprocess.run([sys.executable, "-c", code, str(root)], text=True, capture_output=True, timeout=60,
+                             env={**os.environ, "HERMES_HOME": str(tmp_path / "home"),
+                                  "HERMES_INSTALL_STATE_DIR": str(named)}, check=False)
+
+    assert process.returncode == 0, process.stderr
+    assert process.stdout.splitlines() == ["shipped"]
+
+
+def test_an_env_file_cannot_move_the_named_state_folder(tmp_path, monkeypatch):
+    """The launcher's value holds for the life of the process. A ``.env`` the process can write, read after
+    start-up took its first lock, would send every later lock and marker somewhere else."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text(f"HERMES_INSTALL_STATE_DIR={tmp_path / 'elsewhere'}\nNAMED_STATE_CONTROL=loaded\n",
+                               encoding="utf-8")
+    named = tmp_path / "named"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+    monkeypatch.setenv("NAMED_STATE_CONTROL", "before")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ["NAMED_STATE_CONTROL"] == "loaded"  # control: the file was read, and it overrides
+    assert os.environ["HERMES_INSTALL_STATE_DIR"] == str(named)
+
+
+def test_a_worker_for_another_profile_keeps_the_folder_an_env_file_also_names(tmp_path, monkeypatch):
+    """A worker started for another profile is not handed what the launch profile's ``.env`` defines. The named
+    folder is the launcher's, so a line in that file does not take it from the worker."""
+    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_cli.kanban_worker_env import worker_client_env
+
+    home = tmp_path / "home"
+    other = home / "profiles" / "other"
+    other.mkdir(parents=True)
+    (home / ".env").write_text(f"HERMES_INSTALL_STATE_DIR={tmp_path / 'elsewhere'}\n", encoding="utf-8")
+    named = tmp_path / "named"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+    load_hermes_dotenv(hermes_home=home)
+
+    assert worker_client_env(dict(os.environ), other).get("HERMES_INSTALL_STATE_DIR") == str(named)
+
+
+@pytest.mark.parametrize("request_", [{"extras": ["voice"], "explicit": True}, {"repair": True}])
+def test_a_dependency_change_is_refused_before_anything_is_built(tmp_path, monkeypatch, request_):
+    """`hermes pm install --extra` in such a process would build an environment in the named folder, report it
+    installed, and no process would ever select it. The command says so instead, before it builds."""
+    import pm.client
+    import pm.install
+    from pm.package import InstallError
+
+    started = []
+    monkeypatch.setattr(pm.client, "_request", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(pm.client, "is_runtime", lambda: False)
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    for entry in (pm.client.sync_venv, pm.install.sync_venv):
+        with pytest.raises(InstallError, match="HERMES_INSTALL_STATE_DIR"):
+            entry(request_.get("extras"), explicit=request_.get("explicit", False), repair=request_.get("repair", False))
+    assert started == []
+    assert _entries(named) == [] and not (tmp_path / "home" / "installs").exists()
+
+
+def test_a_repair_command_is_refused_and_leaves_the_installs_markers_alone(tmp_path, monkeypatch):
+    """`hermes pm repair` counts a failed attempt in the marker an update left; three of them stop the install's
+    own repair at start. A process with a named state folder refuses the command without touching the marker."""
+    from hermes_cli import _early_recovery
+    from pm.package import InstallError
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+    marker = root / ".update-incomplete"
+    marker.write_text('{"attempts": 0}', encoding="utf-8")
+    named = tmp_path / "named"
+    named.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("HERMES_INSTALL_STATE_DIR", str(named))
+
+    with pytest.raises(InstallError, match="HERMES_INSTALL_STATE_DIR"):
+        _early_recovery.recover_if_needed(root, ["pm", "repair"], explicit=True)
+    assert marker.read_text(encoding="utf-8") == '{"attempts": 0}'
+    assert _entries(named) == []
+
+
+def test_a_kanban_worker_keeps_the_named_state_folder(tmp_path):
+    """The worker client is started from an allowlisted environment, inside the same sandbox as its parent."""
+    from hermes_cli.kanban_worker_env import worker_client_env
+
+    env = {"PATH": "/bin", "HERMES_INSTALL_STATE_DIR": str(tmp_path / "named")}
+    assert worker_client_env(env, tmp_path / "assignee") == env

@@ -88,18 +88,19 @@ def test_linux_checkout_exemption_survives_the_preparation_home(tmp_path, target
     assert "*" in exempt.stdout.split(), exempt.stderr
 
 
-def test_linux_builds_run_for_tag_builds_only():
+def test_linux_builds_run_for_candidate_phase_only():
     jobs = _workflow()["jobs"]
     builds = linux_builds(jobs)
     assert set(builds.values()) == DIAGNOSTIC_JOBS
     for target, name in builds.items():
         job, needs = jobs[name], admitted(["validate"])
-        for dispatch, runs in (("tag", True), ("candidate", True), ("commit", False), ("channel", False)):
+        for dispatch, runs in (("candidate", True), ("commit", False), ("channel", False)):
             assert gate(job["if"], DOWNLOADABLE_DISPATCHES[dispatch], needs) is runs, (name, dispatch)
-        assert gate(job["if"], DRY_DISPATCH, needs)
+        assert not gate(job["if"], DRY_DISPATCH, needs)
+        assert not gate(job["if"], {**DOWNLOADABLE_DISPATCHES["candidate"], "release-phase": ""}, needs)
         assert not gate(job["if"], {**DOWNLOADABLE_DISPATCHES["candidate"], "release-phase": "publish"}, needs)
         needs["validate"]["outputs"][target] = "false"
-        assert not gate(job["if"], DOWNLOADABLE_DISPATCHES["tag"], needs)
+        assert not gate(job["if"], DOWNLOADABLE_DISPATCHES["candidate"], needs)
 
 
 @pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
@@ -107,7 +108,6 @@ def test_linux_builds_run_for_tag_builds_only():
 def test_linux_stage_archives_the_appimage_under_its_tag_only(tmp_path, r2_server, target, feed):  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
     jobs = _workflow()["jobs"]
     step = _stage_step(jobs[linux_builds(jobs)[target]])
-    assert gate(step["if"], DOWNLOADABLE_DISPATCHES["tag"], {}, job_if=False)
     assert gate(step["if"], DOWNLOADABLE_DISPATCHES["candidate"], {}, job_if=False)
     assert not gate(step["if"], DRY_DISPATCH, {}, job_if=False)
 
@@ -116,7 +116,9 @@ def test_linux_stage_archives_the_appimage_under_its_tag_only(tmp_path, r2_serve
     unpacked = release / f"linux-{arch}-unpacked/resources/agent-payload"
     unpacked.mkdir(parents=True)
     (unpacked / "manifest.json").write_text("{}")
-    image = release / f"HermesBundled-{CANARY_TAG[1:]}-linux-{arch}.AppImage"
+    from hermes_cli.update_channel import release_version
+
+    image = release / f"HermesBundled-{release_version(CANARY_TAG)}-linux-{arch}.AppImage"
     image.write_bytes(b"AppImage transport fixture")
     (release / "builder-debug.yml").write_text("unstaged: true\n")
     staged = {image.name}

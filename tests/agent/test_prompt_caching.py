@@ -1,6 +1,10 @@
 """Tests for agent/prompt_caching.py — Anthropic cache control injection."""
 
 import copy
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 
 from agent.prompt_caching import (
     _apply_cache_marker,
@@ -9,6 +13,7 @@ from agent.prompt_caching import (
     _count_cache_markers,
     apply_anthropic_cache_control,
     build_prompt_cache_plan,
+    catalog_cache_markers,
     effective_cache_ttl,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
@@ -850,3 +855,15 @@ class TestOpenCodeGoOneHourPrecedence:
         markers = _markers(planned_messages, planned_tools)
         assert markers, "opencode/qwen stays cache-eligible"
         assert all("ttl" not in m for m in markers), markers
+
+
+@pytest.mark.parametrize(("cache_write", "markers"), [
+    ("0.0000000000", False), ("0", False), (0.0, False), (None, False), ("free", False), ("nan", False),
+    ("-1", False), ("0.000001", True), (3.75, True)])
+def test_only_a_positive_catalog_cache_write_price_buys_markers(cache_write, markers):
+    """The live Nous catalog lists free / automatic caching as ``"0.0000000000"`` (``~x-ai/grok-latest``)."""
+    profile = SimpleNamespace(prompt_cache_markers_from_catalog=True, base_url="https://n.example/v1")
+    rows = {"m": {"pricing": {"cache_write": cache_write}}}
+    with patch("providers.get_provider_profile", return_value=profile), \
+            patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value=rows):
+        assert catalog_cache_markers("nous", "https://n.example/v1", "m") is markers

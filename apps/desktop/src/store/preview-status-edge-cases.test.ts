@@ -38,9 +38,9 @@ it('retains a close when the same runtime owner is refined from profile-only to 
   expect($previewStatusBySession.get()['refined-append'].map(item => item.id)).toEqual(['/work/second.html'])
 })
 
-it('tolerates malformed persisted scope keys and keeps Windows aliases identical', () => {
+it('tolerates malformed persisted scope keys and keeps Windows aliases identical', async () => {
   window.localStorage.setItem('hermes.desktop.previewDismissals.v1', '{"__proto__":["x"],"constructor":["y"]}')
-  expect(() => migrateTilesForProfile('old-profile', 'new-profile')).not.toThrow()
+  await expect(migrateTilesForProfile('old-profile', 'new-profile')).resolves.toBeUndefined()
   recordPreviewArtifact('windows-alias', './report.html', 'C:\\work')
   const item = $previewStatusBySession.get()['windows-alias'][0]
   dismissPreviewArtifact('windows-alias', item.id)

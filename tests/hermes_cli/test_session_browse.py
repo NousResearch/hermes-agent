@@ -104,10 +104,29 @@ class TestCursesBrowse:
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""
 
-        # Build a mock stdscr that returns keys from the sequence
-        mock_stdscr = MagicMock()
-        mock_stdscr.getmaxyx.return_value = (30, 120)
-        mock_stdscr.getch.side_effect = key_sequence
+        class FakeStdscr:
+            def __init__(self, keys):
+                self.keys = list(keys)
+                self.timeout_ms = -1
+                self.clear = MagicMock()
+                self.refresh = MagicMock()
+                self.addnstr = MagicMock()
+                self.addstr = MagicMock()
+
+            def getmaxyx(self):
+                return (30, 120)
+
+            def getch(self):
+                if self.timeout_ms > 0:
+                    return self.keys.pop(0) if self.keys else -1
+                if not self.keys:
+                    raise StopIteration
+                return self.keys.pop(0)
+
+            def timeout(self, ms):
+                self.timeout_ms = ms
+
+        mock_stdscr = FakeStdscr(key_sequence)
 
         # Capture what curses.wrapper receives and call it with our mock
         with patch("curses.wrapper") as mock_wrapper:
@@ -119,11 +138,20 @@ class TestCursesBrowse:
                     pass  # key sequence exhausted
 
             mock_wrapper.side_effect = run_inner
-            with patch("curses.curs_set"):
+            with patch("curses.curs_set"), patch("curses.ungetch", side_effect=lambda k: mock_stdscr.keys.insert(0, k)):
                 with patch("curses.has_colors", return_value=False):
                     return _session_browse_picker(sessions)
 
+    def test_raw_csi_down_then_enter_selects_second(self):
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [27, ord("["), ord("B"), 10])
+        assert result == sessions[1]["id"]
 
+    def test_quick_double_escape_clears_filter_then_exits(self):
+        """Two Esc presses inside the escape-sequence window are two keypresses, not one sequence."""
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [ord("2"), 27, 27, -1, 10])  # -1: nothing follows
+        assert result is None
 
     def test_escape_cancels(self):
         sessions = _make_sessions(3)

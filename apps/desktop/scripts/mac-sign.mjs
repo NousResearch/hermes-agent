@@ -3,6 +3,14 @@ import path from 'node:path'
 import { createMacSignCache, identityTeam, looseMachOFiles } from './mac-sign-cache.mjs'
 import { rehashPayloadDigests } from './payload-digests.mjs'
 
+/** @type {WeakMap<object, { identity: string | null, keychain: string | null }>} */
+const appSigningResults = new WeakMap()
+
+/** @param {object | null | undefined} packager */
+export function getAppSigningResult(packager) {
+  return packager && typeof packager === 'object' ? (appSigningResults.get(packager) ?? null) : null
+}
+
 /**
  * @param {Pick<import('app-builder-lib').ElectronSignOptions, 'entitlements' | 'entitlementsInherit' | 'hardenedRuntime'> & { ignore: (file: string) => boolean }} policy
  * @param {{ env?: NodeJS.ProcessEnv, makeCache?: typeof createMacSignCache, team?: typeof identityTeam, sign?: typeof import('@electron/osx-sign').sign }} [deps]
@@ -49,5 +57,8 @@ export function createMacSigner(policy, { env = process.env, makeCache = createM
         return optionsForFile(file)
       }
     })
+    if (target === 'mac' && packager && typeof packager === 'object') {
+      appSigningResults.set(packager, { identity: opts.identity ?? null, keychain: opts.keychain ?? null })
+    }
   }
 }

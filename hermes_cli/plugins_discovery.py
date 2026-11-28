@@ -187,10 +187,10 @@ def scan_directory(
     return manifests
 
 
-def collect_directory_manifests() -> list[PluginManifest]:
+def collect_directory_manifests(user_home: Optional[Path] = None) -> list[PluginManifest]:
     """Read directory manifests in full-discovery order (bundled top-level, bundled/platforms, user, opt-in
     project) without loading or mutating anything, so startup probes share the exact precedence/containment
-    rules of the real discovery sweep."""
+    rules of the real discovery sweep. *user_home* (default: the active home) holds the user plugins."""
     from hermes_cli import plugins as _origin  # patched names resolve through the origin
     manifests: list[PluginManifest] = []
 
@@ -207,7 +207,7 @@ def collect_directory_manifests() -> list[PluginManifest]:
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
           {"memory", "context_engine", "model-providers", "cron_providers", "computer_use", "config_backends"})
-    user_dir = get_hermes_home() / "plugins"
+    user_dir = (user_home or get_hermes_home()) / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
     if _origin._env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):

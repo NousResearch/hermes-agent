@@ -1,0 +1,29 @@
+name: trismegistus
+title: Trismegistus
+repo: https://github.com/jrcruciani/trismegistus
+sha: 1fada7858b224a7bee91000982feeddfc100eabc
+version: "0.2.1"
+maintainer: jrcruciani
+tier: community
+category: models
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/jrcruciani/trismegistus#readme
+readme: true
+description: "Precision & performance System-1 / System-2 cognitive router (Triage -> Modulation -> Call) powered by Microsoft-Decision-1.1 on Microsoft Foundry (or local/auxiliary System-1 endpoints) and wire-safe across GitHub Copilot models, with safe passthrough on other execution providers. Disclosure — When configured, sends force-redacted turn excerpts (up to 2,400 chars plus an 800-char tail digest), and optionally redacted tool arguments, changed file paths with the final response (verify gate), and delegate_task goal/context text (when delegation.backend is trismegistus), over HTTPS to your configured Microsoft Foundry or local inference endpoint (or through Hermes's auxiliary model slot when backend is hermes_aux); modulates outgoing LLM reasoning_effort / model on GitHub Copilot; and records non-content metrics in a local plugin-data SQLite ledger."
+known_issues:
+  - "Active effort modulation (xhigh/step-pacing), wire-compatible model swapping, and 4-lane specialty delegation presets are tuned for GitHub Copilot; non-Copilot execution providers default to safe passthrough unless explicit provider-matching models are configured."
+platforms: []
+capabilities:
+  provides_tools:
+    - trismegistus_decide
+    - trismegistus_escalate
+  provides_hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+    - pre_verify
+    - post_api_request
+  provides_middleware:
+    - llm_request
+    - llm_execution
+  requires_env: []

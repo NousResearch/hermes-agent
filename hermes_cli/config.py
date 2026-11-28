@@ -2382,8 +2382,7 @@ def sanitize_env_file() -> int:
 
 
 def _read_env_lines(env_path: Path) -> list:
-    """Read ``.env`` lines, normalized. Explicit UTF-8 (Windows defaults to cp1252) with BOM
-    tolerance (Notepad adds one)."""
+    """Read ``.env`` lines, normalized: explicit UTF-8 (not Windows' cp1252), a BOM (Notepad's) tolerated."""
     with open(env_path, encoding="utf-8-sig", errors="replace") as f:
         return _sanitize_env_lines(f.readlines())
 
@@ -2417,8 +2416,7 @@ def _env_write_lock(env_path: Path):
     under this lock takes other locks, and the only nesting direction that exists
     (credential_lifecycle takes ``_auth_store_lock`` around its own auth-store
     writes, NOT around ``save_env_value``) keeps a single ordering — no cycle.
-    On a filesystem without flock the helper degrades to a depth-only guard
-    (same behavior as auth's locks), never to a crash.
+    Without flock it degrades to a depth-only guard (as auth's locks do), never to a crash.
     """
     from hermes_cli.auth import _file_lock
 
@@ -2431,10 +2429,9 @@ def _env_write_lock(env_path: Path):
         yield
 
 
-def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> None:
-    """Atomically replace ``.env`` (tmp file + fsync + rename).
-    ``preserve_mode`` keeps the original file mode (e.g. 0640 for Docker volume mounts) instead of
-    letting ``_secure_file`` tighten to 0600; a new file is always secured."""
+def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool, newline: Optional[str] = None) -> None:
+    """Atomically replace ``.env`` (tmp + fsync + rename); ``newline=""`` keeps the lines' own endings. ``preserve_mode``
+    keeps the file's mode (0640 for Docker mounts) over ``_secure_file``'s 0600; a new file is always secured."""
     original_mode = None
     try:
         original_mode = stat.S_IMODE(env_path.stat().st_mode) if preserve_mode else None
@@ -2442,7 +2439,7 @@ def _write_env_lines(env_path: Path, lines: list, *, preserve_mode: bool) -> Non
         pass
     fd, tmp_path = mkstemp_beside(env_path, suffix=".tmp", prefix=".env_")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
@@ -2560,9 +2557,9 @@ def _managed_source(filename: str):
     return (managed_dir / filename) if managed_dir else "the managed scope"
 
 
-def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env (also matching ``export KEY=`` lines, so a save
-    never appends a second line that a later delete would resurrect)."""
+def save_env_value(key: str, value: str, env_path: Optional[Path] = None):
+    """Save or update a value in ~/.hermes/.env, or the private copy *env_path* (also matching ``export
+    KEY=`` lines, so a save never appends a second line that a later delete would resurrect)."""
     if _env_write_blocked(key, "set"):
         return
     validate_env_var_name_for_write(key)
@@ -2570,8 +2567,7 @@ def save_env_value(key: str, value: str):
     refuse_redacted_env_value(key, value)
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
-    env_path = get_env_path()
-
+    env_path = Path(env_path) if env_path is not None else get_env_path()
     with _env_write_lock(env_path):
         lines = _read_env_lines(env_path) if env_path.exists() else []
         serialized_value = _quote_env_value(value)
@@ -2609,12 +2605,15 @@ def remove_env_value(key: str) -> bool:
         _publish_env_value(key, None)
         return False
 
-    with _env_write_lock(env_path):
-        lines = _read_env_lines(env_path)
-        new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
-        found = len(new_lines) < len(lines)
-        if found:
-            _write_env_lines(env_path, new_lines, preserve_mode=True)
+    from hermes_cli.env_loader import remove_whole_dotenv_assignments
+    with _env_write_lock(env_path):  # a quoted value over several lines: whole assignments, as dotenv reads them
+        found = remove_whole_dotenv_assignments(env_path, key, _write_env_lines)
+        if found is None:
+            lines = _read_env_lines(env_path)
+            new_lines = [line for line in lines if not _env_line_defines_key(line, key)]
+            found = len(new_lines) < len(lines)
+            if found:
+                _write_env_lines(env_path, new_lines, preserve_mode=True)
     _publish_env_value(key, None)
     invalidate_env_cache()
     return found
@@ -3423,11 +3422,11 @@ def _cmd_config_get(args):
 
 
 def _cmd_config_set(args):
-    key = getattr(args, 'key', None)
-    value = getattr(args, 'value', None)
+    key, value = getattr(args, 'key', None), getattr(args, 'value', None)
     if not key or value is None:
         _usage_exit(*_USAGE_SET)
-    _run_write_command(set_config_value, key, value, bool(getattr(args, 'force', False)))
+    from hermes_cli.gateway_platform_live import set_config_value_live  # a running gateway applies it now
+    _run_write_command(set_config_value_live, key, value, bool(getattr(args, 'force', False)))
 
 
 def _cmd_config_unset(args):
@@ -3727,12 +3726,9 @@ def platform_manifest_secret_scan(home: Optional[Path] = None) -> tuple[frozense
 
 
 def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
-    """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
-    Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
-    Desktop Gateway form without the core knowing they exist. Failures are swallowed so a
-    malformed plugin.yaml can't break CLI import. Returns the bundled manifests' secret names, or
-    None when a bundled manifest could not be read (the policy then re-reads strictly).
-    """
+    """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed at import)
+    so plugin platforms are configurable without the core knowing them; a malformed plugin.yaml never
+    breaks CLI import. Returns the bundled secret names, or None when a bundled manifest was unreadable."""
     bundled: list | None = []
     try:
         bundled = list(_platform_plugin_manifests(source="bundled", strict=True))
@@ -3744,18 +3740,20 @@ def _inject_platform_plugin_env_vars() -> frozenset[str] | None:
             manifests += list(_platform_plugin_manifests(source=source))
         except Exception:
             pass
+    OPTIONAL_ENV_VARS.update({k: v for k, v in _manifest_env_info(manifests).items() if k not in OPTIONAL_ENV_VARS})
+    return _manifest_secret_envs(bundled, _STATIC_CORE_ENV_NAMES) if bundled is not None else None
+
+
+def _manifest_env_info(manifests) -> dict[str, dict[str, Any]]:
+    """``OPTIONAL_ENV_VARS``-shaped entries for the env vars *manifests* declare (first one wins)."""
+    info: dict[str, dict[str, Any]] = {}
     for dir_name, manifest in manifests:
         label = manifest.get("label") or manifest.get("name") or dir_name
         for name, is_secret, meta in _platform_manifest_env_entries(manifest):
-            if name in OPTIONAL_ENV_VARS:
-                continue  # hardcoded entry wins (back-compat)
-            OPTIONAL_ENV_VARS[name] = {
-                "description": meta.get("description") or f"{label} configuration",
-                "prompt": meta.get("prompt") or name,
-                "url": meta.get("url") or None,
-                "password": is_secret,
-                "category": meta.get("category") or "messaging"}
-    return _manifest_secret_envs(bundled, _STATIC_CORE_ENV_NAMES) if bundled is not None else None
+            info.setdefault(name, {"description": meta.get("description") or f"{label} configuration",
+                                   "prompt": meta.get("prompt") or name, "url": meta.get("url") or None,
+                                   "password": is_secret, "category": meta.get("category") or "messaging"})
+    return info
 
 
 # Names declared in core, before any platform manifest is read. A manifest never reclassifies

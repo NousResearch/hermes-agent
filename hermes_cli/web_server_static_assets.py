@@ -1,6 +1,6 @@
 """Static asset lookups the SPA catch-all must not answer with ``index.html``.
 
-The sign-in page (``dashboard_auth/login_page.py``) loads its brand fonts from ``/fonts/``. Those
+The dashboard loads Mondwest and the terminal face from ``/fonts/`` and ``/fonts-terminal/``. Those
 files ship in the dashboard's ``web/public`` tree, which the dashboard build copies into its own
 dist, but the Webapp serves ``apps/desktop/dist-webapp`` and has no ``fonts/`` dir. A font missing
 from the served dist is read from the packaged dashboard dist (``HERMES_WEB_DIST`` / ``web_dist``,

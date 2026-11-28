@@ -286,6 +286,69 @@ def _sidecar_deps_stale() -> bool:
     return _lock_newer_than_install(_sidecar_dir())
 
 
+@contextlib.contextmanager
+def _exclusive_lock(handle):
+    """Exclusive, crash-released lock on an open file (flock / msvcrt)."""
+    if os.name == "nt":
+        import msvcrt
+        if handle.seek(0, os.SEEK_END) == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)  # gives up after ~10 s: that connect retries
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _ensure_sidecar_deps_blocking() -> None:
+    """Cold-install or refresh sidecar node_modules before spawn (blocking; run off the loop).
+
+    Every served profile imports this plugin under its own module name and multiplexed profiles connect
+    concurrently, while ``npm ci`` deletes node_modules before installing. So the checks and the install
+    hold a file lock in the shared sidecar dir (a module-level lock is not shared across those imports):
+    mid-install, spectrum-ts exists before npm writes its install marker."""
+    lock_path = _sidecar_dir() / ".photon-install.lock"
+    try:
+        handle = open(lock_path, "a+b")
+    except OSError as exc:
+        if _dir_writable(_sidecar_dir()):  # another profile may be installing here: never go on unlocked
+            raise PhotonSidecarStartupError(
+                f"Cannot open the Photon sidecar install lock {lock_path}: {exc}", code="SIDECAR_LOCK_FAILED") from exc
+        if not sidecar_deps_installed():
+            raise PhotonSidecarStartupError(
+                f"Photon sidecar deps are not installed in the read-only {_sidecar_dir()}. "
+                f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                code="SIDECAR_DEPS_MISSING", retryable=False) from exc
+        return  # a read-only tree with baked deps: nothing installs there
+    with handle, _exclusive_lock(handle):
+        if not sidecar_deps_installed():
+            # Hosted images have no CLI for `hermes photon setup`: connect bootstraps deps itself.
+            logger.info("[photon] sidecar deps not installed; installing into %s", _sidecar_dir())
+            _reinstall_sidecar_deps()
+            if not sidecar_deps_installed():
+                # Deterministic on immutable images — non-retryable so it doesn't spin silently.
+                raise PhotonSidecarStartupError(
+                    f"Photon sidecar deps could not be installed into "
+                    f"{_sidecar_dir()} (see log for the npm error). "
+                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
+                    code="SIDECAR_DEPS_MISSING", retryable=False)
+        # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
+        # would spawn against stale deps and die on every reconnect.
+        if _sidecar_deps_stale():
+            logger.warning("[photon] sidecar deps are stale (lockfile newer than install); reinstalling before start")
+            _reinstall_sidecar_deps()
+
+
 def _reinstall_sidecar_deps() -> None:
     """Reinstall the sidecar's node_modules from the lockfile (blocking).
 
@@ -1073,22 +1136,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def _ensure_sidecar_deps(self) -> None:
         """Cold-install or refresh sidecar node_modules before spawn (off the loop)."""
-        if not sidecar_deps_installed():
-            # Hosted images have no CLI for `hermes photon setup`: connect bootstraps deps itself.
-            logger.info("[photon] sidecar deps not installed; installing into %s", _sidecar_dir())
-            await asyncio.to_thread(_reinstall_sidecar_deps)
-            if not sidecar_deps_installed():
-                # Deterministic on immutable images — non-retryable so it doesn't spin silently.
-                raise PhotonSidecarStartupError(
-                    f"Photon sidecar deps could not be installed into "
-                    f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)",
-                    code="SIDECAR_DEPS_MISSING", retryable=False)
-        # `hermes update` bumps the lockfile without reinstalling node_modules; the sidecar
-        # would spawn against stale deps and die on every reconnect.
-        if _sidecar_deps_stale():
-            logger.warning("[photon] sidecar deps are stale (lockfile newer than install); reinstalling before start")
-            await asyncio.to_thread(_reinstall_sidecar_deps)
+        await asyncio.to_thread(_ensure_sidecar_deps_blocking)
 
     async def _apply_spectrum_patch(self, hide_flags: int) -> None:
         """Run the mixed-attachment patch script (best-effort, off the loop: up to 10s, every reconnect)."""

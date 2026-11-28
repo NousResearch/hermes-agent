@@ -33,6 +33,14 @@ def _log_tick_yield_once(reason: str) -> None:
 def tick(verbose=True, adapters=None, loop=None, sync=True, *, can_dispatch=None,
          headless: bool = False):
     from hermes_cli.backend_retirement import retirement
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_for_home
+    from hermes_constants import get_hermes_home
+
+    # A plugin runs this profile's backend elsewhere, and that backend ticks this store: leave the
+    # lock, the due scan and every job (``no_agent`` scripts build no agent) to it. Checked here
+    # because every in-process ticker ends in this call, whatever gate its caller applied.
+    if run_elsewhere_for_home(get_hermes_home()) is not None:
+        return 0
 
     # Hold admission through the entire scan/advance/submit handoff. A predicate alone races
     # prepare after the check but before a due job enters the running-job ledger.

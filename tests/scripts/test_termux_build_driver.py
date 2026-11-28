@@ -157,8 +157,11 @@ def test_child_failure_stops_sequence_even_with_stale_product(build_fixture, sta
     assert not out.exists()
 
 
-@pytest.mark.parametrize("identity", [("--tag", "v1.2.3"), ("--commit", "a" * 40)])
-def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
+@pytest.mark.parametrize(("job_name", "identity"), [
+    ("termux-deb-release", ("--tag", "v1.2.3")),
+    ("termux-deb-commit", ("--commit", "a" * 40)),
+])
+def test_release_workflow_runs_the_shared_sequence(build_fixture, job_name, identity):
     repo, payload, _, log, env = build_fixture
     (repo / "scripts/termux/build.py").symlink_to(DRIVER)
     (repo / "termux-build").mkdir()
@@ -168,7 +171,11 @@ def test_release_workflow_runs_the_shared_sequence(build_fixture, identity):
     env.update(HERMES_BUILD_COMMIT=identity[1] if identity[0] == "--commit" else "",
                HERMES_PAYLOAD_TAG=identity[1] if identity[0] == "--tag" else "")
     workflow = YAML(typ="safe").load((ROOT / ".github/workflows/desktop-bundled-release.yml").read_text())
-    step = next(step for step in workflow["jobs"]["termux-deb"]["steps"]
+    call = next(step for step in workflow["jobs"][job_name]["steps"]
+                if str(step.get("uses", "")).endswith("/.github/actions/build-termux-deb"))
+    env["TERMUX_BUILD_MODE"] = str(call["with"]["build-mode"])
+    action = YAML(typ="safe").load((ROOT / ".github/actions/build-termux-deb/action.yml").read_text())
+    step = next(step for step in action["runs"]["steps"]
                 if step.get("name") == "Assemble the .deb")
     bash = shutil.which("bash")
     assert bash is not None
@@ -221,3 +228,46 @@ def test_builder_image_identity_covers_all_inputs(tmp_path, changed_input):
     assert image() != original
     changed.write_bytes(before)
     assert image() == original
+
+
+@pytest.mark.parametrize("mode", ["flag", "env"])
+def test_builder_image_no_push_falls_back_to_digest_pinned_base_image(tmp_path, mode):
+    """Commit builds must never build/login/push to GHCR on a miss; fall back to the pinned base digest."""
+    from pm.lock import termux_docker_digest
+
+    repo = tmp_path / "repo"
+    scripts = repo / "scripts/termux"
+    scripts.mkdir(parents=True)
+    for name in ("build_builder_image.sh", "termux-builder.Dockerfile"):
+        shutil.copy2(ROOT / "scripts/termux" / name, scripts / name)
+    shutil.copytree(ROOT / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "python3").symlink_to(sys.executable)
+    docker_log = tmp_path / "docker.log"
+    docker_stub = tools / "docker"
+    docker_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$DOCKER_LOG\"\n"
+        "case \"$1 $2\" in\n"
+        "  'manifest inspect') exit 1 ;;\n"
+        "  'build '*|'run '*|'login '*|'push '*) echo \"FORBIDDEN docker $1\" >&2; exit 99 ;;\n"
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    docker_stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}",
+           "GITHUB_REPOSITORY_OWNER": "NousResearch", "DOCKER_LOG": str(docker_log)}
+    env.pop("GITHUB_TOKEN", None)
+    args = ["bash", str(scripts / "build_builder_image.sh")]
+    if mode == "flag":
+        args.append("--no-push")
+    else:
+        env["TERMUX_BUILDER_NO_PUSH"] = "1"
+    result = subprocess.run(args, env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    image = result.stdout.splitlines()[-1]
+    assert image == f"termux/termux-docker@{termux_docker_digest()}", image
+    calls = docker_log.read_text(encoding="utf-8").splitlines()
+    assert len(calls) == 1 and calls[0].startswith("manifest inspect ghcr.io/nousresearch/hermes-termux-builder:")

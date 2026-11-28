@@ -1,0 +1,18 @@
+name: quantset
+title: QuantSet
+repo: https://github.com/quantset/skills
+sha: 024a3f14fada6e674ef9c8b5e9bede9db78b1d0d
+version: "0.1.7"
+description: "Global stock market, SEC filings, ETF look-throughs, and quant analytics through QuantSet's official MCP server (Streamable HTTP at https://api.quantset.dev/mcp, OAuth 2.1 or free mw_demo sandbox key): 90,000+ symbols and 52,000+ stocks across 67 countries, 734 crypto pairs, 42 FX currencies, 36,000+ companies with standardized financial statements, 127M+ SEC EDGAR XBRL facts, 4,899 ETF look-through holdings, consensus estimates, and 40-factor stock screening. Bundles seven workflow skills (quantset, dcf-valuation, comps-analysis, investment-memo, earnings-playbook, forensic-red-flags, portfolio-xray). Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration and Markdown skills only, with no local executable code. Every MCP tool is strictly read-only (readOnlyHint: true, destructiveHint: false). The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: QuantSet
+tier: community
+category: tools
+docs_url: https://github.com/quantset/skills#readme
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

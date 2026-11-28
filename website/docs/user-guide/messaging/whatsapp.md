@@ -259,6 +259,23 @@ sudo hermes gateway install --system   # Linux only: boot-time system service
 
 The gateway starts the WhatsApp bridge automatically using the saved session.
 
+### Letting the bot stay silent in a group
+
+A bot that reads every group message can answer exactly `[SILENT]` (or another [silence token](index.md#intentional-silence-tokens)) when a message doesn't need it. Whether that silence stands depends on who the message addresses:
+
+| Group message | Bare silence token |
+|---|---|
+| @mentions the bot, replies to it, matches `mention_patterns`, or is a `/command` | Replaced by a short notice, so a question to the bot never vanishes |
+| Replies to another member, or opens by @mentioning someone else | Stays silent |
+| Any other message without a `?` | Stays silent |
+| Any other message with a `?` (it may be a question for the bot) | Replaced by the notice |
+
+This matters most for the groups listed in `free_response_chats`, which admit every message without a mention: their ordinary chatter ends in real silence instead of a notice. `free_response_chats` is not part of the verdict itself — it decides which messages the bot answers at all, and the addressing test above then decides whether a bare token stands.
+
+A message still gets the notice while the bot's own identity is unknown (the bridge reported no bot JIDs), or when it replies to a message whose author the bridge did not name. A captionless voice note or audio file also gets it, because its words are in the audio and not in the message text — including one admitted by a spoken wake word, which addresses the bot. A direct chat always gets it.
+
+To let a bare token stand on messages that *are* addressed to the bot, set `allow_silence` for the whole platform or for one room (see [Per-Platform and Per-Room Intentional Silence](index.md#per-platform-and-per-room-intentional-silence)).
+
 ---
 
 ## Session Persistence

@@ -1,7 +1,11 @@
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from gateway.config import Platform, PlatformConfig, load_gateway_config
+import pytest
+
+from gateway.config import GatewayConfig, Platform, PlatformConfig, load_gateway_config
+from gateway.run import GatewayRunner
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
@@ -259,3 +263,104 @@ def test_device_qualified_bot_ids_match_bare_mention_and_quote_ids():
         _group_message("and this?", botIds=device_qualified, quotedParticipant="447999674698@s.whatsapp.net")
     ) is True
     assert adapter._should_process_message(_group_message("hello everyone", botIds=device_qualified)) is False
+
+
+@pytest.mark.asyncio
+async def test_group_reply_expectation_from_bridge_addressing_and_ambiguity():
+    adapter = _make_adapter(require_mention=False, group_policy="open", mention_patterns=[r"^chompy\b"])
+    cases = [
+        (_group_message("@15551230000 help", mentionedIds=["15551230000@lid"]), True),
+        (_group_message("help", quotedParticipant="15551230000@lid", hasQuotedMessage=True), True),
+        (_group_message("chompy help"), True),
+        (_group_message("/status"), True),
+        (_group_message("the cake is a lie"), False),
+        (_group_message("Can you help me?"), None),
+        (_group_message("@447700900123 can you help?", mentionedIds=["447700900123@s.whatsapp.net"]), False),
+        (_group_message("what did @447700900123 say?", mentionedIds=["447700900123@s.whatsapp.net"]), None),
+        (_group_message("agreed?", quotedParticipant="447700900123@s.whatsapp.net", hasQuotedMessage=True), False),
+        (_group_message("reply", hasQuotedMessage=True, quotedParticipant=""), None),
+        (_group_message("side chatter", botIds=[]), None),
+        ({**_dm_message("question"), "chatId": "123@s.whatsapp.net"}, True),
+    ]
+    for data, expected in cases:
+        event = await adapter._build_message_event(data)
+        assert event is not None
+        assert event.reply_expected is expected, data
+
+
+@pytest.mark.asyncio
+async def test_merged_whatsapp_group_turn_retains_addressed_reply_expectation():
+    from gateway.platforms.base import merge_pending_message_event
+
+    adapter = _make_adapter(require_mention=False, group_policy="open")
+    chatter = await adapter._build_message_event(_group_message("side chatter"))
+    mention = await adapter._build_message_event(
+        _group_message("@15551230000 help", mentionedIds=["15551230000@s.whatsapp.net"])
+    )
+    assert chatter is not None and mention is not None
+    assert chatter.reply_expected is False
+    pending = {"group": chatter}
+    merge_pending_message_event(pending, "group", mention, merge_text=True)
+    assert pending["group"].reply_expected is True
+
+    runner = GatewayRunner(GatewayConfig())
+    runner._deliver_queued_first_response = AsyncMock()
+    turn_ctx = SimpleNamespace(
+        session_key="group", stream_consumer_holder=[None], mute_notification_reply=False,
+        persist_user_display_kind=None, reply_expected=False,
+        source=pending["group"].source, _status_thread_metadata=None,
+        event_message_id=None, inbound_message_id=None, run_generation=1,
+    )
+    result = {"final_response": "NO_REPLY", "failed": False}
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    runner._deliver_queued_first_response.assert_not_awaited()
+
+    turn_ctx.reply_expected = pending["group"].reply_expected
+    await runner._run_agent_deliver_first_response(turn_ctx, None, result, result, None)
+    assert "silence marker" in runner._deliver_queued_first_response.await_args.args[0]
+
+
+@pytest.mark.parametrize(
+    "media_type, body",
+    [("ptt", "[ptt received]"), ("ptt", ""), ("audio", "[audio received]"), ("audio", "")],
+    ids=["ptt_placeholder", "ptt_empty", "audio_placeholder", "audio_empty"],
+)
+def test_captionless_voice_note_keeps_the_silence_notice(media_type, body):
+    """A voice note carries its words in the audio, not in the body the bridge fills with a
+    placeholder. Reading that text as chatter would silence a spoken question to the bot."""
+    adapter = _make_adapter(require_mention=False, mention_patterns=[], group_policy="open")
+
+    assert adapter._reply_expected_for_message(_group_message(body, mediaType=media_type)) is None
+
+
+@pytest.mark.parametrize(
+    "caption, expected",
+    [("thanks for the invite", False), ("can someone confirm?", None)],
+    ids=["statement", "question"],
+)
+def test_captioned_voice_note_follows_the_text_rules(caption, expected):
+    """A caption is text the rules can read, so the exemption above does not swallow it."""
+    adapter = _make_adapter(require_mention=False, mention_patterns=[], group_policy="open")
+
+    assert adapter._reply_expected_for_message(_group_message(caption, mediaType="ptt")) is expected
+
+
+def test_free_response_group_chatter_is_admitted_yet_may_stay_silent():
+    """The seam this fix exists for: a free-response group admits every message, and the gateway
+    lets a bare silence marker stand on the ones nobody addressed to the bot."""
+    from gateway.response_filters import silence_allowed
+
+    adapter = _make_adapter(
+        require_mention=True, mention_patterns=[], group_policy="open",
+        free_response_chats=["120363001234567890@g.us"],
+    )
+
+    chatter = _group_message("the meeting moved to friday")
+    assert adapter._should_process_message(chatter) is True
+    assert adapter._reply_expected_for_message(chatter) is False
+    assert silence_allowed(None, adapter._reply_expected_for_message(chatter)) is True
+
+    addressed = _group_message("@15551230000 can you join?", mentionedIds=["15551230000@s.whatsapp.net"])
+    assert adapter._should_process_message(addressed) is True
+    assert adapter._reply_expected_for_message(addressed) is True
+    assert silence_allowed(None, adapter._reply_expected_for_message(addressed)) is False

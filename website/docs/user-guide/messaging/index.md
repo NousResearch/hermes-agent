@@ -157,7 +157,7 @@ user: next message
 
 Failed turns still surface as errors; Hermes does not hide failures just because the text resembles a silence token.
 
-On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel. Telegram reports it for [group messages not addressed to the bot](telegram.md#letting-the-bot-stay-silent-in-a-group). Other platforms always get the notice.
+On a message from a person, a bare silence token is replaced by a short notice, because a message that needed a reply must not vanish. Internal wakes such as background-process notifications may stay silent, and so may a message the platform adapter reports as not addressed to the bot. Slack reports this for messages that open by @mentioning someone else and for unmentioned top-level messages that start a new thread in a free-response channel. Telegram reports it for [group messages not addressed to the bot](telegram.md#letting-the-bot-stay-silent-in-a-group), and WhatsApp's bridge adapter does [the same in its groups](whatsapp.md#letting-the-bot-stay-silent-in-a-group). Other platforms always get the notice.
 
 ## Quick Setup
 
@@ -370,8 +370,9 @@ Details:
 In shared chats, a model may choose to end its turn with an explicit silence marker such as
 `NO_REPLY` or `[SILENT]` when a message is not meant for it. To let a successful marker-only turn
 stay silent even when Hermes was mentioned, directly addressed, or the adapter cannot tell (for
-example an unmentioned follow-up in a Slack thread, or WhatsApp group chatter), enable
-`allow_silence` in the serving profile's `config.yaml`, either for a whole platform or for one room:
+example an unmentioned follow-up in a Slack thread, or a WhatsApp group message carrying a `?`),
+enable `allow_silence` in the serving profile's `config.yaml`, either for a whole platform or for
+one room:
 
 ```yaml
 platforms:

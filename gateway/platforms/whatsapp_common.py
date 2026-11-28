@@ -28,6 +28,9 @@ from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 logger = logging.getLogger(__name__)
 
 _TRUTHY = {"true", "1", "yes", "on"}
+# Bridge ``mediaType`` values whose words are spoken, not written, so the question rule in
+# ``_reply_expected_for_message`` cannot read them.
+_SPOKEN_MEDIA_TYPES = frozenset({"ptt", "audio"})
 
 
 def _stash(pattern: str, text: str, tag: str) -> tuple[str, list[str]]:
@@ -234,6 +237,46 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         body = str(data.get("body") or "")
         return any(pattern.search(body) for pattern in self._mention_patterns or ())
 
+    def _message_addresses_bot(self, data: dict[str, Any]) -> bool:
+        return (
+            str(data.get("body") or "").strip().startswith("/")
+            or self._message_is_reply_to_bot(data)
+            or self._message_mentions_bot(data)
+            or self._message_matches_mention_patterns(data)
+        )
+
+    def _reply_expected_for_message(self, data: dict[str, Any]) -> bool | None:
+        """Only known, unaddressed group chatter may suppress an explicit silence marker."""
+        if not data.get("isGroup"):
+            return True
+        if self._message_addresses_bot(data):
+            return True
+        body = str(data.get("body") or "").strip()
+        # Without the bot's identity (or the quoted author) we cannot rule out an address.
+        if not self._bot_ids_from_message(data) or (data.get("hasQuotedMessage") and not data.get("quotedParticipant")):
+            return None
+        # Opening with a mention of, or quoting, someone else (bot ruled out above) is addressed
+        # elsewhere, question or not; a mid-sentence mention may still be a question for the bot.
+        lead = re.match(r"@(\w+)", body)
+        mentioned = {self._normalize_whatsapp_id(m).split("@", 1)[0] for m in data.get("mentionedIds") or ()}
+        if (lead and lead.group(1) in mentioned) or data.get("quotedParticipant"):
+            return False
+        # A captionless voice note or audio file says nothing in its text; it may well be a
+        # spoken question for the bot, so the question rule below must not read it as chatter.
+        if self._is_captionless_spoken_media(data):
+            return None
+        # A bare question may be aimed at the bot even in a free-response group.
+        return None if "?" in body else False
+
+    @staticmethod
+    def _is_captionless_spoken_media(data: dict[str, Any]) -> bool:
+        """A voice note or audio file with no caption: the bridge writes the body as its
+        ``[<mediaType> received]`` placeholder, so the message carries no words to read."""
+        media_type = str(data.get("mediaType") or "")
+        if media_type not in _SPOKEN_MEDIA_TYPES:
+            return False
+        return str(data.get("body") or "").strip().lower() in ("", f"[{media_type} received]")
+
     def _clean_bot_mention_text(self, text: str, data: dict[str, Any]) -> str:
         if not text:
             return text
@@ -258,13 +301,7 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
         # Group messages: check mention / free-response settings
         if chat_id in self._whatsapp_free_response_chats() or not self._whatsapp_require_mention():
             return True
-        return (
-            str(data.get("body") or "").strip().startswith("/")
-            or self._message_is_reply_to_bot(data)
-            or self._message_mentions_bot(data)
-            or spoken_mention
-            or self._message_matches_mention_patterns(data)
-        )
+        return spoken_mention or self._message_addresses_bot(data)
 
     # ------------------------------------------------------------------ formatting
     def format_message(self, content: str) -> str:

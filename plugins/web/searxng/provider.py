@@ -32,6 +32,12 @@ class SearXNGWebSearchProvider(BaseWebSearchProvider):
         if failure is not None:
             return failure
         raw_results = data.get("results", [])
+        unresponsive = data.get("unresponsive_engines", [])
+        if not raw_results and unresponsive:
+            failures = "; ".join(f"{eng}: {reason}" if isinstance(item, (list, tuple)) and len(item) == 2 and (eng := item[0]) and (reason := item[1]) else str(item) for item in unresponsive)
+            msg = f"SearXNG returned no results; upstream engines failed: {failures}" if failures else "SearXNG returned no results (upstream engines unresponsive)"
+            logger.warning("SearXNG search '%s' failed: %s", query, msg)
+            return search_fail(msg)
         # SearXNG may return a score field; sort descending and cap to limit.
         sorted_results = sorted(raw_results, key=lambda r: float(r.get("score", 0)), reverse=True)[:limit]
         web_results = titled_rows(sorted_results, "content")

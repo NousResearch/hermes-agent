@@ -105,6 +105,47 @@ class TestSearXNGSearchProviderSearch:
 
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
+    def test_empty_results_with_unresponsive_engines_returns_failure(self, monkeypatch):
+        """Empty results with unresponsive_engines reports failure so rescue can fire."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        payload = {
+            "results": [],
+            "unresponsive_engines": [
+                ["brave", "Suspended: too many requests"],
+                ["duckduckgo", "CAPTCHA"],
+            ],
+        }
+        mock_resp = self._make_mock_response(payload)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("test query", limit=5)
+
+        assert result["success"] is False
+        assert "upstream engines failed" in result["error"]
+        assert "brave: Suspended: too many requests" in result["error"]
+        assert "duckduckgo: CAPTCHA" in result["error"]
+
+    def test_non_empty_results_with_unresponsive_engines_returns_success(self, monkeypatch):
+        """Partial results with some unresponsive engines still returns success."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        payload = {
+            "results": [
+                {"title": "Result A", "url": "https://a.example.com", "content": "Desc A", "score": 0.9},
+            ],
+            "unresponsive_engines": [
+                ["brave", "Suspended: too many requests"],
+            ],
+        }
+        mock_resp = self._make_mock_response(payload)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("test query", limit=5)
+
+        assert result["success"] is True
+        assert len(result["data"]["web"]) == 1
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"

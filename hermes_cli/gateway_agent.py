@@ -1030,7 +1030,9 @@ class GatewayAgent:
         if name == "todo":
             self._todo_from_result(result)
         diff = payload.get("inline_diff")
-        if isinstance(diff, str) and diff:
+        # The CLI wires tool_complete_callback only when display.inline_diffs is on, and
+        # single-query (-Q) mode clears it, so it doubles as the "render diffs" switch.
+        if isinstance(diff, str) and diff and self.tool_complete_callback is not None:
             from cli import _cprint
             from hermes_cli.cli_modern_layout import diff_printer
             emit = diff_printer(_cprint)

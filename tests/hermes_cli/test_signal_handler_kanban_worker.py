@@ -131,7 +131,7 @@ def _spawn_synthetic(env_overrides: dict) -> subprocess.Popen:
     )
     # Wait for "READY" so we know the signal handler is installed.
     assert proc.stdout is not None
-    deadline = time.time() + 5.0
+    deadline = time.time() + 30.0
     while time.time() < deadline:
         line = proc.stdout.readline()
         if line and line.startswith(b"READY"):
@@ -154,24 +154,23 @@ def _cleanup(proc: subprocess.Popen) -> None:
     reason="SIGTERM semantics differ on Windows; kanban dispatcher is POSIX-only",
 )
 def test_sigterm_with_kanban_task_env_terminates_quickly():
-    """With HERMES_KANBAN_TASK set, SIGTERM should kill the process in <2s
-    even when a non-daemon thread is still alive."""
+    """With HERMES_KANBAN_TASK set, SIGTERM kills the process even when a
+    non-daemon thread is still alive (without the fix it never exits)."""
     proc = _spawn_synthetic({"HERMES_KANBAN_TASK": "t_test_28181"})
     try:
         t0 = time.time()
         os.kill(proc.pid, signal.SIGTERM)
 
-        # Should die in <2s. The handler sleeps ~50ms, then os._exit(0)
-        # is immediate. Give generous headroom for slow CI runners.
-        deadline = t0 + 2.0
+        # The handler sleeps ~50ms, then os._exit(0). A fresh interpreter on a
+        # loaded 32-worker runner missed a 2 s bound (main 42905003861,
+        # 43315529501); the regressed process never exits, so 15 s keeps the teeth.
+        deadline = t0 + 15.0
         while time.time() < deadline:
             if not _is_alive_like_dispatcher(proc.pid):
-                elapsed = time.time() - t0
-                assert elapsed < 2.0
                 return
             time.sleep(0.02)
         pytest.fail(
-            "process still alive 2s after SIGTERM with HERMES_KANBAN_TASK set "
+            "process still alive 15s after SIGTERM with HERMES_KANBAN_TASK set "
             "(dispatcher would keep extending claim) — fix regressed"
         )
     finally:

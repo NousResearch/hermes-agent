@@ -1,4 +1,4 @@
-#!/command/with-contenv sh
+#!/command/with-contenv /bin/sh
 # shellcheck shell=sh
 # Unprivileged supervision tree for per-profile gateways.
 #
@@ -17,6 +17,17 @@
 
 scandir=/run/hermes-service
 
+# Runs as root: resolve commands from system directories only. The gateway
+# tree gets the inherited PATH (plus the hermes user's ~/.local/bin, appended)
+# after the drop.
+hermes_path="${PATH:-/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/bin:/usr/bin:/bin}"
+case ":$hermes_path:" in
+    *:/opt/data/.local/bin:*) ;;
+    *) hermes_path="$hermes_path:/opt/data/.local/bin" ;;
+esac
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 # Skip the drop when already non-root (setgroups() lacks CAP_SETGID).
-[ "$(id -u)" = 0 ] || exec s6-svscan "$scandir"
-exec s6-setuidgid hermes s6-svscan "$scandir"
+[ "$(/usr/bin/id -u)" = 0 ] || exec /usr/bin/env PATH="$hermes_path" /command/s6-svscan "$scandir"
+exec /command/s6-setuidgid hermes /usr/bin/env PATH="$hermes_path" /command/s6-svscan "$scandir"

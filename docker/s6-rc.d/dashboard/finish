@@ -1,4 +1,4 @@
-#!/command/with-contenv sh
+#!/command/with-contenv /bin/sh
 # shellcheck shell=sh
 # Dashboard finish script. Companion to ./run.
 #
@@ -15,6 +15,10 @@
 
 # Arguments passed to a finish script: $1=run-exit-code, $2=signal-num,
 # $3=service-dir-name, $4=run-pgid. See servicedir(7).
+
+# Runs as root: resolve commands from system directories only.
+PATH=/command:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
 
 case "${HERMES_DASHBOARD:-}" in
     1|true|TRUE|True|yes|YES|Yes)

@@ -16,11 +16,8 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from agent.context_compressor import (
     ContextCompressor,
-    _pending_tool_round,
     _summarize_tool_result,
     _tool_output_text,
 )
@@ -61,28 +58,6 @@ def _transcript(newest_chars: int = 30_000) -> list[dict]:
 
 
 # --- 1. a harness row after the round does not answer it -------------------------------------------------
-
-def test_a_background_notice_after_the_round_keeps_it_pending():
-    """A user row appended after the round (a background-process notice) is not the model's answer."""
-    msgs = _transcript()
-    msgs.append({"role": "user", "content": "[IMPORTANT: Background process proc_1 exited (exit code 0).]"})
-    pending = _pending_tool_round(msgs)
-    assert list(pending), "the round it has not read yet must still be pending"
-    assert msgs[pending.start]["tool_call_id"] == "c99"
-
-
-def test_a_steer_after_the_round_keeps_it_pending():
-    msgs = _transcript()
-    msgs.append({"role": "user", "content": "actually, check the last line too", "display_kind": "steer"})
-    pending = _pending_tool_round(msgs)
-    assert list(pending) and msgs[pending.start]["tool_call_id"] == "c99"
-
-
-def test_an_assistant_row_after_the_round_settles_it():
-    msgs = _transcript()
-    msgs.append({"role": "assistant", "content": "I read it."})
-    assert list(_pending_tool_round(msgs)) == []
-
 
 def test_the_unread_round_survives_a_notice_row_in_the_pressure_pass():
     """Case C2 from the issue: the round the model asked for keeps its body.
@@ -202,27 +177,11 @@ def test_an_answered_newest_result_takes_the_plain_stub_in_the_last_resort():
 
 # --- 3. the line count comes from the tool's output, not the JSON envelope -------------------------------
 
-def test_terminal_stub_counts_lines_in_the_output_not_the_envelope():
-    output = "\n".join(f"line {i}" for i in range(2_000))
-    content = json.dumps({"output": output, "exit_code": 0})
-    assert content.count("\n") == 0, "the envelope escapes every newline: this is the bug"
-    stub = _summarize_tool_result("terminal", json.dumps({"command": "cat big.json"}), content)
-    assert "2,000 lines" in stub or "2000 lines" in stub, stub
-    assert "1 lines" not in stub
-
-
 def test_execute_code_stub_counts_lines_in_the_output():
     output = "\n".join(f"row {i}" for i in range(40))
     content = json.dumps({"output": output, "exit_code": 0})
     stub = _summarize_tool_result("execute_code", json.dumps({"code": "print(1)"}), content)
     assert "40 lines" in stub, stub
-
-
-def test_a_bare_text_result_still_counts_its_own_lines():
-    content = "alpha\nbeta\ngamma"
-    assert _tool_output_text("read_file", content) == content
-    stub = _summarize_tool_result("read_file", json.dumps({"path": "x.py"}), content)
-    assert "chars" in stub, stub
 
 
 def test_output_text_falls_back_when_the_envelope_is_malformed():

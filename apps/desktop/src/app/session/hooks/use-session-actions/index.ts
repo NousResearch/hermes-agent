@@ -226,6 +226,7 @@ import {
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
+  shouldDegradeWarmCache,
   toBranchMessages,
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
@@ -1892,7 +1893,11 @@ export function useSessionActions({
               return
             }
 
-            if (!isSessionGoneError(error)) {
+            // A warm cache that cannot paint must not short-circuit the cold
+            // path: publishing it binds a runtime over an empty thread with no
+            // retry latch, so the loader spins until the user sends a message.
+            // See shouldDegradeWarmCache.
+            if (shouldDegradeWarmCache(error, cachedViewState.messages)) {
               publishDegradedWarmCache()
 
               return

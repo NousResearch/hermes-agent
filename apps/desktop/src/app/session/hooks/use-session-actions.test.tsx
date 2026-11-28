@@ -2745,6 +2745,60 @@ describe('resumeSession failure recovery', () => {
     expect($activeSessionId.get()).toBeNull()
   })
 
+  it('falls through to a cold resume instead of degrading to an empty warm cache', async () => {
+    // A warm cache entry can hold NO messages: an earlier resume bound the
+    // runtime before its transcript landed. The sessions-list row is a cache of
+    // backend truth and can lag at message_count 0, so the warm-entry guard
+    // (`sessionShouldHaveTranscript(stored) && messages.length === 0` -> drop)
+    // does NOT catch it. When session.activate then fails with a transport
+    // error (a profile switch / idle reap timing out), the degraded publish
+    // binds that empty thread and returns — no REST prefetch, no retry latch —
+    // so the chat sits on the loader until the user types. A warm cache that
+    // cannot paint must not short-circuit the cold path.
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-1', 'rt-warm']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-warm', clientState('stored-1')]])
+    }
+
+    // The list row has not caught up with the backend yet.
+    setSessions([storedSession({ message_count: 0 })])
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.activate') {
+        throw new Error('Timed out connecting to Hermes backend after 30000ms')
+      }
+
+      if (method === 'session.resume') {
+        return {
+          info: {},
+          message_count: 9,
+          messages: [],
+          messages_omitted: true,
+          resumed: params?.session_id,
+          session_id: 'runtime-1'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(
+      new Error('Timed out connecting to Hermes backend after 30000ms')
+    )
+
+    await runResume(requestGateway, { runtimeIdByStoredSessionIdRef, sessionStateByRuntimeIdRef })
+
+    // The cold path is the transcript authority: it must run, and its empty
+    // result must arm the bounded retry instead of leaving a blank loader.
+    expect(requestGateway).toHaveBeenCalledWith('session.activate', expect.objectContaining({ session_id: 'rt-warm' }))
+    expect(getLatestSessionMessages).toHaveBeenCalled()
+    expect($activeSessionId.get()).toBeNull()
+    expect($resumeFailedSessionId.get()).toBe('stored-1')
+  })
+
   // #97809 remaining edge: older builds persisted a `local` owner hint for
   // sessions whose rows carry no connection tag (the legacy primary-SSH
   // path). Clicks repair it (openStoredSession drops the hint for untagged

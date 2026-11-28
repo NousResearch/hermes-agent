@@ -116,6 +116,7 @@ Secure by default; every widening step is explicit:
 - **Outbound redaction** — credential-shaped strings (API keys, JWTs, tokens) are scrubbed from replies.
 - **Audit log** — every exchange appends to `~/.hermes/a2a_audit.jsonl`.
 - **Anti-loop** — per-context turn caps stop two agents ping-ponging forever.
+- **Peer Agent Card signatures** (A2A v1.0 §8.4) — off until you set `A2A_TRUSTED_SIGNERS` to a JWKS of the public keys you trust. A peer card whose signature does not verify against one of them is refused by `a2a_discover`, `a2a_call` and `a2a_orchestrate`. An attacker who controls the card can also just drop its signature, so set `A2A_REQUIRE_CARD_SIGNATURE=true` to refuse unsigned or unfetchable cards too; without it an unsigned card is still accepted.
 
 ## Configuration reference
 
@@ -132,6 +133,8 @@ Secure by default; every widening step is explicit:
 | `A2A_RATE_LIMIT` | `60` | Requests/minute per identity |
 | `A2A_MAX_PINGPONG_TURNS` | `5` | Anti-loop turn cap per context (max 20) |
 | `A2A_REPLY_TIMEOUT` | `300` | Seconds to wait for the agent's reply. The orphan-task sweep never fails a task before this window elapses (floor 300s), and never while a request is still waiting on it |
+| `A2A_TRUSTED_SIGNERS` | _(unset)_ | JWKS (inline JSON or a file path) of public keys that may sign a peer's Agent Card. When set, a card whose signature does not verify against one of them is refused |
+| `A2A_REQUIRE_CARD_SIGNATURE` | `false` | Also refuse a peer whose card is unsigned or cannot be fetched (calls never fall back to the configured URL) |
 | `A2A_PUSH_SECRET` | bearer token | HMAC secret for push-notification signing |
 | `A2A_ADVERTISED_TOOLSETS` | all registered | Restrict which skills appear on the Agent Card |
 

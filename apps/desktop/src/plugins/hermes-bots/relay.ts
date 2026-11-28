@@ -710,6 +710,37 @@ async function settleRelayDelivery(
   })
 }
 
+/** Deliver once, then keep querying the SAME pinned envelope id while the target
+ *  reports a nonterminal admission (queued/claimed) until it settles, the
+ *  delivery deadline passes, or the relay is stopped / re-rostered. */
+async function pollRelayDelivery(
+  route: RelayConnection['route'],
+  params: ReturnType<typeof relayDeliverParams>,
+  envelopeId: string,
+  attentionKey: string,
+  pending: Map<string, unknown>,
+  postReply: (payload: { error?: string; reason?: string; reply?: string }) => Promise<void>
+) {
+  const deadline = Date.now() + RELAY_DELIVER_TIMEOUT_MS
+  const generation = relay.rosterGeneration
+
+  while (!relay.disposed && relay.rosterGeneration === generation && pending.has(envelopeId)) {
+    const remaining = deadline - Date.now()
+
+    if (remaining <= 0) {return} // Unknown outcome: keep the sender pin for recovery.
+
+    const res = await host.requestProfile<RelayDeliverResult>(route, 'bot_relay.deliver', params, remaining)
+
+    await settleRelayDelivery(res, envelopeId, attentionKey, postReply)
+
+    if (res.delivery_id !== envelopeId || !res.admission_id || (res.status !== 'queued' && res.status !== 'claimed')) {return}
+
+    // Admission is not completion. Query the SAME pinned id on its existing
+    // target socket; an outbox push is not required for the owner's reply.
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(5_000, Math.max(0, deadline - Date.now()))))
+  }
+}
+
 /** Deliver one claimed envelope on the target connection's own socket and post
  *  the reply (or the error) back to the sender gateway for its waiter. */
 async function deliverRelayEnvelope(
@@ -752,14 +783,9 @@ async function deliverRelayEnvelope(
   const attentionKey = `${target.id}::${String(envelope?.target_profile || '')}`
 
   try {
-    const res = await host.requestProfile<RelayDeliverResult>(
-      { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) },
-      'bot_relay.deliver',
-      relayDeliverParams(sender, envelope, envelopeId),
-      RELAY_DELIVER_TIMEOUT_MS
-    )
+    const route = { ...target.route, profile: String(envelope.target_profile), targetProfile: String(envelope.target_profile) }
 
-    await settleRelayDelivery(res, envelopeId, attentionKey, postReply)
+    await pollRelayDelivery(route, relayDeliverParams(sender, envelope, envelopeId), envelopeId, attentionKey, pending, postReply)
   } catch (error: any) {
     // #93091: bot_relay.deliver classifies the failed turn and ships the
     // typed code in the JSON-RPC error's `data.reason`; forward it into

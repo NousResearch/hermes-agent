@@ -160,12 +160,21 @@ def _prompt_filled_window(agent: Any, response: Any) -> Optional[tuple[int, int]
 
 
 def normalize_response_for_agent(agent: Any, response: Any) -> Any:
-    """One OpenAI-style message from any transport; Anthropic strips the OAuth tool prefix."""
+    """One OpenAI-style message from any transport; Anthropic strips the OAuth tool prefix.
+
+    The returned object also carries this response's own completion figure, so every
+    assistant row built from it binds to THIS response — including the truncation-recovery
+    rows, which are built before the usage fold ever runs."""
+    from agent.turn_usage import response_row_token_count
+
     if agent.api_mode == "anthropic_messages":
-        return agent._get_transport().normalize_response(
+        normalized = agent._get_transport().normalize_response(
             response, strip_tool_prefix=agent._is_anthropic_oauth
         )
-    return agent._get_transport().normalize_response(response)
+    else:
+        normalized = agent._get_transport().normalize_response(response)
+    normalized.row_token_count = response_row_token_count(agent, response)
+    return normalized
 
 
 def partial_result(

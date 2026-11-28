@@ -3,6 +3,7 @@ policies and delivery preferences, loaded from config.yaml / gateway.json / env.
 """
 
 import contextlib
+import copy
 import logging
 import math
 import os
@@ -888,9 +889,19 @@ def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> Gat
     from gateway import config_loader
     from gateway.platforms._shared import abort_yaml_env_refresh
     # Platform settings → env vars live in each plugin's apply_yaml_config_fn hook (#41112 / #3823 / #25443).
-    config_loader.with_yaml_fallback(
-        _home, lambda: config_loader.load_yaml_layer(_home, gw_data), abort_yaml_env_refresh, strict=strict)
-    config = GatewayConfig.from_dict(gw_data)
+    # The overlay fills a copy: a merge that raises partway (one malformed block after a good one) must not
+    # leave the blocks it already merged in the gateway.json-only fallback the other readers agree with.
+    layered = copy.deepcopy(gw_data)
+
+    def overlay() -> dict:
+        config_loader.load_yaml_layer(_home, layered)
+        return layered
+
+    def legacy_only() -> dict:
+        abort_yaml_env_refresh()
+        return gw_data
+
+    config = GatewayConfig.from_dict(config_loader.with_yaml_fallback(_home, overlay, legacy_only, strict=strict))
     _apply_env_overrides(config)
     _validate_gateway_config(config)
     return config

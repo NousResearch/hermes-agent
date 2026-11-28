@@ -429,6 +429,15 @@ describe('MessagingView restart banner', () => {
     url: null
   }
 
+  it('names the saved-field clear button without revealing the field value or making a write', async () => {
+    getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [{ ...tokenField, is_set: true, redacted_value: 'masked' }] })] })
+    await renderMessaging()
+    fireEvent.click(await screen.findByRole('button', { name: /Microsoft Teams/ }))
+    const clear = await screen.findByRole('button', { name: 'Clear TEAMS_TOKEN' })
+    expect(clear.getAttribute('aria-label')).toBe('Clear TEAMS_TOKEN')
+    expect(clear.getAttribute('aria-label')).not.toContain('masked')
+  })
+
   it('keeps a restart banner up after a save until the restart completes', async () => {
     // A toast vanishes; the credential still only loads on the next gateway
     // start. The page must keep saying so — and only stop once a restart

@@ -1223,6 +1223,7 @@ function MessagingField({
       {field.is_set && !field.is_list && (
         <Tip label={m.clearField(field.key)}>
           <Button
+            aria-label={m.clearField(field.key)}
             className="size-8 shrink-0"
             disabled={saving === `clear:${field.key}`}
             onClick={() => onClear(field.key)}

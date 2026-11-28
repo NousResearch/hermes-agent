@@ -125,21 +125,24 @@ def exec_approval_cmd_budget(adapter: Any, description: str, smart_denied: bool)
 
 
 def render_exec_approval(adapter: Any, command: str, description: str, smart_denied: bool,
-                         full_command_shown: bool) -> tuple[str, bool]:
+                         full_command_shown: bool, contextual_reason: str = "") -> tuple[str, bool]:
     """``(card text, truncated)`` for ``adapter``'s markup. A preview that cannot hold the whole command
     says so in the card: where the full command was sent just before it (``full_command_shown``), or
-    that only Deny is offered because it could not be (#62359)."""
+    that only Deny is offered because it could not be (#62359). ``contextual_reason`` is display-only
+    and is inserted under the header; its length comes out of the command preview budget."""
+    rationale_block = adapter._ea_rationale_block(contextual_reason) if contextual_reason else ""
+    rationale_len = adapter.message_len_fn(rationale_block) if rationale_block else 0
     if adapter._EA_REASON_BUDGET:
         description = adapter._ea_fit(str(description or ""), adapter._EA_REASON_BUDGET)
     key = "truncated_full_above" if full_command_shown else "truncated_deny_only"
     cut_notice = "\n\n" + adapter._ea_escape(t(f"gateway.exec_approval.{key}", total=len(command)))
     capped = bool(adapter._EA_CARD_CAP)
     if capped:  # the reason gives way first: the deadline line and the cut notice always stay on the card
-        room = adapter._exec_approval_cmd_budget("", smart_denied) - adapter.message_len_fn(cut_notice)
+        room = adapter._exec_approval_cmd_budget("", smart_denied) - adapter.message_len_fn(cut_notice) - rationale_len
         description = adapter._ea_fit(str(description or ""), max(0, room - _EA_MIN_PREVIEW - len("...")))
     # A ``` inside the shown preview would close a markdown fence early; a longer fence holds it, and its
     # extra backticks come out of the preview budget.
-    base = adapter._exec_approval_cmd_budget(description, smart_denied)
+    base = max(0, adapter._exec_approval_cmd_budget(description, smart_denied) - rationale_len)
 
     def fit(fence: str) -> str:
         budget = base - 2 * (len(fence) - 3)
@@ -154,7 +157,7 @@ def render_exec_approval(adapter: Any, command: str, description: str, smart_den
     truncated = preview != command
     notice = cut_notice if truncated else ""
     code_open, code_close = (part.replace("```", fence, 1) for part in (adapter._EA_CODE_OPEN, adapter._EA_CODE_CLOSE))
-    text = (f"{adapter._EA_HEADER}"
+    text = (f"{adapter._EA_HEADER}{rationale_block}"
             f"{code_open}{adapter._ea_escape(preview)}{code_close}"
             f"{adapter._EA_REASON_LABEL}{adapter._ea_escape(description)}{notice}"
             f"{adapter._ea_deadline_line()}")

@@ -16,17 +16,20 @@ from agent.i18n import t
 
 
 def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_id: str | None, command: str,
-                         description: str, prefix: str, **flags: bool) -> str:
+                         description: str, prefix: str, contextual_reason: str = "", **flags: bool) -> str:
     """The plain-text approval prompt for ``adapter``. An adapter that splits long messages gets the
     default layout; one whose send cuts text gets ``_cutting_text_prompt``, and when even that cannot
-    show the whole command the request is marked Deny-only like a card that could not."""
+    show the whole command the request is marked Deny-only like a card that could not.
+    ``contextual_reason`` is display-only."""
     from gateway.platforms.base_exec_approval import send_cannot_prove_whole
     from gateway.run import _format_exec_approval_fallback
     if getattr(adapter, "splits_long_messages", True):
-        text = _format_exec_approval_fallback(command, description, prefix, **flags)
+        text = _format_exec_approval_fallback(
+            command, description, prefix, contextual_reason=contextual_reason, **flags)
         if not send_cannot_prove_whole(adapter, chat_id, text):  # a capped split drops the instructions too
             return text
-    text, deny_only = _cutting_text_prompt(adapter, chat_id, command, description, prefix, **flags)
+    text, deny_only = _cutting_text_prompt(
+        adapter, chat_id, command, description, prefix, contextual_reason=contextual_reason, **flags)
     if deny_only:
         from tools.approval import restrict_gateway_approval_card_to_deny
         restrict_gateway_approval_card_to_deny(session_key, request_id)
@@ -35,7 +38,7 @@ def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_i
 
 def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: str, prefix: str, *,
                          allow_permanent: bool = True, allow_session: bool = True,
-                         smart_denied: bool = False) -> tuple[str, bool]:
+                         smart_denied: bool = False, contextual_reason: str = "") -> tuple[str, bool]:
     """``(prompt, deny_only)``: instructions and deadline ahead of the command, so a cut can only
     shorten the command; when the whole prompt does not fit, a shortened command and Deny alone.
     LINE has no ``MAX_MESSAGE_LENGTH``, so its 4096 default is used: conservative, never cut."""
@@ -46,10 +49,15 @@ def _cutting_text_prompt(adapter: Any, chat_id: str, command: str, description: 
     measure = adapter.message_len_fn_for_chat(chat_id)
     heading = t("gateway.exec_approval.smart_deny_heading") if smart_denied else f"⚠️ **{ea_header_text()}**"
 
+    rationale = str(contextual_reason or "").strip()
+    if len(rationale) > 800:
+        rationale = rationale[:797] + "..."
+    rationale_block = f"{rationale}\n\n" if rationale else ""
+
     def prompt(choices: list[str], notice: str, shown: str, fence: str) -> str:
         instructions = (t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
                         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])) if choices[1:] else f"{choices[0]}.\n"
-        return (f"{heading}\n\n{instructions}{notice}{format_approval_deadline_line(approval_timeout_seconds())}"
+        return (f"{heading}\n\n{rationale_block}{instructions}{notice}{format_approval_deadline_line(approval_timeout_seconds())}"
                 f"\n\n{ea_reason_label_text()}: {description}\n{fence}\n{shown}\n{fence}")
 
     choices = [t("gateway.exec_approval.text_choice_once", prefix=prefix)]

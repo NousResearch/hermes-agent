@@ -296,3 +296,24 @@ def test_same_words_in_a_second_response_are_not_a_reused_response(real_loop):
 
     assert result["final_response"] == "Done."
     assert result["response_reused"] is False
+
+
+def _tool_round(path, call_id):
+    call = _write_file_call(path)
+    call.id = call_id
+    return _response(finish_reason="tool_calls", tool_calls=[call])
+
+
+@pytest.mark.parametrize("script_after_retry", [[], ["tool"]], ids=["budget_on_retry", "budget_after_later_tool"])
+def test_budget_exhausted_after_empty_response_retry_still_summarizes(real_loop, script_after_retry):
+    # An empty reply is retried; the retry is not an answer, so running out of iterations
+    # later must still take the max-iterations summary, not end silently (#92552).
+    script = [_response()]
+    script += [_tool_round(real_loop.ledger, f"call_{n}") for n, _ in enumerate(script_after_retry)]
+    real_loop.agent.max_iterations = len(script)
+    result = real_loop.run(script + [_response(content="Wrote the ledger entry.")], "record the payment in ledger.txt")
+
+    assert result["turn_exit_reason"].startswith("max_iterations_reached")
+    assert "Wrote the ledger entry." in result["final_response"]
+    saved = real_loop.db.get_messages_as_conversation(real_loop.sid)
+    assert saved[-1]["role"] == "assistant" and "Wrote the ledger entry." in saved[-1]["content"]

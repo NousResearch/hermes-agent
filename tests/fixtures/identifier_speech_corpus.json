@@ -7,6 +7,8 @@
     ["Trace id 550e8400-e29b-41d4-a716-446655440000 appears once.", ["550e8400", "446655440000"], ["Trace id", "appears once"]],
     ["Model meta-llama/Llama-3.3-70B-Instruct is large.", ["meta-llama/Llama-3.3-70B-Instruct", "70B"], ["Model", "is large"]],
     ["Config at ~/.config/hermes/config.yaml was read.", ["config.yaml", "~/.config"], ["Config at", "was read"]],
+    ["Build 2026-release-candidate shipped.", ["2026-release-candidate"], ["Build", "shipped"]],
+    ["Ignore 12-month-old.wav in the reply.", ["12-month-old", ".wav"], ["Ignore", "in the reply"]],
     ["Version v2.1.0-beta.3 shipped.", ["v2.1.0-beta.3"], ["Version", "shipped"]]
   ],
   "pass_through_tokens": [
@@ -15,6 +17,10 @@
     ["Email me at user@example.com.", [], ["user@example.com"]],
     ["COVID-19 and well-known facts stay.", [], ["COVID-19", "well-known"]],
     ["Due 2026/06/02 and status N/A here.", [], ["2026/06/02", "N/A"]],
+    ["These 3,000-year-old pots survived.", [], ["3,000-year-old pots"]],
+    ["A 3.5-year-old.", [], ["3.5-year-old."]],
+    ["It was a 48-hour-long wait.", [], ["48-hour-long wait"]],
+    ["A 2.5-hour trip ends in a ten-minute wait.", [], ["2.5-hour trip"]],
     ["The final score was 3:2.", [], ["3:2"]]
   ]
 }

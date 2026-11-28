@@ -35,6 +35,7 @@ const HASH_PREFIX_HEX_RE = /\b(?:sha(?:-?256|-?512|-?1|3)?|blake2[ab]?|md5|crc32
 const HEX_RUN_RE = /[0-9a-fA-F]{7,64}/
 const IDENTIFIER_TOKEN_RE = /[A-Za-z0-9_./~@-]+/g
 const DATE_TOKEN_RE = /^\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?$/
+const NUMBER_COMPOUND_RE = /^\d+(?:\.\d+)?-[a-z]+(?:-(?:olds?|long))?\.?$/i
 
 function isDenseIdentifier(token: string): boolean {
   if (token.includes('@') || DATE_TOKEN_RE.test(token)) {
@@ -51,6 +52,10 @@ function isDenseIdentifier(token: string): boolean {
 
   if (FILENAME_EXT_RE.test(token) || UUID_RE.test(token)) {
     return true
+  }
+
+  if (NUMBER_COMPOUND_RE.test(token)) {
+    return false
   }
 
   // Hex-hash runs ("73688014f78", "e3b0c442...") — digit-free runs

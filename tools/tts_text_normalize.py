@@ -151,6 +151,8 @@ _HASH_PREFIX_HEX_RE = re.compile(
 _HEX_RUN_RE = re.compile(r"(?<![0-9a-fA-F])[0-9a-fA-F]{7,64}(?![0-9a-fA-F])")
 _IDENTIFIER_TOKEN_RE = re.compile(r"[A-Za-z0-9_./~@-]+")
 _DATE_TOKEN_RE = re.compile(r"\d{4}[-/]\d{1,2}(?:[-/]\d{1,2})?")
+# Commas split tokens, so the last digit group of 3,000-year-old also matches.
+_NUMBER_COMPOUND_RE = re.compile(r"\d+(?:\.\d+)?-[a-z]+(?:-(?:olds?|long))?\.?", re.IGNORECASE)
 
 
 def _is_dense_identifier(token: str) -> bool:
@@ -163,6 +165,8 @@ def _is_dense_identifier(token: str) -> bool:
         return True  # paths and dense model IDs ("meta-llama/Llama-3.3-70B-Instruct")
     if _FILENAME_EXT_RE.search(token) or _UUID_RE.search(token):
         return True
+    if _NUMBER_COMPOUND_RE.fullmatch(token):
+        return False
     # Hex-hash runs ("73688014f78", "e3b0c442...") — digit-free runs
     # ("defaced") are legitimate words and stay.
     if _HEX_RUN_RE.fullmatch(token) and re.search(r"\d", token):

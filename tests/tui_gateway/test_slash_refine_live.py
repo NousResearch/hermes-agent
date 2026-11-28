@@ -13,6 +13,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from persistence.conversation.messages import ConversationMessage
 from tui_gateway import server
 from tui_gateway.transport import StdioTransport
@@ -127,3 +129,67 @@ def test_refine_spawns_review_from_in_memory_history_mid_conversation():
         # /refine is explicit: it must not be swallowed by the unattended-review gates.
         "explicit": True,
     }]
+
+
+class _EmptyMessages:
+    """An empty persisted transcript, so the handler must reach the in-memory history."""
+
+    def read_conversation(self, key, request):
+        return ()
+
+
+@pytest.fixture
+def two_profiles(tmp_path, monkeypatch):
+    """A secondary profile (own home and ``.env`` secret) served by a process launched on another
+    home, with multiplexing on so an unscoped secret read fails closed."""
+    from agent.secret_scope import set_multiplex_active
+    launch = tmp_path / ".hermes"
+    profile = launch / "profiles" / "b"
+    profile.mkdir(parents=True)
+    (profile / ".env").write_text("REFINE_SCOPE_PROBE=b\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv("REFINE_SCOPE_PROBE", "launch")
+    set_multiplex_active(True)
+    try:
+        yield launch, profile
+    finally:
+        set_multiplex_active(False)
+
+
+def test_refine_spawns_review_in_the_sessions_profile_scope(two_profiles):
+    """A secondary-profile session's /refine must spawn the review inside the session's profile
+    scope (as /review and the mirrors do): the fork resolves that profile's secrets and the
+    propagated context carries its ledger/skill writes to the session's home, not the launch
+    profile's (#155857)."""
+    from agent.secret_scope import UnscopedSecretError, get_secret
+    from hermes_constants import get_hermes_home
+    _launch, profile = two_profiles
+    sid = "refine-scope"
+    agent = _Agent()
+    seen: dict = {}
+
+    def spawn(**_kwargs):
+        seen["home"] = str(get_hermes_home())
+        try:
+            seen["probe"] = get_secret("REFINE_SCOPE_PROBE")
+        except UnscopedSecretError as exc:
+            seen["probe"] = exc
+
+    agent._spawn_background_review = spawn
+    session = _live_session(
+        agent, session_key="scope-key", history=[{"role": "user", "content": "hi"}]
+    )
+    session["profile_home"] = str(profile)
+    server._sessions[sid] = session
+    try:
+        with (
+            patch.object(server, "_session_uses_compute_host", return_value=False),
+            patch.object(server, "_session_db", _fake_session_db),
+            patch.object(server, "_persistence_for", _persistence_with(_EmptyMessages())),
+        ):
+            out = server._live_slash_command_output(sid, session, "refine", "")
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert "Reviewing this conversation" in out
+    assert seen == {"home": str(profile), "probe": "b"}

@@ -324,7 +324,8 @@ def retry_invalid_response(
         agent._emit_diagnostic_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
         logger.error("%sInvalid API response after %d retries.", agent.log_prefix, max_retries)
         agent._persist_session(messages, conversation_history)
-        # "model=<id>" is describe_invalid_response's OpenRouter fallback, not a provider name.
+        # describe_invalid_response can return the response's model id ("model=<id>") or "Unknown";
+        # neither is a provider name, so neither may be rendered as the sentence's subject.
         _label = (
             provider_label_for(agent.provider)
             if provider_name in ("Unknown", "") or provider_name.startswith("model=")

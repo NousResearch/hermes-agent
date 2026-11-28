@@ -78,6 +78,31 @@ _DEEPSEEK_THINKING_MODEL_PREFIXES = (
     "deepseek_pro", "deepseek-flash", "deepseek_flash",
 )
 
+# MiniMax M3.1 family — adaptive-thinking models. M3.1 is the only MiniMax generation whose
+# thinking depth is actually controllable: its Anthropic-compatible endpoint tunes depth via
+# ``output_config.effort`` (low/medium/high/xhigh/max) and REJECTS ``thinking.type=disabled``
+# with HTTP 400. The legacy manual shape (``thinking.type=enabled`` + ``budget_tokens``) does
+# NOT constrain M3.1's thinking volume — measured live, budget_tokens 1000/4000/32000 produced
+# 971/541/900 thinking tokens (no monotonic relation) while effort low/medium/max produced
+# 105/347/1955. So M3.1 must ride the adaptive path; M3 and the M2.x family keep the manual
+# path (their behaviour is unchanged and already verified).
+_MINIMAX_ADAPTIVE_MODEL_PREFIXES = ("minimax-m3.1", "minimax_m3.1", "minimax-m3-1")
+
+
+def _model_name_is_minimax_adaptive(model: str | None) -> bool:
+    """True for the MiniMax M3.1 family — models whose thinking depth is controlled by
+    ``output_config.effort`` rather than ``budget_tokens``.
+
+    Namespace-stripped (``minimax/MiniMax-M3.1-Flash`` -> ``minimax-m3.1-flash``) so a
+    prefixed slug still classifies. Dot/dash spellings are both accepted.
+    """
+    if not isinstance(model, str):
+        return False
+    name = model.strip().lower().rsplit("/", 1)[-1]
+    if not name:
+        return False
+    return name.startswith(_MINIMAX_ADAPTIVE_MODEL_PREFIXES)
+
 
 def _model_name_is_deepseek_thinking(model: str | None) -> bool:
     """Known DeepSeek thinking families behind an Anthropic-compatible relay.

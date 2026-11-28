@@ -12074,6 +12074,25 @@ def test_plugin_slash_command_runs_under_the_session_env(monkeypatch):
     assert get_session_env("HERMES_SESSION_KEY") in ("", None)
 
 
+def test_plugin_command_failure_surfaces_instead_of_routing_refusal(monkeypatch):
+    # A registered plugin command OWNS its name: when its handler raises, the client must see the
+    # real failure. Suppressing the exception fell through to 4018 "not a quick/plugin/bundle/skill
+    # command: <name>" — a refusal claiming the command does not exist, hiding the cause. slash.exec
+    # already reports the same failure ("Plugin command error: ..."); command.dispatch must not differ.
+    def boom(arg):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler",
+                        lambda name: boom if name == "boomcmd" else None)
+    monkeypatch.setattr(server, "_sessions", {"sid-f": {"session_key": "agent:tui:key-f", "cwd": ""}})
+
+    res = server._methods["command.dispatch"]("d", {"name": "boomcmd", "arg": "", "session_id": "sid-f"})
+
+    assert "error" in res, res
+    assert res["error"]["code"] == 4045
+    assert "disk full" in res["error"]["message"]
+
+
 def test_session_status_reads_live_gateway_agent(monkeypatch):
     agent = types.SimpleNamespace(
         model="live-model",

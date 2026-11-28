@@ -565,10 +565,18 @@ def _is_registry_command(base: str) -> bool:
 
 
 def _dispatch_plugin(rid, params, session, name, arg):
-    with contextlib.suppress(Exception):
-        if (output := _dispatch_plugin_in_profile_scope(
-                name, arg, session, params.get("session_id", ""), _str_arg(params, "profile") or None)) is not None:
-            return _ok(rid, {"type": "plugin", "output": output})
+    try:
+        output = _dispatch_plugin_in_profile_scope(
+            name, arg, session, params.get("session_id", ""), _str_arg(params, "profile") or None)
+    except Exception as exc:
+        # A plugin command whose run raised OWNS the command: its failure is a failure, not a
+        # stage miss. Suppressing the exception fell through to the routing refusal 4018
+        # ("not a quick/plugin/bundle/skill command: <name>"), hiding the real cause from the
+        # client; slash.exec's plugin stage already reports the same failure.
+        logger.warning("Plugin command /%s failed: %s", name, exc, exc_info=True)
+        return _err(rid, 4045, f"plugin command /{name} failed: {type(exc).__name__}: {exc}")
+    if output is not None:
+        return _ok(rid, {"type": "plugin", "output": output})
     return None
 
 

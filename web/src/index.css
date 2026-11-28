@@ -113,6 +113,8 @@ html {
   font-size: var(--theme-base-size);
   line-height: var(--theme-line-height);
   letter-spacing: var(--theme-letter-spacing);
+  /* Keep downward swipes from reloading the dashboard at the page boundary. */
+  overscroll-behavior-y: none;
   height: 100dvh;
   max-height: 100dvh;
   overflow: hidden;

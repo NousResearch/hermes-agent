@@ -213,6 +213,35 @@ _REFERENCE_SYSTEM_PROMPT = (
     "anything."
 )
 
+_REFERENCE_SYSTEM_PROMPT_READ_TOOLS = (
+    "You are a reference advisor in a Mixture of Agents (MoA) process. You are "
+    "NOT the acting agent: you cannot create, edit, delete, move or install "
+    "anything, cannot run commands, cannot browse, and cannot change any state "
+    "on this machine. A separate aggregator/orchestrator model holds those "
+    "capabilities and will take the actual actions.\n\n"
+    "You CAN look at the machine, read-only, through three tools: read_file, "
+    "list_dir, and view_image (images, screenshots, diagrams). Use them "
+    "whenever your advice depends on material you have not actually seen — open "
+    "the file under discussion, look at the screenshot, list the directory — "
+    "instead of guessing about it. Read what you need, then advise.\n\n"
+    "CRITICAL: You must NEVER claim or imply that you changed, created, "
+    "deleted, ran, installed, downloaded or fixed anything. Reading is the only "
+    "action available to you. Examples:\n"
+    "- Bad: \"I fixed the config.\"\n"
+    "- Bad: \"I ran the tests and they pass.\"\n"
+    "- Good: \"The config at that path sets fanout to user_turn, which means...\"\n"
+    "- Good: \"The screenshot shows an error dialog saying...\"\n\n"
+    "The conversation below is the current state of a task handled by that "
+    "acting agent. Your job is to give your most intelligent analysis of that "
+    "state: understand the goal, reason about the problem, and advise on what "
+    "to do next. Surface the best approach, concrete next steps and tool-use "
+    "strategy, likely pitfalls and risks, and anything the acting agent may "
+    "have missed or gotten wrong. Base your advice on what you actually read.\n\n"
+    "Respond with your advice directly — no preamble, no disclaimers about "
+    "access. Your response is private guidance handed to the aggregator, not an "
+    "answer shown to the user."
+)
+
 
 def _slot_label(slot: dict[str, Any]) -> str:
     label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
@@ -400,6 +429,29 @@ def _price_reference_response(
         return usage, None, None, None
 
 
+def _sum_tool_loop_accounting(
+    responses: list[Any], slot: dict[str, Any], runtime: dict[str, Any]
+) -> tuple[Any, Any, str | None, str | None]:
+    """Sum usage and spend across one reference's tool-loop calls (a single call is the
+    no-tools case, so the arithmetic is identical either way)."""
+    usages: list[Any] = []
+    spent = 0.0
+    priced = False
+    status: str | None = None
+    source: str | None = None
+    for response in responses:
+        usage, cost, cost_status, cost_source = _price_reference_response(response, slot, runtime)
+        usages.append(usage)
+        if cost is not None:
+            spent += float(cost)
+            priced = True
+            status, source = cost_status, cost_source
+    total = usages[0] if usages else CanonicalUsage()
+    for usage in usages[1:]:
+        total = total + usage
+    return total, (spent if priced else None), status, source
+
+
 def _slot_request_headers(runtime: dict[str, Any], agent: Any = None) -> dict[str, str] | None:
     """User-initiated request headers of the slot's provider, attributed at that provider's own endpoint
     (MoA attributes by slot provider, whatever account host the slot resolved to). Asked like every
@@ -420,15 +472,22 @@ def _run_reference(
     slot: dict[str, Any], ref_messages: list[dict[str, Any]], *, temperature: float | None = None,
     max_tokens: int | None = None, reference_timeout: float | None = None, context_length_cache: Any = None,
     cache_disabled: bool | None = None, cache_ttl: str | None = None, cache_ttl_auto: bool = False,
-    agent: Any = None,
+    agent: Any = None, reference_tools: bool = False,
 ) -> tuple[str, str, Any]:
     """Call one reference model; return ``(label, text, accounting)``. Never raises:
-    a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool."""
+    a failed reference becomes a labelled ``[failed: …]`` note. Runs in a thread pool.
+
+    With ``reference_tools`` the advisor may read files, list directories and look at
+    images on demand before answering (read-only: see ``agent.moa_reference_tools``).
+    """
     label = _slot_label(slot)
     runtime = _slot_runtime(slot)
     trace_fields = {"model": slot.get("model"), "provider": runtime.get("provider") or slot.get("provider"), "temperature": temperature}
     # The advisory view already stripped the agent's system prompt; this is the only one.
-    messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+    system_prompt = _REFERENCE_SYSTEM_PROMPT_READ_TOOLS if reference_tools else _REFERENCE_SYSTEM_PROMPT
+    if reference_tools:
+        logger.info("MoA reference %s: read-only tools enabled", label)
+    messages = [{"role": "system", "content": system_prompt}, *ref_messages]
     try:
         # Trim to THIS model's window (advisors may be smaller than the aggregator); the
         # advisory view is append-only across iterations, so cache_control lets
@@ -446,23 +505,43 @@ def _run_reference(
         # Providers may gate premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's user-initiated request headers.
         initiator_headers = _slot_request_headers(runtime, agent)
-        if agent is not None:
-            from agent.auxiliary_client import aux_progress_hook
 
-            with aux_progress_hook(_reference_liveness_hook(agent, label)):
-                response = call_llm(
-                    task="moa_reference", messages=trimmed, temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
-                    extra_headers=initiator_headers, **runtime,
-                )
-        else:
-            response = call_llm(
-                task="moa_reference", messages=trimmed, temperature=temperature,
+        def send(convo: list[dict[str, Any]], tools: list[dict[str, Any]] | None) -> Any:
+            kwargs: dict[str, Any] = dict(
+                task="moa_reference", messages=convo, temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
                 extra_headers=initiator_headers, **runtime,
             )
+            if tools:
+                kwargs["tools"] = tools
+            if agent is not None:
+                from agent.auxiliary_client import aux_progress_hook
+
+                with aux_progress_hook(_reference_liveness_hook(agent, label)):
+                    return call_llm(**kwargs)
+            return call_llm(**kwargs)
+
+        if reference_tools:
+            from agent.moa_reference_tools import run_reference_tool_loop
+
+            deadline = time.monotonic() + float(reference_timeout) if reference_timeout else None
+            try:
+                responses, _convo = run_reference_tool_loop(send, trimmed, deadline=deadline)
+            except Exception:
+                # A provider that rejects the tool schema must not lose the advice: one
+                # plain call is exactly the pre-tools behaviour.
+                logger.warning("MoA reference %s: tool loop unavailable — advising without tools", label, exc_info=True)
+                responses = [send(trimmed, None)]
+            response = responses[-1]
+            output_text = _extract_text(response) or "(empty response)"
+            acct = _RefAccounting(
+                *_sum_tool_loop_accounting(responses, slot, runtime),
+                messages=trimmed, output=output_text, **trace_fields,
+            )
+            return label, output_text, acct
+
+        response = send(trimmed, None)
         output_text = _extract_text(response) or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
@@ -627,6 +706,7 @@ def _run_references_parallel(
     reference_models: list[dict[str, Any]], ref_messages: list[dict[str, Any]], *,
     temperature: float | None = None, max_tokens: int | None = None, progress_callback: Any = None,
     reference_timeout: float | None = None, agent: Any = None, late_accounting_sink: Any = None,
+    reference_tools: bool = False,
 ) -> list[tuple[str, str, Any]]:
     """Fan out all reference models in parallel; ``(label, text, _RefAccounting)`` per
     slot in ``reference_models`` order.
@@ -685,6 +765,7 @@ def _run_references_parallel(
                     cache_ttl=cache_ttl,
                     cache_ttl_auto=cache_ttl_auto,
                     agent=agent,
+                    reference_tools=reference_tools,
                 )
             ] = idx
 
@@ -923,7 +1004,7 @@ def aggregate_moa_context(
     *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
     reference_max_tokens: int | None = None, reference_timeout: float | None = None,
-    degraded_reference_policy: str = "loud", agent: Any = None,
+    degraded_reference_policy: str = "loud", agent: Any = None, reference_tools: bool = False,
 ) -> str:
     """Run configured reference models and synthesize their advice (one-shot /moa).
 
@@ -941,6 +1022,7 @@ def aggregate_moa_context(
     reference_outputs = _run_references_parallel(
         reference_models, _reference_messages(api_messages), temperature=temperature,
         max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
+        reference_tools=reference_tools,
     )
     privacy_full = False
     try:
@@ -1370,6 +1452,7 @@ class MoAChatCompletions:
             progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
             reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
             agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
+            reference_tools=bool(preset.get("reference_tools")),
         )
         # An interrupted fan-out is a partial snapshot: never cache it (a HIT would
         # replay placeholder notes every iteration).

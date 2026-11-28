@@ -229,13 +229,16 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
 
         # "user_turn" (default, cheapest): advisors run ONCE per user turn; "per_iteration": every
         # tool iteration; "every_n:<N>": first iteration of each turn and every Nth after.
-        "fanout": _coerce_fanout(raw.get("fanout"))}
+        "fanout": _coerce_fanout(raw.get("fanout")),
+        # Read-only look at the machine (read_file / list_dir / view_image) during the
+        # advisor's own call. Off by default: it adds a model round-trip per advisor.
+        "reference_tools": _coerce_bool(raw.get("reference_tools"), False)}
 
 
 _FLAT_PRESET_KEYS = (
     "reference_models", "aggregator", "reference_temperature", "aggregator_temperature",
     "reference_timeout", "degraded_reference_policy",
-    "fanout", "enabled")
+    "fanout", "reference_tools", "enabled")
 
 
 # Aggregator slot fields ``_clean_slot`` reads, accepted under any preset name (the schema walk only

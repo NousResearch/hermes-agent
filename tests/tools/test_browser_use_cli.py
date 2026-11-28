@@ -579,6 +579,22 @@ class TestOwnTabPreamble:
         # and composes with model code
         ast.parse(bu_cli._OWN_TAB_PREAMBLE + "print('x')")
 
+    def test_own_tab_opens_in_background(self, tmp_path, monkeypatch):
+        """A foreground target raises a headed browser window over the user's work (#156748)."""
+        monkeypatch.setenv("BU_NAME", "r7k2")
+        monkeypatch.setitem(sys.modules, "browser_harness", None)
+        monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+        calls, switched = [], []
+
+        def cdp(method, **params):
+            calls.append((method, params))
+            return {"targetId": "own-tab"}
+
+        exec(bu_cli._OWN_TAB_PREAMBLE, {"cdp": cdp, "switch_tab": switched.append})
+
+        assert calls == [("Target.createTarget", {"url": "about:blank", "background": True})]
+        assert switched == ["own-tab"]
+
     @pytest.mark.platforms("posix")
     def test_marker_write_never_follows_a_planted_symlink(self, tmp_path, monkeypatch):
         """The marker name in the shared temp root is predictable: a planted link must not create its target."""

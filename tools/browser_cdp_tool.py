@@ -407,6 +407,10 @@ def browser_cdp(method: str, params: Optional[dict[str, Any]] = None, target_id:
     blocked = _browser_cdp_private_guard(method=method, params=call_params, endpoint=endpoint, target_id=target_id)
     if blocked:
         return blocked
+    if method == "Target.createTarget":
+        # Chrome focuses a new target and raises its window unless told otherwise; the agent rarely
+        # means to take over the user's screen. An explicit ``background: false`` is still honored.
+        call_params = {"background": True, **call_params}
 
     try:
         safe_timeout = float(timeout) if timeout else 30.0

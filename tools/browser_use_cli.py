@@ -78,8 +78,9 @@ def _hermes_ensure_own_tab():
         return
     try:
         # Force a fresh target: new_tab() would REUSE a blank current tab,
-        # which is exactly the tab a sibling daemon may also hold.
-        _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
+        # which is exactly the tab a sibling daemon may also hold. Background:
+        # a foreground target raises a headed browser window over the user's work.
+        _tid = cdp("Target.createTarget", url="about:blank", background=True).get("targetId")
         if _tid:
             switch_tab(_tid)
     except Exception:

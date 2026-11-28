@@ -17,7 +17,8 @@ vi.mock('react-router', () => ({
   useNavigate: () => navigate
 }))
 
-vi.mock('@/i18n', () => ({
+vi.mock('@/i18n', async () => ({
+  ...(await import('@/i18n/runtime')),
   useI18n: () => ({
     t: {
       common: { cancel: 'Cancel', delete: 'Delete' },

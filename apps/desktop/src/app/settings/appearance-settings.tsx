@@ -87,6 +87,7 @@ import { ListRow, RowFootnoteAction, SectionHeading, SettingsContent, ToggleRow 
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { TerminalFontSetting } from './terminal-font-setting'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { WallpaperSetting } from './wallpaper-setting'
 
 // display.resume_last_session lives in the backend config record (shared with
 // config.yaml and the cold-start restore in use-desktop-integrations), not a
@@ -893,6 +894,8 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               title={a.userBubbleTitle}
             />
           )}
+
+          {show('window-layout') && <WallpaperSetting profileName={activeProfileName} />}
 
           {show('chat-display') && (
             <ListRow

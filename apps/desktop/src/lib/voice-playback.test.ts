@@ -6,9 +6,10 @@
 import type * as SharedTypes from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $voicePlayback } from '@/store/voice-playback'
+import { $voice, $voicePlayback } from '@/store/voice-playback'
 
 import { playSpeechText, startSpeechStream, stopVoicePlayback } from './voice-playback'
+import { $voiceTimeline, getVoiceOutputLatencyMs, readVoiceLevel } from './voice-timeline'
 
 const gateway = vi.hoisted(() => {
   let nextUrl: string | null = 'ws://gateway.test/api/ws'
@@ -29,6 +30,13 @@ vi.mock('@hermes/shared', async importOriginal => {
     resolveGatewayWsUrl: async () => gateway.currentUrl()
   }
 })
+
+const direct = vi.hoisted(() => ({ config: null as object | null }))
+
+vi.mock('@/lib/voice-client-direct', () => ({
+  directTtsConfig: vi.fn(async () => direct.config),
+  synthesizeSpeechClientDirect: vi.fn(async () => new ArrayBuffer(4))
+}))
 
 vi.mock('@/hermes', () => ({
   getApiRequestProfile: () => null,
@@ -92,9 +100,11 @@ class FakeSocket {
 class FakeAudioContext {
   static instances: FakeAudioContext[] = []
 
+  baseLatency = 0
   closed = false
   currentTime = 0
   destination = {}
+  outputLatency = 0.2
   state = 'running'
 
   close = vi.fn(() => {
@@ -106,6 +116,11 @@ class FakeAudioContext {
   createBuffer = vi.fn((_channels: number, length: number, rate: number) => ({
     duration: length / rate,
     getChannelData: () => new Float32Array(length)
+  }))
+  createAnalyser = vi.fn(() => ({
+    connect: vi.fn(),
+    fftSize: 512,
+    getFloatTimeDomainData: (out: Float32Array) => out.fill(0.1)
   }))
   createBufferSource = vi.fn(() => ({
     buffer: null as unknown,
@@ -298,5 +313,124 @@ describe('voice-playback teardown (#91991)', () => {
     expect(secondWs.close).toHaveBeenCalled()
     expect(FakeAudioContext.instances[1]?.closed).toBe(true)
     expect($voicePlayback.get().status).toBe('idle')
+  })
+
+  describe('what plugins see', () => {
+    async function streaming() {
+      $voiceTimeline.set({ segments: [] })
+      await liveSession()
+      const ws = FakeSocket.instances.at(-1)!
+
+      ws.serverOpen()
+      ws.serverFrame({ type: 'start', sample_rate: 24_000 })
+
+      return ws
+    }
+
+    it('times words to when the listener hears them, and reports loudness', async () => {
+      const ws = await streaming()
+      const now = performance.now()
+
+      ws.serverFrame({ type: 'segment', text: 'Hi', units: [{ endMs: 200, kind: 'word', startMs: 0, text: 'Hi' }] })
+      ws.serverPcm(64)
+
+      // 50 ms scheduling lead-in + 200 ms device delay.
+      const [piece] = $voiceTimeline.get().segments[0].pieces
+      expect([piece.startMs - now, piece.endMs - now].map(Math.round)).toEqual([250, 450])
+      expect(getVoiceOutputLatencyMs()).toBe(200)
+      expect(readVoiceLevel()).toBeCloseTo(0.4)
+      expect($voice.get()).toEqual({ endReason: null, messageId: null, source: 'voice-conversation', status: 'speaking' })
+    })
+
+    it('gives a voice without word times one sentence that lasts as long as its audio', async () => {
+      const ws = await streaming()
+
+      ws.serverFrame({ type: 'segment', text: 'One.', units: [] })
+      ws.serverPcm(4_800) // 100 ms
+      ws.serverPcm(4_800)
+
+      const [segment] = $voiceTimeline.get().segments
+      expect(Math.round(segment.endMs - segment.startMs)).toBe(200)
+      expect(segment.pieces[0]).toMatchObject({ endMs: segment.endMs, kind: 'sentence' })
+    })
+
+    it('keeps speaking until the last audio is heard, not just sent to the device', async () => {
+      const ws = await streaming()
+
+      ws.serverPcm(9_600) // 200 ms, heard 50..250 ms after a 200 ms device delay
+      ws.serverFrame({ type: 'end' })
+      await vi.advanceTimersByTimeAsync(400)
+      expect($voice.get().status).toBe('speaking')
+
+      await vi.advanceTimersByTimeAsync(200)
+      expect($voice.get()).toMatchObject({ endReason: 'finished', status: 'idle' })
+    })
+
+    it('gives a whole clip in an audio element one sentence for as long as it plays', async () => {
+      $voiceTimeline.set({ segments: [] })
+      gateway.setNextUrl(null) // no streaming endpoint → data-url fallback
+
+      const playback = playSpeechText('hello world', { messageId: 'm1', source: 'read-aloud' })
+      await vi.advanceTimersByTimeAsync(0)
+
+      const audio = FakeAudio.instances.at(-1)!
+
+      const fire = (type: string) =>
+        audio.addEventListener.mock.calls.filter(([name]) => name === type).forEach(([, listener]) => listener())
+
+      expect($voiceTimeline.get().segments).toEqual([]) // nothing is heard yet
+
+      Object.assign(audio, { duration: 2 })
+      fire('playing')
+
+      const [segment] = $voiceTimeline.get().segments
+      expect(segment.pieces).toEqual([expect.objectContaining({ kind: 'sentence', text: 'hello world' })])
+      expect(Math.round(segment.endMs - segment.startMs)).toBe(2_000)
+
+      stopVoicePlayback()
+      await playback
+    })
+
+    it('does the same for each sentence synthesized straight from the provider', async () => {
+      $voiceTimeline.set({ segments: [] })
+      direct.config = { mode: 'direct', provider: 'openai' }
+      vi.stubGlobal('URL', { ...URL, createObjectURL: () => 'blob:x', revokeObjectURL: () => undefined })
+
+      const session = await liveSession()
+
+      session.append('Hello there, how are you today?')
+      session.finish()
+      await vi.advanceTimersByTimeAsync(0)
+
+      const audio = FakeAudio.instances.at(-1)!
+
+      audio.addEventListener.mock.calls.filter(([name]) => name === 'playing').forEach(([, listener]) => listener())
+      expect($voiceTimeline.get().segments[0].pieces[0]).toMatchObject({ kind: 'sentence' })
+
+      stopVoicePlayback()
+      direct.config = null
+      vi.unstubAllGlobals()
+    })
+
+    it('a stop drops what was still to come; a reply that plays out says finished', async () => {
+      const ws = await streaming()
+
+      ws.serverFrame({ type: 'segment', text: 'Hi', units: [{ endMs: 200, kind: 'word', startMs: 0, text: 'Hi' }] })
+      ws.serverPcm(64)
+      stopVoicePlayback()
+      expect($voiceTimeline.get().segments).toEqual([])
+      expect($voice.get().endReason).toBe('stopped')
+      expect(readVoiceLevel()).toBe(0)
+
+      const next = await streaming()
+
+      next.serverPcm(64)
+      next.serverFrame({ type: 'end' })
+      await vi.advanceTimersByTimeAsync(500)
+      expect($voice.get().endReason).toBe('finished')
+
+      stopVoicePlayback() // from silence: nothing ended
+      expect($voice.get().endReason).toBe('finished')
+    })
   })
 })

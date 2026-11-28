@@ -12,6 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_server
 import hermes_cli.web_server_gateway as _web_server_gateway
+from tools.tts_tool_providers import edge_words
 
 
 @pytest.fixture
@@ -73,6 +74,7 @@ def test_start_frame_carries_rate_learned_during_first_stream(stream_client, mon
     with stream_client.websocket_connect(_url()) as conn:
         conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
         assert conn.receive_json() == {"type": "start", "sample_rate": 44100, "channels": 1}
+        assert conn.receive_json() == {"type": "segment", "text": "Hello there.", "units": []}
         assert conn.receive_bytes() == b"\x01\x02"
         assert conn.receive_json() == {"type": "end"}
 
@@ -85,7 +87,8 @@ def test_streams_pcm_frames_then_end(stream_client, monkeypatch):
         conn.send_text(json.dumps({"text": "Hello there.", "done": True}))
         start = conn.receive_json()
         assert start == {"type": "start", "sample_rate": 24000, "channels": 1}
-
+        # The piece's text rides with its first chunk; a provider without word timing sends no units.
+        assert conn.receive_json() == {"type": "segment", "text": "Hello there.", "units": []}
         assert conn.receive_bytes() == b"\x01\x02\x03\x04"
         assert conn.receive_bytes() == b"\x05\x06"
         assert conn.receive_json() == {"type": "end"}
@@ -107,7 +110,10 @@ def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_cl
         while True:
             message = conn.receive()
             if message.get("bytes") is None:
-                assert json.loads(message["text"]) == {"type": "end"}
+                frame = json.loads(message["text"])
+                if frame["type"] == "segment":
+                    continue
+                assert frame == {"type": "end"}
                 break
 
     assert streamer.requests[0] == "记得，叫团团.", streamer.requests
@@ -132,16 +138,22 @@ def test_long_text_is_split_across_provider_requests(stream_client, monkeypatch)
         assert conn.receive_json()["type"] == "start"
         # One PCM frame per split piece, then end.
         frames = 0
+        segments = []
         while True:
             message = conn.receive()
             if message.get("bytes") is not None:
                 frames += 1
-            else:
-                assert json.loads(message["text"]) == {"type": "end"}
-                break
+                continue
+            frame = json.loads(message["text"])
+            if frame["type"] == "segment":
+                segments.append(frame["text"])
+                continue
+            assert frame == {"type": "end"}
+            break
 
     assert len(streamer.requests) > 1
     assert frames == len(streamer.requests)
+    assert segments == streamer.requests
     # Nothing lost in the split: every sentence reached the provider.
     joined = " ".join(streamer.requests)
     for fragment in ("First sentence here.", "Second sentence here.", "Third one."):
@@ -170,12 +182,14 @@ def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
     reply = f"{first} {second}"
     pcm = [b"\x11\x00\x22\x00", b"\x33\x00\x44\x00"]
     calls: list[str] = []
+    word = {"text": "spoken", "kind": "word", "startMs": 0.0, "endMs": 300.0}
     pcm_for: dict[str, bytes] = {}
 
     def fake_tts(*args, **kwargs):
         raw = kwargs.get("text") if "text" in kwargs else (args[0] if args else "")
         text = raw if isinstance(raw, str) else ""
         calls.append(text)
+        edge_words.get()[:] = [word]
         path = kwargs.get("output_path") or str(tmp_path / f"sent-{len(calls)}.mp3")
         # Edge's sync tool writes MP3 bytes, not a WAV container.
         with open(path, "wb") as fh:
@@ -216,7 +230,10 @@ def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
     assert {"type": "fallback"} not in frames
     assert frames[0] == {"type": "start", "sample_rate": 24000, "channels": 1}
     assert frames[-1] == {"type": "end"}
-    assert frames[1:-1] == pcm
+    assert frames[1:-1] == [
+        {"type": "segment", "text": calls[0], "units": [word]}, pcm[0],
+        {"type": "segment", "text": calls[1], "units": [word]}, pcm[1],
+    ]
     assert len(calls) == 2
     assert first in calls[0] and second not in calls[0]
     assert second in calls[1] and first not in calls[1]

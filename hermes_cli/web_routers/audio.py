@@ -623,6 +623,9 @@ async def speak_stream_ws(ws: WebSocket) -> None:
       server → ``{"type": "start", "sample_rate": N, "channels": 1}`` (sent
                with the first PCM frame, once the provider's rate is final),
                binary PCM frames, then ``{"type": "end"}``
+      server → ``{"type": "segment", "text": ..., "units": [...]}`` before each
+               spoken piece's first PCM frame; ``units`` are ``{text, kind:
+               "word", startMs, endMs}`` from that frame on (Edge only, else [])
       server → ``{"type": "fallback"}`` only when sentence synthesis produced
                no audio. Providers with no chunked API (edge, the default)
                still speak per sentence via ``text_to_speech_tool`` and stream
@@ -685,7 +688,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
     produced_audio = False
     synthesis_failed = False
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
-    chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
+    chunks: asyncio.Queue = asyncio.Queue()  # PCM, or a segment dict, out; None = synthesis done
 
     def _produce():
         # Every streamer re-resolves its API key on each stream() call (tts_streaming ->
@@ -698,6 +701,10 @@ async def speak_stream_ws(ws: WebSocket) -> None:
         nonlocal produced_audio, synthesis_failed
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
+        from tools.tts_tool_providers import edge_words
+
+        words: list = []
+        edge_words.set(words)  # this thread only
 
         chunker = SentenceChunker.from_config(cfg)  # the requesting profile's tts.streaming.min_len
 
@@ -735,9 +742,12 @@ async def speak_stream_ws(ws: WebSocket) -> None:
                 if not cleaned:
                     continue
                 for piece in _split_text_for_speak_stream(cleaned, cap):
-                    for chunk in streamer.stream(piece):
+                    for index, chunk in enumerate(streamer.stream(piece)):
                         if stop.is_set():
                             return
+                        if index == 0:
+                            segment = {"type": "segment", "text": piece, "units": list(words)}
+                            loop.call_soon_threadsafe(chunks.put_nowait, segment)
                         produced_audio = True
                         loop.call_soon_threadsafe(chunks.put_nowait, chunk)
         except Exception as exc:
@@ -772,7 +782,7 @@ async def speak_stream_ws(ws: WebSocket) -> None:
             if chunk is None:
                 break
             await _send_start()
-            await ws.send_bytes(chunk)
+            await (ws.send_json(chunk) if isinstance(chunk, dict) else ws.send_bytes(chunk))
         if not stop.is_set():
             # Fallback is the last resort: sentence synthesis was asked for and
             # produced nothing. A normal edge reply has already streamed PCM.

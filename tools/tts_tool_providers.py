@@ -9,8 +9,10 @@ are resolved through :func:`_origin` at call time.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
+import contextvars
 import json
 import logging
 import os
@@ -193,6 +195,13 @@ def _rewrite_with_auxiliary_model(
 
 
 # --- Edge TTS (free default) ---
+# A list to fill with Edge's word timings, for speak-stream lip-sync; None means don't ask for them.
+edge_words: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar("edge_words", default=None)
+
+# Decoding Edge's MP3 starts the audio ~1,105 samples at 24 kHz after the times Edge reports.
+_MP3_DECODE_DELAY_MS = 46.0
+
+
 async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     edge_tts = _origin()._import_edge_tts()
     edge_config = tts_config.get("edge") or {}
@@ -200,7 +209,20 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: dict[str, 
     kwargs = {"voice": edge_config.get("voice", DEFAULT_EDGE_VOICE)}
     if speed != 1.0:
         kwargs["rate"] = f"{round((speed - 1.0) * 100):+d}%"
-    await edge_tts.Communicate(text, **kwargs).save(output_path)
+    words = edge_words.get()
+    if words is None:
+        await edge_tts.Communicate(text, **kwargs).save(output_path)
+        return output_path
+    words.clear()
+    audio = bytearray()
+    async for chunk in edge_tts.Communicate(text, boundary="WordBoundary", **kwargs).stream():
+        if chunk["type"] == "audio":
+            audio += chunk["data"]
+        else:  # times are 100 ns ticks
+            start = chunk["offset"] / 10_000 + _MP3_DECODE_DELAY_MS
+            words.append({"text": chunk["text"], "kind": "word",
+                          "startMs": start, "endMs": start + chunk["duration"] / 10_000})
+    await asyncio.to_thread(Path(output_path).write_bytes, bytes(audio))
     return output_path
 
 

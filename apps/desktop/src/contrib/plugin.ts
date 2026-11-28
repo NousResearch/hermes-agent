@@ -24,9 +24,11 @@ import {
   runPluginAppAction
 } from '@/lib/keybinds/plugin-actions'
 import { readKey, writeKey } from '@/lib/storage'
+import { $voiceTimeline, getVoiceOutputLatencyMs, readVoiceLevel, type VoiceTimeline } from '@/lib/voice-timeline'
 import { dispatchPluginNativeNotification, type PluginNativeNotificationInput } from '@/store/native-notifications'
 import { $petActive } from '@/store/pet'
 import { clearPetMessages, type PetSayOptions, sayPetMessage } from '@/store/pet-plugin-messages'
+import { $voice, type VoiceState } from '@/store/voice-playback'
 
 import { type GatewayEventListener, onGatewayEvent } from './events'
 import { createPluginFiles, type PluginFiles } from './plugin-files'
@@ -43,8 +45,10 @@ export type { PluginSettingsPage, PluginSettingsSubpage } from './settings-pages
 export type { PluginRestOptions } from '@/hermes'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 export type { PluginAppActionId, PluginAppActionInfo, PluginRunActionResult } from '@/lib/keybinds/plugin-actions'
+export type { SpokenPiece, SpokenSegment, VoiceTimeline } from '@/lib/voice-timeline'
 export type { PluginNativeNotificationInput, PluginNotificationAction } from '@/store/native-notifications'
 export type { PetMessageTone, PetSayOptions } from '@/store/pet-plugin-messages'
+export type { VoiceState } from '@/store/voice-playback'
 
 /** A contribution as a plugin author writes it — provenance + id scoping are
  *  the host's job, so those fields are off-limits here. */
@@ -106,6 +110,21 @@ export interface PluginPet {
   visible: ReadableAtom<boolean>
 }
 
+/** Follow Hermes's speech (mouth, captions, meter) without touching the audio. */
+export interface PluginVoice {
+  /** Speaking or not, and why speech last ended. */
+  playback: ReadonlyStore<VoiceState>
+  /** What is being said, and when the listener hears each piece. Ended segments stay 5 s. */
+  timeline: ReadonlyStore<VoiceTimeline>
+  /** Loudness now, 0..1; ordinary speech is ~0.1-0.3. It runs `outputLatencyMs()` ahead of the listener. */
+  level(): number
+  /** Output delay, already included in timeline times. */
+  outputLatencyMs(): number
+}
+
+/** A store a plugin can read and watch, but not write. */
+export type ReadonlyStore<T> = Pick<ReadableAtom<T>, 'get' | 'listen' | 'subscribe'>
+
 export interface PluginFileDialogOptions {
   defaultPath?: string
   filters?: Array<{ extensions: string[]; name: string }>
@@ -165,6 +184,8 @@ export interface PluginContext {
    *  plugin and cleared when it unloads. Feature-detect on older hosts:
    *  `ctx.pet?.say(...)`. */
   pet: PluginPet
+  /** The voice door. Feature-detect on older hosts: `ctx.voice?.timeline`. */
+  voice: PluginVoice
   /** Run a built-in app action (toggle the browser panel, open Settings,
    *  focus the composer, …) through the same handler its keyboard shortcut
    *  and palette entry use, so rebinding or unbinding the shortcut changes
@@ -306,6 +327,30 @@ function createPluginPet(pluginId: string, track: (dispose: () => void) => () =>
   }
 }
 
+function createPluginVoice(pluginId: string, track: (dispose: () => void) => () => void): PluginVoice {
+  // Plugin callbacks run inside the host's playback code, so a throw must stop here.
+  const guard = <A extends unknown[]>(cb: (...args: A) => void) => (...args: A) => {
+    try {
+      cb(...args)
+    } catch (error) {
+      console.warn(`[plugin ${pluginId}] ctx.voice listener threw`, error)
+    }
+  }
+
+  const readonly = <T>(store: ReadableAtom<T>): ReadonlyStore<T> => ({
+    get: () => store.get(),
+    listen: cb => track(store.listen(guard(cb))),
+    subscribe: cb => track(store.subscribe(guard(cb)))
+  })
+
+  return {
+    level: readVoiceLevel,
+    outputLatencyMs: getVoiceOutputLatencyMs,
+    playback: readonly($voice),
+    timeline: readonly($voiceTimeline)
+  }
+}
+
 /** Timers and DOM listeners a plugin takes out through `ctx`, retired as ONE
  *  tracked disposer. A fired timeout drops out of the set on its own, so a
  *  long-lived plugin firing many one-shots does not accumulate cleanups. */
@@ -397,6 +442,7 @@ export function createPluginContext(
     socket: (path, onMessage) => track(pluginSocket(pluginId, path, onMessage)),
     os: createPluginOs(pluginId),
     pet: createPluginPet(pluginId, track),
+    voice: createPluginVoice(pluginId, track),
     runAction: id => runPluginAppAction(pluginId, id),
     listActions: listPluginAppActions,
     preview: createPluginPreview(pluginId, capabilities),

@@ -142,6 +142,10 @@ The ONLY import surface is `@hermes/plugin-sdk` (plus `react` /
   `ctx.os.openExternal(url)`, `ctx.os.revealPath(path)`, and
   `ctx.os.writeClipboard(text)` resolve `false` (never throw) when the
   capability isn't available.
+- `ctx.voice` — read-only speech state for avatars, captions and meters:
+  `playback` and `timeline` (`get`/`listen`/`subscribe`), `level()`,
+  `outputLatencyMs()`. Feature-detect with `ctx.voice?.`; never patch
+  `HTMLMediaElement` or `AudioContext` to follow speech.
 - `ctx.pet.say(text, { id?, tone?: 'info'|'wait'|'error', ttlMs? })` — a short
   plain-text line in the core pet's speech bubble (in-window and popped out),
   labelled with your plugin name; returns a disposer. 120-char cap, TTL default

@@ -1,15 +1,18 @@
 import { useStore } from '@nanostores/react'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { TitlebarControls } from '@/app/shell/titlebar-controls'
 import { registry } from '@/contrib/registry'
+import { CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { $layoutEditMode } from '../../edit-mode'
-import { group } from '../model'
+import { group, split } from '../model'
 import { $layoutTree, $narrowViewport, $newSessionTabAction } from '../store'
 
+import { NarrowOverlays } from './narrow-overlays'
 import { TreeGroup } from './tree-group'
 
 const ids = ['workspace', 'session-tile:second', 'session-tile:third']
@@ -59,6 +62,40 @@ it('exposes every phone tab and changes the active pane without discarding its d
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'Session 1' }))
   expect((screen.getByRole('textbox', { name: 'Draft 1' }) as HTMLInputElement).value).toBe('keep this draft')
   expect($layoutTree.get()).toMatchObject({ active: ids[0], panes: ids })
+})
+
+it('dismisses the phone tab picker on the tap that opens the sidebar', async () => {
+  disposers.push(
+    registry.register({
+      area: 'panes',
+      data: { collapsible: true, placement: 'left', revealAliases: [CHAT_SIDEBAR_PANE_ID] },
+      id: 'sessions',
+      render: () => <div>Session list</div>,
+      title: 'Sessions'
+    })
+  )
+  const chat = { ...group(ids), active: ids[0], tabStrip: 'always' as const }
+  $layoutTree.set(split('row', [group(['sessions']), chat]))
+  render(
+    <MemoryRouter>
+      <TitlebarControls onOpenSettings={() => {}} />
+      <TreeGroup node={chat} />
+      <NarrowOverlays />
+    </MemoryRouter>
+  )
+  const sidebar = screen.getByRole('button', { name: 'Show sidebar' })
+  const touch = { button: 0, pointerType: 'touch', ctrlKey: false }
+  fireEvent.pointerDown(screen.getByRole('button', { name: '3 tabs Session 1' }), touch)
+  const menu = await screen.findByRole('menu')
+
+  // Radix installs its outside-press listener on the tick after the menu opens.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  fireEvent.pointerDown(sidebar, touch)
+  fireEvent.pointerUp(sidebar, touch)
+  fireEvent.click(sidebar)
+
+  expect(screen.getByText('Session list')).toBeTruthy()
+  await waitFor(() => expect(menu.isConnected).toBe(false))
 })
 
 it('keeps the normal strip on wider layouts', () => {

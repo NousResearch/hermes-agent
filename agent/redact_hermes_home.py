@@ -27,3 +27,21 @@ def _is_under_hermes_home(path: str) -> bool:
         if target == base or target.startswith(base + os.sep):
             return True
     return False
+
+
+def is_hermes_credential_store(path: str, hermes_home: bool, parts: list[str]) -> bool:
+    """True for a Hermes-home credential store (``auth.json``, ``.anthropic_oauth.json``,
+    ``auth/google_oauth.json``, ...): the same inventory the file tools hard-deny
+    (``agent/file_safety._CREDENTIAL_FILE_NAMES``), so the redaction and file-tool lists
+    cannot drift. Anchored like ``config.yaml`` — a ``.hermes`` segment, ``$HERMES_HOME``,
+    or the resolved Hermes home — so a project's own ``auth.json`` never matches (#157915).
+    """
+    from agent.file_safety import _CREDENTIAL_FILE_NAMES
+
+    if not (hermes_home or ".hermes" in parts[:-1] or _is_under_hermes_home(path)):
+        return False
+    for name in _CREDENTIAL_FILE_NAMES:
+        segs = [part.lower() for part in name.replace("\\", "/").split("/") if part]
+        if segs and parts[-len(segs):] == segs:
+            return True
+    return False

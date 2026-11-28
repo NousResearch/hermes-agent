@@ -43,12 +43,20 @@ async def ledger_attempted(adapter: Any, event: Any, session_key: str, text: str
     return bool(saved)
 
 
+def reply_is_private(adapter: Any, event: Any) -> bool:
+    """True when *adapter* says *event*'s replies reach only its sender through a lane this process
+    holds (Slack's native slash response_url, ``SlackAdapter.reply_is_private``). The delivery ledger
+    and restart auto-resume deliver through the public lane, so both skip such a turn."""
+    check = getattr(adapter, "reply_is_private", None)
+    return bool(check is not None and check(event))
+
+
 async def record_final_obligation(adapter: Any, event: Any, session_key: str, text_content: str,
                             delivery_adapter: Any, is_ephemeral_response: bool) -> Optional[str]:
     """Ledger the final response BEFORE the send so a crash before platform ACK redelivers on
     next boot; best-effort, skips slash-command and ephemeral replies. Returns the obligation id
     or None."""
-    if is_ephemeral_response or str(event.text or "").lstrip().startswith(
+    if is_ephemeral_response or reply_is_private(adapter, event) or str(event.text or "").lstrip().startswith(
         ("/", adapter.typed_command_prefix or "!")):
         return None
     try:

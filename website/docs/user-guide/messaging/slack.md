@@ -334,12 +334,22 @@ Replies to a native slash command (e.g. `/status`, `/help`) are delivered
 **ephemerally** — "Only visible to you" — so command output never spams the
 channel. The "Running /cmd…" placeholder is replaced with the real reply; long
 replies are chunked into follow-up ephemeral messages. Slack caps the reply
-flow at 5 posts, so extremely long output is closed with an explicit
-truncation notice rather than silently dropped. If the primary ephemeral path
-fails, Hermes retries via a second ephemeral API path — a slash reply is never
-posted publicly to the channel as a fallback. (Commands typed as regular
-messages — `!cmd` in threads, `@Hermes /cmd` — reply as normal visible
-messages instead.)
+flow at 5 posts per command, so extremely long output is closed with an
+explicit truncation notice rather than silently dropped. If the primary
+ephemeral path fails, Hermes retries via a second ephemeral API path — a slash
+reply is never posted publicly to the channel as a fallback, including on a
+retry. In a channel, every message the command produces stays ephemeral: an
+acknowledgement such as `/plan`'s "Planning: …" and the agent's answer that
+follows it. Output with no ephemeral form is not posted to the channel:
+button prompts (`/model`'s picker, a confirmation or approval) fall back to
+their text form, and files (such as `/save`'s export) are not sent — run the
+command in a DM with the bot to get them. In a DM, which is already private,
+only the reply that replaces the placeholder is ephemeral and the rest of the
+answer stays in the conversation history. A channel slash command interrupted by
+a gateway restart is not resumed automatically, so its answer cannot reach the
+channel afterwards; run it again. (Commands typed as regular messages
+— `!cmd` in threads, `@Hermes /cmd` — reply as normal visible messages
+instead.)
 
 ### Clarify prompts (one-tap buttons)
 

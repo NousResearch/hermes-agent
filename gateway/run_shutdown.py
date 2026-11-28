@@ -899,7 +899,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         # manager during the drain, the durable marker is already written so the next gateway boot can
         # recover in-flight sessions (#27856).
         for _sk, _agent in list(self._running_agents.items()):
-            if _agent is _AGENT_PENDING_SENTINEL:
+            if _agent is _AGENT_PENDING_SENTINEL or self._running_turn_reply_is_private(_sk):
                 continue
             with _log_suppressed(logging.DEBUG, "%s failed for %s: %s", log_prefix, _sk):
                 await self.async_session_store.mark_resume_pending(_sk, reason)

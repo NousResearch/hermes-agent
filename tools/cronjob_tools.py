@@ -1,6 +1,7 @@
 """Cron job management tool: one compressed action-oriented `cronjob_manage` tool
 (schema/context bloat avoided); `cronjob()` stays callable for direct Python callers."""
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -379,7 +380,33 @@ def _run_claimed_job(job: dict[str, Any], extra_prompt: Optional[str] = None) ->
             # run_one_job records last_run_at/last_status via mark_job_run; `job` is the
             # owner-bearing claimed snapshot, so terminal writes stay fenced by that owner.
             with _run_heartbeat(str(job.get("name") or job_id)):
-                processed = run_one_job(job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
+                try:
+                    asyncio.get_running_loop()
+                except RuntimeError:
+                    processed = run_one_job(
+                        job, adapters=adapters, loop=gateway_loop, extra_prompt=extra_prompt)
+                else:
+                    # Agent-backed scheduler runs own their lifecycle with asyncio.run(). A
+                    # deferred/manual tool can itself be dispatched on an async host thread,
+                    # where nesting asyncio.run() fails before the job starts. Keep the public
+                    # tool synchronous, but move the scheduler body to a context-bound thread.
+                    # This is the same process boundary the normal ticker uses.
+                    from agent.memory_provider import spawn_context_thread
+
+                    result = Future()
+
+                    def _run() -> None:
+                        try:
+                            result.set_result(run_one_job(
+                                job, adapters=adapters, loop=gateway_loop,
+                                extra_prompt=extra_prompt))
+                        except BaseException as exc:  # health: allow BLE001 -- transfer scheduler failures unchanged
+                            result.set_exception(exc)
+
+                    worker = spawn_context_thread(
+                        _run, name=f"cron-manual-run-{job_id}")
+                    worker.start()
+                    processed = result.result()
         finally:
             _registered = False
             release_running_job(job_id, owner=registration_owner)

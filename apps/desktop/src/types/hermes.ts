@@ -765,6 +765,14 @@ export interface SessionMessage {
    * (`SELECT *`) ships the same value as a numeric `id`. Read both.
    */
   row_id?: number
+
+  /**
+   * Durable per-logical-message identity minted by the store
+   * (`stamp_message_uid`): a compaction rewrite re-persists rows under new
+   * ids while keeping each row's uid, so matching on it survives the rewrite
+   * where row ids and provider call ids do not (#123294).
+   */
+  message_uid?: string | null
   id?: number
   text?: unknown
   timestamp?: number

@@ -724,6 +724,23 @@ def test_chat_messages_to_responses_input_drops_foreign_id_for_codex_backend():
     assert xai_message["id"] == _FOREIGN_ITEM_ID
 
 
+def test_responses_reasoning_text_echo_is_opt_in_and_survives_preflight():
+    history = [{
+        "role": "assistant", "content": "", "codex_reasoning_items": [
+            {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+        ],
+    }]
+
+    unchanged = _preflight_codex_input_items(_chat_messages_to_responses_input(history))
+    padded = _preflight_codex_input_items(_chat_messages_to_responses_input(
+        history, require_reasoning_text_echo=True))
+
+    plain_reasoning = next(item for item in unchanged if item["type"] == "reasoning")
+    echoed_reasoning = next(item for item in padded if item["type"] == "reasoning")
+    assert "content" not in plain_reasoning
+    assert echoed_reasoning["content"] == [{"type": "reasoning_text", "text": " "}]
+
+
 def test_message_id_is_dropped_when_its_turn_replays_reasoning_without_id():
     """#97427/#97442: a ``msg_*`` id bound to a stripped ``rs_*`` id is an orphan the API rejects with 400;
     the message survives as content/status/phase. A reasoning-free turn keeps its id (prefix-cache affinity)."""

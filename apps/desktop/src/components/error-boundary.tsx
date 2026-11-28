@@ -15,6 +15,9 @@ interface ErrorBoundaryProps {
   fallback?: (props: ErrorBoundaryFallbackProps) => ReactNode
   label?: string
   onError?: (error: Error, info: ErrorInfo) => void
+  /** A caught error clears when this value changes (e.g. the route), so a
+   *  crash in one view doesn't pin its fallback over every view after it. */
+  resetKey?: unknown
 }
 
 interface ErrorBoundaryState {
@@ -87,6 +90,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
       console.warn(`${tag} auto-recovering from ${race} render race`, error.message)
       this.autoRecoveryPending = true
       this.scheduleAutoRecovery()
+    }
+  }
+
+  componentDidUpdate(prev: ErrorBoundaryProps) {
+    if (this.state.error && !Object.is(prev.resetKey, this.props.resetKey)) {
+      this.reset()
     }
   }
 

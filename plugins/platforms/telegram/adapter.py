@@ -79,44 +79,12 @@ async def _await_with_thread_deadline(
     return result.value
 
 
-def _iter_exception_graph(error: BaseException) -> Iterator[BaseException]:
-    """Yield ``error`` and every ``__cause__``/``__context__`` ancestor (DFS, cycle-safe) —
-    PTB wraps httpx errors, so classifiers must inspect the whole graph."""
-    seen: set[int] = set()
-    stack: list[BaseException] = [error]
-    while stack:
-        cur = stack.pop()
-        ident = id(cur)
-        if ident in seen:
-            continue
-        seen.add(ident)
-        yield cur
-        stack.extend(x for x in (getattr(cur, "__cause__", None), getattr(cur, "__context__", None)) if x is not None)
-
-
-async def _shutdown_abandoned_app(app) -> None:
-    """Release a half-built PTB app's httpx transports after an abandoned init: ``app.shutdown()``
-    no-ops when ``_initialized`` was never set, so the request transports are closed directly."""
-    if app is None:
-        return
-    try:
-        await app.shutdown()
-    except Exception:
-        logger.debug("Abandoned Telegram app.shutdown() failed", exc_info=True)
-    bot = getattr(app, "bot", None)
-    for request in (getattr(bot, "_request", None) if bot is not None else None) or ():
-        shutdown = getattr(request, "shutdown", None)
-        if shutdown is None:
-            continue
-        try:
-            result = shutdown()
-            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                await result
-        except Exception:
-            logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
+from plugins.platforms.telegram.telegram_network import _iter_exception_graph, _shutdown_abandoned_app
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
+    from telegram import (
+        InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedDocument)
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -133,6 +101,8 @@ except ImportError as _import_exc:
     TELEGRAM_AVAILABLE = False
     Update = Bot = Message = InlineKeyboardButton = InlineKeyboardMarkup = Application = Any
     CommandHandler = CallbackQueryHandler = InlineQueryHandler = TypeHandler = TelegramMessageHandler = HTTPXRequest = Any
+    InlineQueryResultArticle = InputTextMessageContent = Any
+    InlineQueryResultCachedPhoto = InlineQueryResultCachedVideo = InlineQueryResultCachedAudio = InlineQueryResultCachedDocument = Any
     LinkPreviewOptions = filters = ParseMode = ChatType = None
 
     # Mock so ContextTypes.DEFAULT_TYPE annotations don't crash class definition without the lib.
@@ -181,6 +151,7 @@ from plugins.platforms.telegram.telegram_audio_meta import (
 from plugins.platforms.telegram.telegram_dm_topic_send import dead_topic_may_reroute, dead_topic_retry_kwargs, private_chat, topic_gone
 from plugins.platforms.telegram.telegram_entities import (
     addressing_sources, addressing_text, expand_link_entities, expand_quote_link_entities, rich_message_filter, rich_message_text)
+from plugins.platforms.telegram.telegram_guest import TelegramGuestModeMixin, guest_edit_intercept
 from plugins.platforms.telegram.telegram_held_inbound import TelegramHeldInboundMixin
 from plugins.platforms.telegram.telegram_ingress import TelegramContactMixin
 from plugins.platforms.telegram.telegram_replacement import TelegramReplacementMixin
@@ -270,7 +241,8 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
+    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler, InlineQueryResultArticle, InputTextMessageContent
+    global InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedDocument
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -282,8 +254,12 @@ def check_telegram_requirements() -> bool:
         import importlib
         _tg, _ext, _const, _req = (
             importlib.import_module(m) for m in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"))
-        Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup = (
-            getattr(_tg, n) for n in ("Update", "Bot", "Message", "InlineKeyboardButton", "InlineKeyboardMarkup"))
+        Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent = (
+            getattr(_tg, n) for n in ("Update", "Bot", "Message", "InlineKeyboardButton", "InlineKeyboardMarkup",
+                                      "InlineQueryResultArticle", "InputTextMessageContent"))
+        InlineQueryResultCachedPhoto, InlineQueryResultCachedVideo, InlineQueryResultCachedAudio, InlineQueryResultCachedDocument = (
+            getattr(_tg, n) for n in ("InlineQueryResultCachedPhoto", "InlineQueryResultCachedVideo",
+                                      "InlineQueryResultCachedAudio", "InlineQueryResultCachedDocument"))
         LinkPreviewOptions = getattr(_tg, "LinkPreviewOptions", None)
         Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler = (
             getattr(_ext, n) for n in ("Application", "CommandHandler", "CallbackQueryHandler", "InlineQueryHandler", "MessageHandler"))
@@ -395,7 +371,7 @@ class _PollingStallError(RuntimeError):
     """
 
 
-class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, TelegramVaultCodeMixin, TelegramFloodCooldownMixin, BasePlatformAdapter):
+class TelegramAdapter(TelegramGuestModeMixin, TelegramContactMixin, TelegramHeldInboundMixin, TelegramReplacementMixin, TelegramTopicRoutingMixin, TelegramPendingProbeMixin, TelegramMediaFloodMixin, TelegramSendPathRecoveryMixin, TelegramVaultCodeMixin, TelegramFloodCooldownMixin, BasePlatformAdapter):
     """Telegram bot adapter: users/groups, MarkdownV2 replies, forum topics, media."""
 
     # Bound for the per-(chat_id, status_key) status-message cache; FIFO half-trim on overflow.
@@ -538,6 +514,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._polling_heartbeat_task: Optional[asyncio.Task] = None
         self._bot_identity_refresh_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None  # command menu + DM topics, off the connect path
+        self._init_guest_state()
         self._polling_conflict_count = self._polling_network_error_count = self._polling_generation = 0
         self._polling_conflict_quiet_since: Optional[float] = None
         self._polling_progress_event = asyncio.Event()
@@ -2700,6 +2677,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Register every PTB handler on ``app`` (initial connect and the transient-init rebuild)."""
         table = getattr(app, "handlers", None)
         prior = {id(h) for hs in table.values() for h in hs} if isinstance(table, dict) else set()
+        # Bot API 10.0 guest messages first: filters.TEXT also matches them (effective_message), and PTB
+        # stops at the first matching handler in a group, so this takes priority over the normal pipeline.
+        app.add_handler(TelegramMessageHandler(filters.UpdateType.GUEST_MESSAGE, self._handle_guest_message_update))
         app.add_handler(TelegramMessageHandler((filters.TEXT | rich_message_filter(filters)) & ~filters.COMMAND, self._handle_text_message))
         app.add_handler(TelegramMessageHandler(filters.COMMAND, self._handle_command))
         app.add_handler(TelegramMessageHandler(filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION), self._handle_location_message))
@@ -2958,6 +2938,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             self._bot = self._app.bot
             # Plugin PTB handlers go BEFORE core: PTB dispatches the first matching handler per group.
             self._wire_plugin_handlers(self._app)
+            self._load_guest_update_ids()  # so a restart doesn't reprocess guest updates
             self._register_handlers(self._app)
             await self._initialize_app_with_retries(builder)
             await self._app.start()
@@ -3374,6 +3355,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return SendResult(success=False, error="send_path_degraded", retryable=True)
         # Skip blank or invisible-only text (Telegram 400 empty-text, or a visually empty bubble).
         if is_visually_empty(content):
+            self._guest_drop_media_fragment(chat_id, metadata)
             return SendResult(success=True, message_id=None)
         # One chat at a time (held only around the API calls, never across the reconnect wait above), so
         # two concurrent split replies to one chat cannot interleave their chunks (#114396).
@@ -3404,6 +3386,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         chunks: list[str] = []
         delivered: list[str] = []
         try:
+            if self._is_guest_chat(chat_id):  # Bot API 10.0 guest chat: buffered, flushed on completion
+                return await self._guest_buffer_send(chat_id, content, metadata)
             # Bot API 10.1 rich fast-path; falls through to legacy MarkdownV2 on permanent/capability
             # errors or DM-topic skips; returns directly on success or transient failure (no legacy resend).
             rich_result = await send_rich_parts(self, chat_id, content, reply_to, metadata)
@@ -3491,6 +3475,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def send_or_update_status(
         self, chat_id: str, status_key: str, content: str, *, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Send or edit the status bubble owned by ``(chat_id, status_key)``."""
+        if self._is_guest_chat(chat_id):  # no message to edit; a status send would spend the one-shot query
+            return SendResult(success=True, message_id=None)
         from .telegram_status import send_or_update_status
         return await send_or_update_status(self, chat_id, status_key, content, metadata=metadata)
 
@@ -3524,6 +3510,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # The finalized text is what the user sees and quotes: keep it resolvable (#147287).
             await self._record_sent_text(chat_id, message_id, quotable_text(content))
 
+    @guest_edit_intercept
     async def edit_message(
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[dict[str, Any]] = None,
    ) -> SendResult:
@@ -3728,6 +3715,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def send_draft(self, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Stream a partial message via ``sendRichMessageDraft`` (when rich is enabled and supported) else
         ``sendMessageDraft``; reusing ``draft_id`` animates the preview. The caller sends the final text."""
+        if self._is_guest_chat(chat_id):  # no message to animate: the bot is not a member
+            return SendResult(success=True, message_id=None)
         return await _flood_window.send_draft(self, chat_id, draft_id, content, metadata)
 
     async def _send_message_with_thread_fallback(self, **kwargs):
@@ -4800,6 +4789,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "audio", audio_path, caption)
         _transcoded_voice_path: Optional[str] = None
         source_path = audio_path  # a deferred flood re-upload transcodes again (the temp file is removed below)
         try:
@@ -4861,6 +4852,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return SendResult(success=False, error="Not connected")
         if not images:
             return SendResult(success=False, error="no images to send")
+        if self._is_guest_chat(chat_id):
+            return await self._guest_send_images(str(chat_id), images)
         try:
             from telegram import InputMediaPhoto
         except Exception as exc:  # pragma: no cover - missing SDK
@@ -4880,6 +4873,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self, chat_id: str, image_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a local image file natively as a Telegram photo."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "photo", image_path, caption)
         # Pre-compress large raster images to progressive JPEG once; the photo send and the document
         # fallback both reuse the compressed file so either upload stays under media_write_timeout.
         compressed = self._compress_image_to_jpeg(image_path)
@@ -4924,6 +4919,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self, chat_id: str, file_path: str, caption: Optional[str] = None, file_name: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None, **kwargs) -> SendResult:
         """Send a document/file natively as a Telegram file attachment."""
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "document", file_path, caption or file_name)
         return await self._send_local_file(
             "File", file_path, chat_id, reply_to, metadata, "document",
             lambda f: {"document": f, "filename": file_name or os.path.basename(file_path), "caption": self._caption_1024(caption)},
@@ -4942,6 +4939,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         ``320x320`` video with ``duration=0`` and no thumbnail, which clients then draw as a square
         tile whatever the true aspect ratio (portrait reels and 16:9 clips alike).
         """
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "video", video_path, caption)
         geometry = await asyncio.to_thread(_probe_video_geometry, video_path)
         thumb_path = (
             await asyncio.to_thread(_video_thumbnail_jpeg, video_path, geometry.get("duration"))
@@ -4976,6 +4975,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+        if self._is_guest_chat(chat_id):
+            return await self._guest_media_send(str(chat_id), "photo", image_url, caption)
         photo_caption = self._caption_1024(caption)
         try:
             msg = await self._send_media(
@@ -5111,6 +5112,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         if not self._bot or not typing_may_fire(self, chat_id):
             return
+        await self._guest_typing(chat_id)
         _is_dm_topic: bool = False
         message_thread_id: Optional[int] = None
 
@@ -5185,10 +5187,6 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         return self._extra_bool(
             "observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false",
             "ingest_unmentioned_group_messages")
-
-    def _telegram_guest_mode(self) -> bool:
-        """Return whether non-allowlisted groups may trigger via direct @mention."""
-        return self._extra_bool("guest_mode", "TELEGRAM_GUEST_MODE", "false")
 
     def _telegram_exclusive_bot_mentions(self) -> bool:
         """Return whether explicit @...bot mentions exclusively route group messages."""
@@ -6495,6 +6493,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction (set_message_reaction
         replaces, not adds); CANCELLED explicitly clears the 👀."""
+        await self._guest_finish_turn(event)
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

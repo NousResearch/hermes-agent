@@ -618,11 +618,14 @@ def _dashboard_plugin_entry(data: dict[str, Any], name: str, dashboard_dir: Path
             "not be mounted",
             name, raw_api,
         )
+    # ``icon`` is a Lucide icon name; typed clients decode this list, so a non-string must not escape.
+    raw_icon = data.get("icon")
+    icon = raw_icon if isinstance(raw_icon, str) and raw_icon.strip() else "Puzzle"
     return {
         "name": name,
         "label": data.get("label", name),
         "description": data.get("description", ""),
-        "icon": data.get("icon", "Puzzle"),
+        "icon": icon,
         "version": data.get("version", "0.0.0"),
         "tab": tab_info,
         "slots": slots,

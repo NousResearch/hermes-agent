@@ -93,10 +93,11 @@ _WS_WRITE_TIMEOUT_S = 10.0
 # later frame and RPC reply parked behind the writer lock (#106369).
 _WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
-# Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order, but on a
-# per-connection task so the read loop keeps answering gateway.ping while a handler blocks (a lock held
-# by a long compaction, a GIL-heavy turn): the client's heartbeat deadline measures the transport, not
-# handler latency (#108325). A full queue parks the reader — the old serial behaviour.
+# Frames read ahead of a busy dispatcher. RPCs still dispatch one at a time in arrival order
+# (a manual compress runs in its session's own lane), but on a per-connection task so the read loop
+# keeps answering gateway.ping while a handler blocks (a lock held by a long compaction, a GIL-heavy
+# turn): the client's heartbeat deadline measures the transport, not handler latency (#108325).
+# A full queue parks the reader — the old serial behaviour.
 _WS_DISPATCH_QUEUE_MAX = 256
 # These handlers only project already-owned state.  They may take seconds for a large stored
 # transcript, so running them through the serial control lane turns an inexpensive interrupt or
@@ -107,6 +108,9 @@ _WS_CONCURRENT_READ_METHODS = frozenset({"session.context_breakdown", "session.t
 _WS_CONCURRENT_READ_LIMIT = 2
 # Reads admitted beyond the running ones; one more parks the reader (as the serial lane did).
 _WS_WAITING_READ_LIMIT = 8
+# Cap manual compressions per connection: each holds a default-executor thread for its whole
+# summary call (minutes). A third waits in its own session lane, never on the serial lane.
+_WS_COMPRESS_LANE_LIMIT = 2
 # A shared socket's frame naming a profile hot-serve is still starting (a chat opened on a profile
 # created a moment ago) waits for that start in a lane of its own: on the serial lane every later
 # control on the socket, other profiles' prompts and interrupts included, would queue behind it.
@@ -481,6 +485,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
     # leaves, so a start that ends a moment later (before the lane resumes) cannot run them.
     held_waiting: dict[str, asyncio.Event] = {}
     held_dropped: set[str] = set()
+    # A compress owns only its session's FIFO; unrelated controls keep the shared socket moving.
+    compress_frames: dict[str, collections.deque] = {}
+    compress_lanes: set[asyncio.Task] = set()
+    compress_slots = asyncio.Semaphore(_WS_COMPRESS_LANE_LIMIT)
 
     def _client_left() -> None:
         """At the disconnect, with no yield: drop every lane whose start has not ended yet. A lane that
@@ -592,6 +600,64 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 lane.cancel()
         await asyncio.gather(*held_lanes, return_exceptions=True)
 
+    async def _dispatch_compress_lane(key: str) -> None:
+        """Drain one session in order; do not start more work after a reply fails."""
+        frames = compress_frames[key]
+        try:
+            async with compress_slots:
+                while frames and not send_failed.done():
+                    await _dispatch_one(frames[0])
+                    frames.popleft()
+                    held_room.release()
+        except _SendFailed:
+            if not send_failed.done():
+                send_failed.set_result(None)
+        finally:
+            for _ in frames:
+                held_room.release()
+            del compress_frames[key]
+
+    def _compress_key(req: Any) -> str | None:
+        """The frame's raw session_id, used as the lane key. Profile is ignored (a same-id frame
+        of another profile only gains ordering); another id for the same conversation (root vs tip)
+        is not ordered here, and the mutation's revision/generation fences cover that case."""
+        params = req.get("params") if isinstance(req, dict) else None
+        key = params.get("session_id") if isinstance(params, dict) else None
+        return key if isinstance(key, str) and key else None
+
+    async def _join_compress_lane(req: Any) -> bool:
+        """Join an existing lane unless it drained while this frame waited for room."""
+        key = _compress_key(req)
+        if key not in compress_frames:
+            return False
+        await _unless_dispatch_failed(held_room.acquire())
+        if key not in compress_frames:
+            held_room.release()
+            return False
+        compress_frames[key].append(req)
+        return True
+
+    async def _start_compress_lane(req: Any) -> bool:
+        """Start a session lane for a manual compress (session.mutate operation=compress)."""
+        key = _compress_key(req)
+        if (key is None or req.get("method") != "session.mutate"
+                or req["params"].get("operation") != "compress"):
+            return False
+        await _unless_dispatch_failed(held_room.acquire())
+        compress_frames[key] = collections.deque([req])
+        lane = asyncio.create_task(_dispatch_compress_lane(key))
+        compress_lanes.add(lane)
+        lane.add_done_callback(compress_lanes.discard)
+        return True
+
+    async def _end_compress_lanes() -> None:
+        """Drain already-read controls on hang-up, or cancel the lanes on server shutdown."""
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            for lane in compress_lanes:
+                lane.cancel()
+        await asyncio.gather(*compress_lanes, return_exceptions=True)
+
     async def _next_request() -> Any:
         """The next queued frame, or ``stop`` once the read lane failed to send a reply."""
         step = asyncio.ensure_future(pending.get())
@@ -602,7 +668,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
         return stop
 
     async def _dispatch_loop() -> None:
-        """Dispatch controls in arrival order; bounded expensive read-only projections run alongside them."""
+        """Keep controls ordered per session; expensive reads and compressions run alongside."""
         while (req := await _next_request()) is not stop:
             req_method = req.get("method") if isinstance(req, dict) else None
             if req_method in _WS_CONCURRENT_READ_METHODS:
@@ -610,7 +676,12 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 concurrent_reads.add(task)
                 task.add_done_callback(_finish_concurrent_read)
                 continue
+            # Keep an existing session lane together so a profile hold cannot reorder its frames.
+            if await _join_compress_lane(req):
+                continue
             if await _hold_for_profile_start(req):
+                continue
+            if await _start_compress_lane(req):
                 continue
             await _dispatch_one(req)
 
@@ -739,6 +810,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
                 _log.error("ws dispatcher failed peer=%s", peer, exc_info=failure)
         await _end_reads()
         await _end_held()
+        await _end_compress_lanes()
         if authority_connection is not None:
             # After the dispatcher drained: an in-flight authority call must not see its connection closed.
             await authority_connection.close()

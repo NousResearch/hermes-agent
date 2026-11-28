@@ -5,6 +5,7 @@ used to sit in ``pending_watchers`` until the post-turn drain, leaving the chat 
 the whole turn (#112033).
 """
 
+import pytest
 from types import SimpleNamespace
 
 from tools.process_registry import ProcessRegistry
@@ -47,3 +48,24 @@ def test_watcher_stays_pending_without_a_serving_gateway(monkeypatch):
     _register_completion_watcher(registry, _proc_session(), "agent:main:telegram:dm:123")
 
     assert [w["session_id"] for w in registry.pending_watchers] == ["proc_active", "proc_active"]
+
+
+def test_a_registration_that_raises_leaves_the_no_watcher_marker(monkeypatch):
+    """``watcher_interval`` is the "a watcher exists" marker callers re-arm on, and the spawn and
+    yield paths call the registrar unwrapped: a raise before the descriptor is queued must not leave 5."""
+    from types import SimpleNamespace
+
+    import gateway.run as gateway_run
+    from tools.terminal_tool_background import _register_completion_watcher
+
+    def boom(_watcher):
+        raise RuntimeError("loop torn down")
+
+    _install_runner(monkeypatch, SimpleNamespace(arm_process_watcher=boom))
+    session = _proc_session()
+    session.watcher_interval = 0
+
+    with pytest.raises(RuntimeError):
+        _register_completion_watcher(ProcessRegistry(), session, "agent:main:telegram:dm:123")
+
+    assert session.watcher_interval == 0

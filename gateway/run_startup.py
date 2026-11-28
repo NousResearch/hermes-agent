@@ -1576,8 +1576,7 @@ class GatewayStartupMixin:
         # concurrent append during the yield must not be lost); yield every 100 to keep the loop live.
         with _log_suppressed(logging.ERROR, "Recovered watcher setup error: %s"):
             from tools.process_registry import process_registry
-            watchers = process_registry.pending_watchers
-            process_registry.pending_watchers = []
+            watchers = process_registry.take_pending_watchers()
             for i, watcher in enumerate(watchers):
                 self._spawn_supervised(
                     lambda w=watcher: self._run_process_watcher(w),

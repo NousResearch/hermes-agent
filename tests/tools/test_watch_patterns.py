@@ -189,6 +189,7 @@ class TestLifetimeCap:
         from tools.process_registry import WATCH_LIFETIME_MAX_HITS
 
         session = _make_session(watch_patterns=["ready"])
+        registry._running[session.id] = session  # alive: the exit has not claimed the finish
         for i in range(WATCH_LIFETIME_MAX_HITS - 1):
             session._watch_cooldown_until = 0.0
             registry._check_watch_patterns(session, "ready\n")
@@ -210,6 +211,179 @@ class TestLifetimeCap:
         assert "lifetime cap" in events[-1]["message"]
         assert str(WATCH_LIFETIME_MAX_HITS) in events[-1]["message"]
         assert "notify_on_complete" in events[-1]["message"]
+
+
+# =========================================================================
+# The promotion must also DELIVER: a watch-only spawn has no completion
+# watcher, and the gateway drain drops completion events that no watcher
+# owns, so the promised exit notice used to vanish (#159358).
+# =========================================================================
+
+class TestFallbackArmsCompletionDelivery:
+    @staticmethod
+    def _run(registry, session):
+        """Register the session the way a spawn does: the promotion claims under the registry lock."""
+        registry._running[session.id] = session
+        return session
+
+    @classmethod
+    def _gateway_session(cls, registry, **extra):
+        session = _make_session(watch_patterns=["ready"], **extra)
+        session.watcher_platform = "telegram"
+        session.watcher_chat_id = "123"
+        session.session_key = "agent:main:telegram:dm:123"
+        return cls._run(registry, session)
+
+    @staticmethod
+    def _capture_arming(monkeypatch, armed):
+        from types import SimpleNamespace
+        import gateway.run as gateway_run
+        monkeypatch.setattr(gateway_run, "_gateway_runner_ref",
+                            lambda: SimpleNamespace(arm_process_watcher=lambda w: armed.append(w) or True))
+
+    def test_lifetime_cap_arms_the_completion_watcher_once(self, registry, monkeypatch):
+        """The summary promises exactly one notification on exit, so the watcher the gateway
+        delivers through must exist — armed once, not once per later chunk."""
+        from tools.process_registry import WATCH_LIFETIME_MAX_HITS
+
+        armed = []
+        self._capture_arming(monkeypatch, armed)
+        session = self._gateway_session(registry)
+        for _ in range(WATCH_LIFETIME_MAX_HITS):
+            session._watch_cooldown_until = 0.0
+            registry._check_watch_patterns(session, "ready\n")
+
+        assert session.notify_on_complete is True
+        assert [w["session_id"] for w in armed] == [session.id]
+        assert armed[0]["notify_on_complete"] is True and armed[0]["chat_id"] == "123"
+        assert session.watcher_interval == 5  # a second arm is now skipped
+        assert registry.pending_watchers == []
+
+    def test_strike_disable_arms_the_completion_watcher(self, registry, monkeypatch):
+        from tools.process_registry import WATCH_STRIKE_LIMIT
+
+        armed = []
+        self._capture_arming(monkeypatch, armed)
+        session = self._gateway_session(registry)
+        for _ in range(WATCH_STRIKE_LIMIT):
+            session._watch_cooldown_until = 0.0
+            registry._check_watch_patterns(session, "ready\n")
+            registry._check_watch_patterns(session, "ready\n")  # one strike inside the window
+
+        assert session._watch_disabled is True
+        assert [w["session_id"] for w in armed] == [session.id]
+
+    def test_cli_session_only_flips_the_flag(self, registry, monkeypatch):
+        """No chat routing (CLI/TUI): the queue path delivers, so nothing may be armed."""
+        from tools.process_registry import WATCH_STRIKE_LIMIT
+
+        armed = []
+        self._capture_arming(monkeypatch, armed)
+        session = self._run(registry, _make_session(watch_patterns=["ready"]))  # no chat routing
+        for _ in range(WATCH_STRIKE_LIMIT):
+            session._watch_cooldown_until = 0.0
+            registry._check_watch_patterns(session, "ready\n")
+            registry._check_watch_patterns(session, "ready\n")  # one strike inside the window
+
+        assert session.notify_on_complete is True
+        assert session._watch_disabled is True
+        assert armed == [] and registry.pending_watchers == []
+        assert [e["type"] for e in registry.completion_queue.queue if e["type"] == "completion"] == []
+
+    def test_promotion_after_the_exit_queues_the_completion_itself(self, registry, monkeypatch):
+        """The exit can claim the finish between the breaker's ``exited`` check and the promotion; its
+        publication then read the flag as False. Nobody publishes, so the promoter must — CLI has no
+        watcher to fall back on."""
+        armed = []
+        self._capture_arming(monkeypatch, armed)
+        session = self._gateway_session(registry)
+        assert registry._move_to_finished(session) is True
+        assert registry.completion_queue.empty()  # published before the flag existed
+
+        registry._arm_notify_fallback(session)
+
+        assert [e["type"] for e in list(registry.completion_queue.queue)] == ["completion"]
+        assert [w["session_id"] for w in armed] == [session.id]
+
+    def test_a_failed_arm_leaves_the_session_rearmable(self, registry, monkeypatch):
+        """``0`` means "no watcher yet": a raise while arming must not look like success, and a later
+        attempt must still arm — the flag alone would promise a notice nobody delivers."""
+        from types import SimpleNamespace
+        import gateway.run as gateway_run
+        import tools.terminal_tool_background as ttb
+
+        calls = []
+        monkeypatch.setattr(gateway_run, "_gateway_runner_ref",
+                            lambda: SimpleNamespace(arm_process_watcher=lambda w: calls.append(w) or True))
+
+        def broken(*_args):
+            raise ImportError("no gateway context")
+
+        monkeypatch.setattr(ttb, "_stamp_gateway_routing", broken)
+        session = self._run(registry, _make_session(watch_patterns=["ready"]))
+        registry._arm_notify_fallback(session)
+        assert session.notify_on_complete is True and session.watcher_interval == 0 and calls == []
+
+        monkeypatch.setattr(ttb, "_stamp_gateway_routing", lambda *_args: None)
+        session.watcher_platform = "telegram"
+        registry._arm_notify_fallback(session)
+        assert session.watcher_interval == 5 and [w["session_id"] for w in calls] == [session.id]
+
+    def test_a_promoted_process_is_not_pruned_inside_the_watcher_tick(self, registry):
+        """The watcher sleeps 5 s before its first look: a prune right after the exit leaves it nothing to
+        find, so a finished session a live watcher still has to deliver is kept."""
+        from tools.process_registry import FINISHED_TTL_SECONDS
+
+        session = self._gateway_session(registry)
+        session.started_at = time.time() - FINISHED_TTL_SECONDS - 100  # already TTL-expired
+        session.notify_on_complete = True
+        session.watcher_interval = 5
+        registry._finished[session.id] = session
+        registry._running.pop(session.id)
+
+        registry._prune_if_needed()
+        assert session.id in registry._finished
+
+        session.exited_at = time.time() - 120  # past the grace window: a dead watcher pins nothing
+        registry._prune_if_needed()
+        assert session.id not in registry._finished
+
+    def test_a_subagent_owned_process_is_left_alone(self, registry, monkeypatch):
+        """The watcher breaks at its surface check for a child-owned process, so promoting it would only
+        make a promise nothing delivers."""
+        monkeypatch.setattr("tools.process_registry_notifications.should_surface_notification", lambda *a, **k: False)
+        session = self._gateway_session(registry)
+
+        registry._arm_notify_fallback(session)
+
+        assert session.notify_on_complete is False and session.watcher_interval == 0
+
+    def test_an_arm_that_raises_reports_no_watcher(self, registry, monkeypatch):
+        """``watcher_interval`` must not be stamped before the arm succeeds, or the retry guard lies."""
+        from types import SimpleNamespace
+        import gateway.run as gateway_run
+
+        def boom(_watcher):
+            raise RuntimeError("loop torn down")
+
+        monkeypatch.setattr(gateway_run, "_gateway_runner_ref", lambda: SimpleNamespace(arm_process_watcher=boom))
+        session = self._gateway_session(registry)
+
+        registry._arm_notify_fallback(session)
+
+        assert session.watcher_interval == 0
+
+    def test_a_promotion_that_lost_to_another_path_does_not_queue_twice(self, registry):
+        """A wait/poll promotion may have armed first: the flag is already set and its publication owns
+        the notice, so the watch fallback must not add a second one."""
+        session = self._gateway_session(registry)
+        assert registry._claim_notify(session) is True
+        registry._running.pop(session.id)
+        session._finish_claimed = True
+
+        registry._arm_notify_fallback(session)
+
+        assert registry.completion_queue.empty()
 
 
 # =========================================================================

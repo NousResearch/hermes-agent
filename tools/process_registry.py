@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- registry is already ~700 lines past target; the watch-fallback delivery path lives beside _check_watch_patterns it serves (a tools/process_registry/ package split is the follow-up)
 """Process Registry -- in-memory registry for background processes spawned via
 terminal(background=true): rolling 200KB output buffer, poll/log/wait/kill, JSON
 checkpoint for crash recovery, session-scoped tracking for gateway reset protection.
@@ -58,6 +59,9 @@ MAX_OUTPUT_CHARS = 200_000      # rolling output buffer
 # output IS the payload (a bot DM's reply) asks for more per process (completion_output_chars).
 COMPLETION_OUTPUT_CHARS = 2000
 FINISHED_TTL_SECONDS = 1800     # keep finished processes 30 minutes
+# A completion watcher sleeps 5 s before its first look: keep a finished session a live watcher has not
+# delivered yet, or a burst of spawns right after it exits prunes the only record the watcher can find.
+WATCH_DELIVERY_GRACE_SECONDS = 60
 MAX_PROCESSES = 64              # max tracked processes (LRU pruning)
 
 # Watch-pattern rate limiting, PER SESSION: one watch-match notification per
@@ -797,6 +801,50 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         with suppress(Exception):
             sink(session, chunk)
 
+    def _claim_notify(self, session: ProcessSession) -> bool:
+        """Set ``notify_on_complete`` unless the exit already claimed the finish; False means it did.
+
+        ``_move_to_finished`` decides under this same lock whether to publish, so the flag either lands
+        before that read (its publication queues the completion) or the claim fails and the caller
+        publishes itself. Deciding the flag outside the lock left a window where nothing ever queued.
+        """
+        with self._lock:
+            session.notify_on_complete = True  # truthful either way: set before the claim is judged
+            return not (session._finish_claimed or session.id not in self._running)
+
+    def _arm_notify_fallback(self, session: ProcessSession) -> None:
+        """Wire delivery for the exit notice the watch breaker just promised.
+
+        A watch-only spawn never arms a completion watcher — the launch path arms one only for
+        ``notify_on_complete`` — and the gateway drain hands a ``completion`` event to the watcher
+        instead of delivering it, so after the promotion the exit notice would be dropped. Stamp the
+        spawning chat's routing if the spawn did not, then arm the watcher; CLI/TUI/``chat -q`` drain
+        ``completion_queue`` directly and need nothing. Called from a reader thread: never raises.
+        """
+        from tools.process_registry_notifications import should_surface_notification
+        if not should_surface_notification({"owner_task_id": session.owner_task_id, "task_id": session.task_id}):
+            return  # a subagent-owned process: the watcher would break at its surface check anyway
+        # Losing the claim means the exit published without this flag: nobody will queue the completion
+        # for the queue-draining surfaces, so queue it here. ``already`` keeps a promotion that another
+        # path (a wait/poll) made first from queueing a second one.
+        already = session.notify_on_complete
+        if not self._claim_notify(session) and not already:
+            self.completion_queue.put(self._completion_notification(session))
+        try:
+            from tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
+            from gateway.session_context import get_session_env
+            # Per-field: a recovered or half-stamped session can keep its platform while missing the
+            # chat/thread, and the /new boundary drop keys on parent_session_id.
+            if not (session.watcher_platform and session.watcher_chat_id):
+                _stamp_gateway_routing(session, get_session_env)
+            # watcher_interval is set only by _register_completion_watcher: 0 means no watcher yet.
+            if session.watcher_platform and not session.watcher_interval:
+                _register_completion_watcher(self, session, session.session_key)
+        except Exception:
+            session.watcher_interval = 0  # never poison the "0 = no watcher yet" re-arm guard
+            logger.warning("process %s: arming completion delivery after the watch fallback failed",
+                           session.id, exc_info=True)
+
     def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
         """Scan a freshly-read chunk for watch patterns and queue notifications.
         Per-session rate limiting (see WATCH_* constants): one match per cooldown
@@ -831,11 +879,11 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session._watch_disabled = True
                 # Promote so the agent still gets exactly one notification on exit,
                 # plus exactly one summary so it sees why things went quiet.
-                session.notify_on_complete = True
                 self._emit_watch_disabled(
                     session, session._watch_suppressed,
                     f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
                     f"(min spacing {WATCH_MIN_INTERVAL_SECONDS}s). ")
+                self._arm_notify_fallback(session)  # deliver the exit notice the summary promises
                 return
             # Cooldown expired. A prior window with no drops resets the
             # consecutive-strike counter (healthy cadence again).
@@ -851,7 +899,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             lifetime_exhausted = session._watch_hits >= WATCH_LIFETIME_MAX_HITS
             if lifetime_exhausted:
                 session._watch_disabled = True
-                session.notify_on_complete = True
         output = "\n".join(matched_lines[:20])
         if len(output) > 2000:
             output = output[:2000] + "\n...(truncated)"
@@ -870,6 +917,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             self._emit_watch_disabled(
                 session, 0, f"reached the lifetime cap of {WATCH_LIFETIME_MAX_HITS} delivered matches. ",
             )
+            self._arm_notify_fallback(session)  # deliver the exit notice the summary promises
 
     def _emit_watch_disabled(self, session: ProcessSession, suppressed: int, why: str) -> None:
         """Queue the one-shot watch_disabled summary (strike-limit or lifetime-cap path)."""
@@ -1549,6 +1597,9 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 save_completed_result(session)
                 self._running.pop(session.id)
             self._finished[session.id] = session
+            # Read under the lock ``_claim_notify`` takes: a promotion either lands before this read
+            # (queued here) or sees ``_finish_claimed`` and publishes the completion itself.
+            queue_completion = was_running and session.notify_on_complete
         self._release_job_group(session)
         # Release the retained Popen/PTY handles now: otherwise every
         # finished-but-unpruned session keeps its stdout pipe (or PTY master)
@@ -1560,7 +1611,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # that was just killed. poll()/wait()/read_log() serve from the
         # buffered ``output_buffer``, never from the pipe.
         try:
-            self._publish_finished(session, was_running)
+            self._publish_finished(session, queue_completion)
         finally:
             # The owner releases waiters only after its notice is queued (or its publish
             # failed, so a waiter never parks forever). A duplicate leaves the event to it.
@@ -1568,11 +1619,16 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 session._completion_event.set()
         return was_running
 
-    def _publish_finished(self, session: ProcessSession, was_running: bool) -> None:
+    def _publish_finished(self, session: ProcessSession, queue_completion: bool) -> None:
         self._release_finished_handles(session)
         self._write_checkpoint()
-        if was_running and session.notify_on_complete:
-            notification = {
+        if queue_completion:
+            self.completion_queue.put(self._completion_notification(session))
+
+    def _completion_notification(self, session: ProcessSession) -> dict:
+        """The redacted ``completion`` event for *session*: the exit path and a promotion that lost the
+        race to the exit both queue it."""
+        notification = {
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
@@ -1588,8 +1644,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 # consumer-observed completion timestamp).
                 "started_at": session.started_at,
             }
-            _redact_process_result(notification)
-            self.completion_queue.put(notification)
+        _redact_process_result(notification)
+        return notification
 
     @staticmethod
     def _exit_fields(session: ProcessSession) -> dict:
@@ -2531,12 +2587,30 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     # ----- Cleanup / Pruning -----
 
+    def take_pending_watchers(self) -> list[dict]:
+        """Detach every queued watcher descriptor atomically: appends come from tool and reader threads
+        while the gateway's drain runs, and a read-then-replace pair drops one that lands between them."""
+        with self._lock:
+            watchers, self.pending_watchers = self.pending_watchers, []
+            return watchers
+
+    def _awaiting_watcher(self, session: ProcessSession, now: float) -> bool:
+        """A finished entry a live watcher has not delivered yet. The watcher builds its notice from the
+        session after a 5 s sleep, so pruning inside its first tick leaves it nothing to find; the grace
+        window keeps a dead watcher (a gateway restart) from pinning the entry forever."""
+        if not (getattr(session, "notify_on_complete", False) and getattr(session, "watcher_interval", 0)):
+            return False
+        if self.is_completion_consumed(session.id):
+            return False
+        return (now - (getattr(session, "exited_at", None) or now)) < WATCH_DELIVERY_GRACE_SECONDS
+
     def _prune_if_needed(self):
         """Drop expired, then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
         from tools.process_registry_awaiting import retained_for_delivery
         now = time.time()
         prunable = {sid: s for sid, s in self._finished.items()
-                    if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
+                    if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)
+                    and not self._awaiting_watcher(s, now)}
         expired = [sid for sid, s in prunable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
         if over_cap and (survivors := [sid for sid in prunable if sid not in expired]):

@@ -390,8 +390,16 @@ async function listRemoteHermesProfiles(ssh, platform: any = null) {
   const dir = expandRemotePath(`${home}/profiles`)
   let listing = ''
 
+  // Only profiles the CLI would start (hermes_constants.named_profile_is_live): a marker-less dir or a
+  // `profile delete` tombstone is not a profile. Each listed name gets its own Desktop backend.
+  const markers = ['config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db']
+  const live = markers.map(m => `[ -e "$p/${m}" ] || [ -L "$p/${m}" ]`).join(' || ')
+
   try {
-    listing = await ssh.exec(`if [ -d ${dir} ]; then ls -1 ${dir}; fi`)
+    listing = await ssh.exec(
+      `if [ -d ${dir} ]; then for p in ${dir}/*; do n="\${p##*/}"; [ -d "$p" ] || continue; ` +
+        `[ -e ${dir}/.deleted/"$n" ] && continue; if ${live}; then printf '%s\\n' "$n"; fi; done; fi`
+    )
   } catch (cause) {
     const error: any = new Error('Could not list remote Hermes profiles.')
     error.kind = 'transient-transport-error'

@@ -227,3 +227,12 @@ class TestGeminiInCheckRequirements:
             return_value={"provider": "gemini"},
         ), patch("builtins.__import__", side_effect=fake_import):
             assert check_tts_requirements() is True
+
+
+@pytest.mark.parametrize("text", [r"Saved to C:\Users\me\new.txt", r"group \1 and \g<0>", "cost $5 & 10%"])
+def test_persona_placeholder_inserts_transcript_verbatim(text):
+    """Spoken text is data, never a regex replacement template (backslashes crashed TTS)."""
+    from tools.tts_tool_providers import _compose_gemini_tts_prompt
+
+    prompt = _compose_gemini_tts_prompt(text, {}, persona_prompt="Read calmly: {transcript} (end)")
+    assert prompt.endswith(f"Read calmly: {text} (end)")

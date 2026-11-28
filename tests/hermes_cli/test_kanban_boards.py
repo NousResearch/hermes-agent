@@ -430,3 +430,102 @@ class TestBoardResurrection:
         assert meta["name"] == "My Board"
         assert "keepname" in [b["slug"] for b in kb.list_boards(include_archived=True)]
         assert "keepname" not in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+
+# ---------------------------------------------------------------------------
+# boards list COUNTS in fenced contexts
+# ---------------------------------------------------------------------------
+
+class TestBoardsListCountsPinFree:
+    """Regression: ``hermes kanban boards list`` printed the
+    pinned board's COUNTS on every row when run from a fenced context —
+    a dispatched worker (``HERMES_KANBAN_TASK``) or delegated child
+    (``HERMES_DELEGATED_CHILD_CONTEXT``) — because ``_board_task_counts``
+    resolved through :func:`kanban_db.kanban_db_path`, where the
+    ``HERMES_KANBAN_DB`` env pin outranks an explicit ``board=slug`` inside
+    every fence.
+
+    The boards listing is a cross-board enumeration *display*: its COUNTS are
+    read-only, so each board's canonical DB path must be resolved directly
+    (bypassing the pin) and opened raw read-only — never through
+    ``connect()``, whose unfenced branch would run a write-capable init pass
+    on a foreign board DB (a new cross-board WRITE surface)."""
+
+    def _seed(self, home):
+        """Two boards with different populations: alpha (2 tasks), default (1)."""
+        kb.create_board("alpha")
+        with kbc.connect_closing(board="alpha") as conn:
+            kb.create_task(conn, title="a1", assignee="dev")
+            kb.create_task(conn, title="a2", assignee="dev")
+        with kbc.connect_closing(board="default") as conn:
+            kb.create_task(conn, title="d1", assignee="dev")
+
+    def _unfenced_truth(self):
+        from hermes_cli.kanban_boards import _board_task_counts
+        return _board_task_counts("default"), _board_task_counts("alpha")
+
+    def test_counts_per_board_for_pinned_worker(self, fresh_home, monkeypatch):
+        self._seed(fresh_home)
+        truth_default, truth_alpha = self._unfenced_truth()
+        assert truth_default and truth_alpha and truth_default != truth_alpha
+        # Dispatched worker fence: DB pin on `default` + HERMES_KANBAN_TASK.
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(fresh_home / "kanban.db"))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
+        from hermes_cli.kanban_boards import _board_task_counts
+        assert _board_task_counts("default") == truth_default
+        # Base bug: the pin won, so this returned `default`'s counts.
+        assert _board_task_counts("alpha") == truth_alpha
+
+    def test_counts_per_board_for_delegated_child(self, fresh_home, monkeypatch):
+        self._seed(fresh_home)
+        truth_default, truth_alpha = self._unfenced_truth()
+        assert truth_default and truth_alpha and truth_default != truth_alpha
+        # Delegated-child fence: DB pin on `alpha`'s own DB + child marker.
+        pin = fresh_home / "kanban" / "boards" / "alpha" / "kanban.db"
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(pin))
+        from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+        monkeypatch.setenv(DELEGATED_CHILD_ENV_MARKER, "1")
+        from hermes_cli.kanban_boards import _board_task_counts
+        assert _board_task_counts("alpha") == truth_alpha
+        # Base bug: the pin won, so this returned `alpha`'s counts.
+        assert _board_task_counts("default") == truth_default
+
+    def test_counts_read_is_pin_free_and_never_writes(self, fresh_home, tmp_path, monkeypatch):
+        """Counts reads must not create or migrate any DB: a missing board
+        yields ``{}``, and a stray ``HERMES_KANBAN_DB`` pin elsewhere is
+        ignored for a named board's counts."""
+        from hermes_cli.kanban_boards import _board_task_counts
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "pinned.db"))
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fence_probe")
+        assert _board_task_counts("ghost") == {}
+        assert not (kb.board_dir("ghost") / "kanban.db").exists()
+        assert not (tmp_path / "pinned.db").exists()
+
+    def test_cli_board_counts_differ_per_board_in_fenced_env(self, tmp_path):
+        """End-to-end: ``boards list`` (text + --json) shows per-board COUNTS
+        when the CLI process itself is fenced like a dispatched worker."""
+        env = {"HERMES_HOME": str(tmp_path)}
+        assert _cli(["boards", "create", "falpha"], env_extra=env).returncode == 0
+        for title in ("fa1", "fa2"):
+            r = _cli(["--board", "falpha", "create", title, "--assignee", "dev"], env_extra=env)
+            assert r.returncode == 0, r.stderr
+        assert _cli(["create", "fd1", "--assignee", "dev"], env_extra=env).returncode == 0
+
+        fenced = dict(env)
+        fenced["HERMES_KANBAN_DB"] = str(tmp_path / "kanban.db")  # default board's DB
+        fenced["HERMES_KANBAN_TASK"] = "t_fence_cli_probe"
+
+        j = _cli(["boards", "list", "--json"], env_extra=fenced)
+        assert j.returncode == 0, j.stderr
+        counts = {b["slug"]: b["counts"] for b in json.loads(j.stdout)}
+        assert counts["falpha"] != counts["default"]
+        assert sum(counts["falpha"].values()) == 2
+        assert sum(counts["default"].values()) == 1
+
+        t = _cli(["boards", "list"], env_extra=fenced)
+        assert t.returncode == 0, t.stderr
+        row_falpha = next(ln for ln in t.stdout.splitlines() if "falpha" in ln)
+        row_default = next(ln for ln in t.stdout.splitlines() if "default" in ln)
+        assert row_falpha.split()[-1].split(",") != row_default.split()[-1].split(",")
+        # Both falpha tasks got the same status; default has exactly one task.
+        assert row_falpha.split()[-1].endswith("=2")

@@ -6,10 +6,11 @@ Filesystem-only, so every action works before ``kanban init`` and must ignore th
 from __future__ import annotations
 
 import argparse
+import sqlite3
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.kanban_output import _err, _fmt_counts, _json_out
 
 
@@ -22,14 +23,41 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
     return handler(args)
 
 
+def _counts_db_path(slug: str) -> Path:
+    """Canonical DB path for the COUNTS display — pin-free on purpose.
+
+    Bypasses :func:`kanban_db.kanban_db_path`, where the ``HERMES_KANBAN_DB``
+    env pin outranks an explicit ``board=slug`` inside every fence (dispatched
+    workers, delegated children). The boards listing is a cross-board
+    enumeration display: it needs each board's own counts, pin or no pin.
+    ``default`` keeps the legacy ``<root>/kanban.db`` location."""
+    if slug == kb.DEFAULT_BOARD:
+        return kb.kanban_home() / "kanban.db"
+    return kb.board_dir(slug) / "kanban.db"
+
+
 def _board_task_counts(slug: str) -> dict[str, int]:
-    """``{status: count}`` for a board. Safe to call on an empty DB."""
+    """``{status: count}`` for a board. Safe to call on an empty DB.
+
+    Read-only and pin-free: resolves ``slug``'s canonical DB
+    directly (:func:`_counts_db_path`) and opens it raw read-only — never
+    through :func:`kanban_db_connect.connect`, whose unfenced branch would
+    run a write-capable init/migration pass on a foreign board's DB. A
+    ``mode=ro`` URI open cannot create, migrate or set journal PRAGMs, so
+    no new cross-board write surface exists; the dispatcher's write fence
+    (``kanban_path_is_fenced``) is untouched."""
     try:
-        if not kb.kanban_db_path(board=slug).exists():
+        path = _counts_db_path(slug)
+        if not path.exists():
             return {}
-        with kbc.connect_closing(board=slug) as conn:
-            rows = conn.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
-        return {r["status"]: int(r["n"]) for r in rows}
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+            ).fetchall()
+        finally:
+            conn.close()
+        return {row[0]: int(row[1]) for row in rows}
     except Exception:
         return {}
 

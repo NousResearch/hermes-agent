@@ -1475,6 +1475,11 @@ _STATUS_HANDLERS: dict[int, Callable[[_Ctx], Verdict]] = {
     400: _classify_400, 401: lambda c: _V_AUTH_ROTATE,
     402: lambda c: _classify_402(c.msg, dict, c.code if _is_nous_route(c) else "", c.body),
     403: _status_403, 404: _status_404, 408: lambda c: _V_TIMEOUT, 413: lambda c: _V_PAYLOAD_TOO_LARGE,
+    # 499 "client closed request": the request was cut mid-flight (a cold start the caller gave up
+    # on, a cancelled upstream, a proxy that closed the flow), NOT a malformed request. Without
+    # this entry the unlisted-4xx default makes it a non-retryable format_error, so a single
+    # mid-flight abort fails the turn over to the next provider instead of retrying (#156837).
+    499: lambda c: _V_TIMEOUT,
     422: lambda c: _classify_image_tool_422(c),
     429: _status_429, 500: _status_5xx, 502: _status_5xx,
     503: lambda c: _first_match(c.msg, _OVERFLOW_AS_5XX_RULES) or _V_OVERLOADED,

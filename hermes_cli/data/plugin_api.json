@@ -84,6 +84,7 @@
         "hermes_state_registry:acquire",
         "hermes_state_registry:release",
         "hermes_state_registry:release_or_close",
+        "hermes_time:deadline_clock",
         "plugins.plugin_storage",
         "plugins.plugin_utils",
         "pm",

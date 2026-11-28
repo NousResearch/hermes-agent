@@ -92,6 +92,7 @@ with a name allows that one name only.
 | `hermes_state_registry` | `acquire` | developer-guide / plugins docs |
 | `hermes_state_registry` | `release` | developer-guide / plugins docs |
 | `hermes_state_registry` | `release_or_close` | developer-guide / plugins docs |
+| `hermes_time` | `deadline_clock` | developer-guide / plugins docs |
 | `plugins.plugin_storage` | whole module | developer-guide / plugins docs |
 | `plugins.plugin_utils` | whole module | developer-guide / plugins docs |
 | `pm` | whole module | developer-guide / plugins docs |

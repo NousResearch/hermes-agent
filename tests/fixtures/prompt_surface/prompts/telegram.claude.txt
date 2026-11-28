@@ -66,6 +66,9 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - arxiv: Search arXiv papers by keyword, author, category, or ID.
     - competitor-news-monitor: Watch named companies for material news; cited digests.
     - grounded-citations: Ground answers and documents in cited, verifiable sources.
+  session-health:
+    - session-health-check: Audit past sessions for failure patterns and context loss.
+    - session-loop-detection: Spot repeated tool-call loops in past agent sessions.
   - xurl: X/Twitter via xurl CLI: raw post search, posting, DM, media.
   software-development:
     - codebase-inspection: Inspect codebases w/ pygount: LOC, languages, ratios.

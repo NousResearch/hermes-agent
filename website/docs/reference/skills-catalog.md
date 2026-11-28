@@ -91,6 +91,13 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`competitor-news-monitor`](../user-guide/skills/bundled/research/research-competitor-news-monitor.md) | Watch named companies for material news; cited digests. | `research/competitor-news-monitor` |
 | [`grounded-citations`](../user-guide/skills/bundled/research/research-grounded-citations.md) | Ground answers and documents in cited, verifiable sources. | `research/grounded-citations` |
 
+## session-health
+
+| Skill | Description | Path |
+|-------|-------------|------|
+| [`session-health-check`](../user-guide/skills/bundled/session-health/session-health-session-health-check.md) | Audit past sessions for failure patterns and context loss. | `session-health/session-health-check` |
+| [`session-loop-detection`](../user-guide/skills/bundled/session-health/session-health-session-loop-detection.md) | Spot repeated tool-call loops in past agent sessions. | `session-health/session-loop-detection` |
+
 ## social-media
 
 | Skill | Description | Path |

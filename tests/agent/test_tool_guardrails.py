@@ -68,7 +68,7 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
 def test_gateway_platform_defaults_to_hard_stop_without_changing_interactive_defaults():
     interactive_configs = [
         ToolCallGuardrailConfig.from_mapping({}, platform=platform)
-        for platform in ("cli", "tui", "desktop", "acp")
+        for platform in ("cli", "tui", "desktop", "gui", "acp")
     ]
     telegram_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="telegram")
     cron_cfg = ToolCallGuardrailConfig.from_mapping({}, platform="cron")
@@ -506,3 +506,11 @@ def test_rate_limited_retry_is_not_a_replay_but_stays_bounded(result, throttled,
             break
     else:
         raise AssertionError("a permanently failing endpoint must still halt or block")
+
+
+@pytest.mark.parametrize("platform", ["gui", "desktop"])
+def test_desktop_surface_is_attended_so_the_hard_stop_stays_opt_in(platform):
+    """A Desktop chat has a person reading the turn as it runs, so the non-interactive hard stop must
+    not arm itself there. ``gui`` is the label the Desktop client sends at ``session.create`` (the value
+    the session stores, so what ``agent.platform`` carries) and ``desktop`` the backend fallback name."""
+    assert ToolCallGuardrailConfig.from_mapping({}, platform=platform).hard_stop_enabled is False

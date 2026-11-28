@@ -54,9 +54,10 @@ def test_verify_on_stop_env_can_enable(clear_verify_env):
     clear_verify_env.setenv("HERMES_SESSION_PLATFORM", "telegram")
     assert verify_on_stop_enabled({"agent": {}}) is True
 
-@pytest.mark.parametrize("source", ["cli", "tui", "desktop", "codex", "local"])
+@pytest.mark.parametrize("source", ["cli", "tui", "gui", "desktop", "codex", "local"])
 def test_verify_on_stop_auto_on_for_interactive_surfaces(clear_verify_env, source):
-    # Under "auto", CLI/TUI/desktop coding surfaces resolve ON.
+    # Under "auto", CLI/TUI/Desktop coding surfaces resolve ON.  The Desktop's own ``session.create``
+    # source is ``gui``; ``desktop`` is the name its backend falls back to.
     clear_verify_env.setenv("HERMES_SESSION_SOURCE", source)
     assert verify_on_stop_enabled({"agent": {"verify_on_stop": "auto"}}) is True
 

@@ -49,6 +49,7 @@ class TurnFacadeMixin:
         relay_metadata: Optional[dict[str, Any]] = None,
         title_user_message: Optional[str]=None,
         prelude: Optional[Generator]=None,
+        message_timestamp_handling: str="agent",
     ) -> dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         # An agent built before a plugin began running its profile elsewhere (a cached gateway or
@@ -181,6 +182,7 @@ class TurnFacadeMixin:
                         turn_author=turn_author,
                         title_user_message=title_user_message,
                         prelude=prelude,
+                        message_timestamp_handling=message_timestamp_handling,
                     )
                 finally:
                     # Post-loop relay/task finalization must not receive a late refresh interrupt;

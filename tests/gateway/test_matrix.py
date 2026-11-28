@@ -2136,8 +2136,8 @@ class TestMatrixSelfSenderFilter:
         # the bot's own sender through and triggers the pairing / echo
         # loop in #15763.
         self.adapter._user_id = "@Bot:Example.ORG"
-        assert self.adapter._is_self_sender("@bot:example.org") is True
-        assert self.adapter._is_self_sender("@BOT:EXAMPLE.ORG") is True
+        assert self.adapter._identity.is_self_sender("@bot:example.org") is True
+        assert self.adapter._identity.is_self_sender("@BOT:EXAMPLE.ORG") is True
 
 
 class TestMatrixSystemBridgeFilter:
@@ -2146,20 +2146,20 @@ class TestMatrixSystemBridgeFilter:
 
     def test_appservice_underscore_prefix_is_bridge(self):
         # Conventional appservice namespace puppets
-        assert self.adapter._is_system_or_bridge_sender(
+        assert self.adapter._identity.is_system_or_bridge_sender(
             "@_telegram_12345:bridge.example.org"
         ) is True
-        assert self.adapter._is_system_or_bridge_sender(
+        assert self.adapter._identity.is_system_or_bridge_sender(
             "@_discord_999:example.org"
         ) is True
-        assert self.adapter._is_system_or_bridge_sender(
+        assert self.adapter._identity.is_system_or_bridge_sender(
             "@_slackbridge_puppet:example.org"
         ) is True
 
 
     def test_empty_sender_is_system(self):
-        assert self.adapter._is_system_or_bridge_sender("") is True
-        assert self.adapter._is_system_or_bridge_sender("   ") is True
+        assert self.adapter._identity.is_system_or_bridge_sender("") is True
+        assert self.adapter._identity.is_system_or_bridge_sender("   ") is True
 
 
 class TestMatrixOnRoomMessageFilter:

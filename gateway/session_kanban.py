@@ -3,12 +3,18 @@ import asyncio
 import contextlib
 from contextlib import closing
 from dataclasses import asdict, replace
+import logging
 import threading
 import json
 from pathlib import Path
 import sqlite3
 
 from persistence.core.errors import AuthorityRefusal
+
+# The review lane's default skill (the dispatcher's counterpart is
+# ``hermes_cli.kanban_db_dispatch``). It rides the policy because the in-memory claim the
+# dispatcher annotates never reaches this owner-side rebuild.
+REVIEW_LANE_SKILL = 'sdlc-review'
 
 
 def build_kanban_policy(connection, params, config):
@@ -42,9 +48,14 @@ def build_kanban_policy(connection, params, config):
                 raise AuthorityRefusal('stale_kanban_claim')
             context = kb.build_worker_context(conn, task.id)
             skills = list(task.skills or ())
+            optional = []
             if kb._retry_status_for_run(conn, task.id, task.current_run_id) == 'review':
                 # Same rule as the dispatcher's review lane: the reviewer always loads sdlc-review.
-                skills = list(dict.fromkeys([*skills, 'sdlc-review']))
+                # A card that names the skill itself asked for it, so that copy stays required; the
+                # lane's own default is optional and an attempt without it still reaches the model.
+                if REVIEW_LANE_SKILL not in skills:
+                    optional = [REVIEW_LANE_SKILL]
+                skills = list(dict.fromkeys([*skills, REVIEW_LANE_SKILL]))
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise AuthorityRefusal('invalid_kanban_claim') from exc
     cwd = task.workspace_path
@@ -52,7 +63,8 @@ def build_kanban_policy(connection, params, config):
     policy = kanban_launch_policy(task, cwd, config, private)
     context = dict(params, workspace=cwd, branch=task.branch_name, tenant=task.tenant,
         profile=task.assignee, workspaces_root=str(kb.workspaces_root(board=board).resolve()),
-        skills=skills, goal_mode=task.goal_mode, goal_max_turns=task.goal_max_turns,
+        skills=skills, optional_skills=optional, goal_mode=task.goal_mode,
+        goal_max_turns=task.goal_max_turns,
         goal_text='\n\n'.join(p for p in (task.title, task.body) if p), context=context,
         max_runtime_seconds=task.max_runtime_seconds, accept_hooks=True)
     context['db'] = str(path)
@@ -411,8 +423,16 @@ def _stored_conversation(agent):
 def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
-    if missing and not loaded:
+    # A lane default (the reviewer's ``sdlc-review``) is a default, never the card's requirement: an
+    # attempt whose profile cannot resolve it still runs, degraded, instead of dying before its first
+    # turn — a managed worker that produces no result settles the attempt ``unknown``, which the
+    # submitter must read as final, and repeat spawns only spend the card's failure budget.
+    optional = set(context.get('optional_skills') or ())
+    if [name for name in missing if name not in optional] and not loaded:
         raise ValueError('kanban_skills_unavailable')
+    if missing:
+        logging.getLogger(__name__).warning('Kanban attempt %s: proceeding without unavailable skill(s): %s',
+                                            context.get('task_id'), ', '.join(missing))
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

@@ -80,6 +80,34 @@ def test_real_dispatcher_lifecycle(tmp_path, mode):
     print(json.dumps(receipt))
 
 
+def test_review_lane_attempt_runs_when_the_lane_skill_is_missing(tmp_path):
+    """Regression: a review-lane spawn must not die before its first turn.
+
+    Joining a card to review gives every reviewer spawn the bundled ``sdlc-review`` skill. When the
+    reviewer's profile cannot resolve it — the live case: the profile had lost its copy — the
+    attempt must still be admitted and run. Before the fix the managed worker aborted at skill
+    preload, the owner settled the admission ``unknown`` (a started turn with no result can never be
+    called complete), the submitter exited 1 and every respawn spent the card's failure budget on
+    the same abort.
+    """
+    import os
+    import subprocess
+    import sys
+    repo = Path(__file__).resolve().parents[2]
+    from tests.gateway.fixtures.local_recovery_probe import child_env
+    env = child_env()
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'),
+               PYTHONPATH=str(repo), KANBAN_PROBE_MODE='review')
+    result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
+        env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
+    print(json.dumps(receipt))
+    assert receipt['client_returncode'] == 0
+    assert receipt['task_status'] == 'done' and receipt['run_outcome'] == 'completed'
+    assert receipt['failures'] == 0 and receipt['lane_skill_warning'] is True
+
+
 def test_late_launcher_cannot_stamp_replacement_claim(tmp_path, monkeypatch):
     from contextlib import closing
     from hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch

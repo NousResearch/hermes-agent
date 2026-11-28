@@ -5,6 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import threading
@@ -22,7 +23,7 @@ class Model(BaseHTTPRequestHandler):
         messages = body.get('messages', [])
         if messages:
             self.server.requests.append(body)
-        if messages and not self.server.blocked.is_set():
+        if messages and self.server.mode != 'review' and not self.server.blocked.is_set():
             self.server.blocked.set()
             assert self.server.release.wait(65)
         if messages and self.server.mode in {'rate_limit', 'billing'}:
@@ -93,9 +94,18 @@ def main():
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
         tid = kb.create_task(conn, title='KANBAN_TASK_SENTINEL', body='Acceptance: finish owned card', assignee='default',
-            workspace_kind='dir', workspace_path=str(workspace), skills=['owned-skill'],
+            workspace_kind='dir', workspace_path=str(workspace),
+            # The live card that kept dying carried no skills of its own: its review attempts had the
+            # lane default as their only skill, so an unresolvable lane default left nothing loaded.
+            skills=[] if peer.mode == 'review' else ['owned-skill'],
             goal_mode=peer.mode == 'complete', goal_max_turns=2,
             max_runtime_seconds=3600 if peer.mode == 'timeout' else None)
+        if peer.mode == 'review':
+            # The card's own implementer hands it off: the review lane then claims it, which is what
+            # force-loads the bundled sdlc-review skill into the reviewer's policy. This home has no
+            # copy of that skill, the live shape of the failure.
+            implementer = kb.claim_task(conn, tid)
+            assert kb.request_review(conn, tid, summary='ready', expected_run_id=implementer.current_run_id)
     env = dict(os.environ)
     receipt, clients = {}, []
     original_popen = subprocess.Popen
@@ -119,6 +129,12 @@ def main():
         raise AssertionError(('deadline', receipt))
     try:
         with daemon(root, home, env, barrier=False) as (_proc, desc):
+            if peer.mode == 'review':
+                # A fresh home gets the bundled skills seeded; the live reviewer profile had lost its
+                # copy (only an empty AppleDouble shell was left behind), so remove it here — an
+                # available lane skill proves nothing about the failure.
+                for seeded in (home / 'skills').rglob('sdlc-review'):
+                    shutil.rmtree(seeded, ignore_errors=True)
             subprocess.Popen = spawn
             try:
                 with closing(connect(board='owned')) as conn:
@@ -126,7 +142,12 @@ def main():
                     assert [s[0] for s in launched.spawned] == [tid], launched
                     task = kb.get_task(conn, tid)
                     params = dict(task_id=tid, board='owned', run_id=task.current_run_id, claim_lock=task.claim_lock)
-                    assert peer.blocked.wait(55), 'model never reached'
+                    if peer.mode == 'review':
+                        # The attempt must reach its first turn and finish; pre-fix the client exits
+                        # before any model request, so the wait is on the client, not the model.
+                        wait_for(lambda: clients[0].poll() is not None)
+                    else:
+                        assert peer.blocked.wait(55), 'model never reached'
                     active = kb.get_task(conn, tid)
                     receipt.update(client_pid=clients[0].pid, stored_pid=active.worker_pid, run_id=task.current_run_id)
                     if peer.mode == 'timeout':
@@ -168,6 +189,17 @@ def main():
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'crashed', receipt
                     elif peer.mode == 'timeout':
                         assert task.status == 'ready' and task.consecutive_failures == 1 and run['outcome'] == 'timed_out', receipt
+                    elif peer.mode == 'review':
+                        # A reviewer spawn whose profile cannot resolve the lane's default skill is
+                        # admitted and runs. Before the fix the managed worker aborted before its
+                        # first turn, the admission settled ``unknown`` and the client exited 1.
+                        logs = list((home / 'logs').rglob('*.log'))
+                        receipt['lane_skill_warning'] = any(
+                            'proceeding without unavailable skill(s): sdlc-review' in p.read_text() for p in logs)
+                        receipt['client_returncode'] = clients[0].wait(timeout=10)
+                        assert receipt['client_returncode'] == 0, receipt
+                        assert task.status == 'done' and run['outcome'] == 'completed', receipt
+                        assert task.consecutive_failures == 0 and receipt['lane_skill_warning'], receipt
             finally:
                 subprocess.Popen = original_popen
             if peer.mode != 'complete':

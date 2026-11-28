@@ -183,3 +183,79 @@ def test_disconnect_on_a_package_managed_install_still_clears_the_auth_store(ant
 # ── bulk save strips managed leaves ──────────────────────────────────────────
 
 
+@pytest.mark.parametrize("assertion", ["managed_leaf", "notice"])
+def test_bulk_merge_save_does_not_restore_existing_managed_leaf(homes, capsys, assertion):
+    import hermes_yaml as yaml
+
+    from hermes_cli.config import get_config_path, save_config
+
+    config_path = get_config_path()
+    config_path.write_text(
+        "model:\n  default: stale/user-model\nx_unknown:\n  keep: true\n",
+        encoding="utf-8",
+    )
+
+    save_config({"timezone": "Asia/Bangkok"}, merge_existing=True)
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["x_unknown"] == {"keep": True}
+    assert saved["timezone"] == "Asia/Bangkok"
+    # The stale leaf came in via the merge, not the caller's dict, so the
+    # notice only fires if the strip runs after _merge_partial_save.
+    notice = capsys.readouterr().err
+    if assertion == "managed_leaf":
+        assert "model" not in saved or "default" not in saved["model"]
+    else:
+        assert "model.default" in notice
+
+
+@pytest.mark.parametrize("mixed", [False, True], ids=["alias-only", "mixed"])
+@pytest.mark.parametrize("section, key, alias, stale, pinned, siblings", [
+    ("model", "default", "name", "stale/alias", "managed/model", {"provider": "user-provider"}),
+    ("model", "default", "model", "stale/alias", "managed/model", {"provider": "user-provider"}),
+    ("model", "provider", "provider", "stale-provider", "managed-provider", {"default": "user/model"}),
+    ("agent", "max_turns", "max_turns", 17, 42, {"budget_warning_ratio": 0.7}),
+])
+def test_bulk_merge_save_strips_canonicalized_managed_aliases(
+    homes, capsys, mixed, section, key, alias, stale, pinned, siblings,
+):
+    import hermes_yaml as yaml
+
+    from hermes_cli import config as cfg, managed_scope
+
+    home, managed = homes
+    policy_path = managed / "config.yaml"
+    policy_path.write_text(yaml.safe_dump({section: {key: pinned}}), encoding="utf-8")
+    managed_scope.invalidate_managed_cache()
+    user = {section: dict(siblings), "x_unknown": {"keep": True}}
+    if alias in ("name", "model"):
+        user[section][alias] = stale
+    else:
+        user[alias] = stale
+    current = 19 if isinstance(stale, int) else "stale/current"
+    if mixed:
+        user[section][key] = current
+    config_path = home / "config.yaml"
+    config_path.write_text(yaml.safe_dump(user), encoding="utf-8")
+
+    cfg.save_config({"timezone": "Asia/Bangkok"}, merge_existing=True)
+
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert key not in saved.get(section, {})
+    if alias in ("name", "model"):
+        assert alias not in saved.get(section, {})
+    else:
+        assert alias not in saved
+    assert f"{section}.{key}" in capsys.readouterr().err
+    assert saved[section] == siblings
+    assert saved["x_unknown"] == {"keep": True}
+    assert saved["timezone"] == "Asia/Bangkok"
+    assert cfg.load_config()[section][key] == pinned
+
+    policy_path.write_text("{}\n", encoding="utf-8")
+    managed_scope.invalidate_managed_cache()
+    cfg._LOAD_CONFIG_CACHE.clear()
+    cfg._RAW_CONFIG_CACHE.clear()
+    unpinned = cfg.load_config()
+    assert unpinned[section].get(key) not in (stale, current)
+    assert all(unpinned[section][k] == v for k, v in siblings.items())

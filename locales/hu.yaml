@@ -1342,6 +1342,7 @@ platform:
     user_fallback: "Felhasználó"
     install_hint: "A Telegram-támogatás telepítéséhez futtasd a `hermes setup` parancsot."
   slack:
+    unauthorized_mention_notice: "Itt nem vagyok engedélyezve számodra, így nem tudok válaszolni az említésedre. Kérj hozzáférést attól, aki üzemeltet."
     approval:
       fallback_text: "⚠️ A parancs jóváhagyást igényel: {command}"
       resolved_once: "✅ Egyszer jóváhagyta: {user}"

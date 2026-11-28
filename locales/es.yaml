@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "Usuario"
     install_hint: "Ejecuta `hermes setup` para instalar la compatibilidad con Telegram."
   slack:
+    unauthorized_mention_notice: "No estoy habilitado para ti aquí, así que no puedo responder a tu mención. Pide acceso a la persona que me administra."
     approval:
       fallback_text: "⚠️ Se requiere aprobación del comando: {command}"
       resolved_once: "✅ Aprobado una vez por {user}"

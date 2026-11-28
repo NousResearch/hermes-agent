@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "Kullanıcı"
     install_hint: "Telegram desteğini kurmak için `hermes setup` komutunu çalıştırın."
   slack:
+    unauthorized_mention_notice: "Burada senin için etkin değilim, bu yüzden bahsetmene yanıt veremiyorum. Beni yöneten kişiden erişim iste."
     approval:
       fallback_text: "⚠️ Komut onayı gerekli: {command}"
       resolved_once: "✅ {user} tarafından bir kez onaylandı"

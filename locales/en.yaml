@@ -1384,6 +1384,7 @@ platform:
 # Slash-command DESCRIPTIONS (names are identifiers and never translated). Owned by lane W1a; the
 # keys below are the ones the Discord native command table shares verbatim with the CLI registry.
   slack:
+    unauthorized_mention_notice: "I'm not enabled for you here, so I can't answer your mention. Ask the person who runs me for access."
     approval:
       fallback_text: "⚠️ Command approval required: {command}"
       resolved_once: "✅ Approved once by {user}"

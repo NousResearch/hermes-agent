@@ -52,6 +52,8 @@ from gateway.platforms.base_log_safety import safe_url_for_log
 from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, inline_document_text
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
+from plugins.platforms.slack.adapter_mention_label import self_mention_rewritten
+from plugins.platforms.slack.adapter_unauthorized_notice import notify_unauthorized_mention
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, SUPPORTED_DOCUMENT_TYPES, SUPPORTED_VIDEO_TYPES, _TEXT_INJECT_EXTENSIONS,
@@ -4635,9 +4637,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
         bot_uid: str, thread_ts: Optional[str], team_id: str) -> tuple[str, str, str, bool]:
-        """Strip our mention, re-probe for a command hidden behind it, remember the thread.
-        Returns updated ``(text, original_text, command_probe_text, is_command_text)``."""
-        text = text.replace(f"<@{bot_uid}>", "").strip()
+        """Drop/label our mention, re-probe a command behind it, remember the thread; returns the 4 updated texts."""
+        text = self_mention_rewritten(self, text, bot_uid, team_id)
         # Re-probe commands on the canonical text (block-augmented text would leak quoted text
         # into arguments): handles ``@bot !cmd`` / ``@bot /cmd``.
         mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
@@ -4723,10 +4724,10 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 user_id, chat_id=channel_id, team_id=team_id))
         if self._early_reject_unauthorized(
                 user_id, channel_id, is_dm, thread_id=thread_ts, is_bot=sender_is_bot):
-            return
+            return await notify_unauthorized_mention(self, event, _slack_mention_detection_text(event), user_id,
+                                                     channel_id, team_id, skip=is_one_to_one_dm or sender_is_bot)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        # Mentions may live only in Block Kit blocks.
-        # See #52387.
+        # Mentions may live only in Block Kit blocks (#52387).
         routing_text = _slack_mention_detection_text(event) or original_text or ""
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)

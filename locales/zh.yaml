@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "用户"
     install_hint: "运行 `hermes setup` 以安装 Telegram 支持。"
   slack:
+    unauthorized_mention_notice: "我在这里没有为你启用，因此无法回复你的提及。请向运行我的人申请访问权限。"
     approval:
       fallback_text: "⚠️ 命令需要审批：{command}"
       resolved_once: "✅ {user} 已批准一次"

@@ -1325,6 +1325,7 @@ platform:
     user_fallback: "Úsáideoir"
     install_hint: "Rith `hermes setup` chun tacaíocht Telegram a shuiteáil."
   slack:
+    unauthorized_mention_notice: "Níl mé cumasaithe duit anseo, mar sin ní féidir liom freagra a thabhairt ar do lua. Iarr rochtain ar an duine a ritheann mé."
     approval:
       fallback_text: "⚠️ Cead ordaithe de dhíth: {command}"
       resolved_once: "✅ Ceadaithe uair amháin ag {user}"

@@ -36,7 +36,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     usePluginI18n: () => translateBots
   }
 })
-vi.mock('./avatar', () => ({ avatarColor: () => '#888', botAppearance: () => ({}), BotFace: () => null }))
+vi.mock('./avatar', () => ({ avatarColor: () => '#888', botAppearance: () => ({}), BotBadge: () => null }))
 vi.mock('./group-chat-parts', () => ({
   GroupClarifyCard: () => null,
   GroupImageControls: () => null,

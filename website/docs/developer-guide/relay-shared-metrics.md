@@ -539,8 +539,9 @@ profile's collection switch is on. With it off the app keeps no local record
 local record per gateway connection and profile, shared by that profile's
 windows; after a profile switch nothing is kept or sent until the new profile's
 switch has been read, and the switch is re-read whenever a window regains focus
-(so an opt-out from the CLI or another window takes effect there). There is no rating
-prompt or other new UI; each fact comes from an interaction the app already has.
+(so an opt-out from the CLI or another window takes effect there). After turning
+**Redesigned interface** off in Settings, users can optionally choose a fixed
+reason; there is no required rating or free-text feedback.
 Every value is a closed id defined in the app's code (area, action, notice, flow,
 toggle, step), a published config key, or a bucket. Message text, toast text,
 session/bot/profile names, paths and setting values never leave.
@@ -548,7 +549,7 @@ session/bot/profile names, paths and setting values never leave.
 | Metric | Dimensions | Question it answers |
 |---|---|---|
 | `hermes.desktop.feature_use` | area (panes, command palette, model/session pickers, voice, Bot Mode, skins, projects, each settings page, full pages, `other`) | Which Desktop areas are used at all, counted at most once per area per UTC day per profile (latched in the profile's local database, so a second window or a backend restart never re-counts). |
-| `hermes.desktop.action_use` | action (the app's built-in command/keybinding ids plus a few named buttons; plugin commands and numbered slot shortcuts are `other`, collapsed in the app before anything is kept), via (`click`/`shortcut`/`palette`/`menu`), count bucket | Which buttons and commands people press, and how: aggregated in the app per profile and reported once per finished day (no per-press rows). The row lands in the period of the day it describes, not the day it was sent; each day is recorded once per profile however many windows or backend restarts report it, and a day older than 8 days is dropped. |
+| `hermes.desktop.action_use` | action (the app's built-in command/keybinding ids plus a few named buttons; plugin commands and numbered slot shortcuts are `other`, collapsed in the app before anything is kept), via (`click`/`shortcut`/`palette`/`menu`/`state`), count bucket | Which buttons and commands people press, and how: aggregated in the app per profile and reported once per finished day (no per-press rows). The row lands in the period of the day it describes, not the day it was sent; each day is recorded once per profile however many windows or backend restarts report it, and a day older than 8 days is dropped. |
 | `hermes.desktop.mode_use` | mode (`sessions`/`bots`), active-minutes bucket, messages-sent bucket, bot-count bucket | How Desktop time splits between Bot Mode and regular Sessions. One row per mode used that day, in that day's period (same once-per-profile-per-day latch as `action_use`); active time sums gaps between interactions of up to 5 minutes. |
 | `hermes.desktop.friction` | kind (`notice_dismissed`, `error_toast`, `renderer_crash`, `backend_disconnect`, `slow_frame`), detail (notice id, error category, crash reason, drop reason, frame-duration bucket) | What gets in the way. Error toasts carry only their code-defined category; renderer crashes are recorded by the app shell only when the crashed window's own profile collects, and reported by a window of that profile after it comes back; slow frames are long frames while the window is visible, capped per day. |
 | `hermes.desktop.long_frames.sum` | frame bucket (`50ms_to_100ms`, `100ms_to_250ms`, `250ms_to_1s`, `1s_to_5s`, `gte_5s`, or `none`), visible-minutes bucket | How often the Desktop window stutters. Every long animation frame (50 ms or more, as the browser reports them) while the window is visible is counted in the app per profile and reported once per finished day on its own call, so a backend that predates it still takes the day's other reports (same once-per-profile-per-day latch as `action_use`, kept separately). The value is the day's frame count in that bucket, never capped; each row carries the day's visible time so a rate is computable, and a visible day with no long frames reports one `none` row. |
@@ -611,6 +612,102 @@ immutable permit, never resolve or replace the current owner's token. A fresh
 authorization uses a different permit. If the browser also denies that removal,
 durable deletion cannot be guaranteed; the affected renderer remains disabled.
 With neither Web Locks nor usable IndexedDB, optional collection stays paused.
+
+##### Redesigned interface rollout
+
+The redesigned interface is on by default; **Settings → Appearance → Window
+layout → Redesigned interface** turns it off. Its metric ids keep the
+`simplified_sidebar` name. These metrics use the existing consenting profile `install_id`, not an account
+or person identifier. A person using several profiles can count several times;
+the sidebar preference itself is shared across profiles in the renderer.
+Restrict reports to releases where both the client and gateway support these
+ids: older gateways normalize unknown ids to `other` or discard unknown signals.
+
+- **Active adoption:** distinct profiles with `feature_use.area=simplified_sidebar`
+  divided by profiles with either `classic_sidebar` or `simplified_sidebar`
+  in the same window. These require a real app interaction and are recorded
+  once per UTC day. This includes profiles inheriting an enabled preference.
+- **Re-enables:** action `sidebar.simplified.enable_settings` records turning
+  the redesigned interface back on in Settings. There is no in-app offer or
+  prompt, so there is no offer acceptance or decline metric.
+- **D7/D30 retention:** among profiles first observed with
+  `feature_use.area=simplified_sidebar` in a cohort, the fraction with that
+  use again on UTC day 7/30 after it. Include only cohorts old enough to
+  observe the entire day. This means used again, not continuously enabled.
+  Not returning is not a confirmed switch-off.
+- **Switch-offs:** `sidebar.simplified.disable` and
+  `dislike(signal=feature_disabled, target=simplified_sidebar)` record an
+  enabled-to-disabled transition. Optional inline feedback emits
+  `dislike(signal=sidebar_disabled_reason)` with only `missing_chats`,
+  `hard_to_navigate`, `missing_features`, `prefer_classic`, `performance`, or
+  `other`. Report response rate alongside reasons; silence is not a reason.
+  Feedback is hidden when collection is off.
+
+Use distinct profile presence, not action count buckets, for percentages.
+Actions arrive with the next finished-day report and can be delayed until the
+app runs again; use event period rather than upload date and allow for lag.
+Consent withdrawal stops observation and must not count as sidebar rejection.
+No profile names, gateway addresses, session content, or new identity fields are added.
+
+##### IA redesign interaction counters
+
+With **Redesigned interface** enabled, `hermes.desktop.action_use` also accepts
+closed `ia.*` action codes. These reuse the same per-profile collection gate,
+finished-day aggregation, count buckets, retention and opt-in package sender.
+There is no new endpoint, account identifier, or analytics SDK. Collection
+requires `enabled`; outbound packages still require `send` as well. Switching
+the redesigned interface on does not grant either permission. Unknown codes collapse to
+`other` on both sides. No messages, search strings, chat titles, session IDs,
+profile names, gateway addresses, plugin names or free-text reasons are added.
+Async pin outcomes are discarded after consent, scope or interface changes.
+
+| Action family | What it measures |
+| --- | --- |
+| `ia.rail.*`, `ia.drawer.settings` | Rail destination clicks and the rail's Settings gear. Plugin destinations share the single `plugin` code. Existing keybinding action counters retain shortcut/palette attribution. |
+| `ia.view.*`, `ia.transition.*` | Visible visits and previous-to-current area transitions, including focused chat tiles. Settings and plugin pages are coarse categories, not individual routes. |
+| `ia.backtrack.*` | A→B→A with less than 5 seconds spent in B. This is a navigation pattern, not a dissatisfaction verdict. |
+| `ia.dwell.*` | Visible visit duration buckets: below 5s, 5–30s, 30s–5m, at least 5m. Recorded on area exit or document hide; hidden time is excluded. This is not active reading time or an exact sum of seconds. A crash can lose an unfinished visit. |
+| `ia.session.*` | Session-open requests from Pinned, agent lists, or search, including modifier-click opens. Not a guarantee that loading completed. |
+| `ia.section.*` | User-initiated Pinned and agent expand and collapse; automatic pinned-chat reveals do not count. |
+| `ia.search.*` | Focus, settled nonempty searches, results/empty/partial failure, result selection and clearing. Queries must settle for 500ms after requests complete. Local matches are included. `early` means a settled search within 10 seconds of sidebar mount, a discovery proxy rather than proof of confusion. |
+| `ia.pin.*` | Request source and confirmed pin/unpin or write failure. Repeated clicks while a write is in flight do not produce additional outcomes. Refresh failure after an acknowledged write is not a pin failure. |
+| `ia.pin_count.*`, `ia.profile_pin_count.*` | Successful sidebar-load snapshots in buckets `zero`, `one`, `two`, `three`, `overflow` (4+). The first counts the complete loaded sidebar response; the second counts only the consenting active profile on its gateway. Pinned rows are backfilled beyond recency limits and deduplicated across slices by gateway/profile/lineage. Hidden/archived chats are excluded. Partial failures suppress the total; failed profiles never become zero samples. No profile names are transmitted. |
+| `ia.new_session.*` | Sidebar/command/agent-row entry points; picker opened, opened while no stored chat is focused, agent/default selected, or explicitly dismissed. Command entry includes shortcut and command dispatch; existing `session.new` counters distinguish shortcut/palette. |
+| `ia.gateway.*` | Popover opening state, system/logs clicks, reconnect requests, and agent-settings clicks against a known-offline gateway. |
+| `ia.splash.*` | The rename splash ("Hermes got a new look", prefix `rename_`): shown on its own to someone who used Hermes before the redesign, reopened from the notifications tray, and how it was dismissed: `nav` (any click in the rail or chat sidebar), `button`, or `escape`. The first-time splash ("Welcome to Hermes Agent", prefix `first_time_`): shown on its own to a new install, reopened from the tray, and how it closed: `closed_nav`, `closed_close` (its × or its own close button), `closed_escape`, or `closed_signup` (its sign-up button). |
+| `ia.splash_row.*` | The first hover, focus or tap of each of a splash's rows in one showing: the rename splash's `rename_chats`, `rename_agents`, `rename_library`, `rename_routines`, `rename_machines`, `rename_notifications`; the first-time splash's `first_time_chats`, `first_time_routines`, `first_time_agents`, `first_time_connections`, `first_time_library`, `first_time_theme` ("Make it yours"). The card opens with no row lit; a row counts on its first hover, focus or tap. |
+| `ia.starter_chip.*` | A first-timer sent one of the four starter ideas under the composer, by its code (`morning_briefing`, `research_options`, `summarize_document`, `clean_inbox`); never the text. |
+| `ia.starter_chips.*` | The starter ideas left on their own after two chats in which a task finished (`hidden_auto`), were hidden by the person (`hidden_user`), or brought back with "Show ideas" (`shown_again`). |
+| `ia.sign_up.*` | Sign up started from the first-time splash (`splash`), the notifications tray (`tray`), a message held until sign up or the composer's link (`chat`), the chat sidebar's Create an Account card (`sidebar`), or the screen a sign up that failed to sign the visitor in comes back to (`recovery`). Recorded only where sign up is required and only behind the consent gate. |
+| `ia.theme_pick.*` | "Make it yours" in the first-time splash: `mode_light` / `mode_dark`, or one of the eight colours `color_blue`, `color_violet`, `color_pink`, `color_red`, `color_orange`, `color_yellow`, `color_green`, `color_cyan`. |
+| `ia.check_in.*` | The check-in on a newcomer's new chat after two chats in which a task finished ("How's Hermes going so far?"): the answer `going_well` or `could_be_better`, `dismissed`, `reopened` from the notifications tray, or the suggestion taken (`try_video`, `try_weekly`, `open_tour`). Closed codes only; no free text is asked for or sent. |
+| `ia.developer_view.*` | The developer-view offer in a chat whose answer held a long code block: `offered`, `previewed` (its preview row hovered or focused), `accepted` (turned on), or `declined` (Not now). |
+| `ia.alias_search.*` | A command-palette query that is exactly one of the classic words (`sessions`, `profiles`, `artifacts`, `cron` including "cron jobs", `gateways`), once per palette opening. The code names the word's family; the query itself is never recorded. |
+
+`via=state` distinguishes observations and async outcomes from user clicks;
+these observations do not feed rage-click detection. Reports remain daily
+bucketed counts, not event timelines or exact click totals. Pairing a particular
+navigation with a particular shortcut is not supported. Use matching client
+and gateway releases. If an older gateway rejects `via=state`, the client retries
+the daily report once without IA counters, preserving the existing metrics;
+network errors are not retried by this compatibility path. A consent or scope
+change cancels that retry. Other unknown codes still normalize to `other`.
+
+Pin buckets are observations of acknowledged list responses, independent of
+search, collapse state, and optimistic pin writes. They are not a fleet-wide
+census of offline gateways. A profile can occupy multiple buckets during a day;
+use distinct profile presence (or the highest observed bucket), not refresh
+counts, for daily distributions. Older rows without a pin flag are not counted
+as confirmed zeros. Profiles contribute their own count when active and consented;
+collection does not opt in inactive profiles on their behalf.
+
+Deferred: reconnect success/duration (the current handler
+can resolve without an established connection), first-message latency, blank
+session abandonment and subsequent agent switches (require draft/tile lifecycle
+correlation), and “dead end” classification (reading a page without clicking is
+not necessarily a failure). No cross-profile tracking is added to approximate
+these. There is no claim of per-section action coverage inside existing pages;
+rail and Settings-gear counts measure navigation, not every control on the destination.
 
 Sessions are summarized when they close (finalize, reset or process exit);
 delegated child sessions are not counted separately. Milestones latch in the

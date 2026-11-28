@@ -220,6 +220,108 @@ def test_v3_schema_accepts_exactly_the_desktop_contract_values():
             f: set(values) for f, values in contract._COUNTER_DIMENSION_VALUES[metric].items()}
 
 
+def test_simplified_sidebar_metrics_keep_consent_and_closed_reason_codes(marks):
+    _rpc("shared_metrics.desktop_feature_use", area="simplified_sidebar")
+    _rpc("shared_metrics.desktop_feature_use", area="simplified_sidebar")
+    assert [d["area"] for _, d, _ in _stored(contract.DESKTOP_FEATURE_USE_METRIC)] == ["simplified_sidebar"]
+    _rpc("shared_metrics.desktop_dislike", signal="feature_disabled", target="simplified_sidebar")
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="missing_chats")
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="private free text")
+    assert [(d["signal"], d["target"]) for _, d in marks.rows] == [
+        ("feature_disabled", "simplified_sidebar"),
+        ("sidebar_disabled_reason", "missing_chats"),
+        ("sidebar_disabled_reason", "other"),
+    ]
+    _assert_valid(marks.rows)
+    marks.policy["on"] = False
+    _rpc("shared_metrics.desktop_dislike", signal="sidebar_disabled_reason", target="prefer_classic")
+    _rpc("shared_metrics.desktop_feature_use", area="classic_sidebar")
+    assert len(marks.rows) == 3
+    assert len(_stored(contract.DESKTOP_FEATURE_USE_METRIC)) == 1
+
+
+def test_ia_daily_counters_preserve_closed_codes_consent_and_replay(marks):
+    params = {
+        "day": "2026-09-26",
+        "actions": [
+            {"action": "ia.pin.pinned", "via": "state", "count": 2},
+            {"action": "ia.transition.chat_to_capabilities", "via": "state", "count": 1},
+            {"action": "ia.rail.plugin", "via": "click", "count": 1},
+            {"action": "ia.rail.private-plugin-name", "via": "click", "count": 1},
+        ],
+    }
+    marks.policy["on"] = False
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": False}
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == []
+    marks.policy["on"] = True
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.pin.pinned", "ia.transition.chat_to_capabilities", "ia.rail.plugin", "other",
+    }
+    assert all(d["via"] == "state" for _, d, _ in rows if d["action"].startswith("ia.pin"))
+    assert "private-plugin" not in json.dumps(rows)
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    assert _stored(contract.DESKTOP_ACTION_USE_METRIC) == rows
+
+
+def test_discovery_counters_keep_their_codes_and_collapse_anything_else(marks):
+    """The rename splash and the palette's old-word search report closed codes only: a code outside
+    the contract (a row or a word the client invented) is ``other``, never its own row."""
+    params = {
+        "day": "2026-09-26",
+        "actions": [
+            {"action": "ia.splash.rename_shown", "via": "state", "count": 1},
+            {"action": "ia.splash.rename_dismissed_nav", "via": "click", "count": 1},
+            {"action": "ia.splash_row.rename_library", "via": "state", "count": 1},
+            {"action": "ia.alias_search.cron", "via": "palette", "count": 2},
+            {"action": "ia.alias_search.my secret query", "via": "palette", "count": 1},
+            {"action": "ia.splash_row.rename_private-row", "via": "state", "count": 1},
+        ],
+    }
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.splash.rename_shown", "ia.splash.rename_dismissed_nav", "ia.splash_row.rename_library",
+        "ia.alias_search.cron", "other",
+    }
+    assert "secret" not in json.dumps(rows) and "private" not in json.dumps(rows)
+
+
+def test_first_time_counters_keep_their_codes_and_collapse_anything_else(marks):
+    """The first-time splash, starter ideas, sign up and theme picks report closed codes only: a chip,
+    a colour or an entry point the client invented is ``other``, never its own row or its text."""
+    params = {
+        "day": "2026-09-27",
+        "actions": [
+            {"action": "ia.splash.first_time_shown", "via": "state", "count": 1},
+            {"action": "ia.splash.first_time_closed_signup", "via": "click", "count": 1},
+            {"action": "ia.splash_row.first_time_theme", "via": "state", "count": 1},
+            {"action": "ia.starter_chip.clean_inbox", "via": "click", "count": 1},
+            {"action": "ia.starter_chips.hidden_auto", "via": "state", "count": 1},
+            {"action": "ia.sign_up.chat", "via": "click", "count": 1},
+            {"action": "ia.theme_pick.color_green", "via": "click", "count": 1},
+            {"action": "ia.theme_pick.color_cyan", "via": "click", "count": 1},
+            {"action": "ia.sign_up.sidebar", "via": "click", "count": 1},
+            {"action": "ia.sign_up.recovery", "via": "click", "count": 1},
+            {"action": "ia.check_in.could_be_better", "via": "click", "count": 1},
+            {"action": "ia.developer_view.accepted", "via": "click", "count": 1},
+            {"action": "ia.check_in.I hate it because", "via": "click", "count": 1},
+            {"action": "ia.starter_chip.Plan my trip to Lisbon", "via": "click", "count": 1},
+            {"action": "ia.theme_pick.color_teal", "via": "click", "count": 1},
+        ],
+    }
+    assert _rpc("shared_metrics.desktop_daily", **params)["result"] == {"recorded": True}
+    rows = _stored(contract.DESKTOP_ACTION_USE_METRIC)
+    assert {d["action"] for _, d, _ in rows} == {
+        "ia.splash.first_time_shown", "ia.splash.first_time_closed_signup", "ia.splash_row.first_time_theme",
+        "ia.starter_chip.clean_inbox", "ia.starter_chips.hidden_auto", "ia.sign_up.chat",
+        "ia.theme_pick.color_green", "ia.theme_pick.color_cyan", "ia.sign_up.sidebar", "ia.sign_up.recovery", "ia.check_in.could_be_better",
+        "ia.developer_view.accepted", "other",
+    }
+    assert "Lisbon" not in json.dumps(rows) and "teal" not in json.dumps(rows) and "hate" not in json.dumps(rows)
+
+
 def test_long_frames_are_counted_uncapped_per_bucket_with_the_days_visible_time(marks):
     params = {"day": "2026-09-26", "visible_ms": 3 * 3_600_000, "frames": [
         {"bucket": "50ms_to_100ms", "count": 1200}, {"bucket": "100ms_to_250ms", "count": 300},

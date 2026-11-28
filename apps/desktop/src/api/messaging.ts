@@ -19,11 +19,11 @@ import type {
   WebhooksResponse
 } from '@/types/webhooks'
 
-import { hermesApi, profileScoped } from './client'
+import { capabilityScoped, hermesApi, type ProfileScope } from './client'
 
-export function getMessagingPlatforms(profile?: null | string): Promise<MessagingPlatformsResponse> {
+export function getMessagingPlatforms(profile?: ProfileScope): Promise<MessagingPlatformsResponse> {
   return hermesApi<MessagingPlatformsResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/messaging/platforms'
   })
 }
@@ -35,10 +35,10 @@ const CATALOG_INSTALL_TIMEOUT_MS = 300_000
  *  A refusal resolves `ok: false` with the reason and the terminal command. */
 export function installMessagingCatalogPlatform(
   name: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MessagingCatalogInstallResponse> {
   return hermesApi<MessagingCatalogInstallResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/catalog/${encodeURIComponent(name)}/install`,
     method: 'POST',
     body: {},
@@ -67,10 +67,10 @@ export interface MessagingPlatformUpdateResponse {
 export function updateMessagingPlatform(
   platformId: string,
   body: MessagingPlatformUpdate,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MessagingPlatformUpdateResponse> {
   return hermesApi<MessagingPlatformUpdateResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
     body
@@ -79,10 +79,10 @@ export function updateMessagingPlatform(
 
 export function testMessagingPlatform(
   platformId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<MessagingPlatformTestResponse> {
   return hermesApi<MessagingPlatformTestResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
   })
@@ -93,21 +93,21 @@ export function testMessagingPlatform(
 // the one-time `/link <code>` that binds a chat account to this agent. The profile tag picks the
 // backend (a profile may point at another host); the relay itself serves that gateway's own profile.
 
-export function getRelayLinks(profile?: null | string): Promise<RelayLinksResponse> {
-  return hermesApi<RelayLinksResponse>({ ...profileScoped(profile), path: '/api/messaging/relay' })
+export function getRelayLinks(profile?: ProfileScope): Promise<RelayLinksResponse> {
+  return hermesApi<RelayLinksResponse>({ ...capabilityScoped(profile), path: '/api/messaging/relay' })
 }
 
-export function requestRelayLink(platform: string, profile?: null | string): Promise<RelayLinkCode> {
+export function requestRelayLink(platform: string, profile?: ProfileScope): Promise<RelayLinkCode> {
   return hermesApi<RelayLinkCode>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/relay/${encodeURIComponent(platform)}/link`,
     method: 'POST'
   })
 }
 
-export function getRelayLinkState(code: string, profile?: null | string): Promise<RelayLinkCodeState> {
+export function getRelayLinkState(code: string, profile?: ProfileScope): Promise<RelayLinkCodeState> {
   return hermesApi<RelayLinkCodeState>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/relay/link/${encodeURIComponent(code)}`
   })
 }
@@ -115,10 +115,10 @@ export function getRelayLinkState(code: string, profile?: null | string): Promis
 export function unlinkRelayAccount(
   platform: string,
   platformUserId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ unlinked: boolean }> {
   return hermesApi<{ unlinked: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/relay/${encodeURIComponent(platform)}/accounts/${encodeURIComponent(platformUserId)}`,
     method: 'DELETE'
   })
@@ -131,10 +131,10 @@ export function unlinkRelayAccount(
 
 export function startTelegramOnboarding(
   botName?: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<TelegramOnboardingStartResponse> {
   return hermesApi<TelegramOnboardingStartResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/messaging/telegram/onboarding/start',
     method: 'POST',
     body: botName ? { bot_name: botName } : {}
@@ -143,10 +143,10 @@ export function startTelegramOnboarding(
 
 export function getTelegramOnboardingStatus(
   pairingId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<TelegramOnboardingStatusResponse> {
   return hermesApi<TelegramOnboardingStatusResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`
   })
 }
@@ -154,9 +154,9 @@ export function getTelegramOnboardingStatus(
 export function applyTelegramOnboarding(
   pairingId: string,
   allowedUserIds: string[],
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<TelegramOnboardingApplyResponse> {
-  const scope = profileScoped(profile)
+  const scope = capabilityScoped(profile)
 
   return hermesApi<TelegramOnboardingApplyResponse>({
     ...scope,
@@ -166,9 +166,9 @@ export function applyTelegramOnboarding(
   })
 }
 
-export function cancelTelegramOnboarding(pairingId: string, profile?: null | string): Promise<{ ok: boolean }> {
+export function cancelTelegramOnboarding(pairingId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`,
     method: 'DELETE'
   })
@@ -181,9 +181,9 @@ export function cancelTelegramOnboarding(pairingId: string, profile?: null | str
 // returned by the API, while an authenticated admin is only ever identifying
 // a row they can already see.
 
-export function getPairing(profile?: null | string): Promise<PairingResponse> {
+export function getPairing(profile?: ProfileScope): Promise<PairingResponse> {
   return hermesApi<PairingResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/pairing'
   })
 }
@@ -191,9 +191,9 @@ export function getPairing(profile?: null | string): Promise<PairingResponse> {
 export function approvePairing(
   platform: string,
   requestId: string,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ ok: boolean; user: PairingUser }> {
-  const scope = profileScoped(profile)
+  const scope = capabilityScoped(profile)
 
   return hermesApi<{ ok: boolean; user: PairingUser }>({
     ...scope,
@@ -205,8 +205,8 @@ export function approvePairing(
   })
 }
 
-export function revokePairing(platform: string, userId: string, profile?: null | string): Promise<{ ok: boolean }> {
-  const scope = profileScoped(profile)
+export function revokePairing(platform: string, userId: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
+  const scope = capabilityScoped(profile)
 
   return hermesApi<{ ok: boolean }>({
     ...scope,
@@ -224,33 +224,33 @@ export function revokePairing(platform: string, userId: string, profile?: null |
 /** `profile` = the backend owner this view captured at mount; omitted → the
  *  ambient request scope. Keyed explicitly so a view that survives an active
  *  profile switch keeps talking to the profile it belongs to (#71352). */
-export function getWebhooks(profile?: null | string): Promise<WebhooksResponse> {
+export function getWebhooks(profile?: ProfileScope): Promise<WebhooksResponse> {
   return hermesApi<WebhooksResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/webhooks'
   })
 }
 
-export function enableWebhooks(profile?: null | string): Promise<WebhookEnableResponse> {
+export function enableWebhooks(profile?: ProfileScope): Promise<WebhookEnableResponse> {
   return hermesApi<WebhookEnableResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/webhooks/enable',
     method: 'POST'
   })
 }
 
-export function createWebhook(body: WebhookCreatePayload, profile?: null | string): Promise<WebhookCreateResponse> {
+export function createWebhook(body: WebhookCreatePayload, profile?: ProfileScope): Promise<WebhookCreateResponse> {
   return hermesApi<WebhookCreateResponse>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: '/api/webhooks',
     method: 'POST',
     body
   })
 }
 
-export function deleteWebhook(name: string, profile?: null | string): Promise<{ ok: boolean }> {
+export function deleteWebhook(name: string, profile?: ProfileScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}`,
     method: 'DELETE'
   })
@@ -259,10 +259,10 @@ export function deleteWebhook(name: string, profile?: null | string): Promise<{ 
 export function setWebhookEnabled(
   name: string,
   enabled: boolean,
-  profile?: null | string
+  profile?: ProfileScope
 ): Promise<{ enabled: boolean; name: string; ok: boolean }> {
   return hermesApi<{ enabled: boolean; name: string; ok: boolean }>({
-    ...profileScoped(profile),
+    ...capabilityScoped(profile),
     path: `/api/webhooks/${encodeURIComponent(name)}/enabled`,
     method: 'PUT',
     body: { enabled }

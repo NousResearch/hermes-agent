@@ -73,6 +73,8 @@ export const arChrome = {
       'nav.artifacts': 'فتح العناصر',
       'nav.cron': 'فتح المهام المجدولة',
       'nav.agents': 'فتح الوكلاء',
+      'nav.back': 'رجوع',
+      'nav.forward': 'تقدّم',
       'session.new': 'جلسة جديدة',
       'session.newTab': 'علامة تبويب جلسة جديدة',
       'session.newWindow': 'جلسة جديدة في نافذة',
@@ -135,6 +137,7 @@ export const arChrome = {
       'profile.prev': 'الملف الشخصي السابق',
       'profile.toggleAll': 'تبديل عرض كل الملفات الشخصية',
       'profile.create': 'إنشاء ملف شخصي',
+      'agents.new': 'ملف شخصي جديد (صفحة الملفات الشخصية)',
       'composer.send': 'إرسال الرسالة',
       'composer.newline': 'إدراج سطر جديد',
       'composer.steer': 'توجيه الدور الجاري',
@@ -255,7 +258,8 @@ export const arChrome = {
       reveal: 'إظهار في المجلد',
       copyPath: 'نسخ المسار',
       removeFromSidebar: 'إخفاء من الشريط الجانبي',
-      createdInPreviousContext: 'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
+      createdInPreviousContext:
+        'أُنشئ المشروع على الاتصال أو الملف الشخصي السابق. عُد إليه؛ لم يُكتب ملف IDEA.md.',
       hiddenFromSidebar: 'أُخفي من الشريط الجانبي',
       undoHide: 'تراجع',
       createFailed: 'تعذّر إنشاء المشروع',
@@ -407,6 +411,8 @@ export const arChrome = {
       daybreakFailed: 'فشل تحديث Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'الاتصال',
+      inferenceLabel: 'الاستدلال',
       gateway: 'البوابة',
       connected: 'متصل',
       connecting: 'جار الاتصال',
@@ -420,7 +426,13 @@ export const arChrome = {
       connection: label => `الاتصال: ${label}`,
       recentActivity: 'النشاط الأخير',
       viewAllLogs: 'عرض كل السجلات',
-      messagingPlatforms: 'منصات المراسلة'
+      messagingPlatforms: 'منصات المراسلة',
+      machineStatus: (machine, status) => `حالة ${machine}: ${status}`,
+      checkAgain: 'تحقّق مجددًا',
+      switchToMachine: 'التبديل إلى هذه البوابة',
+      machineSettings: 'البوابات',
+      restartTitle: 'إعادة تشغيل البوابة؟',
+      restartBody: 'ستتوقف الردود الجارية على هذه البوابة. ستعود خلال ثوانٍ وتعيد الاتصال تلقائيًا.'
     },
     approvalMode: {
       perProfile: 'حسب الملف الشخصي',
@@ -538,8 +550,7 @@ export const arChrome = {
       'حُذفت البوابة التي كانت تعمل عليها هذه الطرفية، لذا لا يمكن إعادة فتحها. أغلق علامة التبويب هذه.',
     terminalGatewayNoShellBody:
       'لا توفر هذه البوابة وصولاً إلى الصدفة، لذا لا يمكن إعادة فتح هذه الطرفية. أغلق علامة التبويب هذه.',
-    terminalDisconnectedBody:
-      'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
+    terminalDisconnectedBody: 'انقطع اتصال الطرفية. اضغط Enter لبدء صدفة جديدة؛ يُحفظ سجل التمرير.',
     addToChat: 'إضافة للمحادثة'
   },
   zones: {
@@ -549,6 +560,7 @@ export const arChrome = {
     hideStripTab: title => `إخفاء ${title}`,
     zoneMenuLabel: title => `خيارات المنطقة لـ ${title}`,
     lastTabKeptTitle: 'يبقى آخر تبويب',
+    resizePanes: 'تغيير حجم الأجزاء',
     lastTabKeptBody:
       'تحتاج هذه المنطقة إلى تبويب مرئي واحد على الأقل. أظهر تبويبا آخر أولا، أو اطو الشريط الجانبي بأكمله.',
     toggleStripTab: title => `تبديل تبويب ${title}`,

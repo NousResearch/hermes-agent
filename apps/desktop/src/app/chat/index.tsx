@@ -10,9 +10,7 @@ import { sessionShouldHaveTranscript } from '@/app/session/hooks/use-session-act
 import { Thread } from '@/components/assistant-ui/thread'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
-import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { useSetupChatView } from '@/components/onboarding/first-run/assembly'
-import { $introHoldsThread } from '@/components/onboarding/first-run/intro'
 import { IntroCopy } from '@/components/onboarding/first-run/intro-copy'
 import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $hoveredTreeGroup, $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
@@ -29,9 +27,6 @@ import { migrateSessionDraft } from '@/store/composer'
 import { migrateQueuedPrompts, parkQueuedPrompts } from '@/store/composer-queue'
 import { $introSplash } from '@/store/intro-splash'
 import { $pinnedSessionIds } from '@/store/layout'
-import { $introView } from '@/store/onboarding-intro'
-import { $petActive } from '@/store/pet'
-import { $petOverlayActive } from '@/store/pet-overlay'
 import { $activeGatewayProfile, $gatewaySwapTarget, $hydrationSyncProfile, $profiles } from '@/store/profile'
 import { $profileSwitchFailure } from '@/store/profile-switch-state'
 import {
@@ -53,8 +48,10 @@ import {
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
-import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
+import { isAuxiliaryWindow } from '@/store/windows'
 
+import { ChatDiscovery } from '../discovery/chat-discovery'
+import { useIntroUnlessHeld } from '../discovery/held-exchange'
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
@@ -62,9 +59,8 @@ import { ChatDropOverlay } from './chat-drop-overlay'
 import { dropOverlayKind, useShowChatBar } from './chat-surface-state'
 import { ChatSwitchIndicator } from './chat-switch-indicator'
 import { ChatBar, ChatBarFallback } from './composer'
+import { ComposerHeartField } from './composer/chat-bar-parts'
 import { FloatingComposerSurface } from './composer/floating-surface'
-import { requestComposerInsert } from './composer/focus'
-import { droppedFileInlineRefs } from './composer/inline-refs'
 import {
   ComposerScopeProvider,
   ComposerSurfaceProvider,
@@ -73,9 +69,10 @@ import {
 } from './composer/scope'
 import { useSwitchSendTarget } from './composer/send-target-hint'
 import { useHistoryWindow } from './history-window'
-import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
-import { useFileDropZone } from './hooks/use-file-drop-zone'
+import { type DroppedFile } from './hooks/use-composer-actions'
+import { useConversationFileDrop } from './hooks/use-conversation-file-drop'
 import { shouldShowIntro } from './intro-visibility'
+import { useChatLanding, useClassicIntro, useComposerLanding } from './landing'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -103,6 +100,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onToggleSelectedPin: () => void
   onDeleteSelectedSession: () => void
   onCancel: () => Promise<void> | void
+  onChangeCwd?: (cwd: string, sessionId?: string) => Promise<void>
   onAddContextRef: (refText: string, label?: string, detail?: string) => void
   onAddUrl: (url: string) => void
   onBranchInNewChat?: (messageId: string) => void
@@ -485,28 +483,6 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
   )
 })
 
-// Vibe hearts rise from the composer only when no pet is out (else they play
-// on the pet). Keep the pet subscriptions with this reaction-event surface.
-function ComposerHeartField() {
-  const petActive = useStore($petActive)
-  const petOverlayActive = useStore($petOverlayActive)
-
-  if (petActive || petOverlayActive) {
-    return null
-  }
-
-  return (
-    <HeartField
-      className="absolute inset-x-0 z-30"
-      config={COMPOSER_HEART_CONFIG}
-      style={{
-        top: 0,
-        bottom: 'calc(var(--composer-measured-height) + 0.25rem)'
-      }}
-    />
-  )
-}
-
 const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
@@ -517,9 +493,8 @@ const ChatViewContent = memo(function ChatViewContent({
   requestModelOptionsForOwner,
   onToggleSelectedPin,
   onDeleteSelectedSession,
-  onCancel,
-  onAddContextRef,
-  onAddUrl,
+  onCancel, onChangeCwd,
+  onAddContextRef, onAddUrl,
   onAttachImageBlob,
   onAttachDroppedItems,
   onAttachPastedText,
@@ -549,8 +524,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const composerScope = useComposerScope()
   const composerSurfaceId = useComposerSurfaceId()
   const isPrimary = view.kind === 'primary'
-  const introHoldsThread = useStore($introHoldsThread) && isPrimary && isMainWindow()
-  const guideStarted = useStoreSelector($introView, introView => introView === 'intro' || introView === 'ended')
+  const { classicPrimary, guideStarted, introHoldsThread } = useClassicIntro(isPrimary)
   const activeSessionId = useStore(view.$runtimeId)
 
   const transcriptStoredSessionId = useStoreSelector($sessionStates, states =>
@@ -675,6 +649,11 @@ const ChatViewContent = memo(function ChatViewContent({
     selectedSessionId
   })
 
+  // A visitor's message held until sign up takes the new chat's landing (held-exchange.tsx).
+  const introShown = useIntroUnlessHeld(showIntro, { primary: isPrimary, routed: isRoutedSessionView })
+  const landing = useChatLanding(introShown, introHoldsThread, setupChat, introPersonality, introSeed)
+  const composerLanding = useComposerLanding(landing.centered, isPrimary, composerScope.target, gatewayOpen)
+
   // Session is still loading if the route references a session we haven't
   // resumed yet. Brand-new routed drafts are empty on purpose once a runtime
   // is bound. A session the list already knows has history must keep the
@@ -729,33 +708,12 @@ const ChatViewContent = memo(function ChatViewContent({
     requestModelOptionsForOwner
   })
 
-  // Drop files anywhere in the conversation area, not just on the composer
-  // input. In-app drags (project tree / gutter) carry workspace-relative paths
-  // the gateway resolves directly, so they stay inline `@file:` refs. OS/Finder
-  // drops carry absolute local paths that don't exist on a remote gateway (and
-  // images need byte upload for vision), so route them through the attachment
-  // pipeline — otherwise the local path leaks into the prompt verbatim.
-  const onDropFiles = useCallback(
-    (candidates: DroppedFile[]) => {
-      const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
-      const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
-
-      if (refs.length) {
-        requestComposerInsert(refs.join(' '), { mode: 'inline', target: composerScope.target })
-      }
-
-      if (osDrops.length) {
-        void onAttachDroppedItems(osDrops)
-      }
-    },
-    [composerScope.target, currentCwd, onAttachDroppedItems]
-  )
-
-  // Session drags are POINTER drags (session-drag.ts) — never native DnD.
-  // The drop zone below only handles files; session drops commit through the
-  // drag session itself, which routes a center/link drop to this surface's
-  // composer via `data-composer-target`.
-  const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
+  const { dragKind, dropHandlers } = useConversationFileDrop({
+    cwd: currentCwd,
+    enabled: showChatBar,
+    onAttachDroppedItems,
+    target: composerScope.target
+  })
 
   // While a session drag targets one of this surface's EDGES or a tab strip,
   // the zone overlay/caret owns the visual — the link overlay stands down.
@@ -775,6 +733,7 @@ const ChatViewContent = memo(function ChatViewContent({
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
         className
       )}
+      data-chat-landing={landing.centered}
       data-chat-surface=""
       data-chat-unfocused={surfaceFocused || surfaceHovered ? undefined : ''}
       data-composer-surface-id={composerSurfaceId}
@@ -826,7 +785,7 @@ const ChatViewContent = memo(function ChatViewContent({
             clampToComposer={showChatBar}
             cwd={currentCwd}
             gateway={gateway}
-            intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
+            intro={landing.intro}
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={haltRun}
@@ -836,7 +795,8 @@ const ChatViewContent = memo(function ChatViewContent({
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
-          {isPrimary && isMainWindow() && <IntroCopy />}
+          {classicPrimary && <IntroCopy />}
+          <ChatDiscovery primary={isPrimary} routedSessionId={routedSessionId} />
           {resumeExhausted && routedSessionId && (
             <ResumeExhaustedOverlay onRetryResume={onRetryResume} sessionId={routedSessionId} />
           )}
@@ -854,10 +814,11 @@ const ChatViewContent = memo(function ChatViewContent({
               <ChatBar
                 busy={busy}
                 cwd={currentCwd}
-                disabled={!gatewayOpen}
+                disabled={composerLanding.disabled}
                 focusKey={activeSessionId}
                 freshDraftKey={freshDraftKey}
                 gateway={gateway}
+                landing={composerLanding.around}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
                 onAddContextRef={onAddContextRef}
                 onAddUrl={onAddUrl}
@@ -865,6 +826,7 @@ const ChatViewContent = memo(function ChatViewContent({
                 onAttachImageBlob={onAttachImageBlob}
                 onAttachPastedText={onAttachPastedText}
                 onCancel={onCancel}
+                onChangeCwd={onChangeCwd}
                 onPasteClipboardImage={onPasteClipboardImage}
                 onPickFiles={onPickFiles}
                 onPickFolders={onPickFolders}

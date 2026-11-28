@@ -45,6 +45,7 @@ import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { $layoutEditMode, $layoutEditRevealsHidden } from '../../edit-mode'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -101,10 +102,11 @@ import { startPaneDrag } from './drag-session'
 import { KeepAlivePaneSlot, useStablePaneHosts } from './keep-alive-panes'
 import { PaneBody } from './pane-body'
 import { usePanelTitlebar } from './panel-titlebar'
-import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
+import { useZoneFrameAttrs, zoneFrameStyle } from './zone-frame'
 import { useZoneHeaderLayout } from './zone-header-layout'
+import { useZoneHeader } from './zone-header-provider'
 
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
@@ -394,7 +396,9 @@ export function TreeGroup({
   node,
   parentAxis,
   railSide = 'left',
-  topEdge = false
+  topEdge = false,
+  leftEdge = false,
+  rightEdge = false
 }: {
   node: GroupNode
   parentAxis?: 'column' | 'row'
@@ -427,6 +431,8 @@ export function TreeGroup({
   const editMode = useStore($layoutEditMode)
   const revealsHidden = useStore($layoutEditRevealsHidden)
   const wcOverlap = useWindowControlsOverlap(ref, !topEdge)
+  const edges = { left: leftEdge, right: rightEdge, top: topEdge }
+  const portal = usePortalShell()
 
   const hiddenPanes = useStore($hiddenTreePanes)
   const narrow = useStore($narrowViewport)
@@ -544,14 +550,11 @@ export function TreeGroup({
   const hostedPanes = stableHosts ? node.panes.filter(id => paneChrome(paneFor(id)).lifecycleKeepAlive) : []
   const inlinePanes = mountedPanes.filter(id => !stableHosts || !paneChrome(paneFor(id)).lifecycleKeepAlive)
 
-  // ONE header style: the app's compact pane-header. Whether this zone shows
-  // it is the resolver's call, not this component's — see strip-visibility.ts
-  // for the precedence. The same resolver answers for the toggle command, so
-  // the keystroke and the screen always agree about which way "toggle" points.
-  const stripVisible = tabStripVisibleForZone({
+  // Portal replaces chat-only tabs with conversation chrome. Other zones
+  // retain the shared strip resolver and their persisted visibility choices.
+  const { stripVisible, conversationHeader } = useZoneHeader(node, {
     active: activeId,
     isCollapsePane,
-    mode: node.tabStrip,
     paneFor,
     shown
   })
@@ -658,10 +661,7 @@ export function TreeGroup({
     <div
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-(--ui-editor-surface-background)"
       data-tree-group={node.id}
-      data-window-top={topEdge || undefined}
-      // Advertises the visible tab strip so panes can drop their own
-      // self-naming labels (see [data-pane-self-label] in styles.css).
-      data-zone-header={headerVisible || undefined}
+      {...useZoneFrameAttrs({ active, activeId, edges, headerVisible, isEmpty, portal })}
       // The zone menu opens from the strip, the rail, the edit veil and the
       // body. Only the strip can name a chip, so resolve the target HERE for
       // every one of them — otherwise a right-click off the strip reused the
@@ -671,13 +671,7 @@ export function TreeGroup({
         setMenuPane((e.target as HTMLElement).closest('[data-tree-tab]')?.getAttribute('data-tree-tab') ?? undefined)
       }}
       ref={ref}
-      style={
-        wcOverlap
-          ? { paddingTop: wcOverlap.y + wcOverlap.height }
-          : topEdge && verticalCollapse
-            ? { paddingTop: titlebarHeight }
-            : undefined
-      }
+      style={zoneFrameStyle({ portal, titlebarHeight, topEdge, verticalCollapse, wcOverlap })}
     >
       {wcOverlap && (
         <div
@@ -780,6 +774,7 @@ export function TreeGroup({
                       <button
                         aria-label={node.minimized ? t.zones.restore : minimizeLabel}
                         className="mx-1 grid size-5 shrink-0 place-items-center self-center [-webkit-app-region:no-drag] rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100 group-hover/pane-header:opacity-100"
+                        data-slot="zone-minimize"
                         onClick={toggleCollapse}
                         onPointerDown={e => e.stopPropagation()}
                         type="button"
@@ -951,6 +946,8 @@ export function TreeGroup({
         </div>
       )}
 
+      {conversationHeader}
+
       {/* Body: the zone's pane content — the active pane and bounded hot-hidden
           cache stay mounted in absolute layers; parked panes are unmounted.
           `visibility` (not display) keeps the hidden pane's layout box, so
@@ -980,6 +977,8 @@ export function TreeGroup({
               key={paneId}
               paneId={paneId}
               visible={paneId === activeId && !node.minimized}
+              windowEnd={topEdge && rightEdge}
+              windowStart={topEdge && leftEdge}
             />
           ))}
           {isEmpty ? (

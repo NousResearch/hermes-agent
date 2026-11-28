@@ -1,0 +1,463 @@
+/* Floating surfaces in the redesign: dropdown/context menus, selects, popovers, pickers, the command
+   palette, dialogs and tooltips. Every one of them is body-portalled, so rules gate on the root alone.
+   Figma (Overview 878:*, IA quick win 616:* / 623:*) draws them on the solid floating fill (#0d0d1e on
+   dark, the theme's --ui-bg-elevated), a hairline stroke (menus none, review 2026-11-17), small radii
+   and one soft drop shadow. No backdrop blur anywhere. Light has no Figma frame: the same stroke over a lighter shadow keeps the
+   surface separated from #f2f2f2 pages without looking heavy. Menus are r4 (row/filter menus 878:6044), popovers and dialogs r8
+   (616:1685); tokens in tokens/color.css and tokens/shape.css. */
+
+/* ── Surfaces ─────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content'],
+    [data-slot='popover-content']:not([data-variant='accent']),
+    .hermes-floating-surface
+  ) {
+  --popover-surface: var(--portal-surface-elevated);
+  border-color: var(--portal-stroke-floating);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content']
+  ) {
+  /* Menus draw no stroke (design review 2026-11-17): the solid floating fill and the drop shadow raise
+     them. Popovers, dialogs and toasts hold content and keep their hairline. */
+  border-width: 0;
+  border-radius: var(--portal-radius-card);
+  padding: 4px;
+}
+
+/* A select's menu is at least its trigger's width (the menu's own 4px inset, not the trigger plus
+   a second viewport inset), shows whole rows only (eight 32px rows, then it scrolls inside) and
+   never runs past the window. */
+:root[data-shell='portal'] [data-slot='select-content'] {
+  min-width: var(--radix-select-trigger-width);
+  max-width: var(--radix-select-content-available-width, 100vw);
+  max-height: min(calc(8 * 2rem + 10px), var(--radix-select-content-available-height, 100dvh));
+}
+
+/* A label longer than the window allows ends in an ellipsis inside the menu. */
+:root[data-shell='portal'] [data-slot='select-item'] > span:not([data-slot='select-item-indicator']) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-shell='portal'] [data-slot='select-content'] > [data-radix-select-viewport] {
+  min-width: 0;
+  padding: 0;
+}
+
+/* The check trails the label at the row's end inset, as in every checkable menu (dropdown radio and
+   checkbox items, the language list); leading slots are for icons. */
+:root[data-shell='portal'] [data-slot='select-item'] {
+  padding-inline-end: calc(0.625rem + 0.875rem + 0.5rem);
+}
+
+:root[data-shell='portal'] [data-slot='select-item-indicator'] {
+  inset-inline-end: 0.625rem;
+}
+
+:root[data-shell='portal'] :is([data-slot='popover-content'], .hermes-floating-surface) {
+  border-radius: var(--portal-radius-floating);
+}
+
+/* ── Menu rows (Radix items take real focus; cmdk rows mark data-selected) ── */
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-item'],
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='dropdown-menu-radio-item'],
+    [data-slot='dropdown-menu-sub-trigger'],
+    [data-slot='context-menu-item'],
+    [data-slot='select-item'],
+    [data-slot='command-item']
+  ) {
+  min-height: 2rem;
+  gap: 0.625rem;
+  border-radius: var(--portal-radius-control);
+  padding-inline: 0.625rem;
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-item'],
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='dropdown-menu-radio-item'],
+    [data-slot='dropdown-menu-sub-trigger'],
+    [data-slot='context-menu-item'],
+    [data-slot='select-item']
+  ):is([data-highlighted], [data-state='open']),
+:root[data-shell='portal'] [data-slot='command-item'][data-selected='true'] {
+  background-color: var(--portal-surface-floating-hover);
+  color: var(--ui-text-primary);
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-item'], [data-slot='context-menu-item'])[data-variant='destructive'] {
+  color: var(--portal-text-danger);
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-item'], [data-slot='context-menu-item'])[data-variant='destructive'][data-highlighted] {
+  background-color: var(--portal-surface-danger-hover);
+  color: var(--portal-text-danger);
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-label'], [data-slot='select-label'], [data-slot='command-group'] [cmdk-group-heading]) {
+  padding: 0.5rem 0.625rem 0.25rem;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-caption-size);
+  font-weight: var(--portal-weight-regular);
+  letter-spacing: var(--portal-tracking-caption);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-separator'], [data-slot='select-separator'], [data-slot='command-separator']) {
+  margin-block: 4px;
+  background-color: var(--portal-stroke-hairline);
+}
+
+:root[data-shell='portal'] [data-slot='dropdown-menu-shortcut'] {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-micro-size);
+  letter-spacing: var(--portal-tracking-ui);
+}
+
+/* ── Menu switches ────────────────────────────────────────────────────────── */
+
+/* A settings row says which state it is in. Radix mounts a checkbox item's indicator only while the
+   item is on, which left "off" a blank row, so the item draws the redesign's own checkbox either
+   way (878:5039: 16px, r3, the 28% ink stroke at rest, the brand fill checked) at the row's end
+   inset, where a checkable menu keeps its indicator: the empty outline here, the row's own
+   indicator under the check when on. The row reserves the tile's room (that inset, the tile, its
+   gap) so no label runs under it — the agent menu's settings reserve it themselves and wider
+   (portal-sidebar.css), which still wins there — and both states sit at one inset, so toggling
+   never moves the row. */
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-checkbox-item'], [data-slot='context-menu-checkbox-item']) {
+  /* The tile's seat. A context menu's checkbox rows keep that menu's own row shape, whose end inset
+     is 0.5rem (the row list above names no checkbox slot there), so the seat is set here. */
+  padding-inline-end: 0.625rem;
+}
+
+:root[data-shell='portal']
+  :is([data-slot='dropdown-menu-checkbox-item'], [data-slot='context-menu-checkbox-item'])[data-state='unchecked'] {
+  padding-inline-end: calc(0.625rem + 1rem + 0.625rem);
+}
+
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='context-menu-checkbox-item']
+  )[data-state='unchecked']::before {
+  content: '';
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0.625rem;
+  width: 1rem;
+  height: 1rem;
+  margin-block: auto;
+  border: 1px solid var(--portal-stroke-strong);
+  border-radius: var(--portal-radius-control);
+}
+
+/* On, the check rides in that tile: the row's own indicator span becomes the brand fill (its 0.5rem
+   lead is the tile's centring now), so both states are the same 16px box at the row's end. */
+:root[data-shell='portal']
+  :is(
+    [data-slot='dropdown-menu-checkbox-item'],
+    [data-slot='context-menu-checkbox-item']
+  )[data-state='checked']
+  > span:last-child {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+/* ── Command palette (HUD) ────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] .hermes-floating-surface [data-slot='command-input-wrapper'] {
+  border-bottom-color: var(--portal-stroke-hairline);
+}
+
+/* Menus and popovers opened from the global rail (Settings, System) share one side offset. */
+:root[data-shell='portal'] .portal-rail-popover[data-side='right'] {
+  margin-inline-start: var(--portal-rail-popover-offset);
+}
+
+/* ── Dialogs ──────────────────────────────────────────────────────────────── */
+
+:root[data-shell='portal'] :is([data-slot='dialog-overlay'], [data-slot='sheet-overlay']) {
+  background-color: var(--portal-surface-scrim);
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal']:not(.dark) [data-slot='dialog-overlay'] {
+  background-color: var(--portal-surface-scrim);
+}
+
+/* The image lightbox is a viewer, not a themed sheet: it keeps a dark scrim in
+   BOTH modes (Light's 0.2 page scrim left photos washed out against a bright
+   window). `media-lightbox-overlay` comes from zoomable-image.tsx, so this never
+   depends on sibling order inside the Radix portal. */
+:root[data-shell='portal'] [data-slot='dialog-overlay'].media-lightbox-overlay,
+:root[data-shell='portal']:not(.dark) [data-slot='dialog-overlay'].media-lightbox-overlay {
+  background-color: color-mix(in srgb, var(--portal-raw-black) 70%, transparent);
+  backdrop-filter: none;
+}
+
+/* A dialog's text is page text, not chat text: its body reads at the redesign's 14px body size (the
+   owner's standing ruling, restated in the design review of 2026-11-17), not the transcript's 13px. */
+:root[data-shell='portal'] [data-slot='dialog-content'] {
+  border-color: var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-surface);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
+  font-size: var(--portal-type-body-size);
+}
+
+/* Field labels are row labels (body, 500); the optional tag and help under a control are meta. */
+:root[data-shell='portal'] [data-slot='dialog-content'] [data-slot='field-label'] {
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-slot='dialog-content'] :is([data-slot='field-optional'], [data-slot='field-hint']) {
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.4;
+}
+
+:root[data-shell='portal'] [data-slot='dialog-description'] {
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  /* No one-word last line ("…stays / "default"."). */
+  text-wrap: pretty;
+}
+
+:root[data-shell='portal'] [data-slot='dialog-footer'] {
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+}
+
+/* A dialog taller than the window scrolls its body; the actions stay pinned to the bottom edge
+   instead of scrolling away with the form (the body box owns the scroll). The closing footer takes
+   over the body's bottom padding, so its plate runs to the body's edge whether the body scrolls or
+   not: a short dialog seats its buttons one padding above the edge, as a tall one does. The footer
+   may close the body itself or the wrappers that close it (a submit form, its fieldset), which the
+   sticky footer rides to the body's floor. A flush body (the model picker's p-0) lays its own
+   footer out and is left alone. */
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0']):has(
+    > [data-slot='dialog-footer']:last-child,
+    > :last-child > [data-slot='dialog-footer']:last-child,
+    > :last-child > :last-child > [data-slot='dialog-footer']:last-child
+  ) {
+  padding-bottom: 0;
+}
+
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0'])
+  > [data-slot='dialog-footer']:last-child,
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0'])
+  > :last-child
+  > [data-slot='dialog-footer']:last-child,
+:root[data-shell='portal']
+  [data-slot='dialog-content']
+  > div:not([class~='p-0'])
+  > :last-child
+  > :last-child
+  > [data-slot='dialog-footer']:last-child {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  padding-bottom: var(--dialog-body-padding, 1rem);
+  background-color: var(--portal-surface-elevated);
+}
+
+:root[data-shell='portal'] [data-slot='popover-arrow'] {
+  backdrop-filter: none;
+}
+
+/* Tooltips keep their inverted bubble: the radius is pinned (the root scalar shrinks it) and the label
+   reads at the redesign's 12px meta step on a 1.45 line, over a bubble a step roomier than the shared
+   one the classic shell draws (`components/ui/tooltip.tsx`: `text-[0.6875rem] leading-[1.4] px-2 py-1`),
+   which stays untouched. `:where()` zeroes this rule's specificity (the file is unlayered, so it still
+   beats Tailwind's `@layer utilities` defaults) and lets `.portal-hidden-help` (0, 1, 0) keep its own
+   card padding, 14px UI size and 1.5 line on the wide hidden-agent tooltip. */
+:where(:root[data-shell='portal'] [data-slot='tooltip-content']) {
+  border-radius: var(--portal-radius-card);
+  padding: 0.375rem 0.625rem;
+  font-size: var(--portal-type-meta-size);
+  line-height: 1.45;
+}
+
+/* ── Toasts ───────────────────────────────────────────────────────────────── */
+
+/* Notification cards take the floating fill, stroke and shadow (no blur), r8 like popovers; the
+   "+N more · Clear all" strip under the top stack sits on the same surface so it never floats bare
+   over page content. */
+:root[data-shell='portal'] :is(.hermes-toast-surface, .hermes-toast-controls) {
+  border-color: var(--portal-stroke-floating);
+  background-color: var(--portal-surface-elevated);
+  box-shadow: var(--portal-shadow-floating);
+  backdrop-filter: none;
+}
+
+:root[data-shell='portal'] .hermes-toast-surface {
+  border-radius: var(--portal-radius-floating);
+}
+
+:root[data-shell='portal'] .hermes-toast-controls {
+  border: 1px solid var(--portal-stroke-floating);
+  border-radius: var(--portal-radius-card);
+}
+
+/* ── Touch and small windows (DESIGN.md › Responsive) ───────────────────────── */
+
+/* A coarse pointer on the browser host: menu rows take the 44px target. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(
+      [data-slot='dropdown-menu-item'],
+      [data-slot='dropdown-menu-checkbox-item'],
+      [data-slot='dropdown-menu-radio-item'],
+      [data-slot='dropdown-menu-sub-trigger'],
+      [data-slot='context-menu-item'],
+      [data-slot='select-item'],
+      [data-slot='command-item']
+    ) {
+    min-height: var(--portal-touch-target);
+  }
+}
+
+/* Every floating surface stays inside the window: no wider or taller than the room Radix measured
+   on its side, less a 16px gutter, and scrolling inside when its content is taller. */
+:root[data-shell='portal'] :is([data-slot='dropdown-menu-content'], [data-slot='dropdown-menu-sub-content']) {
+  min-width: 14rem;
+  max-width: calc(var(--radix-dropdown-menu-content-available-width, 100vw) - 1rem);
+  max-height: calc(var(--radix-dropdown-menu-content-available-height, 100dvh) - 1rem);
+  overflow-y: auto;
+}
+
+/* Redesign menu rows use 14px text and a 10px gap, which squeezes model names out of the shared
+   w-72 model menu whenever effort, window-plan, reset, or pricing tags render. Widen the model
+   catalog menu (and widen further when pricing is visible); the available-width cap above still
+   keeps narrow viewports inside the window. */
+:root[data-shell='portal'] [data-slot='dropdown-menu-content']:has([data-slot='model-catalog-menu']) {
+  width: 21rem;
+}
+
+:root[data-shell='portal'] [data-slot='dropdown-menu-content']:has([data-slot='model-price']) {
+  width: 24rem;
+}
+
+:root[data-shell='portal'] :is([data-slot='context-menu-content'], [data-slot='context-menu-sub-content']) {
+  min-width: 16rem;
+  max-width: calc(var(--radix-context-menu-content-available-width, 100vw) - 1rem);
+  max-height: calc(var(--radix-context-menu-content-available-height, 100dvh) - 1rem);
+  overflow-y: auto;
+}
+
+:root[data-shell='portal'] [data-slot='popover-content'] {
+  max-width: calc(var(--radix-popover-content-available-width, 100vw) - 1rem);
+  max-height: calc(var(--radix-popover-content-available-height, 100dvh) - 1rem);
+  overflow-y: auto;
+}
+
+/* A dialog is capped at 85% of the window. The web app's UI scale enlarges a viewport unit with
+   everything else, so under a scale the default cap is divided back to the window via
+   `--dialog-max-h` (which `components/ui/dialog.tsx` reads in its default `max-h-*` utility, so any
+   caller passing its own `max-h-*` class still replaces it cleanly through `tailwind-merge`). */
+@layer components {
+  :root[data-shell='portal'][data-layout-scaled] {
+    --dialog-max-h: calc(85vh / var(--browser-ui-scale, 1));
+  }
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): a dialog is the whole window, its actions pinned to
+   the bottom edge (the sticky footer above) clear of the home indicator; a focused field scrolls
+   into the body's view, above the keyboard where the browser resizes for it. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] [data-slot='dialog-content']:not([data-variant='media-lightbox']) {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: calc(100dvh / var(--browser-ui-scale, 1));
+    max-height: none;
+    translate: none;
+    transform: none;
+    border-width: 0;
+    border-radius: 0;
+    padding-top: var(--portal-safe-top);
+    padding-bottom: var(--portal-safe-bottom);
+  }
+
+  /* The body fills the window and lays its blocks in a column, so the footer rests on the floor even
+     when the form is short. */
+  :root[data-shell='portal']
+    [data-slot='dialog-content']
+    > div:not([class~='p-0']):has(> [data-slot='dialog-footer'], > :last-child > [data-slot='dialog-footer']),
+  :root[data-shell='portal']
+    [data-slot='dialog-content']
+    > div:not([class~='p-0'])
+    > :last-child:has(> [data-slot='dialog-footer']) {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > * {
+    min-width: 0;
+  }
+
+  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > [data-slot='dialog-footer'],
+  :root[data-shell='portal']
+    [data-slot='dialog-content']
+    > div:not([class~='p-0'])
+    > :last-child
+    > [data-slot='dialog-footer'] {
+    margin-top: auto;
+  }
+
+  :root[data-shell='portal'] [data-slot='dialog-content'] :is(input, textarea, select, [contenteditable='true']) {
+    scroll-margin-block: 1.5rem 6rem;
+  }
+
+  /* Toasts span the window above the docked composer (or the floor), under the band. */
+  :root[data-shell='portal'] .hermes-toast-region {
+    right: calc(0.75rem + var(--portal-safe-end));
+    left: calc(0.75rem + var(--portal-safe-start));
+    width: auto;
+  }
+}

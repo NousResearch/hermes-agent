@@ -11,7 +11,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: () => null,
     useValue: useStore,
     resolveSiblingWsUrl: vi.fn(),
-    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn() }
+    host: { onEvent: vi.fn(onGatewayEvent), requestProfile: vi.fn(), profileRoutes: vi.fn(async () => []) }
   }
 })
 vi.mock('./data', async () => {
@@ -24,6 +24,7 @@ vi.mock('./data', async () => {
   }
 })
 vi.mock('./i18n', () => ({
+  botsText: () => ({ screen: { menu: 'Open Screen' } }),
   useBots: () => ({
     screen: {
       portalTitle: 'Screen',
@@ -50,7 +51,7 @@ import { $lastRoster } from './data'
 import type { DisplayStatus } from './screen-connection'
 import { ScreenHero } from './screen-hero'
 import { openBotScreen } from './screen-open'
-import { ProfileGroupScreenPortal, useScreenPortalState } from './screen-portal'
+import { ProfileGroupScreenPortal, profileScreenCommand, useScreenPortalState } from './screen-portal'
 import { $screenState, setScreenStatus } from './screen-state'
 
 const botA: RosterRow = { name: 'default', sourceScoped: true, connectionId: 'host-a', connectionKind: 'remote' }
@@ -75,6 +76,7 @@ beforeEach(() => {
   $screenState.set({})
   $lastRoster.set([])
   vi.mocked(host.requestProfile).mockReset()
+  vi.mocked(host.profileRoutes).mockReset().mockResolvedValue([])
   vi.mocked(openBotScreen).mockClear()
   vi.spyOn(globalThis.document, 'hidden', 'get').mockReturnValue(false)
 })
@@ -127,6 +129,56 @@ it('does not match a legacy profile group to a same-named remote bot', () => {
   fireEvent.click(view.getByRole('button'))
   expect(openBotScreen).toHaveBeenLastCalledWith(botB, null)
   view.unmount()
+})
+
+it('the classic sidebar group opens its own profile\'s Screen, never an alias serving from it', () => {
+  const alias: RosterRow = { ...botB, name: 'shared-bot', targetProfile: 'default' }
+  $lastRoster.set([botA, alias])
+  vi.mocked(host.requestProfile).mockResolvedValue(status)
+  const view = render(<ProfileGroupScreenPortal route={{ connectionId: 'host-b', profile: 'default' }} />)
+
+  fireEvent.click(view.getByRole('button'))
+  expect(openBotScreen).toHaveBeenCalledWith(botB, null)
+  view.unmount()
+})
+
+it('opens Screen from the tool palette on its captured owner, including a roster alias', async () => {
+  const alias: RosterRow = { ...botB, name: 'shared-bot', targetProfile: 'default', connectionLabel: 'Host B' }
+  $lastRoster.set([botA, alias])
+  const command = profileScreenCommand({ connectionId: 'host-b', profile: 'default' })
+
+  expect(command.label).toBe('Open Screen')
+  expect(command.detail?.()).toBe('default · Host B')
+  await command.run()
+  expect(openBotScreen).toHaveBeenCalledWith(alias, null)
+
+  // A cold/filtered roster must not redirect the action onto the live host's same-named bot.
+  $lastRoster.set([botA])
+  await command.run()
+  expect(openBotScreen).toHaveBeenLastCalledWith(
+    { name: 'default', sourceScoped: true, connectionId: 'host-b', connectionKind: 'remote' },
+    null
+  )
+})
+
+it('opens the profile’s own bot from the palette, not an alias listed ahead of it that serves the profile', async () => {
+  const alias: RosterRow = { ...botB, name: 'shared-bot', targetProfile: 'default', connectionLabel: 'Host B' }
+  $lastRoster.set([alias, botB])
+
+  await profileScreenCommand({ connectionId: 'host-b', profile: 'default' }).run()
+
+  expect(openBotScreen).toHaveBeenLastCalledWith(botB, null)
+})
+
+it('resolves a cold Portal alias through authoritative routes without visiting Bot Mode', async () => {
+  vi.mocked(host.profileRoutes).mockResolvedValue([
+    { connectionId: 'host-a', profile: 'moxie', targetProfile: 'other', mode: 'remote' },
+    { connectionId: 'host-b', profile: 'moxie', targetProfile: 'default', mode: 'remote' }
+  ])
+  await profileScreenCommand({ connectionId: 'host-b', profile: 'moxie' }).run()
+  expect(openBotScreen).toHaveBeenCalledWith(expect.objectContaining({
+    name: 'moxie', connectionId: 'host-b', targetProfile: 'default'
+  }), null)
 })
 
 it.each(['pending', 'rejected'])('never displays host A pixels under host B while B is %s', async state => {

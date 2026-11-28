@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import type { DesktopBootProgress, UpdateHoldWire } from '@/global'
 import { translateNow } from '@/i18n'
+import { bootReadyCopy, bootStepCopy } from '@/lib/boot-copy'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 
 export interface DesktopBootState extends DesktopBootProgress {
@@ -11,7 +12,7 @@ export interface DesktopBootState extends DesktopBootProgress {
 const INITIAL_BOOT_STATE: DesktopBootState = {
   error: null,
   fakeMode: false,
-  message: translateNow('boot.steps.startingHermesDesktop'),
+  message: bootStepCopy('startingHermesDesktop'),
   phase: 'renderer.init',
   progress: 2,
   running: true,
@@ -96,7 +97,7 @@ export function resumeDesktopBootForRetry(message: string) {
   })
 }
 
-export function completeDesktopBoot(message = translateNow('boot.ready')) {
+export function completeDesktopBoot(message = bootReadyCopy()) {
   const current = $desktopBoot.get()
   $desktopBoot.set({
     ...current,

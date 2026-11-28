@@ -45,6 +45,8 @@ async function boot() {
 describe('side visibility survives a page refresh independently of Files', () => {
   beforeEach(() => {
     window.localStorage.clear()
+    // Pins the classic shell, whose layout keeps the keys asserted here.
+    window.localStorage.setItem('hermes.desktop.agentShell.v1', 'false')
     window.history.replaceState(null, '', '/')
     vi.resetModules()
   })

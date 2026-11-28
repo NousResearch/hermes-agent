@@ -127,7 +127,17 @@ describe('migrateTilesForProfile', () => {
     // Fresh module instances are intentional: these tests exercise persisted profile ownership.
     const metrics = await import('@/store/desktop-metrics')
     const profiles = await import('@/store/session-states')
+    const { $apiRequestScope } = await import('@/api/client')
     const minute = 60_000
+
+    // The focus change publishes its request scope before the metrics hook binds that owner.
+    const bind = (requester: Parameters<typeof metrics.bindDesktopMetrics>[0], owner: string) => {
+      const [connectionId, profile] = owner.split('|')
+
+      $apiRequestScope.set({ connectionId, profile })
+      metrics.bindDesktopMetrics(requester, owner)
+    }
+
     const noon = Date.UTC(2026, 8, 27, 12)
 
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -136,13 +146,13 @@ describe('migrateTilesForProfile', () => {
     vi.setSystemTime(noon)
 
     try {
-      metrics.bindDesktopMetrics(null, 'local|alpha')
+      bind(null, 'local|alpha')
       await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
       metrics.trackDesktopVisibleTime(11 * minute)
       metrics.recordLongFrames([120])
       vi.setSystemTime(noon + minute)
       metrics.tickDesktopMetrics()
-      metrics.bindDesktopMetrics(null, 'remote-1|alpha')
+      bind(null, 'remote-1|alpha')
       await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
       metrics.recordLongFrames([70, 70])
       vi.setSystemTime(noon + 2 * minute)
@@ -165,7 +175,7 @@ describe('migrateTilesForProfile', () => {
       }
 
       vi.setSystemTime(noon + 24 * 60 * minute)
-      metrics.bindDesktopMetrics(requester('local'), `local|${operation === 'rename' ? 'renamed' : 'alpha'}`)
+      bind(requester('local'), `local|${operation === 'rename' ? 'renamed' : 'alpha'}`)
       await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
 
       if (operation === 'rename') {
@@ -173,11 +183,11 @@ describe('migrateTilesForProfile', () => {
         expect(reports[0]).toEqual(['local', {
           day: '2026-09-27', visible_ms: minute, frames: [{ bucket: '100ms_to_250ms', count: 1 }]
         }])
-        metrics.bindDesktopMetrics(requester('old-name'), 'local|alpha')
+        bind(requester('old-name'), 'local|alpha')
         await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
       }
 
-      metrics.bindDesktopMetrics(requester('remote'), 'remote-1|alpha')
+      bind(requester('remote'), 'remote-1|alpha')
       await setMetricsGate(metrics.captureDesktopMetricsGate, 'on')
       await vi.waitFor(() => expect(reports.some(([owner]) => owner === 'remote')).toBe(true))
       expect(reports.filter(([owner]) => owner !== 'local')).toEqual([['remote', {

@@ -26,12 +26,14 @@ import { ruProjects } from './ru_projects'
 import { ruSharedMetrics } from './ru_shared_metrics'
 import { ruThemePicker } from './ru_theme_picker'
 import { ruUpdateChannel } from './ru_update_channel'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const ruOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['ru'],
   gatewayGroupOpen: {
-    opening: "Открываем групповой чат…",
+    opening: 'Открываем групповой чат…',
     lookupFailed: "Не удалось найти эту группу на шлюзе. Попробуйте ещё раз.",
-    missing: "Этот групповой чат больше не существует."
+    missing: 'Этот групповой чат больше не существует.'
   },
   catalog: ruCatalog,
   connectors: ruConnectors.connectors,
@@ -246,6 +248,8 @@ export const ruOverrides = {
       'nav.artifacts': 'Открыть артефакты',
       'nav.cron': 'Открыть запланированные задачи',
       'nav.agents': 'Открыть агенты',
+      'nav.back': 'Назад',
+      'nav.forward': 'Вперёд',
       'session.new': 'Новый сеанс',
       'session.newTab': 'Новая вкладка сеанса',
       'session.newWindow': 'Новое окно',
@@ -322,6 +326,7 @@ export const ruOverrides = {
       'profile.prev': 'Предыдущий профиль',
       'profile.toggleAll': 'Показать все профили',
       'profile.create': 'Создать профиль',
+      'agents.new': 'Новый профиль (страница «Профили»)',
       'composer.send': 'Отправить сообщение',
       'composer.newline': 'Вставить перенос строки',
       'composer.steer': 'Направить текущий ход',
@@ -486,6 +491,14 @@ export const ruOverrides = {
       system: { label: 'Системная', description: 'Следовать настройкам ОС' }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: 'Вызовы инструментов',
+        toolViewDesc:
+          'Простой режим скрывает необработанные данные инструментов; технический показывает полные входные и выходные данные.',
+        product: 'Простой',
+        introSplashTitle: 'Экран приветствия',
+        embedsTitle: 'Предпросмотр ссылок'
+      },
       chatTextScaleTitle: 'Размер текста чата',
       chatTextScaleDesc:
         'Масштабирует текст беседы и поле ввода относительно масштаба интерфейса. Размер боковых панелей и элементов управления не меняется.',
@@ -568,7 +581,8 @@ export const ruOverrides = {
       modelPricingTitle: 'Цены моделей',
       modelPricingDesc: 'Показывать в выборе модели цены за миллион токенов: ввод, вывод и чтение из кэша.',
       reactionsTitle: 'Реакции на сообщения',
-      reactionsDesc: 'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
+      reactionsDesc:
+        'Эмодзи-тапбеки в стиле iMessage — реагируйте на сообщения, и Hermes сможет реагировать на ваши.',
       composerPopoutTitle: 'Плавающий композер',
       composerPopoutDesc:
         'Позволяет вытягивать композер из его док-зоны. Когда выключено, он остаётся закреплённым внизу.',
@@ -1316,7 +1330,8 @@ export const ruOverrides = {
       noKeysMatch: 'Провайдеры, подходящие под поиск, не найдены.',
       localEndpoint: {
         title: 'Локальный / свой эндпоинт',
-        description: 'Направьте Hermes на любой OpenAI-совместимый эндпоинт (Zyphra, vLLM, llama.cpp, Ollama и т. д.).'
+        description:
+          'Направьте Hermes на любой OpenAI-совместимый эндпоинт (Zyphra, vLLM, llama.cpp, Ollama и т. д.).'
       },
       loading: 'Загрузка провайдеров…'
     },
@@ -1359,8 +1374,9 @@ export const ruOverrides = {
         reimportSignins: 'Импортировать входы заново',
         signinsImportedTitle: 'Входы во встроенном браузере',
         signinsImported: count => `Встроенный браузер вошёл с cookie из профиля браузера: ${count}.`,
-        signinsRemote: 'Этот бэкенд работает на другом компьютере, поэтому его профиль браузера не импортируется во встроенный браузер.',
-        signinsFailed: 'Не удалось импортировать входы во встроенный браузер',
+        signinsRemote:
+          'Этот бэкенд работает на другом компьютере, поэтому его профиль браузера не импортируется во встроенный браузер.',
+        signinsFailed: 'Не удалось импортировать входы во встроенный браузер'
       },
       loadingConfig: 'Загрузка конфигурации',
       savedTitle: 'Учётные данные сохранены',
@@ -1450,6 +1466,17 @@ export const ruOverrides = {
   },
   skillDeepLink: ruSkillDeepLink,
   skills: {
+    inventoryScopeHint:
+      'Установки относятся к выбранным агенту и компьютеру. Включение инструментов и индивидуальные переопределения задаются в настройках агента. Учётные записи размещённых коннекторов общие для агентов, использующих одну учётную запись Nous.',
+    agentScopeHint:
+      'Изменения применяются только к этому агенту. В существующих беседах сохраняются текущие инструменты.',
+    toolSecretsHint:
+      'Ключи API, адреса подключения и провайдеры, используемые этим агентом. Авторизация у провайдеров может быть общей для нескольких агентов; учётные записи размещённых коннекторов общие для агентов, использующих одну учётную запись Nous.',
+    openAgentSettings: 'Настройки профиля',
+    openToolLibrary: 'Открыть библиотеку инструментов',
+    remotePluginHint:
+      'Откройте этот профиль на его шлюзе, чтобы управлять плагинами. Для установки плагинов используется подключённый шлюз.',
+    showAllToolsets: (count: number) => `Показать все (${count})`,
     plugins: { ...ruPluginPreviewAccess, ...ruPluginsTab, ...ruPluginUpdateAll },
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
@@ -1919,7 +1946,8 @@ export const ruOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Токен бота не нужен',
-      intro: (platform: string) => `${platform} связывается с этим агентом через общий бот Hermes. Привяжите свой аккаунт ${platform} и напишите боту, чтобы говорить с агентом.`,
+      intro: (platform: string) =>
+        `${platform} связывается с этим агентом через общий бот Hermes. Привяжите свой аккаунт ${platform} и напишите боту, чтобы говорить с агентом.`,
       link: (platform: string) => `Привязать ${platform}`,
       linkAnother: (platform: string) => `Привязать ещё один аккаунт ${platform}`,
       linkedAccounts: 'Привязанные аккаунты',
@@ -1940,7 +1968,8 @@ export const ruOverrides = {
       managedNote: (platform: string) => `На этом экземпляре сообщения идут через Team Gateway, поэтому шлюз отключает прямое подключение ${platform} при каждом запуске. Чтобы использовать его вместе с ретранслятором, задайте GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true в окружении шлюза (прямое подключение не даёт экземпляру масштабироваться до нуля и может доставлять сообщения дважды).`,
       managedIntro: 'Аккаунты этого агента привязываются в Nous Portal.',
       openPortal: 'Привязать аккаунты в Nous Portal',
-      noNewAccount: (platform: string) => `Код больше не активен, и новый аккаунт не появился. Если вашего аккаунта ${platform} нет в списке, получите новый код и попробуйте снова.`
+      noNewAccount: (platform: string) =>
+        `Код больше не активен, и новый аккаунт не появился. Если вашего аккаунта ${platform} нет в списке, получите новый код и попробуйте снова.`
     },
     telegramQr: {
       title: 'Выберите способ подключения Telegram-бота',
@@ -2012,7 +2041,10 @@ export const ruOverrides = {
       MATTERMOST_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей Mattermost' },
       MATTERMOST_HOME_CHANNEL: { label: 'Домашний канал' },
       QQ_ALLOW_ALL_USERS: { label: 'Разрешить всех пользователей QQ' },
-      QQBOT_HOME_CHANNEL: { label: 'Домашний канал QQ', help: 'Канал или группа по умолчанию для доставки cron.' },
+      QQBOT_HOME_CHANNEL: {
+        label: 'Домашний канал QQ',
+        help: 'Канал или группа по умолчанию для доставки cron.'
+      },
       QQBOT_HOME_CHANNEL_NAME: { label: 'Название домашнего канала QQ' },
       SLACK_BOT_TOKEN: {
         label: 'Токен бота Slack',
@@ -2595,6 +2627,7 @@ export const ruOverrides = {
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',
     placeholderFollowUp: 'Отправить продолжение',
+    browseAllSessions: 'Все сеансы…',
     newSessionPlaceholders: [
       'Что будем делать?',
       'Дайте Hermes задачу',
@@ -3252,6 +3285,8 @@ export const ruOverrides = {
       daybreakFailed: 'Не удалось обновить Daybreak'
     },
     gatewayMenu: {
+      connectionLabel: 'Подключение',
+      inferenceLabel: 'Инференс',
       gateway: 'Шлюз',
       connected: 'Подключён',
       connecting: 'Подключение',
@@ -3265,7 +3300,14 @@ export const ruOverrides = {
       connection: label => `Соединение: ${label}`,
       recentActivity: 'Недавняя активность',
       viewAllLogs: 'Все журналы →',
-      messagingPlatforms: 'Платформы сообщений'
+      messagingPlatforms: 'Платформы сообщений',
+      machineStatus: (machine, status) => `Состояние ${machine}: ${status}`,
+      checkAgain: 'Проверить снова',
+      switchToMachine: 'Переключиться на этот шлюз',
+      machineSettings: 'Шлюзы',
+      restartTitle: 'Перезапустить шлюз?',
+      restartBody:
+        'Выполняющиеся ответы на этом шлюзе остановятся. Через несколько секунд он вернётся и переподключится сам.'
     },
     approvalMode: {
       perProfile: 'Для каждого профиля',
@@ -3517,6 +3559,7 @@ export const ruOverrides = {
     hideStripTab: title => `Скрыть ${title}`,
     zoneMenuLabel: title => `Параметры зоны для ${title}`,
     lastTabKeptTitle: 'Последняя вкладка остаётся',
+    resizePanes: 'Изменить размер панелей',
     lastTabKeptBody:
       'В этой зоне нужна хотя бы одна видимая вкладка. Сначала покажите другую вкладку или сверните всю боковую панель.',
     toggleStripTab: title => `Переключить вкладку ${title}`,
@@ -3829,7 +3872,11 @@ export const ruOverrides = {
   },
   desktop: {
     audioReadFailed: 'Не удалось прочитать записанное аудио',
+    sessionOpenFailed: 'Не удалось открыть этот сеанс',
     sessionUnavailable: 'Сеанс недоступен',
+    sessionOwnerConflictTitle: 'Не удалось открыть этот чат',
+    sessionOwnerConflictBody:
+      'Другой чат с тем же ID уже открыт. Сначала закройте его или откройте этот чат в новом окне.',
     createSessionFailed: 'Не удалось создать новый сеанс',
     promptFailed: 'Промпт не удался',
     providerCredentialRequired: 'Добавьте учётные данные провайдера перед отправкой первого сообщения.',

@@ -86,6 +86,38 @@ function ScreenNeedsHttps({ label }: { label: string }) {
   )
 }
 
+function ScreenHolderBadge({
+  humanOther,
+  iHold,
+  labels
+}: {
+  humanOther: boolean
+  iHold: boolean
+  labels: { agentControls: string; otherControls: string; youControl: string }
+}) {
+  if (iHold) {
+    return (
+      <span
+        className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400"
+        data-slot="bot-screen-badge"
+        data-tone="human"
+      >
+        {labels.youControl}
+      </span>
+    )
+  }
+
+  return (
+    <span
+      className="rounded bg-muted px-2 py-0.5 text-muted-foreground"
+      data-slot="bot-screen-badge"
+      data-tone={humanOther ? 'other' : 'agent'}
+    >
+      {humanOther ? labels.otherControls : labels.agentControls}
+    </span>
+  )
+}
+
 export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const t = useBots()
   const screen = useValue($screenState)
@@ -450,10 +482,12 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
     const sw = status.image_switch
 
     return (
-      <div className="grid min-h-48 place-items-center p-6 text-center">
-        <div className="flex max-w-md flex-col items-center gap-2">
-          <div className="text-sm font-medium">{t.screen.imageSwitchTitle}</div>
-          <div className="text-xs text-muted-foreground">
+      <div className="grid min-h-48 place-items-center p-6 text-center" data-slot="bot-screen-state">
+        <div className="flex max-w-md flex-col items-center gap-2" data-slot="bot-screen-state-card">
+          <div className="text-sm font-medium" data-slot="bot-screen-state-title">
+            {t.screen.imageSwitchTitle}
+          </div>
+          <div className="text-xs text-muted-foreground" data-slot="bot-screen-state-body">
             {t.screen.imageSwitchBody(sw.current_image, sw.target_image)}
           </div>
           <div className="flex gap-2">
@@ -465,7 +499,11 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
               {t.screen.imageSwitchKeep}
             </Button>
           </div>
-          {error ? <div className="text-xs text-red-500">{error}</div> : null}
+          {error ? (
+            <div className="text-xs text-red-500" data-slot="bot-screen-state-error">
+              {error}
+            </div>
+          ) : null}
         </div>
       </div>
     )
@@ -473,15 +511,23 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
 
   if (status && !status.running) {
     return (
-      <div className="grid min-h-48 place-items-center p-6 text-center">
-        <div className="flex flex-col items-center gap-2">
-          <div className="text-sm font-medium">{t.screen.stoppedTitle}</div>
-          <div className="text-xs text-muted-foreground">{status.blocker ?? t.screen.stoppedBody}</div>
+      <div className="grid min-h-48 place-items-center p-6 text-center" data-slot="bot-screen-state">
+        <div className="flex flex-col items-center gap-2" data-slot="bot-screen-state-card">
+          <div className="text-sm font-medium" data-slot="bot-screen-state-title">
+            {t.screen.stoppedTitle}
+          </div>
+          <div className="text-xs text-muted-foreground" data-slot="bot-screen-state-body">
+            {status.blocker ?? t.screen.stoppedBody}
+          </div>
           <Button disabled={busy || Boolean(status.blocker)} onClick={() => void start()} size="sm">
             {busy ? <GlyphSpinner /> : <Codicon name="play" />}
             {t.screen.start}
           </Button>
-          {error ? <div className="text-xs text-red-500">{error}</div> : null}
+          {error ? (
+            <div className="text-xs text-red-500" data-slot="bot-screen-state-error">
+              {error}
+            </div>
+          ) : null}
         </div>
       </div>
     )
@@ -490,19 +536,25 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
   const humanOther = lease?.holder === 'human' && !iHold
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs">
+    <div className="flex h-full min-h-0 flex-col" data-slot="bot-screen-pane">
+      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs" data-slot="bot-screen-header">
         <Codicon name="device-desktop" />
-        <span className="font-medium">{t.screen.title}</span>
+        <span className="font-medium" data-slot="bot-screen-title">
+          {t.screen.title}
+        </span>
         {status?.display ? (
-          <span className="text-muted-foreground">
+          <span className="text-muted-foreground" data-slot="bot-screen-meta">
             {status.display} · {status.geometry}
           </span>
         ) : null}
         {status?.placement?.startsWith('terminal:') ? (
           // Where the desktop lives matters for what a takeover can reach: inside the terminal's sandbox,
           // not on the gateway host.
-          <span className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground">
+          <span
+            className="rounded bg-(--ui-bg-tertiary) px-1.5 py-0.5 text-muted-foreground"
+            data-slot="bot-screen-badge"
+            data-tone="sandbox"
+          >
             {t.screen.placementSandbox(status.placement.slice('terminal:'.length))}
           </span>
         ) : null}
@@ -511,20 +563,14 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
           // Why control was taken stays readable while the human acts.
           <span
             className="max-w-[40%] truncate rounded bg-amber-500/15 px-2 py-0.5 text-amber-600 dark:text-amber-400"
+            data-slot="bot-screen-badge"
+            data-tone="reason"
             title={lease.reason}
           >
             <Codicon name="bell" /> {lease.reason}
           </span>
         ) : null}
-        {iHold ? (
-          <span className="rounded bg-red-500/15 px-2 py-0.5 font-medium text-red-600 dark:text-red-400">
-            {t.screen.youControl}
-          </span>
-        ) : humanOther ? (
-          <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.otherControls}</span>
-        ) : (
-          <span className="rounded bg-muted px-2 py-0.5 text-muted-foreground">{t.screen.agentControls}</span>
-        )}
+        <ScreenHolderBadge humanOther={humanOther} iHold={iHold} labels={t.screen} />
         {iHold ? (
           <Button disabled={busy} onClick={() => void handBack()} size="sm" variant="secondary">
             <Codicon name="debug-continue" /> {t.screen.handBack}
@@ -562,6 +608,8 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
         className={
           iHold ? 'relative min-h-0 grow bg-black ring-2 ring-inset ring-red-500/70' : 'relative min-h-0 grow bg-black'
         }
+        data-holding={iHold || undefined}
+        data-slot="bot-screen-stage"
       >
         {/* data-terminal: the same keyboard-ownership marker the terminal pane uses, so the app's
             type-to-focus / bare-key shortcuts never steal keystrokes meant for the remote screen.
@@ -569,17 +617,30 @@ export function BotScreenPane({ bot }: { bot: RosterRow }) {
             the chord belongs to the remote desktop, nothing local should close. */}
         <div className="absolute inset-0" data-remote-screen="" data-terminal="" ref={canvasHost} />
         {conn === 'attaching' ? (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-white/70">
+          <div
+            className="pointer-events-none absolute inset-0 flex items-center justify-center text-xs text-white/70"
+            data-slot="bot-screen-attaching"
+          >
             <GlyphSpinner /> {t.screen.attaching}
           </div>
         ) : null}
         {evicted ? (
-          <div className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100">
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 bg-amber-950/80 px-3 py-1.5 text-center text-xs text-amber-100"
+            data-slot="bot-screen-banner"
+            data-tone="warn"
+          >
             {t.screen.controlTaken}
           </div>
         ) : null}
         {conn === 'error' && error ? (
-          <div className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200">{error}</div>
+          <div
+            className="absolute inset-x-0 bottom-0 bg-red-950/80 px-3 py-1.5 text-xs text-red-200"
+            data-slot="bot-screen-banner"
+            data-tone="error"
+          >
+            {error}
+          </div>
         ) : null}
         <ScreenNeedsHttps label={t.screen.needsHttps} />
       </div>

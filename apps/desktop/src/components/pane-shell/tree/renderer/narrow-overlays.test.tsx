@@ -1,11 +1,12 @@
 import { act, cleanup, fireEvent, render } from '@testing-library/react'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { registry } from '@/contrib/registry'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 import { stubResizeObserver } from '@/test/jsdom'
 
 import { group, split } from '../model'
@@ -72,7 +73,17 @@ const revealPane = (id: string) => {
   })
 }
 
-const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
+const overlayTab = (paneId: string) => globalThis.document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
+
+it('reveals a pane unhidden by the same user action before React rerenders', () => {
+  $hiddenTreePanes.set(new Set(['sessions']))
+  render(<NarrowOverlays />)
+  act(() => {
+    $hiddenTreePanes.set(new Set())
+    window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'sessions', mode: 'open' } }))
+  })
+  expect(globalThis.document.querySelector('[data-narrow-overlay="sessions"]')).not.toBeNull()
+})
 
 // The page the browser-hosted Desktop serves (its bridge writes this marker).
 const asBrowserHost = () => {
@@ -90,6 +101,10 @@ describe('narrow overlay in native Desktop', () => {
   // stays open until Escape, the toggle or the edge hover closes it.
   it('puts no outside-click backdrop over the app and keeps a pinned overlay open', () => {
     asNativeDesktop()
+    // Classic's native overlay; the redesign draws a sheet with a scrim on every host (below).
+    $shellChoice.set(false)
+    onTestFinished(() => $shellChoice.set(null))
+    $narrowViewport.set(true)
     render(<NarrowOverlays />)
     revealPane('sessions')
 
@@ -109,7 +124,9 @@ describe('narrow overlay in native Desktop', () => {
     )
     expect(queryByTestId('bots-body')).toBeTruthy()
 
-    act(() => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'bots', mode: 'close' } })))
+    act(() =>
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'bots', mode: 'close' } }))
+    )
     expect(queryByTestId('bots-body')).toBeNull()
   })
 })
@@ -160,12 +177,18 @@ describe('narrow overlay of a stacked zone', () => {
 
   it('reserves the browser touch titlebar above overlay tabs', () => {
     window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    // Classic's pointer band is the compact one; the redesign's 60px band already fits touch.
+    $shellChoice.set(false)
+    onTestFinished(() => $shellChoice.set(null))
+    // The shell flip re-homes the layout; declare the zone again for the classic shell.
+    declareDefaultTree(split('row', [group(['sessions', 'bots']), group(['workspace'])]))
 
     const overlayInset = (touch: boolean) => {
       vi.stubGlobal(
         'matchMedia',
         vi.fn().mockReturnValue({ matches: touch, addEventListener: vi.fn(), removeEventListener: vi.fn() })
       )
+      $narrowViewport.set(true)
       const { container, unmount } = render(<NarrowOverlays />)
       revealPane('sessions')
       const inset = parseFloat(container.querySelector<HTMLElement>('[data-narrow-overlay]')!.style.paddingTop)
@@ -249,10 +272,10 @@ describe('narrow overlay of a stacked zone', () => {
     render(<NarrowOverlays />)
     revealPane('sessions')
 
-    // Controls rect = { x: 0, y: 0, width: 24 + 58, height: 34 }; the
-    // reservation is the overlap's bottom edge, so the strip starts below it.
-    const overlay = document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
-    expect(overlay?.style.paddingTop).toBe('34px')
+    // Controls rect = { x: 0, y: 0, width: 24 + 58, height: 34 }. The redesign's sheet starts under
+    // its whole 60px band (where Electron seats the lights), past the controls' overlap.
+    const overlay = globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
+    expect(parseFloat(overlay!.style.paddingTop)).toBeGreaterThanOrEqual(34)
     // The reserved band stays a window-drag target, as in a docked TreeGroup.
     const dragSpacer = overlay?.querySelector<HTMLElement>('[aria-hidden="true"]')
     expect(dragSpacer).not.toBeNull()
@@ -299,5 +322,55 @@ describe('narrow overlay of a stacked zone', () => {
     expect(narrowOverlayWidth({ paneFor: () => undefined, paneGone: () => false, overrides: {} }, null, bots)).toBe(
       '260px'
     )
+  })
+})
+
+describe('narrow overlay in the redesign', () => {
+  // Below wide the redesign shows the chat sidebar as a sheet: a scrim a tap dismisses, on native
+  // Desktop too, the panel starting under the band, sized by its sheet token.
+  it('is a sheet with a dismissing scrim on every host', () => {
+    asNativeDesktop()
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+
+    const sheet = globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')
+    expect(sheet?.dataset.narrowOverlaySide).toBe('left')
+    expect(sheet?.style.width).toBe('var(--portal-sheet-panel-width)')
+    expect(sheet?.style.paddingTop).toBe('60px')
+
+    const scrim = globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay-backdrop]')
+    expect(scrim).not.toBeNull()
+    fireEvent.pointerDown(scrim!, { button: 0, pointerId: 1 })
+    fireEvent.pointerUp(scrim!, { button: 0, pointerId: 1 })
+    expect(globalThis.document.querySelector('[data-narrow-overlay]')).toBeNull()
+  })
+
+  it('keeps a plugin pane’s declared width in its sheet, within the room a sheet may take', () => {
+    registerPane('plugin:notes', 'Notes', { collapsible: true, placement: 'left', width: '420px' }, 'notes')
+    $layoutTree.set(split('row', [group(['sessions']), group(['plugin:notes']), group(['workspace'])]))
+    render(<NarrowOverlays />)
+
+    revealPane('plugin:notes')
+    expect(globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay="plugin:notes"]')?.style.width).toBe(
+      'min(420px, var(--portal-sheet-panel-max-width))'
+    )
+
+    revealPane('sessions')
+    expect(globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay="sessions"]')?.style.width).toBe(
+      'var(--portal-sheet-panel-width)'
+    )
+  })
+
+  it('closes on Escape and on an explicit close', () => {
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(globalThis.document.querySelector('[data-narrow-overlay]')).toBeNull()
+
+    revealPane('sessions')
+    act(() => {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'chat-sidebar', mode: 'close' } }))
+    })
+    expect(globalThis.document.querySelector('[data-narrow-overlay]')).toBeNull()
   })
 })

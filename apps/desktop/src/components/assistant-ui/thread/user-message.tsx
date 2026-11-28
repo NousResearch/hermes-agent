@@ -287,6 +287,7 @@ const UserBubbleActions: FC<UserBubbleActionsProps> = ({
           ? 'opacity-100'
           : 'opacity-0 group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100'
       )}
+      data-slot="aui_user-bubble-tail"
     >
       {!touch && <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />}
       {showStop ? (

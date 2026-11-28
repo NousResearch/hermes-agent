@@ -33,6 +33,69 @@ export const fmtDate = new Intl.DateTimeFormat(undefined, { day: 'numeric', mont
 export const fmtMonth = new Intl.DateTimeFormat(undefined, { month: 'long' })
 export const fmtMonthYear = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' })
 
+// ── Locale-keyed safe formatters ───────────────────────────────────────────
+// Redesign surfaces render in the *app-selected* locale, which must beat the OS
+// one: an `undefined` locale picks the host's, mixing languages in a single
+// string ("morgen, 7:00 AM") and making output host-dependent. These mirror the
+// `fmt*` instances above but take a locale and a `Date`, cache one
+// `Intl.DateTimeFormat` per (kind, locale), and answer '' for a malformed date
+// instead of throwing `RangeError: Invalid time value`. The `fmt*` exports stay
+// for classic callers.
+
+const safeFormats = new Map<string, Intl.DateTimeFormat>()
+
+function safeFormat(date: Date, locale: string | undefined, kind: string, options: Intl.DateTimeFormatOptions): string {
+  if (Number.isNaN(date.valueOf())) {
+    return ''
+  }
+
+  const key = `${kind}\u0000${locale ?? ''}`
+  let format = safeFormats.get(key)
+
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, options)
+    safeFormats.set(key, format)
+  }
+
+  return format.format(date)
+}
+
+/** `hh:mm` clock in the chosen locale. */
+export function formatClock(date: Date, locale?: string): string {
+  return safeFormat(date, locale, 'clock', { hour: 'numeric', minute: '2-digit' })
+}
+
+/** Date only, "5 Jun 2026". */
+export function formatDate(date: Date, locale?: string): string {
+  return safeFormat(date, locale, 'date', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+/** Medium date + short time. */
+export function formatDateTime(date: Date, locale?: string): string {
+  return safeFormat(date, locale, 'dateTime', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+/** Weekday + full date + clock. */
+export function formatFullDateTime(date: Date, locale?: string): string {
+  return safeFormat(date, locale, 'fullDateTime', { dateStyle: 'full', timeStyle: 'short' })
+}
+
+/** Compact "day + clock", no year. */
+export function formatDayTime(date: Date, locale?: string): string {
+  return safeFormat(date, locale, 'dayTime', { day: 'numeric', hour: 'numeric', minute: '2-digit', month: 'short' })
+}
+
+/** Compact "day + clock" whose year is kept, so a moment outside the current year never reads as this one. */
+export function formatDayTimeWithYear(date: Date, locale?: string): string {
+  return safeFormat(date, locale, 'dayTimeYear', {
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  })
+}
+
 // ── Relative time ──────────────────────────────────────────────────────────
 const relativeFormats = new Map<string | undefined, Intl.RelativeTimeFormat>()
 

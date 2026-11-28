@@ -1,4 +1,4 @@
-import { cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -9,6 +9,7 @@ import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } fro
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { AppContextMenu } from './app-context-menu'
 import {
@@ -50,6 +51,7 @@ function attach(html: string): HTMLElement {
 afterEach(() => {
   $contextMenu.set(null)
   $connection.set(null)
+  $shellChoice.set(null)
   closeRightRail()
   cleanup()
   vi.restoreAllMocks()
@@ -317,6 +319,25 @@ describe('AppContextMenu', () => {
 
     expect(await screen.findByText('Settings')).toBeTruthy()
     expect(electronEvent.defaultPrevented).toBe(false)
+  })
+
+  // The profile rail is the classic sidebar's: the redesign lists agents in its sidebar and has none to toggle.
+  it('offers the agent rail toggle on bare chrome in classic only', async () => {
+    installBridge()
+    $shellChoice.set(false)
+    mountMenu()
+    const host = attach('<p>plain chrome</p>')
+
+    fireEvent.contextMenu(host.querySelector('p')!)
+    expect(await screen.findByText('Toggle profile rail')).toBeTruthy()
+
+    act(() => {
+      $contextMenu.set(null)
+      $shellChoice.set(true)
+    })
+    fireEvent.contextMenu(host.querySelector('p')!)
+    expect(await screen.findByText('Settings')).toBeTruthy()
+    expect(screen.queryByText(/rail/i)).toBeNull()
   })
 
   it('opens the link menu on a chat link right-click', async () => {

@@ -46,6 +46,23 @@ function mount(onOpenSession = vi.fn()) {
   }
 }
 
+it('starts a selected preview and the returned compact list at the top', async () => {
+  vi.mocked(foreignRequest).mockImplementation(async (_owner, method) =>
+    method === 'list'
+      ? { sessions: [session], next_offset: null, host: 'studio', unreadable: 0 }
+      : { messages: [], total: 0, already_imported: null }
+  )
+  mount()
+  const row = await screen.findByRole('button', { name: /Repair imports/ })
+  const page = screen.getByRole('region', { name: 'Continue from another app' })
+  page.scrollTop = 444
+  fireEvent.click(row)
+  expect(page.scrollTop).toBe(0)
+  page.scrollTop = 700
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+  expect(page.scrollTop).toBe(0)
+})
+
 it('browses without importing, then retries a failed import on the captured owner before opening', async () => {
   let attempts = 0
   vi.mocked(foreignRequest).mockImplementation(async (_owner, method) => {

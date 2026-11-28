@@ -145,3 +145,90 @@ it('clips only visible covered siblings, follows resize, and releases styles and
   expect(visible.reply.style.getPropertyValue('--sticky-prompt-clip')).toBe('')
   expect(disconnect).toHaveBeenCalledTimes(2)
 })
+
+it('publishes the edge of a prompt at rest, and withdraws it while the prompt is pushed out', () => {
+  const viewport = window.document.createElement('div')
+  const content = window.document.createElement('div')
+  const edge = window.document.createElement('div')
+  viewport.append(content)
+  vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue(rect(100, 500))
+
+  const group = window.document.createElement('div')
+  group.dataset.slot = 'aui_message-group'
+  const prompt = window.document.createElement('div')
+  prompt.dataset.slot = 'aui_user-message-root'
+  prompt.style.top = '48px'
+  const reply = window.document.createElement('div')
+  group.append(prompt, reply)
+  content.append(group)
+  vi.spyOn(group, 'getBoundingClientRect').mockReturnValue(rect(0, 900))
+  const promptRect = vi.spyOn(prompt, 'getBoundingClientRect').mockReturnValue(rect(148, 44))
+  const replyRect = vi.spyOn(reply, 'getBoundingClientRect').mockReturnValue(rect(60, 900))
+
+  let frame: FrameRequestCallback | undefined
+  let scrolled: (() => void) | undefined
+  vi.spyOn(viewport, 'addEventListener').mockImplementation((type, listener) => {
+    if (type === 'scroll') {
+      scrolled = listener as () => void
+    }
+  })
+
+  const Observer = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+
+  vi.stubGlobal('IntersectionObserver', Observer)
+  vi.stubGlobal('ResizeObserver', Observer)
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frame = callback
+
+    return 1
+  })
+  vi.stubGlobal('cancelAnimationFrame', () => {
+    frame = undefined
+  })
+
+  const scroll = () =>
+    act(() => {
+      scrolled?.()
+      const run = frame
+      frame = undefined
+      run?.(0)
+    })
+
+  const { unmount } = renderHook(() =>
+    useStickyPromptClip({
+      contentRef: { current: content },
+      edgeRef: { current: edge },
+      paneVisible: true,
+      rows: 'rows',
+      scrollRef: { current: viewport }
+    })
+  )
+
+  // Pinned 48px below the viewport's top, 44px tall, with the reply running under it.
+  expect(edge.hasAttribute('data-sticky-prompt-edge')).toBe(true)
+  expect(edge.style.getPropertyValue('--sticky-prompt-edge')).toBe('92px')
+
+  // The next turn pushes it up: no still edge to soften, and the last position is kept to fade from.
+  promptRect.mockReturnValue(rect(120, 44))
+  scroll()
+  expect(edge.hasAttribute('data-sticky-prompt-edge')).toBe(false)
+  expect(edge.style.getPropertyValue('--sticky-prompt-edge')).toBe('92px')
+
+  // Back at rest, but its reply starts below it: nothing is covered, so nothing to soften.
+  promptRect.mockReturnValue(rect(148, 44))
+  replyRect.mockReturnValue(rect(210, 900))
+  scroll()
+  expect(edge.hasAttribute('data-sticky-prompt-edge')).toBe(false)
+
+  replyRect.mockReturnValue(rect(60, 900))
+  scroll()
+  expect(edge.hasAttribute('data-sticky-prompt-edge')).toBe(true)
+
+  unmount()
+  expect(edge.hasAttribute('data-sticky-prompt-edge')).toBe(false)
+  expect(edge.style.getPropertyValue('--sticky-prompt-edge')).toBe('')
+})

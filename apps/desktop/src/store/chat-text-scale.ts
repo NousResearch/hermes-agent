@@ -22,6 +22,8 @@ export function setChatTextScale(value: number): void {
 if (typeof window !== 'undefined') {
   $chatTextScale.subscribe(value => {
     document.documentElement.style.setProperty('--chat-text-scale', String(value / 100))
+    // Relative to the Default preset: the redesign draws its Figma sizes at Default.
+    document.documentElement.style.setProperty('--chat-text-scale-relative', String(value / DEFAULT_CHAT_TEXT_SCALE))
     persistString(KEY, value === DEFAULT_CHAT_TEXT_SCALE ? null : String(value))
   })
 }

@@ -17,6 +17,7 @@ function view(): SessionView {
     kind: 'primary',
     $runtimeId: atom<string | null>(SESSION),
     $storedId: atom<string | null>(null),
+    $transcriptStoredId: atom<string | null>(null),
     $messages: atom<ChatMessage[]>([]),
     $busy: atom(false),
     $awaitingResponse: atom(false),

@@ -10,27 +10,23 @@
 
 import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
-import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
+import { type CSSProperties, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { StartupOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
-import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
 import { FindBar } from '@/components/find-bar'
-import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { NotificationStack } from '@/components/notifications'
-import { DesktopOnboardingOverlay } from '@/components/onboarding'
+import { leaveIntro } from '@/components/onboarding/first-run/intro'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
-import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
 import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
-import { SharedMetricsConsentDialog } from '@/components/shared-metrics/consent-dialog'
 import { TipHost } from '@/components/tips'
 import { UpdateHoldOverlay } from '@/components/update-hold-overlay'
 import { emitGatewayEvent } from '@/contrib/events'
@@ -55,17 +51,19 @@ import {
   type OnboardingRequest,
   type OnboardingResume
 } from '@/store/onboarding-run'
+import { $portalStatusBarOpen } from '@/store/portal-status-bar'
 import { $previewTarget } from '@/store/preview'
 import {
   $activeGatewayProfile,
   $profileScope,
+  $sessionListProfileScope,
   type AgentProfileRoute,
   ALL_PROFILES,
   ensureGatewayProfile,
   newSessionInProfile,
   normalizeProfileKey
 } from '@/store/profile'
-import { $newProjectSessionRequest, $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
+import { $startWorkSessionRequest, followActiveSessionCwd } from '@/store/projects'
 import { $backendRestartRequest, $routeRequest } from '@/store/recovery-requests'
 import {
   $activeSessionId,
@@ -90,9 +88,10 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { decideOnboarding as decideSetupGuide } from '@/store/setup-guide'
 import { reportPendingUpdateRun } from '@/store/shared-metrics'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 import { $archivedSessions } from '@/store/sidebar-archive'
-import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow, isMainWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -104,6 +103,9 @@ import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { openNewSessionTab as openNewSessionTabAction } from '../chat/new-session-tab'
 import { CommandPalette } from '../command-palette'
 import { triggerAndRefreshCronJobs } from '../cron/cron-actions'
+import { useHeldPromptRun } from '../discovery/held-prompt-run'
+import { NewVersionNotice } from '../discovery/new-version-notice'
+import { NotificationBell } from '../discovery/notification-tray'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useHermesConfigRecord } from '../hooks/use-config-record'
@@ -112,7 +114,21 @@ import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
+import { AgentsFrameFallback, PageFrameFallback, SettingsFrameFallback } from '../overlays/page-frame-fallback'
+import {
+  AgentsView,
+  CommandCenterView,
+  CronView,
+  preloadRailPagesInRedesign,
+  ProfilesView,
+  SettingsView,
+  StarmapView,
+  WebhooksView
+} from '../page-views'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
+import { PortalFreeTierSignIn } from '../redesign/portal-free-tier-sign-in'
+import { PortalStatusBar } from '../redesign/portal-status-bar'
+import { PortalStatusMenu } from '../redesign/portal-status-menu'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
@@ -145,9 +161,11 @@ import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
 import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
+import { useTitlebarClusterCounts } from '../shell/band-tools'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  bandEndsAtWindow,
   TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
@@ -155,9 +173,10 @@ import {
   titlebarToolsWidthCss,
   TOUCH_TITLEBAR_HEIGHT
 } from '../shell/titlebar'
-import { TitlebarControls } from '../shell/titlebar-controls'
+import { TitlebarControls, TitlebarSessionTab } from '../shell/titlebar-controls'
 import { useTouchTitlebar } from '../shell/use-touch-titlebar'
 import { WslgWindowControls } from '../shell/wslg-window-controls'
+import { StableNavigateContext, useStableNavigateSource } from '../stable-navigate'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
@@ -170,13 +189,16 @@ import {
 } from './hooks/use-background-sync'
 import { useDesktopIntegrations } from './hooks/use-desktop-integrations'
 import { useDesktopMetrics } from './hooks/use-desktop-metrics'
+import { useNewProjectSessionRequest } from './hooks/use-new-project-session-request'
 import { usePetBridge } from './hooks/use-pet-bridge'
 import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
+import { MainWindowOverlays } from './main-window-overlays'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
+import { SimplifiedNavigationSurface } from './simplified-navigation-surface'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
 import type { WiringActions, WiringApi } from './types'
 import {
@@ -186,17 +208,6 @@ import {
   useOpenKeybindsListener,
   usePublishRestartPreviewServer
 } from './wiring-effects'
-
-// Overlay views the controller mounts over the shell — lazy, load on demand.
-// The workspace-route full-page views (skills/messaging/artifacts) are the
-// ChatRoutesSurface's and live in ./surfaces.
-const AgentsView = lazy(async () => ({ default: (await import('../agents')).AgentsView }))
-const CommandCenterView = lazy(async () => ({ default: (await import('../command-center')).CommandCenterView }))
-const CronView = lazy(async () => ({ default: (await import('../cron')).CronView }))
-const WebhooksView = lazy(async () => ({ default: (await import('../webhooks')).WebhooksView }))
-const ProfilesView = lazy(async () => ({ default: (await import('../profiles')).ProfilesView }))
-const SettingsView = lazy(async () => ({ default: (await import('../settings')).SettingsView }))
-const StarmapView = lazy(async () => ({ default: (await import('../starmap')).StarmapView }))
 
 // Surfaces (the four wired panes), the render context + WiredPane, and the
 // WiringActions/WiringApi contracts all live in sibling modules — this file is
@@ -220,17 +231,26 @@ function useRouteRequestNavigation(navigate: ReturnType<typeof useNavigate>): vo
   }, [navigate, routeRequest])
 }
 
-// The main window asks the backend whether first-run onboarding is due and opens it with main's
-// intro around it; every other window never runs it, so its first-run surfaces are free at once.
-// Settings' Run onboarding again opens its chat through the same opener.
+// Both modes own their decision promise; a live toggle re-reads without deleting a classic chat.
 function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResume, gatewayOpen: boolean): void {
+  const setupGuide = useStore($setupGuideOnboarding)
+  const lastMode = useRef<boolean | null>(null)
+  // eslint-disable-next-line no-restricted-syntax -- previous processed mode detects transitions; never read as current state
   useEffect(() => {
     if (!isMainWindow()) {
       markOnboardingDecided()
     } else if (gatewayOpen) {
-      void decideOnboarding(request, open, { intro: firstRunIntro() })
+      const switched = lastMode.current !== null && lastMode.current !== setupGuide
+      lastMode.current = setupGuide
+
+      if (setupGuide) {
+        leaveIntro()
+        void decideSetupGuide(request, switched)
+      } else {
+        void decideOnboarding(request, open, { intro: firstRunIntro(), freshLaunch: !switched }, switched)
+      }
     }
-  }, [gatewayOpen, open, request])
+  }, [gatewayOpen, open, request, setupGuide])
 
   useEffect(() => {
     if (!isMainWindow()) {
@@ -241,6 +261,65 @@ function useFirstRunOnboarding(request: OnboardingRequest, open: OnboardingResum
 
     return () => $onboardingChatOpener.set(null)
   }, [open])
+}
+
+/** The redesign's status bar: its toggle always, and the statusbar's data only while it is open (the
+ *  status poll goes with it). */
+function PortalStatusBarSource(props: {
+  actions: WiringActions
+  agentsOpen: boolean
+  chatOpen: boolean
+  commandCenterOpen: boolean
+}) {
+  const open = useStore($portalStatusBarOpen)
+
+  return <PortalStatusBar>{open && <StatusbarSurface {...props} chatStatus />}</PortalStatusBar>
+}
+
+function useStatusbarSurfaces(
+  actions: WiringActions,
+  agentsOpen: boolean,
+  chatOpen: boolean,
+  commandCenterOpen: boolean
+) {
+  const renderStatusbar = useCallback(
+    (onClose?: () => void) => (
+      <StatusbarSurface
+        actions={actions}
+        agentsOpen={agentsOpen}
+        chatOpen={chatOpen}
+        commandCenterOpen={commandCenterOpen}
+        onClose={onClose}
+      />
+    ),
+    [actions, agentsOpen, chatOpen, commandCenterOpen]
+  )
+
+  return useMemo(
+    () => ({
+      statusbarNode: renderStatusbar(),
+      globalNavNode: (
+        <SimplifiedNavigationSurface
+          footer={
+            <>
+              <NotificationBell />
+              <NewVersionNotice />
+              <PortalFreeTierSignIn />
+              <PortalStatusMenu>{renderStatusbar}</PortalStatusMenu>
+              <PortalStatusBarSource
+                actions={actions}
+                agentsOpen={agentsOpen}
+                chatOpen={chatOpen}
+                commandCenterOpen={commandCenterOpen}
+              />
+            </>
+          }
+          onNavigate={item => actions.onNavigate(item)}
+        />
+      )
+    }),
+    [actions, agentsOpen, chatOpen, commandCenterOpen, renderStatusbar]
+  )
 }
 
 // Recovery actions raised by toast buttons (Restart Hermes, Open Billing, cron
@@ -324,7 +403,7 @@ function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CS
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
-  const navigate = useNavigate()
+  const navigate = useStableNavigateSource()
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
@@ -340,6 +419,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useRouteRequestNavigation(navigate)
   useRecoveryRequestToasts()
+  useEffect(() => preloadRailPagesInRedesign(), [])
 
   const freshDraftReady = useStore($freshDraftReady)
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
@@ -351,6 +431,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeConnectionId = useStore($activeConnectionId)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const sessionListProfileScope = useStore($sessionListProfileScope)
   const boot = useStore($desktopBoot)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -441,7 +522,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   )
 
   const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
-    useSessionListActions({ profileScope })
+    useSessionListActions({ profileScope: sessionListProfileScope })
 
   const { changeSessionCwd, refreshProjectBranch } = useCwdActions({
     activeSessionIdRef,
@@ -662,30 +743,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   useFirstRunOnboarding(requestGateway, adoptSessionRoute, gatewayState === 'open')
 
-  // "New project" DRAG completion: the dialog created a project that was
-  // dropped onto a chat zone (tab-strip slot / pane edge / pane center). Open
-  // its fresh session draft exactly there — the same `openNewSessionTile`
-  // create path the new-session drags use — so the project starts, and stays,
-  // where it was dropped. Consume-once: drop the request after handling.
-  const newProjectSessionRequest = useStore($newProjectSessionRequest)
-
-  useEffect(() => {
-    if (!newProjectSessionRequest) {
-      return
-    }
-
-    const { path, placement } = newProjectSessionRequest
-
-    $newProjectSessionRequest.set(null)
-    void openNewSessionTile(placement.dir, {
-      anchor: placement.anchor,
-      before: placement.before,
-      cwd: path,
-      // Same draft-tab contract as onNewSessionSplit: a center/strip drop is
-      // an unlisted draft tab until its first turn; an edge split lists.
-      listed: placement.dir === 'center' ? false : undefined
-    })
-  }, [newProjectSessionRequest, openNewSessionTile])
+  useNewProjectSessionRequest(openNewSessionTile)
 
   const composer = useComposerActions({ activeSessionId, currentCwd, requestGateway })
 
@@ -760,10 +818,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // The popped-out pet overlay's bridge back into the app.
   usePetBridge({ requestGateway, resumeSession, submitText })
 
-  // The global-hotkey Quick Entry window's bridge: its captured text rides the
-  // SAME submit machinery the normal composer uses (current chat / picked
-  // session / new session), and it hears gateway truth from this window.
+  // The Quick Entry window's captured text, and a message held until sign up (held-prompt-run.ts),
+  // ride the SAME submit machinery the normal composer uses (current chat / picked session / new
+  // session), hearing gateway truth from this window.
   useQuickEntryBridge({ submitText, submitTextToNewSession })
+  useHeldPromptRun(submitTextToNewSession)
 
   // Leaving HUD mode hands this window the session back (see hud/handoff).
   useHudHandoff({ navigate, resumeSession })
@@ -1079,20 +1138,21 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
     // The row menu reuses this verb on archived rows, so it restores there
     // (#98813). The clicked row's flag is what the menu showed, so it decides;
-    // the caches are only a fallback for callers that pass no row.
-    onArchiveSession: (sessionId, session) => {
-      const isArchived = session
-        ? session.archived === true
-        : ownerLookupSessionRows().some(row => row.archived === true && sessionMatchesStoredId(row, sessionId)) ||
-          $archivedSessions.get().some(row => sessionMatchesStoredId(row, sessionId))
+    // the caches are only a fallback for callers that pass no row. The row
+    // also carries the owner, so either verb reaches the machine that owns it.
+    onArchiveSession: (sessionId, row) => {
+      const isArchived = row
+        ? row.archived === true
+        : ownerLookupSessionRows().some(r => r.archived === true && sessionMatchesStoredId(r, sessionId)) ||
+          $archivedSessions.get().some(r => sessionMatchesStoredId(r, sessionId))
 
-      void (isArchived ? unarchiveSession(sessionId, session) : archiveSession(sessionId))
+      void (isArchived ? unarchiveSession(sessionId, row) : archiveSession(sessionId, row))
     },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
-    onBranchSession: sessionId => void branchStoredSession(sessionId),
+    onBranchSession: (sessionId, profile, row) => void branchStoredSession(sessionId, profile, row),
     onCancel: cancelRun,
     onDeleteSelectedSession: () => {
       const id = $selectedStoredSessionId.get()
@@ -1101,7 +1161,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         void removeSession(id)
       }
     },
-    onDeleteSession: sessionId => void removeSession(sessionId),
+    onDeleteSession: (sessionId, row) => void removeSession(sessionId, row),
     onDismissError: dismissError,
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
@@ -1174,17 +1234,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const terminalNode = useMemo(() => <TerminalSurface />, [])
 
-  const statusbarNode = useMemo(
-    () => (
-      <StatusbarSurface
-        actions={actions}
-        agentsOpen={agentsOpen}
-        chatOpen={chatOpen}
-        commandCenterOpen={commandCenterOpen}
-      />
-    ),
-    [actions, agentsOpen, chatOpen, commandCenterOpen]
-  )
+  const { statusbarNode, globalNavNode } = useStatusbarSurfaces(actions, agentsOpen, chatOpen, commandCenterOpen)
 
   // The voice cap changes only on config load; the gateway instance + all
   // chat reactivity are subscribed inside ChatRoutesSurface / ChatView.
@@ -1195,12 +1245,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const api = useMemo<WiringApi>(
     () => ({
+      globalNav: globalNavNode,
       chatRoutes: chatRoutesNode,
       sidebar: sidebarNode,
       statusbar: statusbarNode,
       terminal: terminalNode
     }),
-    [chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
+    [globalNavNode, chatRoutesNode, sidebarNode, statusbarNode, terminalNode]
   )
 
   // The REAL titlebar tool clusters (sidebar/flip toggles, haptics, keybinds,
@@ -1227,12 +1278,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
   // renderer paints its own min/max/close (main decides via customWindowControls).
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
-  const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
   const shownTool = shownInMode(interfaceMode)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
+  const clusters = useTitlebarClusterCounts(leftExtraCount, interfaceMode)
+
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =
@@ -1246,194 +1297,186 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [controlsPos.left, controlsPos.top, titlebarToolsRight])
 
   return (
-    <ContribWiringContext.Provider value={api}>
-      <div
-        className="contents"
-        style={
-          {
-            ...controlsVars,
-            '--titlebar-controls-width': leftToolsWidth,
-            '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
-            '--titlebar-tools-right': titlebarToolsRight,
-            '--titlebar-tools-width': titlebarToolsWidth,
-            '--shell-preview-toolbar-gap': systemToolsWidth
-          } as CSSProperties
-        }
-      >
-        {/* HUD and the popped-out Browser have no titlebar to hang these off —
+    <StableNavigateContext value={navigate}>
+      <ContribWiringContext.Provider value={api}>
+        <div
+          className="contents"
+          data-band-end={bandEndsAtWindow(nativeOverlayWidth) ? 'window' : undefined}
+          style={
+            {
+              ...controlsVars,
+              '--titlebar-controls-width': leftToolsWidth,
+              '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
+              '--titlebar-tools-right': titlebarToolsRight,
+              '--titlebar-tools-width': titlebarToolsWidth,
+              '--shell-preview-toolbar-gap': systemToolsWidth
+            } as CSSProperties
+          }
+        >
+          {/* HUD and the popped-out Browser have no titlebar to hang these off —
             the clusters are `fixed`, so without this they'd float over the
             surface as orphaned buttons. */}
-        {!isHudWindow() && !isBrowserWindow() && (
-          <TitlebarControls
-            leftTools={leftTitlebarTools}
-            onOpenSettings={() => navigate(SETTINGS_ROUTE)}
-            tools={rightTitlebarTools}
-          />
-        )}
-        {!isHudWindow() && customWindowControls && (
-          <WslgWindowControls
-            isFullscreen={Boolean(connection?.isFullscreen)}
-            isMaximized={Boolean(connection?.isMaximized)}
-          />
-        )}
-        {children}
-      </div>
+          {!isHudWindow() && !isBrowserWindow() && (
+            <TitlebarControls
+              leftTools={leftTitlebarTools}
+              onOpenSettings={() => navigate(SETTINGS_ROUTE)}
+              tools={rightTitlebarTools}
+            />
+          )}
+          {!isHudWindow() && customWindowControls && (
+            <WslgWindowControls
+              isFullscreen={Boolean(connection?.isFullscreen)}
+              isMaximized={Boolean(connection?.isMaximized)}
+            />
+          )}
+          {children}
+          {!isHudWindow() && !isBrowserWindow() && <TitlebarSessionTab />}
+        </div>
 
-      {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
-      <RemoteDisplayBanner />
-      {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
-      {!isAuxiliaryWindow() && (
-        <DesktopOnboardingOverlay
+        {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
+        <RemoteDisplayBanner />
+        <MainWindowOverlays
           enabled={gatewayState === 'open'}
           onCompleted={() => {
             void refreshHermesConfig()
             void refreshCurrentModel()
             void queryClient.invalidateQueries({ queryKey: ['model-options'] })
           }}
+          onSelectModel={selectModel}
           profile={activeGatewayProfile}
           requestGateway={requestGateway}
         />
-      )}
-      {!isAuxiliaryWindow() && <OnboardingEnd />}
-      {!isAuxiliaryWindow() && (
-        <SharedMetricsConsentDialog
-          enabled={gatewayState === 'open'}
+        <ModelPickerOverlay
+          gateway={gateway || undefined}
+          onSelect={selectModel}
+          ownerConnectionId={activeConnectionId || undefined}
+          profile={activeGatewayProfile}
+          requestGateway={requestGateway}
+        />
+        <SessionPickerOverlay onResume={sessionId => openSessionFromPicker(sessionId, navigate)} />
+        <ModelVisibilityOverlay
+          gateway={gateway || undefined}
+          onOpenProviders={openProviderSettings}
+          ownerConnectionId={activeConnectionId || undefined}
           profile={activeGatewayProfile}
         />
-      )}
-      {/* One host for every free-tier sign-in entry point (Settings › Billing,
-          the statusbar chip, the first-launch intro). It owns the flow; the
-          entry points only record the intent. */}
-      {!isAuxiliaryWindow() && <FreeTierSignInDialog onSelectModel={selectModel} />}
-      <ModelPickerOverlay
-        gateway={gateway || undefined}
-        onSelect={selectModel}
-        ownerConnectionId={activeConnectionId || undefined}
-        profile={activeGatewayProfile}
-        requestGateway={requestGateway}
-      />
-      <SessionPickerOverlay onResume={sessionId => openSessionFromPicker(sessionId, navigate)} />
-      <ModelVisibilityOverlay
-        gateway={gateway || undefined}
-        onOpenProviders={openProviderSettings}
-        ownerConnectionId={activeConnectionId || undefined}
-        profile={activeGatewayProfile}
-      />
-      <UpdatesOverlay />
-      <GatewayConnectingOverlay />
-      <StartupOverlay />
-      <UpdateHoldOverlay />
-      <CommandPalette />
-      <PluginInstallModal />
-      <PetGenerateOverlay />
-      <SessionSwitcher />
-      <FileActionDialogs />
-      <McpInstallDeepLinkDialog />
-      <RemoteFolderPicker />
-      <FindBar />
+        <UpdatesOverlay />
+        <GatewayConnectingOverlay />
+        <StartupOverlay />
+        <UpdateHoldOverlay />
+        <CommandPalette />
+        <PluginInstallModal />
+        <PetGenerateOverlay />
+        <SessionSwitcher />
+        <FileActionDialogs />
+        <McpInstallDeepLinkDialog />
+        <RemoteFolderPicker />
+        <FindBar />
 
-      {settingsOpen && (
-        <Suspense fallback={null}>
-          <SettingsView
-            gateway={gateway}
+        {settingsOpen && (
+          <Suspense fallback={<SettingsFrameFallback onClose={closeOverlayToPreviousRoute} />}>
+            <SettingsView
+              gateway={gateway}
+              onClose={closeOverlayToPreviousRoute}
+              onConfigSaved={() => {
+                void refreshHermesConfig()
+                void refreshCurrentModel()
+                void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+              }}
+              onMainModelChanged={(provider, model) => {
+                applySavedMainModel(provider, model)
+                void refreshCurrentModel()
+                void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+              }}
+            />
+          </Suspense>
+        )}
+
+        {currentView === 'session-import' && (
+          <SessionImportView
+            key={`${activeConnectionId}:${activeGatewayProfile}`}
             onClose={closeOverlayToPreviousRoute}
-            onConfigSaved={() => {
-              void refreshHermesConfig()
-              void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+            onOpenSession={sessionId => {
+              closeOverlayToPreviousRoute()
+              openSession(sessionId, navigate, 'stack')
             }}
-            onMainModelChanged={(provider, model) => {
-              applySavedMainModel(provider, model)
-              void refreshCurrentModel()
-              void queryClient.invalidateQueries({ queryKey: ['model-options'] })
-            }}
+            owner={{ connectionId: activeConnectionId || 'local', profile: activeGatewayProfile }}
           />
-        </Suspense>
-      )}
+        )}
 
-      {currentView === 'session-import' && (
-        <SessionImportView
-          key={`${activeConnectionId}:${activeGatewayProfile}`}
-          onClose={closeOverlayToPreviousRoute}
-          onOpenSession={sessionId => {
-            closeOverlayToPreviousRoute()
-            openSession(sessionId, navigate, 'stack')
-          }}
-          owner={{ connectionId: activeConnectionId || 'local', profile: activeGatewayProfile }}
-        />
-      )}
+        {commandCenterOpen && (
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
+            <CommandCenterView
+              initialSection={commandCenterInitialSection}
+              onClose={closeOverlayToPreviousRoute}
+              onDeleteSession={removeSession}
+              onLoadMoreSessions={loadMoreSessions}
+              onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
+              onOpenSession={openStoredSession}
+            />
+          </Suspense>
+        )}
 
-      {commandCenterOpen && (
-        <Suspense fallback={null}>
-          <CommandCenterView
-            initialSection={commandCenterInitialSection}
-            onClose={closeOverlayToPreviousRoute}
-            onDeleteSession={removeSession}
-            onLoadMoreSessions={loadMoreSessions}
-            onNavigateRoute={path => navigateToWorkspacePage(navigate, path)}
-            onOpenSession={openStoredSession}
-          />
-        </Suspense>
-      )}
+        {agentsOpen && (
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
+            <AgentsView onClose={closeOverlayToPreviousRoute} />
+          </Suspense>
+        )}
 
-      {agentsOpen && (
-        <Suspense fallback={null}>
-          <AgentsView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
+        {cronOpen && (
+          <Suspense fallback={<PageFrameFallback frame="schedules" onClose={closeOverlayToPreviousRoute} />}>
+            <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openStoredSession} />
+          </Suspense>
+        )}
 
-      {cronOpen && (
-        <Suspense fallback={null}>
-          <CronView onClose={closeOverlayToPreviousRoute} onOpenSession={openStoredSession} />
-        </Suspense>
-      )}
+        {webhooksOpen && (
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
+            <WebhooksView onClose={closeOverlayToPreviousRoute} />
+          </Suspense>
+        )}
 
-      {webhooksOpen && (
-        <Suspense fallback={null}>
-          <WebhooksView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
+        {profilesOpen && (
+          <Suspense fallback={<AgentsFrameFallback onClose={closeOverlayToPreviousRoute} />}>
+            <ProfilesView onClose={closeOverlayToPreviousRoute} />
+          </Suspense>
+        )}
 
-      {profilesOpen && (
-        <Suspense fallback={null}>
-          <ProfilesView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
+        {starmapOpen && (
+          <Suspense fallback={<PageFrameFallback frame="page" onClose={closeOverlayToPreviousRoute} />}>
+            <StarmapView onClose={closeOverlayToPreviousRoute} />
+          </Suspense>
+        )}
 
-      {starmapOpen && (
-        <Suspense fallback={null}>
-          <StarmapView onClose={closeOverlayToPreviousRoute} />
-        </Suspense>
-      )}
+        {/* Toasts above everything. */}
+        <NotificationStack />
 
-      {/* Toasts above everything. */}
-      <NotificationStack />
+        {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
+        <ConfirmHost />
+        <PreviewSigninsBoot />
 
-      {/* Backs confirm() from @/store/confirm — renders only while one is open. */}
-      <ConfirmHost /><PreviewSigninsBoot />
-
-      {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
+        {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
           (error card action); renders nothing until requested. */}
-      <SendDiagnosticsHost />
+        <SendDiagnosticsHost />
 
-      {/* Fallback modal when opening an external URL fails — carries the URL
+        {/* Fallback modal when opening an external URL fails — carries the URL
           so a dead system-browser click is never silent. */}
-      <ExternalOpenFailedDialog />
+        <ExternalOpenFailedDialog />
 
-      {/* Petdex floating mascot — renders nothing unless installed + enabled.
+        {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}
-      {!isHudWindow() && !isBrowserWindow() && <FloatingPet />}
+        {!isHudWindow() && !isBrowserWindow() && <FloatingPet />}
 
-      {/* In-app tips. Renders nothing until the app is quiet and has something
+        {/* In-app tips. Renders nothing until the app is quiet and has something
           to point at, and nothing at all once they're off or all retired. The
           HUD and browser windows have none of the surfaces a tip talks about. */}
-      {!isHudWindow() && !isBrowserWindow() && <TipHost />}
+        {!isHudWindow() && !isBrowserWindow() && <TipHost />}
 
-      {/* Single persistent xterm host chasing the terminal pane's slot rect.
+        {/* Single persistent xterm host chasing the terminal pane's slot rect.
           The HUD has no terminal pane, so it has nothing to chase. */}
-      {!isHudWindow() && !isBrowserWindow() && (
-        <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
-      )}
-    </ContribWiringContext.Provider>
+        {!isHudWindow() && !isBrowserWindow() && (
+          <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+        )}
+      </ContribWiringContext.Provider>
+    </StableNavigateContext>
   )
 }

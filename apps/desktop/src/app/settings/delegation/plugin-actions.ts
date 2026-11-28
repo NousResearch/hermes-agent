@@ -5,6 +5,7 @@ import { lookupPluginCatalogEntry } from '@/lib/plugin-catalog'
 import type { GatewayRequest } from '@/store/agent-plugins'
 import {
   $agentPlugins,
+  $agentPluginsOwnerKey,
   $agentPluginsProfile,
   $agentPluginsStatus,
   loadAgentPlugins,
@@ -22,8 +23,10 @@ export type PluginState = 'disabled' | 'loading' | 'missing' | 'not_loaded'
 export function useAdvancedDelegationPlugin(request: GatewayRequest, owner: null | string) {
   const rows = useStore($agentPlugins)
   const loadedFor = useStore($agentPluginsProfile)
+  const loadedOwnerKey = useStore($agentPluginsOwnerKey)
   const status = useStore($agentPluginsStatus)
-  const owned = loadedFor === owner
+  // The list is shared: rows another socket loaded for the same profile name are not this owner's.
+  const owned = loadedFor === owner && loadedOwnerKey === request.ownerKey
 
   useEffect(() => {
     if (!owned) {

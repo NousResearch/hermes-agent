@@ -1,8 +1,9 @@
 import { atom, computed, type ReadableAtom, type WritableAtom } from 'nanostores'
 
-import { createLayoutPersistence } from '@/lib/layout-persistence'
+import { createLayoutPersistence, type LayoutScope } from '@/lib/layout-persistence'
 import { type Codec, persistentAtom } from '@/lib/persisted'
 import type { SidebarRowMeta } from '@/store/layout'
+import { $shellChoice, rendersPortalShell } from '@/store/shell-variant'
 import type { ToolViewMode } from '@/store/tool-view'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 
@@ -50,20 +51,65 @@ const modeCodec: Codec<InterfaceMode> = {
   encode: mode => (mode === DEFAULT_INTERFACE_MODE ? null : mode)
 }
 
-export const $interfaceMode = persistentAtom<InterfaceMode>(
+/** The stored choice. Only {@link setInterfaceMode} writes it. */
+const $interfaceModePreference = persistentAtom<InterfaceMode>(
   INTERFACE_MODE_STORAGE_KEY,
   DEFAULT_INTERFACE_MODE,
   modeCodec
 )
 
+/** A transient override, in this window's memory only: the developer-view offer previews Advanced
+ *  through it (store/developer-view-offer.ts). Never stored, so closing the window mid-preview, or
+ *  another window of the machine, never sees it. */
+const $interfaceModePreview = atom<InterfaceMode | null>(null)
+
+/** The mode this window shows: the preview while there is one, else the stored choice. The one source
+ *  every reader resolves through, so nothing reads the raw preference by mistake. */
+export const $interfaceMode: ReadableAtom<InterfaceMode> = computed(
+  [$interfaceModePreference, $interfaceModePreview],
+  (preference, preview) => preview ?? preference
+)
+
+/** Show `mode` without storing it, or end the preview (null). */
+export function previewInterfaceMode(mode: InterfaceMode | null) {
+  $interfaceModePreview.set(mode)
+}
+
+const layoutScope = (): LayoutScope => ({
+  mode: $interfaceMode.get(),
+  shell: rendersPortalShell($shellChoice.get()) ? 'portal' : 'classic'
+})
+
+/** The arrangement is scoped by mode × shell, so neither the picker nor the redesign switch
+ *  can rewrite the other scope's layout. */
 export const modeLayout = createLayoutPersistence(
-  $interfaceMode.get(),
+  layoutScope(),
   !isSecondaryWindow() && !isBrowserWindow() && !isHudWindow()
 )
 
+/** Store the choice; a preview in progress gives way to it. */
 export function setInterfaceMode(mode: InterfaceMode) {
-  modeLayout.change(mode, () => $interfaceMode.set(mode))
+  const publish = () => {
+    $interfaceModePreview.set(null)
+    $interfaceModePreference.set(mode)
+  }
+
+  // Previewing `mode` already moved the layout to its scope, where a change is a no-op that would
+  // never publish: store the choice directly.
+  if (modeLayout.scope.mode === mode) {
+    publish()
+
+    return
+  }
+
+  modeLayout.change({ ...modeLayout.scope, mode }, publish)
 }
+
+// Both inputs are machine-wide preferences that also change from another window (a storage
+// event sets the atom directly), and the mode also follows a preview. Follow every change here so
+// the scope never lags its inputs; a change already made through `setInterfaceMode` is a no-op by then.
+$interfaceMode.listen(() => modeLayout.change(layoutScope()))
+$shellChoice.listen(() => modeLayout.change(layoutScope()))
 
 /** The ⌘K row and the rebindable `view.toggleSimpleMode` action. */
 export function toggleSimpleMode() {
@@ -86,8 +132,10 @@ export interface ModeContext {
 }
 
 export interface ModePolicy {
+  chatItemsOpen: boolean
   fileBrowserOpen: boolean
   hideCodeDiffs: boolean
+  portalStatusBarOpen: boolean
   profileRailVisible: boolean
   reasoningCollapsedByDefault: boolean
   reviewOpen: boolean
@@ -104,10 +152,14 @@ type PolicyEntry<K extends ModePolicyKey> = ((context: ModeContext) => ModePolic
 type PolicyTable = { readonly [K in ModePolicyKey]?: PolicyEntry<K> }
 
 const SIMPLE_POLICY: PolicyTable = {
+  // The chat's items open on click (its "N items" button), never by default.
+  chatItemsOpen: false,
   // Hide-style panes rest closed; their keybinds and the agent still reveal them.
   fileBrowserOpen: false,
   // Inline diffs are the review pane's job; the changed-files summary stays.
   hideCodeDiffs: true,
+  // The redesign's status bar rests collapsed; its toggle stays in the corner.
+  portalStatusBarOpen: false,
   // Without the statusbar, multi-gateway installs still need the rail even
   // when the active gateway has only one profile.
   profileRailVisible: context => context.profileCount > 1 || context.connectionCount > 1,

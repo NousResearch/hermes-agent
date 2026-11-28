@@ -1921,6 +1921,14 @@ def _plugins_auto_update(rid, params):
         return _err(rid, 4021, str(e))
 
 
+def _plugins_check(rid, params):
+    """Read-only update check (``hermes plugins check-updates``); records results and returns refreshed rows."""
+    cadence, plugins_dir = _tools_mod("hermes_cli.plugins_cadence"), _tools_mod("hermes_cli.plugins_cmd")._plugins_dir()
+    checked = cadence.snapshot_installs(plugins_dir)
+    results = _tools_mod("hermes_cli.plugins_updates").run_checks(plugins_dir, include_pip=False)
+    cadence.record_check_results(results, checked)
+    return _ok(rid, {"check_results": [r.to_json() for r in results], "plugins": _plugin_rows()})
+
 def _plugins_onboarding(rid, params):
     """Catalog plugins curated for the onboarding card that this OS runs, each with its app state."""
     return _ok(rid, {"onboarding": _tools_mod("hermes_cli.plugin_catalog_presence").onboarding_entries()})
@@ -1935,8 +1943,7 @@ _PLUGINS_ACTIONS = {"list": _plugins_list, "onboarding": _plugins_onboarding, "p
                     "toggle": _plugins_toggle, "install": _plugins_install, "inspect": _plugins_inspect,
                     "install_desktop": _plugins_install_desktop, "remove_desktop": _plugins_remove_desktop,
                     "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings,
-                    "update_all": _plugins_update_all, "auto_update": _plugins_auto_update}
-
+                    "update_all": _plugins_update_all, "auto_update": _plugins_auto_update, "check": _plugins_check}
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
 def _(rid, params: dict) -> dict:
@@ -1945,7 +1952,7 @@ def _(rid, params: dict) -> dict:
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
     default True); ``inspect`` reports which halves that source ships, installing nothing; ``update`` re-pins a catalog install or pulls a git install (``force`` accepts a caution scan); ``remove`` deletes
     a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``; ``update_all``
-    updates every plugin with an update; ``auto_update`` reads or (with ``enable``) sets ``plugins.auto_apply``."""
+    updates every plugin with an update; ``auto_update`` reads/sets ``plugins.auto_apply``; ``check`` runs a read-only update check."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

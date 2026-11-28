@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
-import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { type CSSProperties, lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { isElementInHiddenPane, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
 import { $layoutTree } from '@/components/pane-shell/tree/store'
@@ -11,7 +11,7 @@ import { $paneStates } from '@/store/panes'
 import { $terminalTakeover } from '../store'
 
 import { ensureTerminal } from './terminals'
-import { TerminalWorkspace } from './workspace'
+const TerminalWorkspace = lazy(async () => ({ default: (await import('./workspace')).TerminalWorkspace }))
 
 /**
  * One xterm Terminal mounted at the layout root and CSS-overlayed onto
@@ -260,7 +260,7 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
     }
   }, [slot])
 
-  const visible = Boolean(rect && !rect.hidden && rect.width > 0 && rect.height > 0)
+  const visible = Boolean(terminalTakeover && rect && !rect.hidden && rect.width > 0 && rect.height > 0)
 
   const style: CSSProperties = {
     position: 'fixed',
@@ -287,8 +287,12 @@ export function PersistentTerminal({ onAddSelectionToChat }: PersistentTerminalP
   // booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a visible
   // conhost on Windows. After that `mounted` latches: shells persist while hidden.
   return (
-    <div aria-hidden={!visible} data-persistent-terminal="" style={style}>
-      {mounted && <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />}
+    <div aria-hidden={!visible} data-persistent-terminal="" inert={!visible} style={style}>
+      {mounted && (
+        <Suspense fallback={null}>
+          <TerminalWorkspace onAddSelectionToChat={onAddSelectionToChat} />
+        </Suspense>
+      )}
     </div>
   )
 }

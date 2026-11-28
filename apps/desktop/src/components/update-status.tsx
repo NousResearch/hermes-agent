@@ -248,45 +248,57 @@ export function VersionHero({
             : ''}
         </p>
       </div>
-      {(version?.bundleSwapPending || version?.bundleOutOfSync) && (
-        <div className="mx-auto w-full max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left text-sm">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-            <div className="min-w-0">
-              <p className="font-medium">{version.bundleSwapPending ? u.bundleSwapPending : u.bundleOutOfSync}</p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {version.bundleSwapPending ? u.bundleSwapPendingDesc : u.bundleOutOfSyncDesc}
-              </p>
-              {version.bundleSwapPending ? (
-                <Button
-                  className="mt-2"
-                  onClick={() => void window.hermesDesktop?.relaunchApp?.()}
-                  size="sm"
-                  variant="textStrong"
-                >
-                  <RefreshCw className="size-3" />
-                  {u.bundleSwapPendingAction}
-                </Button>
-              ) : (
-                <Button asChild className="mt-2" size="sm" variant="textStrong">
-                  <a
-                    href={INSTALLER_URL}
-                    onClick={event => {
-                      event.preventDefault()
-                      void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
-                    }}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    <ExternalLink className="size-3" />
-                    {u.bundleOutOfSyncAction}
-                  </a>
-                </Button>
-              )}
-            </div>
-          </div>
+      <VersionBundleNotice version={version} />
+    </div>
+  )
+}
+
+/** The installed-bundle warning (swap pending / out of sync) with its relaunch or reinstall action. */
+export function VersionBundleNotice({ version }: { version: DesktopVersionInfo | null }): ReactElement | null {
+  const { t } = useI18n()
+  const u = t.updates
+
+  if (!version?.bundleSwapPending && !version?.bundleOutOfSync) {
+    return null
+  }
+
+  return (
+    <div className="mx-auto w-full max-w-2xl rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-left text-sm">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <div className="min-w-0">
+          <p className="font-medium">{version.bundleSwapPending ? u.bundleSwapPending : u.bundleOutOfSync}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {version.bundleSwapPending ? u.bundleSwapPendingDesc : u.bundleOutOfSyncDesc}
+          </p>
+          {version.bundleSwapPending ? (
+            <Button
+              className="mt-2"
+              onClick={() => void window.hermesDesktop?.relaunchApp?.()}
+              size="sm"
+              variant="textStrong"
+            >
+              <RefreshCw className="size-3" />
+              {u.bundleSwapPendingAction}
+            </Button>
+          ) : (
+            <Button asChild className="mt-2" size="sm" variant="textStrong">
+              <a
+                href={INSTALLER_URL}
+                onClick={event => {
+                  event.preventDefault()
+                  void window.hermesDesktop?.openExternal?.(INSTALLER_URL)
+                }}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ExternalLink className="size-3" />
+                {u.bundleOutOfSyncAction}
+              </a>
+            </Button>
+          )}
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -343,13 +355,9 @@ export function UpdateStatusCard({
   return <UpdateStatusCardBody showReleaseNotes={showReleaseNotes} target={target} />
 }
 
-function UpdateStatusCardBody({
-  showReleaseNotes,
-  target
-}: {
-  showReleaseNotes: boolean
-  target: UpdateTarget
-}): ReactElement {
+/** One target's derived update state plus a forced re-check, shared by the status card and the
+ *  redesign's About rows (856:6778). */
+export function useUpdateStatusView(target: UpdateTarget) {
   const { t } = useI18n()
   const u = t.updates
   const isBackend = target === 'backend'
@@ -374,6 +382,27 @@ function UpdateStatusCardBody({
     const next = await (isBackend ? checkBackendUpdates({ force: true }) : checkUpdates({ force: true }))
     setJustChecked(Boolean(next))
   }
+
+  return {
+    checking,
+    handleCheck,
+    justChecked,
+    lastChecked: u.lastChecked(relativeTime(status?.fetchedAt, u)),
+    status,
+    view
+  }
+}
+
+function UpdateStatusCardBody({
+  showReleaseNotes,
+  target
+}: {
+  showReleaseNotes: boolean
+  target: UpdateTarget
+}): ReactElement {
+  const { t } = useI18n()
+  const u = t.updates
+  const { checking, handleCheck, justChecked, status, view } = useUpdateStatusView(target)
 
   return (
     <div

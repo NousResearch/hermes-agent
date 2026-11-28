@@ -3,7 +3,7 @@ import { ExternalLink } from '@/lib/icons'
 
 import { Pill } from '../primitives'
 
-import { openExternal } from './open-external'
+import { externalActionLabel, openExternal } from './open-external'
 import type { BillingAccountRowView } from './use-billing-state'
 
 export function RowValue({ onAction, row }: { onAction?: () => void; row: BillingAccountRowView }) {
@@ -40,7 +40,7 @@ export function RowValue({ onAction, row }: { onAction?: () => void; row: Billin
           type="button"
           variant="outline"
         >
-          {action.label}
+          {!action.disabled && action.url ? externalActionLabel(action.label) : action.label}
           {!action.disabled && action.url && <ExternalLink className="size-3.5" />}
         </Button>
       )}

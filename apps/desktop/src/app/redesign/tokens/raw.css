@@ -1,0 +1,154 @@
+/* Primitives: the only colour literals in the redesign (scripts/check_desktop_design_tokens.py flags a
+   colour anywhere else). Theme-independent; the roles in color.css choose among them. An ink step is the
+   skin's foreground (--ui-base) at an alpha, so it is right in both modes and every skin. */
+:root[data-shell='portal'] {
+  /* Figma primary/blue: fills of primary actions, toggles, checked states, the active tab underline. */
+  --portal-raw-blue: #0000f2;
+  /* The blue lightened to AA for thin marks (rings, links, counts) on navy. */
+  --portal-raw-blue-ink-dark: #8585ff;
+  /* "Make it yours" (Onboarding 18695:18059): the seven other colours the brand gesture can wear, in
+     the swatches' order. Each is a fill, the ink on it, the brand ink on light and the brand ink on
+     navy. Deep fills (violet, pink, red, orange) take white ink and are their own light ink; bright
+     ones (yellow, green, cyan: Figma's secondary colours as drawn) take the navy ink and a darkened
+     light ink. Every set keeps the blue's contrast duties: 4.5:1 for the on-brand ink, the brand ink
+     on every light and dark panel, and the text on a brand selection (portal-accent-contrast.test.ts). */
+  --portal-raw-violet: #6d28d9;
+  --portal-raw-violet-ink-dark: #b79cff;
+  --portal-raw-pink: #b0124f;
+  --portal-raw-pink-ink-dark: #ff80b0;
+  --portal-raw-red: #c40d0d;
+  --portal-raw-red-ink-light: #b00c0c;
+  --portal-raw-red-ink-dark: #ff8080;
+  --portal-raw-orange-deep: #a33f00;
+  --portal-raw-orange-ink-dark: #ff9a52;
+  --portal-raw-yellow: #f2f200;
+  --portal-raw-yellow-ink-light: #666000;
+  --portal-raw-green-deep: #086b36;
+  --portal-raw-green-ink-dark: #3fd68a;
+  --portal-raw-cyan: #00f2f2;
+  --portal-raw-cyan-ink-light: #00696b;
+  /* The ink on a bright fill: the dark canvas navy (--portal-raw-navy-channels). */
+  --portal-raw-navy: #0b0b24;
+  /* The accent the brand gesture wears: the blue, or the person's pick (data-portal-accent, below). The
+     navy family (veils, panels, the composer card) stays on the blue whatever the accent. */
+  --portal-raw-accent: var(--portal-raw-blue);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-blue);
+  --portal-raw-accent-ink-dark: var(--portal-raw-blue-ink-dark);
+  /* Figma primary/white: ink on the brand fill. */
+  --portal-raw-white: #f2f2f2;
+  --portal-raw-pure-white: #fff;
+  --portal-raw-black: #000;
+  /* Figma secondary/green (live dots and gradients); at .6 it is the connected / online ink on dark
+     (1089:8305). */
+  --portal-raw-green: #00f279;
+  --portal-raw-green-60: color-mix(in srgb, var(--portal-raw-green) 60%, transparent);
+  /* Connected / online ink on light: the green darkened to AA. */
+  --portal-raw-mint-deep: #0f6d4a;
+  /* Figma secondary/orange: pending and warning. */
+  --portal-raw-orange: #f27900;
+  /* Figma secondary/red: a status badge's fill under black ink (UNVERIFIED, 18732:33155). */
+  --portal-raw-red-signal: #f20000;
+  /* Danger fill and stroke (877:4212, 878:7066, 1038:7836) and its soft status text (877:4312). */
+  --portal-raw-danger: #a22a20;
+  --portal-raw-danger-soft: #cc8a84;
+  /* The danger label on dark (1038:7836): bright enough for 4.5:1 on the danger tint. */
+  --portal-raw-danger-bright: #ff7373;
+  /* The composer's spectrum edge (906:19872). */
+  --portal-raw-spectrum-red: #aa1515;
+  --portal-raw-spectrum-yellow: #ddd61c;
+  /* The neutral of a hovered sidebar row's gradient (1089:8351): the selected row's brand ramp in
+     grayscale. */
+  --portal-raw-gray: #797979;
+  /* The HUD's transcript sheet: the dark canvas navy as channels, laid at the HUD's own alphas
+     (styles.css). Always dark, in both modes: its ink is white over someone else's window. */
+  --portal-raw-navy-channels: 11 11 36;
+  /* Shadow inks. */
+  --portal-raw-shadow-4: rgb(0 0 0 / 0.04);
+  --portal-raw-shadow-8: rgb(0 0 0 / 0.08);
+  --portal-raw-shadow-20: rgb(0 0 0 / 0.2);
+  --portal-raw-shadow-50: rgb(0 0 0 / 0.5);
+  /* The workspace frame's top highlight (16292:14463): white at .05. */
+  --portal-raw-highlight-5: rgb(255 255 255 / 0.05);
+  /* Light's workspace frame shadow ink (16292:23801): a navy at .1. */
+  --portal-raw-shadow-navy-10: rgb(18 20 38 / 0.1);
+  /* The ink ladder (LANGUAGE §1.1): Figma's light/2, 5, 10, 40 plus the page steps 3, 4, 8, 14, 22, 28.
+     No other neutral alpha belongs to the language; the off-ladder steps still in use are listed in
+     color.css and the "Still to unify" table. */
+  --portal-raw-ink-2: color-mix(in srgb, var(--ui-base) 2%, transparent);
+  --portal-raw-ink-3: color-mix(in srgb, var(--ui-base) 3%, transparent);
+  --portal-raw-ink-4: color-mix(in srgb, var(--ui-base) 4%, transparent);
+  --portal-raw-ink-5: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  --portal-raw-ink-8: color-mix(in srgb, var(--ui-base) 8%, transparent);
+  --portal-raw-ink-10: color-mix(in srgb, var(--ui-base) 10%, transparent);
+  --portal-raw-ink-14: color-mix(in srgb, var(--ui-base) 14%, transparent);
+  --portal-raw-ink-20: color-mix(in srgb, var(--ui-base) 20%, transparent);
+  --portal-raw-ink-22: color-mix(in srgb, var(--ui-base) 22%, transparent);
+  --portal-raw-ink-28: color-mix(in srgb, var(--ui-base) 28%, transparent);
+  --portal-raw-ink-40: color-mix(in srgb, var(--ui-base) 40%, transparent);
+  /* Brand tints, in the accent: row selection 8, info banner 10, light brand selection 12, dark brand
+     selection 25, info banner stroke 60. */
+  --portal-raw-brand-8: color-mix(in srgb, var(--portal-raw-accent) 8%, transparent);
+  --portal-raw-brand-10: color-mix(in srgb, var(--portal-raw-accent) 10%, transparent);
+  --portal-raw-brand-12: color-mix(in srgb, var(--portal-raw-accent) 12%, transparent);
+  --portal-raw-brand-25: color-mix(in srgb, var(--portal-raw-accent) 25%, transparent);
+  /* The blue under a sidebar agent card (16292:15630). */
+  --portal-raw-brand-30: color-mix(in srgb, var(--portal-raw-accent) 30%, transparent);
+  --portal-raw-brand-60: color-mix(in srgb, var(--portal-raw-accent) 60%, transparent);
+  /* Danger tints (1038:7836): the tint 8, its hover and pressed steps 14 and 20, the stroke 50. */
+  --portal-raw-danger-8: color-mix(in srgb, var(--portal-raw-danger) 8%, transparent);
+  --portal-raw-danger-14: color-mix(in srgb, var(--portal-raw-danger) 14%, transparent);
+  --portal-raw-danger-20: color-mix(in srgb, var(--portal-raw-danger) 20%, transparent);
+  --portal-raw-danger-50: color-mix(in srgb, var(--portal-raw-danger) 50%, transparent);
+}
+
+/* The accent picked in "Make it yours" (store/portal-accent.ts). Blue sets no attribute. A block names
+   all four: fill, the ink on it, and the brand ink on light and on dark. */
+:root[data-shell='portal'][data-portal-accent='violet'] {
+  --portal-raw-accent: var(--portal-raw-violet);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-violet);
+  --portal-raw-accent-ink-dark: var(--portal-raw-violet-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='pink'] {
+  --portal-raw-accent: var(--portal-raw-pink);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-pink);
+  --portal-raw-accent-ink-dark: var(--portal-raw-pink-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='red'] {
+  --portal-raw-accent: var(--portal-raw-red);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-red-ink-light);
+  --portal-raw-accent-ink-dark: var(--portal-raw-red-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='orange'] {
+  --portal-raw-accent: var(--portal-raw-orange-deep);
+  --portal-raw-accent-on: var(--portal-raw-white);
+  --portal-raw-accent-ink-light: var(--portal-raw-orange-deep);
+  --portal-raw-accent-ink-dark: var(--portal-raw-orange-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='yellow'] {
+  --portal-raw-accent: var(--portal-raw-yellow);
+  --portal-raw-accent-on: var(--portal-raw-navy);
+  --portal-raw-accent-ink-light: var(--portal-raw-yellow-ink-light);
+  --portal-raw-accent-ink-dark: var(--portal-raw-yellow);
+}
+
+:root[data-shell='portal'][data-portal-accent='green'] {
+  --portal-raw-accent: var(--portal-raw-green);
+  --portal-raw-accent-on: var(--portal-raw-navy);
+  --portal-raw-accent-ink-light: var(--portal-raw-green-deep);
+  --portal-raw-accent-ink-dark: var(--portal-raw-green-ink-dark);
+}
+
+:root[data-shell='portal'][data-portal-accent='cyan'] {
+  --portal-raw-accent: var(--portal-raw-cyan);
+  --portal-raw-accent-on: var(--portal-raw-navy);
+  --portal-raw-accent-ink-light: var(--portal-raw-cyan-ink-light);
+  --portal-raw-accent-ink-dark: var(--portal-raw-cyan);
+}

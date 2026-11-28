@@ -903,14 +903,14 @@ function mintBrowserTabId(): RightRailTabId {
  *  ask for (the strip's "+"), the way they are in a real browser. `tabs` is
  *  the opening session's visible set: another session's Browser is never
  *  taken over. */
-function browserTabFor(tabs: readonly PreviewTab[]): PreviewTab | undefined {
-  const active = tabs.find(tab => tab.id === $rightRailActiveTabId.get())
+export function browserTabFor(tabs: readonly PreviewTab[], activeTabId: RightRailTabId | null): PreviewTab | undefined {
+  const active = tabs.find(tab => tab.id === activeTabId)
 
   return active && isBrowserTab(active) ? active : tabs.findLast(isBrowserTab)
 }
 
 function browserTabId(tabs: readonly PreviewTab[]): RightRailTabId {
-  return browserTabFor(tabs)?.id ?? mintBrowserTabId()
+  return browserTabFor(tabs, $rightRailActiveTabId.get())?.id ?? mintBrowserTabId()
 }
 
 /** HTML files open rendered unless the caller asks for a mode. A re-open keeps
@@ -983,7 +983,7 @@ export function openPreview(
 
   const existing =
     target.kind === 'url'
-      ? browserTabFor(visible)
+      ? browserTabFor(visible, $rightRailActiveTabId.get())
       : target.kind === 'file'
         ? fileTabFor(visible, target)
         : current.find(tab => tab.id === previewTabId(target))
@@ -1012,7 +1012,12 @@ export function openPreview(
 
   noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
+  $previewReveal.set({ id, seq: ($previewReveal.get()?.seq ?? 0) + 1 })
 }
+
+/** Signaled by every explicit `openPreview` so `preview-tile.tsx` can surface
+ *  a narrow overlay sheet even when the tab was already selected. */
+export const $previewReveal = atom<null | { id: string; seq: number }>(null)
 
 const blankPage = (): PreviewTarget => ({ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' })
 

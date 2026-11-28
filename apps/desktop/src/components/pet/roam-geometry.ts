@@ -6,7 +6,7 @@
  * helpers (`overlapsX`, `resolveLedge`, `groundTop`) stay unit testable.
  */
 
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { titlebarHeightNow } from '@/app/shell/use-touch-titlebar'
 
 /**
  * A horizontal surface the pet can stand and walk on. `y` is the surface line
@@ -124,7 +124,7 @@ export function snapshotLedges(petW: number, petH: number): Ledge[] {
  */
 export function overlayLedge(petW: number): Ledge {
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
-  const inset = TITLEBAR_HEIGHT + (vw() >= 640 ? 0.875 : 0.625) * rem
+  const inset = titlebarHeightNow() + (vw() >= 640 ? 0.875 : 0.625) * rem
 
   return { left: inset, right: Math.max(0, vw() - inset - petW), y: vh() - inset }
 }

@@ -235,6 +235,19 @@ def test_skip_setup_while_a_card_waits_ends_the_run_and_refuses_later_beats():
     assert "error" in refused.result and refused.record == skipped.record
 
 
+def test_a_sessionless_end_marks_the_record_in_the_same_step_whether_or_not_the_run_had_ended():
+    """Sessionless setup retires a run with one event, so a store that applies events in one write
+    never shows a waiting card an ended-but-unmarked record (it would answer a plain skip)."""
+    facts = MACHINES["mac"]
+    live, skipped = run(facts, Shown("name"), End("skipped"))
+    for before, was in ((live.record, "replaced"), (skipped.record, "skipped")):
+        retired = apply(before, End("replaced", sessionless=True), facts, now=9.0)
+        assert retired.record["sessionless"] is True
+        assert retired.record["ended_by"] == was and retired.record["phase"] == flow.PHASE_SKIPPED
+        assert retired.result == {"skipped_all": True}
+    assert "sessionless" not in apply(live.record, End("replaced"), facts, now=9.0).record
+
+
 def test_walks_away_closes_the_card_and_the_turn_note_brings_it_back():
     facts = MACHINES["linux"]
     step = run(facts, Shown("name"), Answered("name", {"name": "Sid"}), Shown("theme"), TimedOut("theme"))[-1]

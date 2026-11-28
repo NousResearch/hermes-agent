@@ -28,12 +28,14 @@ import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
+import { simplifiedAgentsCopy } from './simplified-agents'
 
 export const deOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['de'],
   gatewayGroupOpen: {
-    opening: "Gruppenchat wird geöffnet…",
+    opening: 'Gruppenchat wird geöffnet…',
     lookupFailed: "Diese Gruppe konnte auf dem Gateway nicht gefunden werden. Versuche es erneut.",
-    missing: "Dieser Gruppenchat existiert nicht mehr."
+    missing: 'Dieser Gruppenchat existiert nicht mehr.'
   },
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
@@ -590,6 +592,8 @@ export const deOverrides = {
       'nav.artifacts': 'Artefakte öffnen',
       'nav.cron': 'Geplante Jobs öffnen',
       'nav.agents': 'Agenten öffnen',
+      'nav.back': 'Zurück',
+      'nav.forward': 'Vorwärts',
       'session.new': 'Neue Session',
       'session.newTab': 'Neuer Session-Tab',
       'session.newWindow': 'Neues Fenster',
@@ -673,6 +677,7 @@ export const deOverrides = {
       'profile.prev': 'Vorheriges Profil',
       'profile.toggleAll': 'Alle-Profile-Ansicht umschalten',
       'profile.create': 'Profil erstellen',
+      'agents.new': 'Neues Profil (Seite „Profile“)',
       'composer.send': 'Nachricht senden',
       'composer.newline': 'Neue Zeile einfügen',
       'composer.steer': 'Laufenden Turn steuern',
@@ -995,6 +1000,13 @@ export const deOverrides = {
       }
     },
     appearance: {
+      redesign: {
+        toolViewTitle: 'Tool-Aufrufe',
+        toolViewDesc: 'Einfach blendet rohe Tool-Payloads aus; Technisch zeigt die vollständige Ein-/Ausgabe.',
+        product: 'Einfach',
+        introSplashTitle: 'Willkommensbildschirm',
+        embedsTitle: 'Link-Vorschauen'
+      },
       chatTextScaleTitle: 'Chat-Textgröße',
       chatTextScaleDesc:
         'Skaliert Unterhaltungstext und Nachrichteneingabe relativ zur UI-Skalierung. Seitenleisten und Bedienelemente behalten ihre Größe.',
@@ -2410,12 +2422,15 @@ export const deOverrides = {
         enabledTitle: 'Echtes Profil-Browsen aktiv',
         enabledMessage: 'Neue Sessions browsen mit einem Schnappschuss Ihres Standard-Browserprofils.',
         disabledTitle: 'Echtes Profil-Browsen deaktiviert',
-        disabledMessage: 'Der Profil-Schnappschuss wird gelöscht und der In-App-Browser davon abgemeldet; neue Sessions verwenden einen sauberen Browser.',
+        disabledMessage:
+          'Der Profil-Schnappschuss wird gelöscht und der In-App-Browser davon abgemeldet; neue Sessions verwenden einen sauberen Browser.',
         failedSave: 'Die Echtes-Profil-Einstellung konnte nicht gespeichert werden',
         reimportSignins: 'Anmeldungen erneut importieren',
         signinsImportedTitle: 'Anmeldungen im In-App-Browser',
-        signinsImported: count => `In-App-Browser mit ${count} Cookie${count === 1 ? '' : 's'} aus Ihrem Browserprofil angemeldet.`,
-        signinsRemote: 'Dieses Backend läuft auf einem anderen Rechner, daher wird sein Browserprofil nicht in den In-App-Browser importiert.',
+        signinsImported: count =>
+          `In-App-Browser mit ${count} Cookie${count === 1 ? '' : 's'} aus Ihrem Browserprofil angemeldet.`,
+        signinsRemote:
+          'Dieses Backend läuft auf einem anderen Rechner, daher wird sein Browserprofil nicht in den In-App-Browser importiert.',
         signinsFailed: 'Anmeldungen konnten nicht in den In-App-Browser importiert werden',
         prompt: {
           title: 'Auf Ihren Websites angemeldet bleiben',
@@ -2431,6 +2446,17 @@ export const deOverrides = {
     }
   },
   skills: {
+    inventoryScopeHint:
+      'Installationen gelten für den ausgewählten Agenten und Rechner. Agentenspezifische Tool-Aktivierung und Anpassungen finden Sie in den Agenten-Einstellungen. Gehostete Connector-Konten werden von Agenten geteilt, die dasselbe Nous-Konto verwenden.',
+    agentScopeHint:
+      'Änderungen gelten nur für diesen Agenten. Bestehende Unterhaltungen behalten ihre aktuellen Tools.',
+    toolSecretsHint:
+      'API-Schlüssel, Endpunkte und Anbieter, die dieser Agent nutzt. Anbieter-Anmeldungen können zwischen Agenten geteilt werden; gehostete Connector-Konten werden von Agenten geteilt, die dasselbe Nous-Konto verwenden.',
+    openAgentSettings: 'Profileinstellungen',
+    openToolLibrary: 'Tool-Bibliothek durchsuchen',
+    remotePluginHint:
+      'Öffnen Sie dieses Profil auf seinem Gateway, um seine Plugins zu verwalten. Die Plugin-Installation verwendet das verbundene Gateway.',
+    showAllToolsets: (count: number) => `Alle ${count} anzeigen`,
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Konfiguriert:',
@@ -2493,8 +2519,7 @@ export const deOverrides = {
     tabPlugins: 'Plugins',
     plugins: {
       agentTitle: 'Agent-Plugins',
-      agentBlurb:
-        'Erweitert den Agenten für das gewählte Profil — Tools, Hooks, Anbieter. Wirkt nach einem Gateway-Neustart.',
+      agentBlurb: 'Erweitert den Agenten für das gewählte Profil — Tools, Hooks, Anbieter. Wirkt nach einem Gateway-Neustart.',
       pageBlurb: 'Ein Plugin kann diese App, den Agent oder beides erweitern – jede Hälfte hat einen eigenen Schalter.',
       halfDesktop: 'Desktop',
       halfDesktopHint: 'diese App, gleich für jedes Profil',
@@ -3025,7 +3050,8 @@ export const deOverrides = {
     relayLink: {
       title: 'Team Gateway',
       badge: 'Kein Bot-Token nötig',
-      intro: (platform: string) => `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
+      intro: (platform: string) =>
+        `${platform} erreicht diesen Agenten über den gemeinsamen Hermes-Bot. Verknüpfe dein ${platform}-Konto damit und schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       link: (platform: string) => `${platform} verknüpfen`,
       linkAnother: (platform: string) => `Weiteres ${platform}-Konto verknüpfen`,
       linkedAccounts: 'Verknüpfte Konten',
@@ -3040,13 +3066,15 @@ export const deOverrides = {
       waiting: 'Warte darauf, dass der Bot deine Nachricht sieht. Der Code gilt einmal.',
       linked: (platform: string) => `${platform}-Konto verknüpft. Schreib dem Bot, um mit deinem Agenten zu sprechen.`,
       expired: 'Der Code ist abgelaufen, bevor er benutzt wurde. Hol dir einen neuen Code und versuch es erneut.',
-      refused: (platform: string) => `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
+      refused: (platform: string) =>
+        `${platform} hat die Verknüpfung abgelehnt. Hol dir einen neuen Code und versuch es erneut.`,
       qrAlt: (platform: string) => `QR-Code für den gemeinsamen ${platform}-Bot`,
       managed: 'Von Team Gateway verwaltet',
       managedNote: (platform: string) => `Team Gateway übernimmt auf dieser Instanz das Messaging, daher schaltet das Gateway die direkte ${platform}-Verbindung bei jedem Start ab. Um sie parallel zum Relay zu betreiben, setze GATEWAY_RELAY_ALLOW_DIRECT_PLATFORMS=true in der Umgebung des Gateways (eine direkte Verbindung verhindert das Herunterskalieren auf null und kann Nachrichten doppelt zustellen).`,
       managedIntro: 'Die Konten dieses Agenten werden im Nous Portal verknüpft.',
       openPortal: 'Konten im Nous Portal verknüpfen',
-      noNewAccount: (platform: string) => `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
+      noNewAccount: (platform: string) =>
+        `Der Code ist nicht mehr aktiv und es ist kein neues Konto erschienen. Falls dein ${platform}-Konto nicht aufgeführt ist, hol dir einen neuen Code und versuche es erneut.`
     },
     telegramQr: {
       title: 'Wählen Sie, wie Sie Ihren Telegram-Bot verbinden',
@@ -3507,8 +3535,7 @@ export const deOverrides = {
     topOfHour: 'Zu jeder vollen Stunde',
     everyHourAt: minute => `Jede Stunde um :${minute}`,
     newCron: 'Neuer Cron',
-    emptyDescNew:
-      'Planen Sie einen Prompt, der nach einem Cron-Ausdruck ausgeführt wird. Hermes führt ihn aus und liefert die Ergebnisse an das von Ihnen gewählte Ziel.',
+    emptyDescNew: 'Planen Sie einen Prompt, der nach einem Cron-Ausdruck ausgeführt wird. Hermes führt ihn aus und liefert die Ergebnisse an das von Ihnen gewählte Ziel.',
     emptyDescSearch: 'Versuchen Sie eine breitere Suchanfrage.',
     emptyTitleNew: 'Noch keine geplanten Jobs',
     emptyTitleSearch: 'Keine Treffer',
@@ -3802,6 +3829,7 @@ export const deOverrides = {
     placeholderStarting: 'Hermes wird gestartet…',
     placeholderReconnecting: 'Verbindung zu Hermes wird wiederhergestellt…',
     placeholderFollowUp: 'Folge senden',
+    browseAllSessions: 'Alle Sessions durchsuchen…',
     newSessionPlaceholders: [
       'Was bauen wir?',
       'Geben Sie Hermes eine Aufgabe',
@@ -4379,7 +4407,8 @@ export const deOverrides = {
     remoteSetupDesc:
       'Geben Sie die URL Ihres Gateways ein. Hermes Desktop erkennt, ob ein Token oder eine Browser-Anmeldung nötig ist.',
     remoteUrlTitle: 'Gateway-URL',
-    remoteUrlDesc: 'Verwenden Sie die Basis-URL des Hermes Gateways, bei Remote-Gateways einschließlich https://.',
+    remoteUrlDesc:
+      'Verwenden Sie die Basis-URL des Hermes Gateways, bei Remote-Gateways einschließlich https://.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Gateway-Authentifizierung wird erkannt...',
     probeError: 'Dieses Hermes Gateway konnte nicht erreicht werden.',
@@ -4585,6 +4614,8 @@ export const deOverrides = {
       daybreakFailed: 'Aktualisierung von Daybreak schlug fehl'
     },
     gatewayMenu: {
+      connectionLabel: 'Verbindung',
+      inferenceLabel: 'Inferenz',
       gateway: 'Gateway',
       connected: 'Verbunden',
       connecting: 'Wird verbunden',
@@ -4598,7 +4629,14 @@ export const deOverrides = {
       connection: label => `Verbindung: ${label}`,
       recentActivity: 'Letzte Aktivität',
       viewAllLogs: 'Alle Logs ansehen →',
-      messagingPlatforms: 'Messaging-Plattformen'
+      messagingPlatforms: 'Messaging-Plattformen',
+      machineStatus: (machine, status) => `Status von ${machine}: ${status}`,
+      checkAgain: 'Erneut prüfen',
+      switchToMachine: 'Zu diesem Gateway wechseln',
+      machineSettings: 'Gateways',
+      restartTitle: 'Gateway neu starten?',
+      restartBody:
+        'Laufende Antworten auf diesem Gateway werden abgebrochen. Es ist in wenigen Sekunden zurück und verbindet sich selbst neu.'
     },
     approvalMode: {
       perProfile: 'Pro Profil',
@@ -4858,6 +4896,7 @@ export const deOverrides = {
     hideStripTab: title => `${title} ausblenden`,
     zoneMenuLabel: title => `Zonenoptionen für ${title}`,
     lastTabKeptTitle: 'Letzter Tab bleibt',
+    resizePanes: 'Bereiche anpassen',
     lastTabKeptBody:
       'Diese Zone braucht mindestens einen sichtbaren Tab. Zeigen Sie zuerst einen anderen Tab an oder klappen Sie die ganze Seitenleiste ein.',
     toggleStripTab: title => `${title}-Tab umschalten`,
@@ -5163,7 +5202,8 @@ export const deOverrides = {
       readAloud: 'Vorlesen',
       copyFullResponse: 'Vollständige Antwort kopieren',
       readAloudFullResponseHint: 'Umschalt-Klick: vollständige Antwort vorlesen',
-      contentRefusedNotice: 'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
+      contentRefusedNotice:
+        'Diese Nachricht wurde vom Sicherheitsfilter des Modells abgelehnt – versuche eine andere Anfrage.',
       editMessage: 'Nachricht bearbeiten',
       expandMessage: 'Nachricht aufklappen',
       scrollToBottom: 'Nach unten scrollen',
@@ -5461,7 +5501,11 @@ export const deOverrides = {
   },
   desktop: {
     audioReadFailed: 'Aufgenommenes Audio konnte nicht gelesen werden',
+    sessionOpenFailed: 'Diese Session konnte nicht geöffnet werden',
     sessionUnavailable: 'Session nicht verfügbar',
+    sessionOwnerConflictTitle: 'Chat konnte nicht geöffnet werden',
+    sessionOwnerConflictBody:
+      'Ein anderer Chat mit derselben ID ist bereits geöffnet. Schließe ihn zuerst oder öffne diesen Chat in einem neuen Fenster.',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
     providerCredentialRequired:

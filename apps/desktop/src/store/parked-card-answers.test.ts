@@ -9,6 +9,7 @@ import {
   registerParkedCardAnswer,
   sessionOnboardingCardWaiting
 } from './parked-card-answers'
+import { $shellChoice } from './shell-variant'
 
 const kind = (answer: ParkedCardAnswer) => ({ $requests: atom({}), answer, waiting: () => false })
 
@@ -55,6 +56,7 @@ describe('parked card answers', () => {
   })
 
   it('takes typed text for an onboarding-only card in the onboarding chat, and leaves every other chat alone', () => {
+    $shellChoice.set(false)
     const takes = vi.fn<ParkedCardAnswer>(() => Promise.resolve(true))
     unregister.push(
       registerParkedCardAnswer('test-onboarding', { ...kind(takes), onboardingOnly: true, waiting: () => true })
@@ -70,5 +72,8 @@ describe('parked card answers', () => {
     expect($waiting.get()).toBe(true)
     expect(answerParkedCard('session-a', 'hello')).toBe(true)
     expect(answerParkedCard('session-b', 'hello')).toBe(false)
+    $shellChoice.set(true)
+    expect($waiting.get()).toBe(false)
+    expect(answerParkedCard('session-a', 'hello')).toBe(false)
   })
 })

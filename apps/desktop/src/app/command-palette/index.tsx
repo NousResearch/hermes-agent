@@ -4,6 +4,8 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { useConnectionsCopy } from '@/app/capabilities/connectors/redesign/connections-copy'
+import { toolsRoute } from '@/app/capabilities/tools-route'
 import {
   HUD_HEADING,
   HUD_ITEM,
@@ -75,19 +77,21 @@ import { $bindings, bindingsFor } from '@/store/keybinds'
 import { $dismissedAutoProjectIds, $pinnedSessionIds, filterVisibleProjects } from '@/store/layout'
 import { openPetGenerate } from '@/store/pet-generate'
 import { toggleBrowserTab } from '@/store/preview'
-import { $projectTree, goToProject, openFolderAsProject, requestStartWorkSession } from '@/store/projects'
+import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
+import { $projectTree, goToProject, openFolderAsProject, projectRootCwd, requestStartWorkSession } from '@/store/projects'
 import { $cronSessions, $messagingSessions, $sessions } from '@/store/session'
 import { $unconfirmedPinWrites } from '@/store/session-pin-sync'
 import { $removedSessionIds } from '@/store/session-removal'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
+import { usePortalShell } from '@/store/shell-variant'
 import { runGatewayRestart } from '@/store/system-actions'
-import {
-  requestActiveUpdate
-} from '@/store/updates'
+import { requestActiveUpdate } from '@/store/updates'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
+import type { SidebarProjectTree } from '../chat/sidebar/projects/workspace-groups'
 import { buildSessionByAnyId, resolvePinnedSessions } from '../chat/sidebar/session-index'
 import { openSessionFromPicker, openSessionIntentFromModifiers } from '../open-session'
 import {
@@ -111,8 +115,35 @@ import { useSettingsSearchCatalog } from '../settings/use-settings-search'
 import { usePaletteContributions } from './contrib'
 import { HighlightWatcher } from './highlight-watcher'
 import { MarketplaceThemePage } from './marketplace-theme-page'
+import { useOldNameRows } from './old-name-rows'
 import { PetInlineToggle, PetPalettePage } from './pet-palette-page'
 import { useUpdateRowLabel } from './use-update-row-label'
+
+/** Portal has no project scope to enter: its sidebar never shows `$projectScope`, so a project row
+ *  is only a chat opener. Classic keeps `goToProject`'s scope switch. */
+function startPortalProjectChat(project: SidebarProjectTree): void {
+  const cwd = projectRootCwd(project)
+
+  if (cwd) {
+    requestStartWorkSession(cwd, undefined, { openTab: true })
+  } else {
+    requestFreshSession()
+  }
+}
+
+function runProjectRow(
+  portal: boolean,
+  project: SidebarProjectTree,
+  event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }
+): void {
+  if (portal) {
+    startPortalProjectChat(project)
+
+    return
+  }
+
+  goToProject(project.id, { newSession: Boolean(event?.metaKey || event?.ctrlKey) })
+}
 
 interface PaletteItem {
   /** Keybind action id — its live combo renders as a hotkey hint. */
@@ -121,6 +152,8 @@ interface PaletteItem {
   active?: boolean
   /** Static trailing combo hint for a modifier-variant select (e.g. `mod+enter`). */
   comboHint?: string
+  /** A second line under the label (the redesign's renamed places: "Formerly Sessions"). */
+  description?: string
   /** Short note beside the label — state the row acts on (a version, a count). */
   detail?: string
   /** `state` when the row will change what `detail` says (a toggle's on/off). */
@@ -355,15 +388,24 @@ const PaletteRow = memo(function PaletteRow({
       value={paletteValue(item)}
     >
       <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      <span className={cn('truncate', modPreview && 'text-muted-foreground/80')}>
-        {modPreview ? (
-          item.modLabel
-        ) : (
-          /* Same per-term split as scoreItem's AND matcher, so the emphasis
-             shows exactly which words earned the row its rank. */
-          <HighlightMatches query={search.split(/\s+/)} text={item.label} />
-        )}
-      </span>
+      {item.description ? (
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="truncate">
+            <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+          </span>
+          <span className="truncate font-mono text-xs text-muted-foreground">{item.description}</span>
+        </span>
+      ) : (
+        <span className={cn('truncate', modPreview && 'text-muted-foreground/80')}>
+          {modPreview ? (
+            item.modLabel
+          ) : (
+            /* Same per-term split as scoreItem's AND matcher, so the emphasis
+               shows exactly which words earned the row its rank. */
+            <HighlightMatches query={search.split(/\s+/)} text={item.label} />
+          )}
+        </span>
+      )}
       {item.detail && (
         <span className={cn(HUD_NOTE, HUD_NOTE_VARIANT[item.detailVariant ?? 'muted'])}>{item.detail}</span>
       )}
@@ -431,7 +473,7 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   {
     icon: Globe,
-    // The Connections registry merged into the unified Gateways page.
+    // The Connections registry merged into the unified Machines page.
     keywords: [
       'connection',
       'connections',
@@ -442,6 +484,9 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
       'ssh',
       'cloud',
       'add gateway',
+      'machine',
+      'machines',
+      'add machine',
       'registry'
     ],
     labelKey: 'gateway',
@@ -468,6 +513,60 @@ const NON_CONFIG_SETTINGS: ReadonlyArray<{
   },
   { icon: Info, keywords: ['version', 'about'], labelKey: 'about', tab: 'about' }
 ]
+
+interface ConnectionsSearchTermsOptions {
+  /** The Capabilities heading the row sits under. */
+  capLabel: string
+  /** Classic's name for the page ("Connectors"). */
+  classicTitle: string
+  portal: boolean
+  /** The redesign's Connections page title ("Connections"). */
+  redesignTitle: string
+}
+
+/**
+ * The two rows that talk about connections in the root palette. The redesign's Capabilities page
+ * calls itself Connections and owns the word, so Settings ▸ Gateways (the merged Machines page) stops
+ * competing for it there; classic keeps that page findable by "connections" as it always was.
+ * "connectors" stays an alias on the Capabilities row in both shells, since that is what classic
+ * calls the page.
+ */
+export function connectionsSearchTerms({
+  capLabel,
+  classicTitle,
+  portal,
+  redesignTitle
+}: ConnectionsSearchTermsOptions): { connectors: { keywords: string[]; label: string }; gateways: string[] } {
+  return {
+    connectors: {
+      keywords: [
+        'connectors',
+        ...(portal ? ['connections'] : []),
+        'apps',
+        'mcp',
+        'servers',
+        'tools',
+        'capabilities',
+        'model context protocol'
+      ],
+      label: `${capLabel}: ${portal ? redesignTitle : classicTitle}`
+    },
+    gateways: [
+      ...(portal ? [] : ['connection', 'connections']),
+      'messaging',
+      'remote',
+      'multi',
+      'instances',
+      'ssh',
+      'cloud',
+      'add gateway',
+      'machine',
+      'machines',
+      'add machine',
+      'registry'
+    ]
+  }
+}
 
 const THEME_MODES: ReadonlyArray<{ icon: IconComponent; mode: ThemeMode }> = [
   { icon: Sun, mode: 'light' },
@@ -556,8 +655,45 @@ export function CommandPalette() {
   )
 }
 
+function useConnectionsPaletteTerms(portal: boolean) {
+  const { t } = useI18n()
+  const connCopy = useConnectionsCopy()
+  const capLabel = t.commandCenter.nav.capabilities.title
+  const classicTitle = t.connectorsPage.title
+  const redesignTitle = connCopy.page.title
+
+  return useMemo(
+    () => connectionsSearchTerms({ capLabel, classicTitle, portal, redesignTitle }),
+    [capLabel, classicTitle, portal, redesignTitle]
+  )
+}
+
+/** Live ⌘/⌃-held state while the palette is open; blur clears so ⌘-Tab never strands it. */
+function useModHeld(): boolean {
+  const [modHeld, setModHeld] = useState(false)
+
+  useEffect(() => {
+    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
+    const clear = () => setModHeld(false)
+
+    window.addEventListener('keydown', sync, { capture: true })
+    window.addEventListener('keyup', sync, { capture: true })
+    window.addEventListener('blur', clear)
+
+    return () => {
+      window.removeEventListener('keydown', sync, { capture: true })
+      window.removeEventListener('keyup', sync, { capture: true })
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
+
+  return modHeld
+}
+
 function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   const { t } = useI18n()
+  const portal = usePortalShell()
+  const connections = useConnectionsPaletteTerms(portal)
   const pendingPage = useStore($commandPalettePage)
   const pendingSeed = useStore($commandPaletteSeed)
   const bindings = useStore($bindings)
@@ -601,26 +737,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     }
   }
 
-  // Live ⌘/⌃-held state while the palette is open: rows with a modifier
-  // variant (projects) preview it by swapping their label. Window-level
-  // listeners because focus sits in the search input; blur clears so a
-  // ⌘-Tab away doesn't strand the preview on.
-  const [modHeld, setModHeld] = useState(false)
-
-  useEffect(() => {
-    const sync = (event: KeyboardEvent) => setModHeld(event.metaKey || event.ctrlKey)
-    const clear = () => setModHeld(false)
-
-    window.addEventListener('keydown', sync, { capture: true })
-    window.addEventListener('keyup', sync, { capture: true })
-    window.addEventListener('blur', clear)
-
-    return () => {
-      window.removeEventListener('keydown', sync, { capture: true })
-      window.removeEventListener('keyup', sync, { capture: true })
-      window.removeEventListener('blur', clear)
-    }
-  }, [])
+  const modHeld = useModHeld()
 
   // Server-backed sources for the type-to-search groups. This component only
   // exists while the palette is open, so the queries are inherently lazy — no
@@ -785,11 +902,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     const cc = t.commandCenter
 
     // Projects are the primary way the desktop scopes work, so they're jumpable
-    // from the palette. Plain select is a pure scope switch (sidebar enters the
-    // project — never spends main); ⌘-Enter / ⌘-click also starts a new session
-    // at the project root (stacked as a tab when main holds a chat), previewed
-    // by the label swap while ⌘ is held. Rows carry the project's own codicon,
-    // matching the sidebar. The pinned "Open folder…" row is the ⌘O upsert.
+    // from the palette. In classic, plain select is a pure scope switch (sidebar
+    // enters the project — never spends main); ⌘-Enter / ⌘-click also starts a
+    // new session at the project root (stacked as a tab when main holds a chat),
+    // previewed by the label swap while ⌘ is held. The redesign has no project
+    // scope in its sidebar, so there every row opens that new chat at the root.
+    // Rows carry the project's own codicon, matching the sidebar. The pinned
+    // "Open folder…" row is the ⌘O upsert.
     const projectGroup: PaletteGroup = {
       heading: cc.projects,
       items: [
@@ -809,7 +928,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           label: project.label,
           modLabel: cc.newSessionInProject(project.label),
           runWithEvent: (event?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) =>
-            goToProject(project.id, { newSession: Boolean(event?.metaKey || event?.ctrlKey) })
+            runProjectRow(portal, project, event)
         }))
       ]
     }
@@ -864,19 +983,21 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
             label: cc.nav.messaging.title,
             run: go(MESSAGING_ROUTE)
           },
+          // The redesign names destinations as its rail does; the other name still finds them.
           {
             action: 'nav.artifacts',
             icon: Package,
             id: 'nav-artifacts',
-            label: cc.nav.artifacts.title,
+            keywords: [cc.nav.artifacts.title, t.simplifiedAgents.library],
+            label: portal ? t.simplifiedAgents.library : cc.nav.artifacts.title,
             run: go(ARTIFACTS_ROUTE)
           },
           {
             action: 'nav.cron',
             icon: Clock,
             id: 'nav-cron',
-            keywords: ['schedule', 'jobs'],
-            label: t.shell.statusbar.cron,
+            keywords: ['schedule', 'jobs', t.cron.title],
+            label: portal ? t.cron.title : t.shell.statusbar.cron,
             run: go(CRON_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
@@ -947,7 +1068,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           {
             icon: RefreshCw,
             id: 'cc-restart-gateway',
-            keywords: ['gateway', 'restart', 'messaging', 'reconnect', 'system'],
+            keywords: ['machine', 'hermes', 'gateway', 'restart', 'messaging', 'reconnect', 'system'],
             label: cc.restartGateway,
             run: () => void runGatewayRestart()
           },
@@ -1030,7 +1151,7 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           ...NON_CONFIG_SETTINGS.map(entry => ({
             icon: entry.icon,
             id: `set-${entry.tab}`,
-            keywords: ['settings', ...(entry.keywords ?? [])],
+            keywords: ['settings', ...(entry.labelKey === 'gateway' ? connections.gateways : (entry.keywords ?? []))],
             label: t.settings.nav[entry.labelKey],
             run: go(settingsTab(entry.tab))
           })),
@@ -1043,9 +1164,11 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
     // that kept the palette open — eslint only sees an unused dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
+    connections,
     contributedItems,
     dismissedAutoProjects,
     go,
+    portal,
     projectTree,
     selectTick,
     settingsSectionLabel,
@@ -1138,13 +1261,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
           id: 'cap-toolsets',
           keywords: ['tools', 'toolsets', 'capabilities'],
           label: `${capLabel}: ${t.skills.tabToolsets}`,
-          run: go(`${CAPABILITIES_ROUTE}?tab=toolsets`)
+          run: go(toolsRoute(portal, $activeGatewayProfile.get()))
         },
         {
           icon: Layers3,
           id: 'cap-connectors',
-          keywords: ['connectors', 'apps', 'mcp', 'servers', 'tools', 'capabilities', 'model context protocol'],
-          label: `${capLabel}: ${t.connectorsPage.title}`,
+          keywords: connections.connectors.keywords,
+          label: connections.connectors.label,
           run: go(`${CAPABILITIES_ROUTE}?tab=connectors`)
         },
         {
@@ -1295,11 +1418,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   }, [
     archivedSessions,
     availableThemes,
+    connections,
     go,
     goSession,
     mcpServers,
     mode,
     pinnedSessions,
+    portal,
     previewTheme,
     resolvedMode,
     resolveThemeMode,
@@ -1316,10 +1441,13 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
   // Branch rows rank below BOTH the fixed groups and the typed-only lists: they
   // scale with whatever worktrees happen to exist, so on a tie they're the least
   // likely thing meant. Everything above is either always-present chrome or a
-  // list the search itself asked for.
+  // list the search itself asked for. A renamed place found by its classic word leads (the redesign's
+  // root list only): the person typed a name the app no longer shows.
+  const oldNameGroups = useOldNameRows(search, portal && !page, go)
+
   const groups = useMemo(
-    () => [...baseGroups, ...searchGroups, ...branchGroup],
-    [baseGroups, branchGroup, searchGroups]
+    () => [...oldNameGroups, ...baseGroups, ...searchGroups, ...branchGroup],
+    [baseGroups, branchGroup, oldNameGroups, searchGroups]
   )
 
   // Settings-scoped page (⌘K on the Settings overlay, or its search pill):
@@ -1559,8 +1687,10 @@ function CommandPaletteBody({ onExited }: { onExited: () => void }) {
 
     completeFlow('command_palette')
     recordAction(item.action ?? 'other', 'palette')
-    // A Cmd-K command or layout is a way out of the first-run intro.
-    leaveIntro()
+
+    if (!$setupGuideOnboarding.get()) {
+      leaveIntro()
+    }
 
     if (item.runWithEvent) {
       item.runWithEvent(lastSelectMods.current)

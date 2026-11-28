@@ -9,6 +9,11 @@ export const zhPluginUpdateAll: PluginUpdateAllTranslations = {
     `已更新 ${updated} 个` + (review ? `，${review} 个需要审核` : '') + (failed ? `，${failed} 个失败` : ''),
   updateAllNone: '所有插件均已是最新',
   updateAllFailed: '无法更新插件',
+  checkForUpdates: '检查更新',
+  checkingForUpdates: '正在检查…',
+  updatesAvailable: (count: number) => `有 ${count} 个插件更新可用`,
+  checkFailed: '无法检查更新',
+  checkUnsupported: '此后端无法检查插件更新。请更新 Hermes 以启用',
   autoUpdate: '自动更新',
   autoUpdateTip: (hours: number) => `网关检查时（每 ${hours} 小时）自动应用插件更新。更新后的代码在新会话中加载。`,
   autoUpdateFailed: '无法更改插件自动更新'

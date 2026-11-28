@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
@@ -14,6 +15,20 @@ import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { ListRow, ToggleRow } from './primitives'
 import { SearchableSelect } from './searchable-select'
+
+interface ConfigFieldProps {
+  schemaKey: string
+  schema: ConfigFieldSchema
+  value: unknown
+  enumOptions?: string[]
+  optionLabels?: Record<string, string>
+  onChange: (value: unknown) => void
+  descriptionExtra?: ReactNode
+  descriptionOverride?: string
+  /** Page-specific title (agent settings name rows as the Figma page draws them). */
+  labelOverride?: string
+  segmented?: boolean
+}
 
 export function parseListFieldDraft(raw: string): string[] {
   return raw
@@ -37,20 +52,16 @@ export function ConfigField({
   enumOptions,
   optionLabels,
   onChange,
-  descriptionExtra
-}: {
-  schemaKey: string
-  schema: ConfigFieldSchema
-  value: unknown
-  enumOptions?: string[]
-  optionLabels?: Record<string, string>
-  onChange: (value: unknown) => void
-  descriptionExtra?: ReactNode
-}) {
+  descriptionExtra,
+  descriptionOverride,
+  labelOverride,
+  segmented = false
+}: ConfigFieldProps) {
   const { t } = useI18n()
   const c = t.settings.config
 
   const label =
+    labelOverride ??
     fieldCopyForSchemaKey(t.settings.fieldLabels, schemaKey) ??
     fieldCopyForSchemaKey(FIELD_LABELS, schemaKey) ??
     prettyName(schemaKey.split('.').pop() ?? schemaKey)
@@ -62,6 +73,7 @@ export function ConfigField({
       .replace(/[^\p{L}\p{M}\p{N}]+/gu, '')
 
   const rawDescription = (
+    descriptionOverride ??
     fieldCopyForSchemaKey(t.settings.fieldDescriptions, schemaKey) ??
     fieldCopyForSchemaKey(FIELD_DESCRIPTIONS, schemaKey) ??
     schema.description ??
@@ -163,27 +175,14 @@ export function ConfigField({
 
   if (selectOptions) {
     return row(
-      <Select
-        onValueChange={next => onChange(next === EMPTY_SELECT_VALUE ? '' : next)}
-        value={String(value ?? '') || EMPTY_SELECT_VALUE}
-      >
-        <SelectTrigger className={CONTROL_TEXT}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {selectOptions.map(option => (
-            <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
-              {option
-                ? (optionLabels?.[option] ?? prettyName(option))
-                : schemaKey === 'display.personality'
-                  ? c.none
-                  : schemaKey === 'memory.provider'
-                    ? c.builtinOnly
-                    : c.noneParen}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <EnumControl
+        onChange={onChange}
+        optionLabels={optionLabels}
+        options={selectOptions}
+        schemaKey={schemaKey}
+        segmented={segmented}
+        value={value}
+      />
     )
   }
 
@@ -293,5 +292,56 @@ function ListField({
       placeholder={placeholder}
       value={draft}
     />
+  )
+}
+
+interface EnumControlProps {
+  schemaKey: string
+  value: unknown
+  options: string[]
+  optionLabels?: Record<string, string>
+  onChange: (value: unknown) => void
+  segmented: boolean
+}
+
+function EnumControl({ schemaKey, value, options, optionLabels, onChange, segmented }: EnumControlProps) {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const selected = String(value ?? '') || EMPTY_SELECT_VALUE
+  const change = (next: string) => onChange(next === EMPTY_SELECT_VALUE ? '' : next)
+
+  const label = (option: string) =>
+    option
+      ? (optionLabels?.[option] ?? prettyName(option))
+      : schemaKey === 'display.personality'
+        ? c.none
+        : schemaKey === 'memory.provider'
+          ? c.builtinOnly
+          : c.noneParen
+
+  if (segmented) {
+    return (
+      <SegmentedControl
+        onChange={change}
+        options={options.map(option => ({ id: option || EMPTY_SELECT_VALUE, label: label(option) }))}
+        sizing="content"
+        value={selected}
+      />
+    )
+  }
+
+  return (
+    <Select onValueChange={change} value={selected}>
+      <SelectTrigger className={CONTROL_TEXT}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {options.map(option => (
+          <SelectItem key={option || EMPTY_SELECT_VALUE} value={option || EMPTY_SELECT_VALUE}>
+            {label(option)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   )
 }

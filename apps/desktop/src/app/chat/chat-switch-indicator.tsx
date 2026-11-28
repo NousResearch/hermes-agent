@@ -10,6 +10,7 @@ import { useI18n } from '@/i18n'
 import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { $profileColors } from '@/store/profile'
 import { dismissProfileSwitchFailure, type ProfileSwitchFailure } from '@/store/profile-switch-state'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 // Elapsed-time rungs of a profile switch. Under SLOW the switch is fast enough
 // that any chrome would only flash; between SLOW and STALLED a quiet corner
@@ -87,8 +88,10 @@ export function ChatSwitchIndicator({ failure, syncing, target }: ChatSwitchIndi
   const colors = useStore($profileColors)
   // The first run may swap into the default profile, which the user did not ask for.
   // Switch chrome over the greeting reads as a stall in the moment that has to feel instant.
+  // The redesign's setup guide has no such greeting, so its wake stays visible.
+  const setupGuide = useStore($setupGuideOnboarding)
   const onboarding = useOnboardingChatActive()
-  const switching = onboarding ? null : target
+  const switching = onboarding && !setupGuide ? null : target
   const stage = useSwitchStage(switching)
   const state: SwitchIndicatorState = failure ? 'failed' : (stage ?? (syncing ? 'syncing' : 'idle'))
   const profile = failure?.profile ?? switching ?? syncing
@@ -104,6 +107,7 @@ export function ChatSwitchIndicator({ failure, syncing, target }: ChatSwitchIndi
       {(state === 'slow' || state === 'syncing') && profile && (
         <div
           className="pointer-events-none absolute right-3 top-2 flex items-center gap-1.5 rounded-full border border-(--stroke-nous) bg-(--ui-chat-surface-background) px-2 py-0.5 font-mono text-[0.6875rem] text-(--ui-text-secondary) shadow-nous transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none"
+          data-slot="chat-switch-pill"
           style={tintStyle(color)}
         >
           <GlyphSpinner className="w-3 justify-start text-(--ui-accent)" spinner="braille" />

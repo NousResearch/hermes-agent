@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestLocalMode } from './api/client'
 import {
   createCronJob,
   deleteCronJob,
@@ -13,6 +14,7 @@ import {
   triggerCronJob,
   updateCronJob
 } from './hermes'
+import { deferred } from './test/deferred'
 
 // Contract: every cron helper must carry the active gateway profile, so a
 // multi-profile / remote user's cron list, runs, and mutations hit the backend
@@ -142,10 +144,31 @@ describe('cron run rows carry their owning connection', () => {
     expect(rows[0].profile).toBe('research')
   })
 
-  it('leaves run rows untagged on a local/single-source window', async () => {
+  it('leaves connectionless legacy primary rows on the profile-only route', async () => {
     const rows = await getCronJobRuns('job-1')
 
     expect(rows[0].connection_id).toBeUndefined()
+  })
+
+  it('leaves delayed local-primary runs on the profile door after selecting a remote gateway', async () => {
+    // The ambient local door can resolve a profile to its legacy remote
+    // override; a `local` tag would pin those runs back to this machine.
+    setApiRequestLocalMode(true)
+    const pending = deferred<{ runs: typeof run[] }>()
+    api.mockReturnValueOnce(pending.promise)
+    const request = getCronJobRuns('job-1')
+    setApiRequestConnection('gw-tailscale')
+    pending.resolve({ runs: [{ ...run }] })
+    expect((await request)[0].connection_id).toBeUndefined()
+    setApiRequestLocalMode(false)
+  })
+
+  it('stamps runs fetched through an explicit local pin with that pin', async () => {
+    setApiRequestConnection('gw-tailscale')
+
+    const rows = await getCronJobRuns('job-1', 20, { connectionId: 'local', profile: 'research' })
+
+    expect(rows[0]).toMatchObject({ connection_id: 'local', profile: 'research' })
   })
 
   it('never clobbers an owner a row already names', async () => {

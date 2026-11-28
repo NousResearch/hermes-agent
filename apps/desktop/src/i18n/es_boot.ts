@@ -13,6 +13,14 @@ export const esBoot = {
       startingDesktopConnection: 'Iniciando la conexión de escritorio',
       startingHermesDesktop: 'Iniciando Hermes Desktop…'
     },
+    // Los textos de arranque de la Webapp: una pestaña del navegador no nombra la app de escritorio (lib/boot-copy).
+    webapp: {
+      ready: 'Hermes está listo',
+      steps: {
+        startingConnection: 'Iniciando la conexión',
+        startingHermes: 'Iniciando Hermes…'
+      }
+    },
     errors: {
       backgroundExited:
         'El servicio que ejecuta tus chats se cerró de forma inesperada. Reinícialo para continuar; tus chats y ajustes están a salvo.',

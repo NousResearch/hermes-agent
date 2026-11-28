@@ -8,6 +8,8 @@ export const zhSessionCommands = {
   retryUnsupported: '/retry：无法重试包含媒体或未知内容的消息',
   busy: (command: string) =>
     `会话忙碌中 — Hermes 仍在回复。请先停止当前回复（Stop 按钮，或在终端中按 Ctrl+C），然后再运行 /${command}。`,
+  titleSet: (title: string, queued: boolean) => `已设置会话标题：${title}${queued ? '（会话初始化完成后生效）' : ''}`,
+  titleCleared: '已清除会话标题。',
   busyCompressing: (command: string) =>
     `会话忙碌中 — 正在运行 /compress；完成后再运行 /${command}。`,
   steerUsage: '用法：/steer <提示>',

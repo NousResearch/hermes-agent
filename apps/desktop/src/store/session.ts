@@ -650,21 +650,16 @@ export function mergeSessionPage(
 ): SessionInfo[] {
   const keep = keepIds instanceof Set ? keepIds : new Set(keepIds)
 
-  // Rows are identified by (profile, id), never bare id: two profiles can
-  // hold sessions with the SAME stored id (restored backups, copied
-  // state.dbs, cross-profile imports — #92454). Keyed by bare id, the twins
-  // collapse into one sidebar row whose title/preview carry can stitch one
-  // profile's content onto the other profile's route — the user clicks a row
-  // previewing profile A and the resume dials profile B. Same-profile rows
-  // (including untagged ones, which normalize together) keep the exact
-  // carry behavior below.
-  // (Local normalize: importing @/store/profile here would be circular —
-  // same '' → 'default' rule as normalizeProfileKey.)
+  // Rows and compression lineages belong to a connection AND profile. Bare
+  // primary-pool rows retain their legacy local identity; registry rows never
+  // borrow titles/activity from a same-id conversation on another gateway.
   const profileKeyOf = (session: SessionInfo) => (session.profile ?? '').trim() || 'default'
-  const identity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
+  const ownerKeyOf = (session: SessionInfo) =>
+    JSON.stringify([session.connection_id?.trim() || 'local', profileKeyOf(session)])
+  const identity = (session: SessionInfo) => `${ownerKeyOf(session)}::${session.id}`
 
   const lineageIdentity = (session: SessionInfo) =>
-    `${profileKeyOf(session)}::${session._lineage_root_id ?? session.id}`
+    `${ownerKeyOf(session)}::${session._lineage_root_id ?? session.id}`
 
   // Carry a known title onto a row that arrives title-less, so a freshly
   // submitted session (e.g. a branch draft) holds its placeholder instead of
@@ -672,6 +667,10 @@ export function mergeSessionPage(
   // auto-titler. A real clear sets the local title null first, so this never
   // masks one.
   const prevById = new Map(previous.map(session => [identity(session), session]))
+  // Secondary profile::id lookup for reconciling a connection-tagged row with an untagged refresh
+  // (never merges two differently tagged remote connections).
+  const profileIdentity = (session: SessionInfo) => `${profileKeyOf(session)}::${session.id}`
+  const prevByProfileId = new Map(previous.map(session => [profileIdentity(session), session]))
   // Tip rotation changes the live id — carry activity/title across the lineage
   // root so a mid-turn refresh can't drop a touchSessionActivity bump.
   const prevByLineage = new Map(previous.map(session => [lineageIdentity(session), session]))
@@ -679,8 +678,10 @@ export function mergeSessionPage(
   const merged = incoming
     .filter(session => !session.is_internal_child)
     .map(session => {
-      const prev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
-      // User-send stamps last_active before the DB flushes the user row
+      const exactPrev = prevById.get(identity(session)) ?? prevByLineage.get(lineageIdentity(session))
+      const loosePrev =
+        !exactPrev && !session.connection_id?.trim() ? prevByProfileId.get(profileIdentity(session)) : undefined
+      const prev = exactPrev ?? loosePrev
       // (last_active = MAX(messages.timestamp)). Keep the fresher of the two.
       const last_active = Math.max(prev?.last_active ?? 0, session.last_active ?? 0)
       const title = session.title?.trim() ? session.title : prev?.title?.trim() ? prev.title : session.title
@@ -704,7 +705,12 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(merged.map(identity))
-
+  const incomingUntaggedProfileIds = new Set(
+    merged.filter(session => !session.connection_id?.trim()).map(profileIdentity)
+  )
+  const incomingTaggedProfileIds = new Set(
+    merged.filter(session => Boolean(session.connection_id?.trim())).map(profileIdentity)
+  )
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -731,7 +737,7 @@ export function mergeSessionPage(
   // are only unique per-profile (#92454), so a bare-id match would evict a
   // kept twin in another profile whose id merely coincides with a lineage.
   const incomingLineageIdMembers = new Set(
-    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
+    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${ownerKeyOf(session)}::${id}`))
   )
 
   // The tombstone set is re-read here, not at the caller: optimistic removal
@@ -760,6 +766,7 @@ export function mergeSessionPage(
       !session.hidden &&
       !tombstoned(session) &&
       !incomingIds.has(identity(session)) &&
+      !(session.connection_id?.trim() ? incomingUntaggedProfileIds.has(profileIdentity(session)) : incomingTaggedProfileIds.has(profileIdentity(session))) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       !incomingLineageIdMembers.has(identity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
@@ -1025,6 +1032,7 @@ export function messagingListServerForFetch(
   }
 }
 
+
 /** Keep a non-primary list's connection on messaging rows that arrived without
  *  one. Does not invent a profile and does not tag the primary pool — a bare
  *  primary row already routes through the profile door, and a `local` tag
@@ -1054,8 +1062,8 @@ export function stampMessagingRowsWithListServer(
   return changed ? next : (rows as SessionInfo[])
 }
 
-// Exact per-platform conversation totals, keyed by source id. Empty until a
-// per-platform "load more" fetch resolves it (the combined seed fetch only
+// Exact per-platform conversation totals, keyed by messagingTotalsKey(profile, source).
+// Empty until a per-platform "load more" fetch resolves it (the combined seed fetch only
 // knows the aggregate), so sections fall back to their loaded count.
 export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
@@ -1142,6 +1150,9 @@ export const $sessionProfilesTruncated = atom<Record<string, boolean>>({})
 export interface ProfileUsage {
   cost_usd: number
   tokens: number
+  /** How many chats the profile holds, the ones past the loaded page included. Absent from a
+   *  backend older than the count. */
+  sessions?: number
 }
 
 export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})

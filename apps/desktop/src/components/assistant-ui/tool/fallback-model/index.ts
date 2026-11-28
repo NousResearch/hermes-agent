@@ -3,6 +3,7 @@ import { stripAnsi } from '@hermes/shared/ansi'
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
 import { isFileMediaPath, mediaKind } from '@/lib/media'
+import { shellCopy } from '@/lib/shell-copy'
 import { summarizeShellCommand } from '@/lib/summarize-command'
 import { capitalize, firstStringField, normalize } from '@/lib/text'
 import { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
@@ -933,7 +934,12 @@ function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Reco
   const jobs = Array.isArray(resultRecord.jobs) ? resultRecord.jobs : null
 
   if (jobs) {
-    return jobs.length ? `${jobs.length} cron job${jobs.length === 1 ? '' : 's'}` : 'No cron jobs'
+    return jobs.length
+      ? shellCopy({
+          classic: `${jobs.length} cron job${jobs.length === 1 ? '' : 's'}`,
+          redesign: translateNow('cron.count', jobs.length)
+        })
+      : shellCopy({ classic: 'No cron jobs', redesign: translateNow('cron.emptyTitleNew') })
   }
 
   const message = firstStringField(resultRecord, ['message'])
@@ -946,7 +952,9 @@ function cronjobSubtitle(argsRecord: Record<string, unknown>, resultRecord: Reco
   const name = firstStringField(resultRecord, ['name']) || firstStringField(argsRecord, ['name', 'job_id'])
   const label = capitalize(action)
 
-  return name ? `${label} ${name}` : `Cron ${action}`
+  return name
+    ? `${label} ${name}`
+    : shellCopy({ classic: `Cron ${action}`, redesign: `${translateNow('cron.title')} · ${action}` })
 }
 
 function cronjobDetail(argsRecord: Record<string, unknown>, resultRecord: Record<string, unknown>): string {
@@ -954,14 +962,18 @@ function cronjobDetail(argsRecord: Record<string, unknown>, resultRecord: Record
 
   if (jobs) {
     if (!jobs.length) {
-      return 'No cron jobs scheduled'
+      return shellCopy({ classic: 'No cron jobs scheduled', redesign: translateNow('cron.emptyTitleNew') })
     }
 
     return jobs
       .slice(0, 20)
       .map(job => {
         const row = isRecord(job) ? job : {}
-        const name = firstStringField(row, ['name', 'id']) || 'job'
+
+        const name =
+          firstStringField(row, ['name', 'id']) ||
+          shellCopy({ classic: 'job', redesign: translateNow('assistant.tool.titles.cronjob.done') })
+
         const sched = firstStringField(row, ['schedule_display', 'schedule'])
 
         return sched ? `- ${name} · ${sched}` : `- ${name}`

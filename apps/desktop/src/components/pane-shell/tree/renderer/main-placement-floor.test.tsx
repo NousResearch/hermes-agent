@@ -1,4 +1,5 @@
 import { cleanup, render } from '@testing-library/react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
@@ -62,6 +63,20 @@ describe('subtreeGone', () => {
     expect(subtreeGone(main, ctx(['workspace', 'session-tile:a']))).toBe(false)
   })
 
+  it('collapses a zone of docked side panes that are main only by placement', () => {
+    disposers.push(
+      registry.register({ area: 'panes', data: { placement: 'main' }, id: 'preview-tile:a', render: () => null, title: 'Browser' })
+    )
+    const browser = group(['preview-tile:a'], { id: 'grp-browser' })
+    const docked = { ...ctx(['preview-tile:a']), dockedSide: (id: string) => id.startsWith('preview-tile:') }
+
+    // Without the context naming it a side surface, its placement alone holds the floor.
+    expect(subtreeGone(browser, ctx(['preview-tile:a']))).toBe(false)
+    expect(subtreeGone(browser, docked)).toBe(true)
+    // A real main surface beside it still holds the floor.
+    expect(subtreeGone(group(['workspace', 'preview-tile:a'], { id: 'grp-mixed' }), docked)).toBe(false)
+  })
+
   it('still collapses a tool zone whose panes a chrome toggle hid', () => {
     expect(subtreeGone(group(['terminal'], { id: 'grp-tools' }), ctx(['terminal']))).toBe(true)
   })
@@ -86,7 +101,11 @@ describe('the main placement floor in the renderer', () => {
     $layoutTree.set(tree)
     $hiddenTreePanes.set(new Set(['workspace', 'session-tile:a', 'terminal']))
 
-    render(<TreeSplit node={tree} root rootRow />)
+    render(
+      <MemoryRouter>
+        <TreeSplit node={tree} root rootRow />
+      </MemoryRouter>
+    )
 
     const main = zoneWrapper('grp-main')
 
@@ -102,7 +121,11 @@ describe('vertical sash vs leading-pane scrollbar (#99867)', () => {
     const tree = split('row', [group(['sessions'], { id: 'grp-sessions' }), group(['workspace'], { id: 'grp-main' })])
 
     $layoutTree.set(tree)
-    render(<TreeSplit node={tree} root rootRow />)
+    render(
+      <MemoryRouter>
+        <TreeSplit node={tree} root rootRow />
+      </MemoryRouter>
+    )
 
     const sashes = document.querySelectorAll('[data-sash-overlap="trailing"]')
 

@@ -1,6 +1,26 @@
 import type { FirstRunCopy } from './types_first_run'
 
 export const jaFirstRun: FirstRunCopy = {
+  guide: {
+    title: 'Hermes を設定',
+    resume: 'セットアップを再開',
+    upgradeRequired:
+      'セッションなしのセットアップには、このマシン上の Hermes の更新が必要です。そのマシンで hermes update を実行し、Hermes を再起動してから再試行してください。チャットは変更されません。',
+    intro: '任意の設定をいくつか選ぶと、いつものチャットを使えます。セットアップで会話が作成されることはありません。',
+    appearance: '外観',
+    model: 'モデルを選択',
+    ready: 'モデルの準備ができました。',
+    providerNeeded: 'メッセージを送信する前に、プロバイダーを接続するか無料モデルを使用してください。',
+    freeModel: '無料モデルを使用',
+    freeUnavailable: 'ここでは無料モデルを利用できません。プロバイダーを接続するか、後で選択してください。',
+    providers: 'プロバイダーを接続',
+    finish: 'セットアップを完了',
+    skip: 'セットアップをスキップ',
+    back: '戻る',
+    check: '準備状況を確認',
+    checking: '確認中…',
+    privacy: '使用状況の指標の共有は任意です。'
+  },
   beats: {
     name: '名前',
     theme: 'アクセントカラー',

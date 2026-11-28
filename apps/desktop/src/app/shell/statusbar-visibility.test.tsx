@@ -1,8 +1,9 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { StatusbarControls, type StatusbarItem } from '@/app/shell/statusbar-controls'
+import { $shellChoice } from '@/store/shell-variant'
 import {
   $statusbarHiddenIds,
   $statusbarVisible,
@@ -16,8 +17,12 @@ beforeAll(() => {
   stubMenuDomApis()
 })
 
+// The strip exists only in the classic shell (the redesign has none), so these cases pin it.
+beforeEach(() => $shellChoice.set(false))
+
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   $statusbarHiddenIds.set([...STATUSBAR_HIDDEN_BY_DEFAULT])
   $statusbarVisible.set(true)
 })
@@ -150,6 +155,12 @@ describe('whole-bar visibility', () => {
 
     expect($statusbarVisible.get()).toBe(false)
 
+    toggleStatusbarVisible()
+    expect($statusbarVisible.get()).toBe(true)
+  })
+
+  it('leaves the classic preference untouched when toggled from the redesign, which has no strip', () => {
+    $shellChoice.set(null)
     toggleStatusbarVisible()
     expect($statusbarVisible.get()).toBe(true)
   })

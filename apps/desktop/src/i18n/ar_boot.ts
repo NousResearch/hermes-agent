@@ -14,6 +14,14 @@ export const arBoot = {
       startingDesktopConnection: 'جار بدء اتصال سطح المكتب',
       startingHermesDesktop: 'جار تشغيل Hermes Desktop...'
     },
+    // نصوص تشغيل Webapp: تبويب المتصفح لا يسمّي تطبيق سطح المكتب (lib/boot-copy).
+    webapp: {
+      ready: 'Hermes جاهز',
+      steps: {
+        startingConnection: 'جار بدء الاتصال',
+        startingHermes: 'جار بدء Hermes...'
+      }
+    },
     errors: {
       backgroundExited: 'خرجت عملية Hermes الخلفية.',
       backgroundExitedDuringStartup: 'خرجت عملية Hermes الخلفية أثناء بدء التشغيل.',

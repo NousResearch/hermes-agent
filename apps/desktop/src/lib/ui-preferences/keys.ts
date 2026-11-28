@@ -27,10 +27,14 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   'hermes.desktop.backdrop.v1',
   'hermes.desktop.chat-text-scale.v1',
   'hermes.desktop.interfaceMode.v1',
+  'hermes.desktop.portalAccent.v1',
+  'hermes.desktop.portalArtwork.v1',
+  'hermes.desktop.portalDensity.v1',
   'hermes.desktop.textDirection',
   'hermes.desktop.translucency.v2',
   'hermes.desktop.user-bubble-transparency.v1',
   // Sessions sidebar and profile rail.
+  'hermes.desktop.agentShell.v1',
   'hermes.desktop.agentsGroupedByWorkspace',
   'hermes.desktop.profileColors',
   'hermes.desktop.profileOrder',
@@ -69,6 +73,7 @@ const SHARED_KEYS: ReadonlySet<string> = new Set([
   // Guidance: what the user already skipped, saw or dismissed does not come
   // back in every new browser or origin (#145600).
   'hermes-onboarding-skipped-v1',
+  'hermes.desktop.guidance.v1',
   'hermes.desktop.tips.last.v1',
   'hermes.desktop.tips.next.v1',
   'hermes.desktop.tips.retired.v1',

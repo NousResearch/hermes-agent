@@ -1,0 +1,76 @@
+/* Global Settings' column (Panel/flexible 16292:16447): 640px centred in the stage, its header
+   --portal-settings-top under the stage's top; a stage narrower than the column keeps the panel
+   inset on both sides. The stage lays no side padding of its own: the column's centring rides the
+   two flows below, so the scroller spans the stage's whole width and the wheel scrolls over the
+   blank gutters beside the column instead of into dead space. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] {
+  --portal-settings-gutter: max(var(--portal-frame-inset), (100% - var(--portal-settings-column)) / 2);
+
+  max-width: none;
+  margin-inline: 0;
+  padding: var(--portal-settings-top) 0 0;
+}
+
+/* The column's two flows, its header and its scroller, carry the centring and pad their content to
+   the TEXT column, --portal-settings-inset inside the 640: the H1, descriptions, section heads,
+   forms and every page's own content start there. Only the card primitives (SettingsCard,
+   SettingsDisclosure, the empty block) bleed back out over that padding to the column's edges, their
+   rows keeping the inset (global-overviews.css). The bleed stays inside the scroller's padding box,
+   so it is never clipped. The gutter's percentage resolves on the flow that uses it, both of which
+   box the whole stage. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > :not([data-slot='settings-content']),
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > [data-slot='settings-content'] > div {
+  padding-inline: calc(var(--portal-settings-gutter) + var(--portal-settings-inset));
+}
+
+/* The scroller reserves its scrollbar gutter so overflowing and non-overflowing Settings tabs stay
+   locked to the exact same column width with zero 8px horizontal jump. */
+:root[data-shell='portal'] [data-page-surface] [data-slot='overlay-main'] > [data-slot='settings-content'] > div {
+  padding-bottom: var(--portal-page-end-space);
+  scrollbar-gutter: stable;
+}
+/* Navigation folded away: the column centres in the whole stage, not the empty nav track. */
+@media (min-width: 47.5rem) {
+  :root[data-shell='portal'] [data-page-surface] [data-tour='overlay-nav'].hidden ~ [data-slot='overlay-main'] {
+    grid-column: 1 / -1;
+  }
+}
+
+:where(:root[data-shell='portal']) .page-nav-title {
+  margin: 0 0 1.875rem;
+  color: var(--ui-text-primary);
+  font: 300 var(--portal-type-display-lg-size)/1.1 var(--portal-font-display);
+  letter-spacing: var(--portal-tracking-display);
+}
+
+/* Keyed on the Button's own size and variant, as portal-controls.css is, not on its data-slot: a Button
+   wrapped in a Tip carries the tooltip trigger's slot instead. */
+:root[data-shell='portal']
+  :is([data-page-surface], [data-slot='dialog-content'])
+  :is(button, a)[data-size][data-variant='default'] {
+  background: var(--portal-surface-brand);
+  color: var(--portal-text-on-brand);
+}
+
+/* A split route tile (Routines, Agents, Settings beside chat) may be narrower than a full window:
+   collapse its internal nav column and drop its panel inset when the tile itself is narrow. */
+:root[data-shell='portal'] [data-route-tile] {
+  container-type: inline-size;
+}
+
+@container (max-width: 48rem) {
+  :root[data-shell='portal'] [data-route-tile] [data-page-surface] :is([data-tour='overlay-nav'], .page-sidebar-panel) {
+    display: none;
+  }
+
+  :root[data-shell='portal']
+    [data-route-tile]
+    [data-page-surface]
+    :is(.management-panel.routines-page, .page-stage):has(> .page-sidebar-panel) {
+    padding-inline-start: 0;
+  }
+
+  :root[data-shell='portal'] [data-route-tile] [data-page-surface] [data-slot='overlay-main'] {
+    grid-column: 1 / -1;
+  }
+}

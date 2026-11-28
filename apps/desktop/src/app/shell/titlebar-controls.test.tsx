@@ -6,15 +6,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
+import { findGroupOfPane, group, split } from '@/components/pane-shell/tree/model'
+import {
+  $collapsedTreeSides,
+  $dismissedPanes,
+  $hiddenTreePanes,
+  $layoutTree,
+  $narrowViewport,
+  dismissTreePane,
+  isPaneVisible
+} from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
-import { $fileBrowserOpen, $leftSideOpen, CHAT_SIDEBAR_PANE_ID, FILE_BROWSER_PANE_ID } from '@/store/layout'
+import { $chromiumAppWindow } from '@/lib/keybinds/app-window'
+import { CHAT_ITEMS_PANE_ID } from '@/store/chat-items'
+import { $interfaceMode, setInterfaceMode } from '@/store/interface-mode'
+import {
+  $fileBrowserOpen,
+  $leftSideOpen,
+  $sidebarOpen,
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
+  setSidebarOpen
+} from '@/store/layout'
 import { REVIEW_PANE_ID } from '@/store/review'
+import { $shellChoice } from '@/store/shell-variant'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
-import { ROUTES_AREA } from '../routes'
+import { $widthClass } from '../redesign/breakpoints'
+import { $workspaceIsPage, ROUTES_AREA } from '../routes'
 
+import { $shellSheet } from './shell-sheet'
 import { TITLEBAR_CHROME_CHANGED_EVENT } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
@@ -77,10 +99,55 @@ describe('TitlebarControls fixed clusters', () => {
   })
 
   it('hides the app clusters on an overlay', () => {
+    $shellChoice.set(false)
     renderControls('/settings')
 
     expect(windowControls()).toBeNull()
     expect(appControls()).toBeNull()
+    $shellChoice.set(null)
+  })
+
+  it('parks the redesign’s clusters on its overlay destinations, keeping titleBar slots mounted', () => {
+    const life = { cleanups: 0, mounts: 0 }
+
+    function PluginRight() {
+      useEffect(() => {
+        life.mounts += 1
+
+        return () => {
+          life.cleanups += 1
+        }
+      }, [])
+
+      return <span>plugin-right</span>
+    }
+
+    $shellChoice.set(true)
+
+    const disposeRight = registry.register({
+      area: 'titleBar.right',
+      id: 'test-plugin-right',
+      render: () => <PluginRight />
+    })
+
+    try {
+      renderControls('/')
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+
+      for (const page of ['/settings', '/profiles', '/cron']) {
+        act(() => navigateTo(page))
+        // Out of sight and out of reach while the destination owns the band, but never torn down.
+        expect(windowControls()?.hidden).toBe(true)
+        expect(screen.getByText('plugin-right').closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
+      }
+
+      act(() => navigateTo('/'))
+      expect(windowControls()?.hidden).toBe(false)
+      expect(life).toEqual({ cleanups: 0, mounts: 1 })
+    } finally {
+      act(disposeRight)
+      $shellChoice.set(null)
+    }
   })
 
   it('a titleBar.tools item alone does not claim the band', () => {
@@ -161,10 +228,16 @@ describe('TitlebarControls fixed clusters', () => {
       expect(pluginTool()).not.toBeNull()
     })
 
-    it('hides plugin titlebar contributions on an overlay', () => {
+    it('hides plugin titlebar contributions on an overlay: unmounted in classic, parked in the redesign', () => {
+      $shellChoice.set(false)
       renderControls('/settings')
-
       expect(pluginChrome()).toBeNull()
+      cleanup()
+
+      $shellChoice.set(true)
+      renderControls('/settings')
+      expect(pluginChrome()?.closest('[data-titlebar-cluster]')?.hasAttribute('hidden')).toBe(true)
+      $shellChoice.set(null)
     })
 
     it('keeps measurable titlebar clusters on a chrome-owning contributed page', () => {
@@ -202,14 +275,16 @@ describe('titlebar app-action cluster', () => {
     $narrowOverlayPaneIds.set(new Set())
     setTitlebarAppActionsSide('right')
     cleanup()
+    $shellChoice.set(null)
     vi.unstubAllGlobals()
     delete window.document.documentElement.dataset.hermesDesktopHost
   })
 
-  // A narrow native window keeps main's titlebar: the side buttons read the
-  // docked sides and flip the overlay through the shared ⌘B/⌘J toggle, whatever
-  // the overlay shows, and carry no aria-expanded.
-  it('names and toggles the sides from docked state in a narrow native window, as on main', () => {
+  // A narrow native CLASSIC window keeps main's titlebar: the side buttons read
+  // the docked sides and flip the overlay through the shared ⌘B/⌘J toggle,
+  // whatever the overlay shows, and carry no aria-expanded.
+  it('names and toggles the sides from docked state in a narrow native classic window, as on main', () => {
+    $shellChoice.set(false)
     vi.stubGlobal(
       'matchMedia',
       vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
@@ -238,6 +313,160 @@ describe('titlebar app-action cluster', () => {
       ])
     } finally {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
+  })
+
+  // HADESK-90: the redesign shows its narrow panes as sheets on every host, so
+  // its NATIVE window's sides read and drive the overlay too — docked state names
+  // panes those sheets never show, and the sheet on screen keeps its labelled Hide.
+  it('reads and drives the narrow sheets in a native redesign window', () => {
+    $shellChoice.set(true)
+    $narrowViewport.set(true)
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+
+      // The chat sidebar's sheet names the left button (first revealed pane, whether sessions or a
+      // left-zone mate such as bots); the right side stays clear.
+      act(() => $narrowOverlayPaneIds.set(new Set(['sessions', CHAT_SIDEBAR_PANE_ID, 'bots'])))
+      expect(screen.getByRole('button', { name: 'Hide sidebar' })).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+
+      act(() => $narrowOverlayPaneIds.set(new Set(['bots', 'sessions', CHAT_SIDEBAR_PANE_ID])))
+      fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+      // The band publishes the tool zone's ids revealed-first (narrow-overlays.tsx), so the set
+      // below is Review fronted, then the whole zone: the right button names Review, and Hide closes
+      // the sheet rather than switching the panel to Files.
+      act(() => $narrowOverlayPaneIds.set(new Set([REVIEW_PANE_ID, 'files', FILE_BROWSER_PANE_ID, 'terminal'])))
+      expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+      // A tool without an id of its own in the band (Terminal) still names itself.
+      act(() => $narrowOverlayPaneIds.set(new Set(['terminal', 'files', FILE_BROWSER_PANE_ID, REVIEW_PANE_ID])))
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+      // The chat's items dock in a zone of their own: the button names and closes that sheet.
+      act(() => $narrowOverlayPaneIds.set(new Set([CHAT_ITEMS_PANE_ID])))
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+      // Both sides clear: the labelled Show reveals the sheet's Files.
+      act(() => $narrowOverlayPaneIds.set(new Set()))
+      expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+      expect(intents).toEqual([
+        { id: 'sessions', mode: 'close' },
+        { id: 'bots', mode: 'close' },
+        { id: REVIEW_PANE_ID, mode: 'close' },
+        { id: 'terminal', mode: 'close' },
+        { id: CHAT_ITEMS_PANE_ID, mode: 'close' },
+        { id: FILE_BROWSER_PANE_ID, mode: 'open' }
+      ])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
+  })
+
+  // HADESK-90: a dismissed Files pane has LEFT the tree (dismissal = removed + remembered), so the
+  // overlay's reveal event had nothing to match and the labelled Show opened no sheet. The button
+  // heals the dismissal, the same restore the developer rail's tiles make, before revealing.
+  it('restores a dismissed Files pane from the narrow right-sidebar Show', () => {
+    const dispose = registry.register({
+      area: 'panes',
+      data: {
+        collapsible: true,
+        dock: { pane: 'workspace', pos: 'right' },
+        placement: 'right',
+        revealAliases: [FILE_BROWSER_PANE_ID]
+      },
+      id: 'files',
+      render: () => null,
+      title: 'files'
+    })
+    $shellChoice.set(true)
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set())
+    $layoutTree.set(split('row', [group(['workspace']), group(['files'])]))
+    act(() => dismissTreePane('files'))
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      expect($dismissedPanes.get().has('files')).toBe(true)
+      expect(findGroupOfPane($layoutTree.get()!, 'files')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+      expect($dismissedPanes.get().has('files')).toBe(false)
+      expect(findGroupOfPane($layoutTree.get()!, 'files')).not.toBeNull()
+      expect(intents).toEqual([{ id: FILE_BROWSER_PANE_ID, mode: 'open' }])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+      dispose()
+      $dismissedPanes.set(new Set())
+      $layoutTree.set(null)
+    }
+  })
+
+  // HADESK-90: Files' DEFAULT closed state is `$fileBrowserOpen === false`, which
+  // `bindPaneVisibility` records as a chrome HIDE, not a dismissal. The pane stays in the tree, so
+  // the dismissal-only heal skipped it — and the overlay's reveal event refuses a hidden pane
+  // outright (narrow-overlays.tsx), leaving the labelled Show opening no sheet. The button heals the
+  // hide first, through the same restore (owning store's opener, then reveal) the dismissed case uses.
+  it('restores a chrome-hidden Files pane from the narrow right-sidebar Show', () => {
+    const dispose = registry.register({
+      area: 'panes',
+      data: {
+        collapsible: true,
+        dock: { pane: 'workspace', pos: 'right' },
+        placement: 'right',
+        revealAliases: [FILE_BROWSER_PANE_ID]
+      },
+      id: 'files',
+      render: () => null,
+      title: 'files'
+    })
+    $shellChoice.set(true)
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set())
+    $collapsedTreeSides.set(new Set())
+    $layoutTree.set(split('row', [group(['workspace']), group(['files'])]))
+    // Closed the normal way: chrome-hidden, still in the tree and never dismissed.
+    $hiddenTreePanes.set(new Set(['files']))
+    const hiddenAtReveal: boolean[] = []
+    const intents: unknown[] = []
+    const listener = (event: Event) => {
+      // The overlay's matcher reads the hidden set synchronously as the event fires.
+      hiddenAtReveal.push($hiddenTreePanes.get().has('files'))
+      intents.push((event as CustomEvent).detail)
+    }
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      expect($dismissedPanes.get().has('files')).toBe(false)
+      expect(findGroupOfPane($layoutTree.get()!, 'files')).not.toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+      expect(hiddenAtReveal).toEqual([false])
+      expect($hiddenTreePanes.get().has('files')).toBe(false)
+      expect(isPaneVisible('files')).toBe(true)
+      expect(intents).toEqual([{ id: FILE_BROWSER_PANE_ID, mode: 'open' }])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+      dispose()
+      $hiddenTreePanes.set(new Set())
+      $collapsedTreeSides.set(new Set())
+      $layoutTree.set(null)
     }
   })
 
@@ -291,7 +520,8 @@ describe('titlebar app-action cluster', () => {
     }
   })
 
-  it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {
+  it('moves classic settings, layout, and HUD to the left when the appearance setting says left', () => {
+    $shellChoice.set(false)
     setTitlebarAppActionsSide('left')
     renderControls('/')
 
@@ -305,6 +535,7 @@ describe('titlebar app-action cluster', () => {
   })
 
   it('keeps HUD hidden in the browser on either app-action side', () => {
+    $shellChoice.set(false)
     vi.stubGlobal('hermesDesktop', { ...window.hermesDesktop, hud: undefined })
     renderControls('/')
 
@@ -316,5 +547,226 @@ describe('titlebar app-action cluster', () => {
     expect(screen.queryByLabelText('HUD mode')).toBeNull()
     expect(within(screen.getByLabelText('Window controls')).getByLabelText('Open settings')).toBeTruthy()
     expect(screen.getByLabelText('Layout editor')).toBeTruthy()
+  })
+})
+
+it('keeps settings only in the global rail when simplified mode is enabled', () => {
+  $shellChoice.set(false)
+  renderControls('/')
+  expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  act(() => $shellChoice.set(true))
+  expect(screen.queryByRole('button', { name: 'Open settings' })).toBeNull()
+  act(() => $shellChoice.set(false))
+  expect(screen.getByRole('button', { name: 'Open settings' })).toBeTruthy()
+  cleanup()
+  $shellChoice.set(null)
+})
+
+it('offers the Advanced band only the way back to a hidden sidebar: the open Chats destination folds it', () => {
+  $shellChoice.set(null)
+  setSidebarOpen(true)
+  renderControls('/')
+  expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
+
+  act(() => setSidebarOpen(false))
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Show sidebar' }))
+  expect($leftSideOpen.get()).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
+  cleanup()
+})
+
+it('brings a hidden sidebar back in Simple mode from one floating button at the stage, not the band', () => {
+  const previousMode = $interfaceMode.get()
+  $shellChoice.set(null)
+  setInterfaceMode('simple')
+  setSidebarOpen(false)
+  renderControls('/')
+
+  expect(screen.queryByRole('button', { name: 'Show sidebar' })).toBeNull()
+  const reveal = screen.getByRole('button', { name: 'Show chats' })
+  expect(reveal.getAttribute('data-slot')).toBe('panel-reveal')
+  fireEvent.click(reveal)
+  expect($sidebarOpen.get()).toBe(true)
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+
+  // Below wide the band's button is the sheet's menu in every mode, and no floating button shows.
+  act(() => {
+    setSidebarOpen(false)
+    $narrowViewport.set(true)
+  })
+  expect(screen.queryByRole('button', { name: 'Show chats' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+
+  act(() => $narrowViewport.set(false))
+  cleanup()
+  setSidebarOpen(true)
+  setInterfaceMode(previousMode)
+})
+
+describe('the redesigned band on a compact window', () => {
+  beforeEach(() => {
+    act(() => {
+      $widthClass.set('compact')
+      $narrowViewport.set(true)
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    act(() => {
+      $widthClass.set('wide')
+      $narrowViewport.set(false)
+      $shellSheet.set(null)
+      $workspaceIsPage.set(false)
+    })
+  })
+
+  it('is menu, title and new session: no Back or Forward (the browser has them)', () => {
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+    expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
+    expect(within(left).getByRole('button', { name: /^(Show|Hide) sidebar/ })).toBeTruthy()
+  })
+
+  it('opens the rail as a sheet from a workspace page, which has no chat sidebar', () => {
+    act(() => $workspaceIsPage.set(true))
+    renderControls('/capabilities')
+    fireEvent.click(
+      within(screen.getByLabelText('Window controls')).getByRole('button', { name: /^(Show|Hide) sidebar/ })
+    )
+    expect($shellSheet.get()).toBe('nav')
+  })
+
+  it('keeps the rail, and so no menu, on a medium workspace page', () => {
+    act(() => {
+      $widthClass.set('medium')
+      $workspaceIsPage.set(true)
+    })
+    renderControls('/capabilities')
+    expect(
+      within(screen.getByLabelText('Window controls')).queryByRole('button', { name: /^(Show|Hide) sidebar/ })
+    ).toBeNull()
+  })
+})
+
+describe('Back and Forward in the redesigned band', () => {
+  afterEach(() => {
+    cleanup()
+    delete document.documentElement.dataset.hermesDesktopHost
+  })
+
+  it('leads the native app’s band at desktop width', () => {
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).getByRole('button', { name: 'Back' })).toBeTruthy()
+    expect(within(left).getByRole('button', { name: 'Forward' })).toBeTruthy()
+  })
+
+  it('is left to the browser when the app is hosted in one, at any width', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
+  })
+  it('stays in an installed Chromium app window, which has no browser toolbar', () => {
+    document.documentElement.dataset.hermesDesktopHost = 'browser'
+    renderControls('/')
+    act(() => $chromiumAppWindow.set(true))
+    const left = screen.getByLabelText('Window controls')
+
+    expect(within(left).getByRole('button', { name: 'Back' })).toBeTruthy()
+    expect(within(left).getByRole('button', { name: 'Forward' })).toBeTruthy()
+    act(() => $chromiumAppWindow.set(false))
+  })
+})
+
+// Classic's right button is positional. The redesign's reads and flips its one tool panel.
+describe('the redesign’s right sidebar button', () => {
+  beforeEach(() => {
+    $shellChoice.set(true)
+    $narrowViewport.set(false)
+    $collapsedTreeSides.set(new Set())
+    $hiddenTreePanes.set(new Set(['files', 'review', 'chat-items']))
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { id: 'main' }),
+        group(['files', 'review', 'terminal'], { active: 'terminal', id: 'tools' }),
+        group(['chat-items'], { id: 'items' })
+      ])
+    )
+  })
+
+  afterEach(() => {
+    cleanup()
+    $shellChoice.set(null)
+    $layoutTree.set(null)
+    $hiddenTreePanes.set(new Set())
+  })
+
+  it('says Hide while a tool shows, and hides the panel without opening another', () => {
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+    expect(['files', 'review', 'terminal', 'chat-items'].filter(isPaneVisible)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+  })
+
+  it('hides tools showing in two zones with one press', () => {
+    $hiddenTreePanes.set(new Set(['files', 'review']))
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+    expect(['files', 'review', 'terminal', 'chat-items'].filter(isPaneVisible)).toEqual([])
+    expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+  })
+
+  // Browser tabs the user tiled into a zone of their own are theirs, not "the side": the button
+  // neither counts them nor hides them.
+  it('leaves a zone of Browser tabs alone', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { id: 'main' }),
+        group(['files', 'review', 'terminal'], { active: 'terminal', id: 'tools' }),
+        group(['preview-tile:a', 'preview-tile:b'], { active: 'preview-tile:a', id: 'browsers' })
+      ])
+    )
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+
+    expect(isPaneVisible('terminal')).toBe(false)
+    expect(isPaneVisible('preview-tile:a')).toBe(true)
+    expect(screen.getByRole('button', { name: 'Show right sidebar' })).toBeTruthy()
+  })
+
+  it('brings the panel back after hiding it beside a plugin pane stacked into it', () => {
+    $layoutTree.set(
+      split('row', [
+        group(['workspace'], { id: 'main' }),
+        group(['files', 'review', 'terminal', 'plugin:notes'], { active: 'terminal', id: 'tools' })
+      ])
+    )
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+    expect(isPaneVisible('files')).toBe(true)
+  })
+
+  it('shows Files in the panel when nothing is open', () => {
+    $hiddenTreePanes.set(new Set(['files', 'review', 'terminal', 'chat-items']))
+    renderControls('/')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show right sidebar' }))
+
+    expect(['files', 'review', 'terminal', 'chat-items'].filter(isPaneVisible)).toEqual(['files'])
   })
 })

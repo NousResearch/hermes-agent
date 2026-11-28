@@ -203,7 +203,10 @@ export const PaneTab = React.forwardRef<HTMLDivElement, PaneTabProps>(function P
       {onClose && !vertical && (
         // Mask the content beneath the close button instead of painting over it.
         // Geometry stays fixed; the same fade works on solid and glass surfaces.
-        <span className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100">
+        <span
+          className="pointer-events-none absolute inset-y-0 right-0 flex items-stretch opacity-0 transition-opacity group-hover/tab:pointer-events-auto group-hover/tab:opacity-100"
+          data-slot="pane-tab-close"
+        >
           <button
             aria-label={translateNow('common.close')}
             className="grid w-(--pane-tab-close-width) cursor-pointer place-items-center bg-transparent text-(--ui-text-tertiary) outline-none hover:text-foreground"
@@ -284,10 +287,114 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
  * Tabs go in `children` as `PaneTab`s; per-strip extras (drag handlers,
  * `data-zone-tabstrip`, drop carets) ride on the usual div props.
  */
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
+  if (typeof ref === 'function') {
+    ref(value)
+  } else if (ref) {
+    ref.current = value
+  }
+}
+
+const OVERFLOW_EPSILON = 2
+
+function useTabStripOverflow(scrollerRef: React.RefObject<HTMLDivElement | null>) {
+  const [overflow, setOverflow] = React.useState({ left: false, right: false })
+
+  const measure = React.useCallback(() => {
+    const el = scrollerRef.current
+
+    if (!el) {
+      return
+    }
+
+    // Chromium's RTL origin is the right edge: `scrollLeft` starts at 0 there
+    // and runs negative toward the leftmost end, so the edges flip.
+    const rtl = getComputedStyle(el).direction === 'rtl'
+    const max = Math.max(0, el.scrollWidth - el.clientWidth)
+    const offset = Math.abs(el.scrollLeft)
+    const left = rtl ? offset < max - OVERFLOW_EPSILON : el.scrollLeft > OVERFLOW_EPSILON
+    const right = rtl ? offset > OVERFLOW_EPSILON : el.scrollLeft < max - OVERFLOW_EPSILON
+
+    setOverflow(current => (current.left === left && current.right === right ? current : { left, right }))
+  }, [scrollerRef])
+
+  React.useLayoutEffect(() => {
+    const el = scrollerRef.current
+
+    if (!el) {
+      return
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth + OVERFLOW_EPSILON) {
+        return
+      }
+
+      if (event.deltaY !== 0 && Math.abs(event.deltaY) >= Math.abs(event.deltaX)) {
+        event.preventDefault()
+        el.scrollLeft += event.deltaY
+        measure()
+      }
+    }
+
+    measure()
+    el.addEventListener('scroll', measure, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: false })
+
+    const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(measure) : null
+    ro?.observe(el)
+
+    const mo = typeof MutationObserver === 'function' ? new MutationObserver(measure) : null
+    mo?.observe(el, { childList: true, subtree: true })
+
+    return () => {
+      el.removeEventListener('scroll', measure)
+      el.removeEventListener('wheel', onWheel)
+      ro?.disconnect()
+      mo?.disconnect()
+    }
+  }, [measure, scrollerRef])
+
+  const scrollByDirection = React.useCallback(
+    (direction: -1 | 1) => {
+      const el = scrollerRef.current
+
+      if (!el) {
+        return
+      }
+
+      const step = Math.max(120, Math.round(el.clientWidth * 0.65)) * direction
+
+      if (typeof el.scrollBy === 'function') {
+        el.scrollBy({ behavior: 'smooth', left: step })
+      } else {
+        el.scrollLeft += step
+      }
+
+      measure()
+    },
+    [measure, scrollerRef]
+  )
+
+  return { overflow, scrollByDirection }
+}
+
 export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(function PaneTabStrip(
   { children, className, listRef, trailing, titlebar = false, ...props },
   ref
 ) {
+  const scrollerRef = React.useRef<HTMLDivElement | null>(null)
+  const { overflow, scrollByDirection } = useTabStripOverflow(scrollerRef)
+  const overflows = overflow.left || overflow.right
+
+  const bindList = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollerRef.current = node
+      assignRef(listRef, node)
+    },
+    [listRef]
+  )
+
+
   return (
     <div
       // Strip and active tab both sit on the sidebar surface, so the bar reads
@@ -301,14 +408,43 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       ref={ref}
       {...props}
     >
+      {overflow.left ? (
+        <button
+          aria-label="Scroll tabs left"
+          className="grid size-6 shrink-0 place-items-center self-center rounded-md text-(--ui-text-secondary) [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--ui-accent)"
+          data-slot="pane-tab-scroll-left"
+          onClick={() => scrollByDirection(-1)}
+          onPointerDown={event => event.stopPropagation()}
+          type="button"
+        >
+          <Codicon aria-hidden name="chevron-left" size="0.75rem" />
+        </button>
+      ) : null}
       <div
         aria-orientation="horizontal"
-        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        ref={listRef}
+        className={cn(
+          'flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+          overflows && '[-webkit-app-region:no-drag]'
+        )}
+        data-overflow-left={overflow.left || undefined}
+        data-overflow-right={overflow.right || undefined}
+        ref={bindList}
         role="tablist"
       >
         {children}
       </div>
+      {overflow.right ? (
+        <button
+          aria-label="Scroll tabs right"
+          className="grid size-6 shrink-0 place-items-center self-center rounded-md text-(--ui-text-secondary) [-webkit-app-region:no-drag] hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-(--ui-accent)"
+          data-slot="pane-tab-scroll-right"
+          onClick={() => scrollByDirection(1)}
+          onPointerDown={event => event.stopPropagation()}
+          type="button"
+        >
+          <Codicon aria-hidden name="chevron-right" size="0.75rem" />
+        </button>
+      ) : null}
       {trailing}
     </div>
   )

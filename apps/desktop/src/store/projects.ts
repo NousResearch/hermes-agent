@@ -70,6 +70,13 @@ export const $projects = atom<ProjectInfo[]>([])
 // existing import path keeps working — projects.ts remains its only writer.
 import { $projectTree } from './project-tree'
 export { $projectTree }
+
+let projectTreeConnectionId: null | string = null
+
+/** Captured serving source, including primary-local trees whose rows stay bare. */
+export function getProjectTreeConnectionId(): null | string {
+  return projectTreeConnectionId
+}
 export const $activeProjectId = atom<null | string>(null)
 
 // The authoritative project -> repo -> lane tree (overview), served by
@@ -497,6 +504,7 @@ function tagProjectSessionConnection(project: SidebarProjectTree, owner: Project
 
 function applyProjectTreePayload(res: ProjectTreePayload, owner: ProjectRowOwner): void {
   const scoped = new Set(res.scoped_session_ids ?? [])
+  projectTreeConnectionId = owner.connectionId
   // The tree refreshes on every sessions.changed and window focus, and most of
   // those answers are unchanged. Keep unchanged nodes by reference so the
   // entered project doesn't refetch and rebuild on a no-op (#77591).
@@ -1064,15 +1072,18 @@ interface ProjectsSnapshot {
   projects: ProjectInfo[]
   tree: SidebarProjectTree[]
   active: null | string
+  connectionId: null | string
 }
 
 const snapshotProjects = (): ProjectsSnapshot => ({
   projects: $projects.get(),
   tree: $projectTree.get(),
-  active: $activeProjectId.get()
+  active: $activeProjectId.get(),
+  connectionId: projectTreeConnectionId
 })
 
-const restoreProjects = ({ projects, tree, active }: ProjectsSnapshot): void => {
+const restoreProjects = ({ projects, tree, active, connectionId }: ProjectsSnapshot): void => {
+  projectTreeConnectionId = connectionId
   $projects.set(projects)
   $projectTree.set(tree)
   $activeProjectId.set(active)

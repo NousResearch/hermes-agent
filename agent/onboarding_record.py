@@ -83,7 +83,8 @@ def _transition(db, session_id: str, event: Event, *, persistence=None) -> Step 
     # Told before the flag write, which can fail: the record already says the run ended.
     if step is not None and holder["was_active"] and not is_active(step.record):
         _announce(step.record.get("run_id"), session_id, step.record["ended_by"])
-    if step is not None and not is_active(step.record) and active_session_id(db, persistence=persistence) is None:
+    if (step is not None and not step.record.get("sessionless")
+            and not is_active(step.record) and active_session_id(db, persistence=persistence) is None):
         _close_install_flag()
     return step
 
@@ -103,9 +104,8 @@ def _close_install_flag() -> None:
 
 
 def start(db, session_id: str, facts: Facts, *, persistence=None) -> dict:
-    """Write a fresh run record (the row must exist) and mark the install as mid-onboarding, so a
-    crash or a quit before the end runs onboarding again on the next launch (which starts over:
-    ``onboarding.start`` with ``fresh_launch``)."""
+    """Write a classic conversational run record (the row must exist) and mark the install
+    mid-onboarding. The redesigned guide never creates these records."""
     from hermes_cli.onboarding_run import set_run
 
     from agent.agent_init_session import writer_interface
@@ -119,30 +119,28 @@ def start(db, session_id: str, facts: Facts, *, persistence=None) -> dict:
 
 
 def advance(db, session_id: str, event: Event, *, persistence=None) -> Step:
-    """Apply one event to the stored run; LookupError when this session has no run."""
+    """Apply one event to the stored run; LookupError when this session has no run. A sessionless
+    ``End`` leaves the install flag to sessionless setup."""
     step = _transition(db, session_id, event, persistence=persistence) if db is not None and session_id else None
     if step is None:
         raise LookupError(f"session {session_id} has no onboarding run")
     return step
 
 
-def open_session_ids(db, *, persistence=None) -> list[str]:
-    """The chats whose run is still in progress, newest first. Rotation leaves the active copy on the
+def run_tips(db, *, persistence=None) -> list[str]:
+    """Every chat that carries a run record, newest first. Rotation leaves the live copy on the
     compression parent, so each id is read at its compression tip."""
     store = _reader(db, persistence)
-    tips: set[str] = set()
-    open_ids: list[str] = []
     if store is not None:
         ids, resolve = store.sessions.session_ids_with_model_config_key(KEY), store.lineage.resolve_resume_target
     else:
         ids, resolve = db.session_ids_with_model_config_key(KEY), db.resolve_resume_session_id
-    for sid in ids:
-        tip = resolve(sid) or sid
-        if tip not in tips:
-            tips.add(tip)
-            if is_active(load(db, tip, persistence=persistence)):
-                open_ids.append(tip)
-    return open_ids
+    return list(dict.fromkeys(resolve(sid) or sid for sid in ids))
+
+
+def open_session_ids(db, *, persistence=None) -> list[str]:
+    """The chats whose run is still in progress, newest first."""
+    return [tip for tip in run_tips(db, persistence=persistence) if is_active(load(db, tip, persistence=persistence))]
 
 
 def active_session_id(db, *, persistence=None) -> str | None:

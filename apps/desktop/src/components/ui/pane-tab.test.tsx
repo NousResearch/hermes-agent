@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from './context-menu'
-import { PaneTab, PaneTabLabel } from './pane-tab'
+import { PaneTab, PaneTabLabel, PaneTabStrip } from './pane-tab'
 
 afterEach(cleanup)
 
@@ -155,5 +155,94 @@ describe('PaneTab under a context-menu trigger', () => {
 
     expect(tab?.getAttribute('data-slot')).toBe('pane-tab')
     expect(tab?.hasAttribute(HERMES_CONTEXT_MENU_TRIGGER_ATTR)).toBe(true)
+  })
+})
+
+describe('PaneTabStrip horizontal overflow & scrolling', () => {
+  function stubOverflow(el: HTMLElement, { clientWidth, scrollLeft, scrollWidth }: { clientWidth: number; scrollLeft: number; scrollWidth: number }) {
+    let currentLeft = scrollLeft
+    Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
+    Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
+    Object.defineProperty(el, 'scrollLeft', {
+      configurable: true,
+      get: () => currentLeft,
+      set: value => {
+        const max = scrollWidth - clientWidth
+        currentLeft = Math.max(-max, Math.min(max, value))
+      }
+    })
+    el.scrollBy = vi.fn(({ left = 0 }: ScrollToOptions) => {
+      el.scrollLeft += left
+    }) as unknown as typeof el.scrollBy
+  }
+
+  it('translates vertical wheel events into horizontal scroll when tabs overflow', () => {
+    render(
+      <PaneTabStrip>
+        <PaneTab active role="tab">
+          <PaneTabLabel>Browser</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const list = screen.getByRole('tablist')
+    stubOverflow(list, { clientWidth: 300, scrollLeft: 180, scrollWidth: 900 })
+    fireEvent.scroll(list)
+
+    fireEvent.wheel(list, { deltaX: 0, deltaY: -100 })
+    expect(list.scrollLeft).toBe(80)
+  })
+
+  it('shows left/right scroll buttons only on overflowing edges and scrolls without dragging', () => {
+    const onStripPointerDown = vi.fn()
+    render(
+      <PaneTabStrip onPointerDown={onStripPointerDown}>
+        <PaneTab active role="tab">
+          <PaneTabLabel>Browser</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const list = screen.getByRole('tablist')
+    expect(screen.queryByRole('button', { name: 'Scroll tabs left' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Scroll tabs right' })).toBeNull()
+
+    stubOverflow(list, { clientWidth: 300, scrollLeft: 200, scrollWidth: 900 })
+    fireEvent.scroll(list)
+
+    const leftBtn = screen.getByRole('button', { name: 'Scroll tabs left' })
+    const rightBtn = screen.getByRole('button', { name: 'Scroll tabs right' })
+    expect(list.getAttribute('data-overflow-left')).toBe('true')
+    expect(list.getAttribute('data-overflow-right')).toBe('true')
+
+    fireEvent.pointerDown(leftBtn)
+    expect(onStripPointerDown).not.toHaveBeenCalled()
+
+    fireEvent.click(leftBtn)
+    expect(list.scrollLeft).toBeLessThan(200)
+    expect(rightBtn).toBeTruthy()
+  })
+
+  it("flips the overflow edges for Chromium's negative RTL scroll origin", () => {
+    render(
+      <PaneTabStrip>
+        <PaneTab active role="tab">
+          <PaneTabLabel>Browser</PaneTabLabel>
+        </PaneTab>
+      </PaneTabStrip>
+    )
+
+    const list = screen.getByRole('tablist')
+    stubOverflow(list, { clientWidth: 300, scrollLeft: 0, scrollWidth: 900 })
+
+    const computedStyle = vi
+      .spyOn(window, 'getComputedStyle')
+      .mockReturnValue({ direction: 'rtl' } as CSSStyleDeclaration)
+    fireEvent.scroll(list)
+    computedStyle.mockRestore()
+
+    // 0 is the rightmost start in RTL: left/right swap, and only the left edge remains.
+    expect(list.getAttribute('data-overflow-left')).toBe('true')
+    expect(list.hasAttribute('data-overflow-right')).toBe(false)
   })
 })

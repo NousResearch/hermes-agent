@@ -1,4 +1,4 @@
-import { keybindActionAllowedInEditableTarget } from './actions'
+import { keybindActionAllowedInEditableTarget, keybindActionYieldsToEditableTarget } from './actions'
 
 // Keybind combo normalization + display.
 //
@@ -266,8 +266,7 @@ export function isFocusWithin(selector: string): boolean {
 // anywhere means the composer is behind it — its keys, and any focus the
 // user has inside it, are the overlay's own.
 export const OVERLAY_SURFACE =
-  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]'
-
+  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]:not([data-in-tile])'
 // True when focus is in a text-entry surface, so bare-key shortcuts don't fire
 // while the user is typing.
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -309,6 +308,10 @@ export function actionAllowedInInput(actionId: string, combo: string): boolean {
   // yields one, but reject it here so a malformed stored binding can't pass
   // the shape-only mod/ctrl check below.
   if (!base || base === 'mod' || base === 'ctrl') {
+    return false
+  }
+
+  if (keybindActionYieldsToEditableTarget(actionId)) {
     return false
   }
 

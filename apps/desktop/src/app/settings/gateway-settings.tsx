@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tip } from '@/components/ui/tooltip'
 import type {
   DesktopCloudAgent,
   DesktopCloudOrg,
@@ -22,18 +21,13 @@ import { hostHas } from '@/lib/host-capabilities'
 import {
   AlertCircle,
   Check,
-  Cloud,
   FileText,
   Globe,
-  HelpCircle,
   Loader2,
   LogIn,
-  Monitor,
-  RefreshCw,
-  Terminal
+  RefreshCw
 } from '@/lib/icons'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
-import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import {
   $activeConnectionId,
@@ -43,19 +37,23 @@ import {
 } from '@/store/connections'
 import { managedUpdatesSupported } from '@/store/managed-updates'
 import { notify, notifyError, readableError } from '@/store/notifications'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
+import { type GatewayMode, GatewayModeSection } from './gateway-mode-section'
 import { KeychainEncryptionSetting, useKeychainEncryption } from './keychain-encryption-setting'
 import { ManagedUpdatesSection } from './managed-updates-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
+import { SettingsCard, SettingsPageDescription } from './settings-card'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
+import { useSettingsPagesCopy } from './settings-pages-copy'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
 import { WebappGatewaySettings } from './webapp-gateway-settings'
 
-type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
+type Mode = GatewayMode
 type AuthMode = 'oauth' | 'token'
 // Hermes Cloud discovery lifecycle for the cloud-mode panel.
 type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
@@ -120,61 +118,13 @@ export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode
   return config.mode === 'cloud' ? config.remoteUrl.trim().replace(/\/+$/, '').toLowerCase() : ''
 }
 
-function ModeCard({
-  active,
-  description,
-  disabled,
-  hint,
-  icon: Icon,
-  onSelect,
-  title
-}: {
-  active: boolean
-  description: string
-  disabled?: boolean
-  hint?: string
-  icon: typeof Monitor
-  onSelect: () => void
-  title: string
-}) {
-  return (
-    <button
-      className={cn(
-        'flex h-full min-h-0 w-full flex-col p-3 text-left disabled:cursor-not-allowed disabled:opacity-50',
-        selectableCardClass({ active, prominent: true })
-      )}
-      disabled={disabled}
-      onClick={onSelect}
-      type="button"
-    >
-      <div className="flex items-center gap-1.5">
-        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 text-[length:var(--conversation-text-font-size)] font-medium">{title}</span>
-        {hint ? (
-          <Tip label={hint}>
-            <span
-              className="grid size-3.5 shrink-0 cursor-help place-items-center text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)"
-              onClick={event => event.stopPropagation()}
-            >
-              <HelpCircle className="size-3.5" />
-            </span>
-          </Tip>
-        ) : null}
-        {active ? <Check className="ml-auto size-3.5 shrink-0 text-primary" /> : null}
-      </div>
-      <p className="mt-1.5 flex-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-        {description}
-      </p>
-    </button>
-  )
-}
-
 interface GatewaySettingsProps {
   embedded?: boolean
   subpage?: string
 }
 
 export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
+  const redesign = usePortalShell()
   useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
 
   if (!hostHas('gatewayManagement')) {
@@ -195,7 +145,13 @@ export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsPr
     return <GatewayManagedUpdates />
   }
 
-  return <GatewayConnectionSettings embedded={embedded} standalone={subpage !== undefined} />
+  // The redesign lands on `connection` and shows the whole page there (856:5142).
+  return (
+    <GatewayConnectionSettings
+      embedded={embedded}
+      standalone={subpage !== undefined && !(redesign && subpage === 'connection')}
+    />
+  )
 }
 
 function GatewayManagedUpdates() {
@@ -261,6 +217,8 @@ function GatewayManagedUpdates() {
 function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean; standalone: boolean }) {
   const { t } = useI18n()
   const g = t.settings.gateway
+  const pages = useSettingsPagesCopy()
+  const redesign = usePortalShell()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -1032,7 +990,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
   return (
     <SettingsContent bare={embedded}>
-      {embedded || standalone ? null : (
+      {embedded || standalone ? null : redesign ? (
+        <SettingsPageDescription>{pages.intro.gateways}</SettingsPageDescription>
+      ) : (
         <div className="mb-5">
           <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
             <Globe className="size-4 text-muted-foreground" />
@@ -1055,47 +1015,11 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         </div>
       ) : null}
 
-      <div className="mb-5 grid gap-2" id={settingElementId(SETTING_IDS.gateway.connectionMode)}>
-        <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-          {g.modeTitle}
-        </div>
-        <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
-          <ModeCard
-            active={state.mode === 'local'}
-            description={g.localDesc}
-            disabled={state.envOverride}
-            icon={Monitor}
-            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={g.localTitle}
-          />
-          <ModeCard
-            active={state.mode === 'cloud'}
-            description={g.cloudDesc}
-            disabled={state.envOverride}
-            icon={Cloud}
-            onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
-            title={g.cloudTitle}
-          />
-          <ModeCard
-            active={state.mode === 'remote'}
-            description={g.remoteDesc}
-            disabled={state.envOverride}
-            hint={g.remoteAuthHint}
-            icon={Globe}
-            onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-            title={g.remoteTitle}
-          />
-          <ModeCard
-            active={state.mode === 'ssh'}
-            description={g.sshDesc}
-            disabled={state.envOverride}
-            hint={g.sshTrustHint}
-            icon={Terminal}
-            onSelect={() => setState(current => ({ ...current, mode: 'ssh' }))}
-            title={g.sshTitle}
-          />
-        </div>
-      </div>
+      <GatewayModeSection
+        disabled={state.envOverride}
+        mode={state.mode}
+        onSelect={mode => setState(current => ({ ...current, mode }))}
+      />
 
       {/* Hermes Cloud panel: one portal sign-in, then a discovered-agent picker
           whose selection drives the silent per-agent cascade + a cloud
@@ -1456,34 +1380,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         </div>
       ) : null}
 
-      {embedded ? null : (
-        <div className="mt-6 grid gap-1">
-          <KeychainEncryptionSetting keychain={keychainEncryption} />
-          <ListRow
-            action={
-              <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
-                <FileText />
-                {g.openLogs}
-              </Button>
-            }
-            description={g.diagnosticsDesc}
-            id={settingElementId(SETTING_IDS.gateway.diagnostics)}
-            title={g.diagnostics}
-          />
-        </div>
-      )}
-
-      {/* Preserve the full legacy page outside subpage navigation, without
-          mounting registry editors in connection-only or recovery views. */}
-      {embedded || standalone ? null : (
-        <>
-          <ConnectionsRegistrySection />
-          {/* Per-connection driver for the transactional managed SSH update
-              engine (#95942). Renders only when SSH sources are registered and
-              the Electron main exposes connections.updateManaged. */}
-          <ManagedUpdatesSection />
-        </>
-      )}
+      {embedded ? null : <GatewayPageTail keychain={keychainEncryption} standalone={standalone} />}
 
       {/* Plain-text token opt-in: gated when secure storage is unavailable and a
           new token would be persisted. Confirm resumes the remembered save/apply. */}
@@ -1503,5 +1400,80 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         title={g.plainTextConfirmTitle}
       />
     </SettingsContent>
+  )
+}
+
+/** Token encryption at rest and the gateway log shortcut. */
+function GatewayDiagnosticsRows({ keychain }: { keychain: ReturnType<typeof useKeychainEncryption> }) {
+  const { t } = useI18n()
+  const g = t.settings.gateway
+
+  return (
+    <>
+      <KeychainEncryptionSetting keychain={keychain} />
+      <ListRow
+        action={
+          <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
+            <FileText />
+            {g.openLogs}
+          </Button>
+        }
+        description={g.diagnosticsDesc}
+        id={settingElementId(SETTING_IDS.gateway.diagnostics)}
+        title={g.diagnostics}
+      />
+    </>
+  )
+}
+
+interface GatewayPageTailProps {
+  keychain: ReturnType<typeof useKeychainEncryption>
+  /** A subpage view: only the diagnostics, never the registry editors. */
+  standalone: boolean
+}
+
+/** Below the connection form: diagnostics, then the saved-connections registry and managed updates. */
+function GatewayPageTail({ keychain, standalone }: GatewayPageTailProps) {
+  const redesign = usePortalShell()
+
+  return redesign ? (
+    standalone ? (
+      <SettingsCard className="mt-9">
+        <GatewayDiagnosticsRows keychain={keychain} />
+      </SettingsCard>
+    ) : (
+      <div className="mt-9">
+        {/* Redesign (856:5142): keychain, diagnostics and managed SSH updates sit under the saved
+          connections' Advanced disclosure. */}
+        <ConnectionsRegistrySection
+          advanced={
+            <>
+              <SettingsCard>
+                <GatewayDiagnosticsRows keychain={keychain} />
+              </SettingsCard>
+              <ManagedUpdatesSection />
+            </>
+          }
+          advancedCount={2}
+        />
+      </div>
+    )
+  ) : (
+    <>
+      <div className="mt-6 grid gap-1">
+        <GatewayDiagnosticsRows keychain={keychain} />
+      </div>
+      {/* Preserve the full legacy page outside subpage navigation, without
+        mounting registry editors in connection-only or recovery views. */}
+      {standalone ? null : (
+        <>
+          <ConnectionsRegistrySection />
+          {/* Per-connection driver for the transactional managed SSH update
+            engine (#95942). Renders only when SSH sources are registered and
+            the Electron main exposes connections.updateManaged. */}
+          <ManagedUpdatesSection />
+        </>
+      )}
+    </>
   )
 }

@@ -58,6 +58,14 @@ export interface PaneSizing {
 interface PaneChrome extends PaneSizing {
   /** Leaves the grid on narrow viewports; revealed as an edge overlay. */
   collapsible?: boolean
+  /** A sash drag that would size this pane's zone under this length folds the pane away instead
+   *  (`onDragCollapse`), live as the pointer crosses it; a drag that stops short rests at the
+   *  minimum. The zone's size from before the drag is kept for when it returns. Resolved per gesture
+   *  like `width` (`var()` included); a length that resolves to nothing disables it. */
+  dragCollapseBelow?: string
+  /** How a drag past `dragCollapseBelow` folds the pane: its own hide, so every surface that
+   *  shows or restores it (⌘B, the rail) agrees. */
+  onDragCollapse?: () => void
   /** Arrive minimized — a rail tab rather than an open zone. For a pane that
    *  docks to an edge this is the vertical strip; the user's first expand is
    *  persisted on the zone and wins from then on. Applied when the pane ENTERS
@@ -179,6 +187,9 @@ export interface TrackContext {
   paneFor: (id: string) => Contribution | undefined
   paneGone: (id: string) => boolean
   overrides: Record<string, { widthOverride?: number; heightOverride?: number }>
+  /** A `placement: 'main'` pane that is docked beside the main column rather than being part of it
+   *  (the redesign's Browser tiles): it does not hold the main floor in `subtreeGone`. */
+  dockedSide?: (id: string) => boolean
 }
 
 /** A group's panes that are actually on screen (not hidden / narrow-collapsed
@@ -324,7 +335,10 @@ export function fixedTrackSize(node: LayoutNode, axis: 'row' | 'column', ctx: Tr
  * every sessions-scoped tile out of the center and then closing its last bot
  * chat.) An emptied main zone renders its own placeholder instead. Chrome
  * toggles over a terminal, a review rail or an unregistered plugin pane still
- * collapse and still hand their space to their neighbors.
+ * collapse and still hand their space to their neighbors. So does a zone of panes the context
+ * names `dockedSide`: main by placement, but a side surface. In the redesign a Browser tile left
+ * alone in its zone and then hidden (its chat lost focus, the panel moved to another tool) kept
+ * that zone on screen as the empty placeholder, with no chrome there to close it.
  */
 export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
   const ids = allPaneIds(node)
@@ -333,7 +347,7 @@ export function subtreeGone(node: LayoutNode, ctx: TrackContext): boolean {
     return false
   }
 
-  return !ids.some(id => paneChrome(ctx.paneFor(id)).placement === 'main')
+  return !ids.some(id => paneChrome(ctx.paneFor(id)).placement === 'main' && !ctx.dockedSide?.(id))
 }
 
 /**

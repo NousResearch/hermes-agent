@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router'
 
-import { $freshSessionRequest, refreshActiveProfile } from '@/store/profile'
+import { $freshSessionRequest, $freshSessionRequestOptions, refreshActiveProfile } from '@/store/profile'
 
 import { resetProjectTreeState } from '../right-sidebar/files/use-project-tree'
 import { SETTINGS_ROUTE } from '../routes'
@@ -53,7 +53,9 @@ export function usePublishRestartPreviewServer(restartPreviewServer: RestartPrev
 
 // A profile switch/create drops to a fresh new-session draft so the
 // previously open session doesn't bleed across contexts. Skip initial value.
-export function useFreshSessionRequest(startFreshSessionDraft: (options: { preserveProfileSwitch: true }) => void) {
+export function useFreshSessionRequest(
+  startFreshSessionDraft: (options: { preserveProfileSwitch: true; preserveRoute?: boolean }) => void
+) {
   const freshSessionRequest = useStore($freshSessionRequest)
   const lastFreshRef = useRef(freshSessionRequest)
 
@@ -64,7 +66,7 @@ export function useFreshSessionRequest(startFreshSessionDraft: (options: { prese
     }
 
     lastFreshRef.current = freshSessionRequest
-    startFreshSessionDraft({ preserveProfileSwitch: true })
+    startFreshSessionDraft({ ...$freshSessionRequestOptions.get(), preserveProfileSwitch: true })
   }, [freshSessionRequest, startFreshSessionDraft])
 }
 

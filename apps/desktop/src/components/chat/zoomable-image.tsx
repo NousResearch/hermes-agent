@@ -177,7 +177,7 @@ export function ImageLightbox({
             </div>
           )
         }
-        className="w-auto max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] border-0 bg-transparent! shadow-none!"
+        className="w-auto max-h-[calc(100vh-5rem)] max-w-[calc(100vw-2rem)] border-0 bg-transparent! shadow-none! sm:max-h-[calc(100vh-12rem)] sm:max-w-[calc(100vw-12rem)]"
         // The media-lightbox shell variant. styles.css paints every
         // [data-slot='dialog-content'] with the themed elevated background +
         // --shadow-md — fine for opaque dialogs, but this shell is meant to be
@@ -202,14 +202,14 @@ export function ImageLightbox({
           const opener = globalThis.document.activeElement
           openerRef.current = opener instanceof HTMLElement ? opener : null
         }}
-        overlayClassName="bg-black/60"
+        overlayClassName="media-lightbox-overlay bg-black/60"
         showCloseButton={false}
       >
         <div className="group/lightbox relative inline-block">
           <img
             alt={alt ?? ''}
             className={cn(
-              'block max-h-[calc(100vh-12rem)] max-w-[calc(100vw-12rem)] select-none rounded-lg object-contain shadow-2xl',
+              'block max-h-[calc(100vh-5rem)] max-w-[calc(100vw-2rem)] select-none rounded-lg object-contain shadow-2xl sm:max-h-[calc(100vh-12rem)] sm:max-w-[calc(100vw-12rem)]',
               panning && 'cursor-grabbing'
             )}
             onClick={onImageClick}

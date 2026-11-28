@@ -15,7 +15,7 @@ export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding
 const $canonicalGroupListRevision = atom(0)
 // Rooms this window saw disbanded. A `groups.list` that started before the
 // disband (or a failed re-read keeping the last good list) never lists them again.
-const $disbandedGatewayRooms = atom<ReadonlySet<string>>(new Set())
+export const $disbandedGatewayRooms = atom<ReadonlySet<string>>(new Set())
 
 export function refreshGatewayGroupRooms(): void {
   $canonicalGroupListRevision.set($canonicalGroupListRevision.get() + 1)
@@ -39,7 +39,9 @@ export function forgetCanonicalGroup({ connectionId, profile, roomId }: Canonica
   refreshGatewayGroupRooms()
 }
 
-function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
+/** The key of a room on a route: `canonical:<connection>:<profile>:<room_id>`. Exported so callers
+ *  outside the registry (History) can test a room against `$disbandedGatewayRooms` the same way. */
+export function canonicalGroupKey(route: CanonicalGroupRoute, roomId: string): string {
   return `canonical:${encodeURIComponent(route.connectionId)}:${encodeURIComponent(route.profile)}:${roomId}`
 }
 

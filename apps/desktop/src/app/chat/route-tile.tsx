@@ -7,32 +7,62 @@
  * main -> tree adoption lands it on the chosen edge; closing removes it.
  */
 
-import { lazy, type ReactNode, Suspense } from 'react'
+import { type ReactNode, Suspense } from 'react'
 
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { runtimeTranslations, type Translations, useI18n } from '@/i18n'
 import { $routeTiles, closeRouteTile, type RouteTile } from '@/store/route-tiles'
+import { $portalShell, usePortalShell } from '@/store/shell-variant'
 
+import { RouteTileContext } from '../overlays/overlay-view'
+import { ArtifactsView, CapabilitiesView, CronView, MessagingView, ProfilesView, SettingsView } from '../page-views'
 import {
   $routesVersion,
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   contributedRoutes,
+  CRON_ROUTE,
   MESSAGING_ROUTE,
-  ROUTES_AREA
+  PROFILES_ROUTE,
+  ROUTES_AREA,
+  SETTINGS_ROUTE
 } from '../routes'
 
 import { paneMirror } from './pane-mirror'
 
-const CapabilitiesView = lazy(async () => ({ default: (await import('../capabilities')).CapabilitiesView }))
-const MessagingView = lazy(async () => ({ default: (await import('../messaging')).MessagingView }))
-const ArtifactsView = lazy(async () => ({ default: (await import('../artifacts')).ArtifactsView }))
+interface BuiltinPage {
+  render: () => ReactNode
+  /** Classic's fixed tab title. */
+  title: string
+  /** The redesign's: the page's nav label, in the app's language and the shell's wording. */
+  label: (t: Translations) => string
+}
 
 // Built-in page views + their pane titles, keyed by route.
-const BUILTIN_PAGES: Record<string, { render: () => ReactNode; title: string }> = {
-  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts' },
-  [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging' },
-  [CAPABILITIES_ROUTE]: { render: () => <CapabilitiesView />, title: 'Capabilities' }
+const BUILTIN_PAGES: Record<string, BuiltinPage> = {
+  [ARTIFACTS_ROUTE]: { render: () => <ArtifactsView />, title: 'Artifacts', label: t => t.sidebar.nav.artifacts },
+  [MESSAGING_ROUTE]: { render: () => <MessagingView />, title: 'Messaging', label: t => t.sidebar.nav.messaging },
+  [CAPABILITIES_ROUTE]: {
+    render: () => <CapabilitiesView />,
+    title: 'Capabilities',
+    label: t => t.sidebar.nav.capabilities
+  },
+  [CRON_ROUTE]: {
+    render: () => <CronView onClose={() => closeRouteTile(CRON_ROUTE)} />,
+    title: 'Routines',
+    label: t => t.cron.title
+  },
+  [PROFILES_ROUTE]: {
+    render: () => <ProfilesView onClose={() => closeRouteTile(PROFILES_ROUTE)} />,
+    title: 'Agents',
+    label: t => t.profiles.title
+  },
+  [SETTINGS_ROUTE]: {
+    render: () => <SettingsView onClose={() => closeRouteTile(SETTINGS_ROUTE)} />,
+    title: 'Settings',
+    label: t => t.commandCenter.settings
+  }
 }
 
 /** Humanize a route path into a tab title: `/my-atlas` → `My Atlas`. */
@@ -54,6 +84,14 @@ function routeTitle(path: string): string {
   return contributedRoutes().find(r => r.path === path)?.title ?? humanizePath(path)
 }
 
+/** A built-in page's tab label, live: it follows a language or shell switch without re-registering. */
+function BuiltinPageTitle({ page }: { page: BuiltinPage }) {
+  const { t } = useI18n()
+  const portal = usePortalShell()
+
+  return <>{portal ? page.label(t) : page.title}</>
+}
+
 export function RouteTilePane({ path }: { path: string }) {
   const builtin = BUILTIN_PAGES[path]
 
@@ -65,19 +103,27 @@ export function RouteTilePane({ path }: { path: string }) {
 
   if (builtin) {
     return (
-      <ContribBoundary id={path}>
-        <Suspense fallback={null}>
-          <ContribRender render={builtin.render} />
-        </Suspense>
-      </ContribBoundary>
+      <RouteTileContext.Provider value={true}>
+        <div className="h-full min-h-0 w-full" data-route-tile="">
+          <ContribBoundary id={path}>
+            <Suspense fallback={null}>
+              <ContribRender render={builtin.render} />
+            </Suspense>
+          </ContribBoundary>
+        </div>
+      </RouteTileContext.Provider>
     )
   }
 
   if (contrib) {
     return (
-      <ContribBoundary id={path}>
-        <ContribRender render={contrib.render} />
-      </ContribBoundary>
+      <RouteTileContext.Provider value={true}>
+        <div className="h-full min-h-0 w-full" data-route-tile="">
+          <ContribBoundary id={path}>
+            <ContribRender render={contrib.render} />
+          </ContribBoundary>
+        </div>
+      </RouteTileContext.Provider>
     )
   }
 
@@ -103,6 +149,9 @@ export const watchRouteTiles = paneMirror<RouteTile>({
   dir: t => t.dir,
   minWidth: '22rem',
   title: routeTitle,
+  tabTitle: path => BUILTIN_PAGES[path] && <BuiltinPageTitle page={BUILTIN_PAGES[path]} />,
+  tabTitleText: path =>
+    BUILTIN_PAGES[path] && $portalShell.get() ? BUILTIN_PAGES[path].label(runtimeTranslations()) : routeTitle(path),
   render: path => <RouteTilePane path={path} />,
   close: closeRouteTile
 })

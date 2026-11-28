@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 
-import type { captureDesktopMetricsGate, DesktopMetricsGate } from './desktop-metrics'
+import { type captureDesktopMetricsGate, DESKTOP_METRICS_STATE_KEY, type DesktopMetricsGate } from './desktop-metrics'
 
 /** Use the production consent seam, bound to the renderer module actually under test. */
 export async function setMetricsGate(
@@ -9,6 +9,22 @@ export async function setMetricsGate(
   decided = true
 ): Promise<boolean> {
   return (await capture())(next, decided)
+}
+
+/** Let queued aggregate writes (each one a short coordination phase) land. Under fake timers,
+ *  advance them by zero instead. */
+export function settleMetrics(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0))
+}
+
+/** The stored daily aggregate records, without the frame journals and revocation tokens kept
+ *  beside them under the same prefix. Empty when nothing is collected. */
+export function storedMetricsAggregate(): string {
+  return Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '')
+    .filter(key => key.startsWith(`${DESKTOP_METRICS_STATE_KEY}:`) && !key.slice(DESKTOP_METRICS_STATE_KEY.length + 1).includes(':'))
+    .map(key => window.localStorage.getItem(key))
+    .filter(value => value !== null && value !== 'null')
+    .join('')
 }
 
 /** Deterministic idle Web Lock acquisition for tests that advance the wall clock synchronously. */

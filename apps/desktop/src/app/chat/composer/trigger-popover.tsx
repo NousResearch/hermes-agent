@@ -1,14 +1,16 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { Fragment, useEffect, useRef } from 'react'
+import { Fragment, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 import { referenceKind, referenceStyle } from '@/components/assistant-ui/reference-kinds'
+import { composerPanelCard } from '@/components/chat/composer-dock'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS, CompletionDrawerEmpty } from './completion-drawer'
+import { CompletionDrawerEmpty } from './completion-drawer'
 import type { DirectiveScope } from './text-utils'
 
 interface RowMeta {
@@ -52,6 +54,159 @@ const ROW_CLASS = [
 const GROUP_HEADER_CLASS =
   'select-none px-2 pb-0.5 text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
 
+// The drawer portals to the body for the same reason Radix menus do: a window-top
+// tree group clips its zone (`overflow: clip`), and on the centered landing screen
+// or a short split tile that clip cut the `/`, `@` and `:` list off at the top.
+// The skin is shared with the attach menu; only position and the viewport cap are
+// this component's.
+const PORTAL_DRAWER_CLASS = cn(
+  'fixed z-(--z-modal-popover) w-80 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain p-1 text-popover-foreground',
+  composerPanelCard
+)
+
+type DrawerPlacement = 'bottom' | 'top'
+
+interface DrawerBox {
+  left: number
+  maxHeight: number
+  top: number
+  width: number
+}
+
+function remToPx(value: number): number {
+  const rootSize = Number.parseFloat(getComputedStyle(document.documentElement).fontSize)
+
+  return (Number.isFinite(rootSize) ? rootSize : 16) * value
+}
+
+/** The box `absolute bottom-full` used to resolve against (its offset parent). */
+function anchorBlock(anchor: HTMLElement): HTMLElement {
+  const parent = anchor.offsetParent
+
+  return parent instanceof HTMLElement ? parent : (anchor.parentElement ?? document.body)
+}
+
+/**
+ * The shell root: the outermost node under `<body>` that holds this drawer's
+ * anchor. Portalling there — rather than `<body>` — keeps the drawer inside the
+ * app's own theme/zoom frame (browser-hosted windows scale `#root`) while still
+ * stepping outside the window-top zones that clip it. In a bare document (a test
+ * container) that is the container itself; inside the HUD window it is the HUD
+ * shell, whose background, dimming, backdrop and frost the drawer must sit on.
+ */
+function shellPortalHost(anchor: HTMLElement): HTMLElement {
+  // A HUD window's shell is the window: escaping it would paint into the hidden main one.
+  const hud = anchor.closest<HTMLElement>('[data-hud-shell]')
+
+  if (hud) {
+    return hud
+  }
+
+  let host = anchor.parentElement ?? document.body
+
+  while (host.parentElement && host.parentElement !== document.body) {
+    host = host.parentElement
+  }
+
+  return host
+}
+
+function sameBox(left: DrawerBox | null, right: DrawerBox): boolean {
+  return Boolean(
+    left &&
+      left.left === right.left &&
+      left.maxHeight === right.maxHeight &&
+      left.top === right.top &&
+      left.width === right.width
+  )
+}
+
+/**
+ * Viewport-anchored placement for the portalled drawer: above the anchor like the
+ * old absolute card, flipped below when there is no room above, and capped to the
+ * space actually left on screen so a short tile scrolls the list instead of
+ * painting it off-window.
+ */
+function useAnchoredDrawer(
+  placement: DrawerPlacement,
+  anchorRef: RefObject<HTMLSpanElement | null>,
+  drawerRef: RefObject<HTMLDivElement | null>
+): DrawerBox | null {
+  const [box, setBox] = useState<DrawerBox | null>(null)
+
+  const measure = useCallback(() => {
+    const anchor = anchorRef.current
+    const drawer = drawerRef.current
+
+    if (!anchor || !drawer) {
+      return
+    }
+
+    const block = anchorBlock(anchor)
+    const blockRect = block.getBoundingClientRect()
+    const gap = remToPx(0.25)
+    const edge = remToPx(0.5)
+    const viewportWidth = document.documentElement.clientWidth
+    const viewportHeight = document.documentElement.clientHeight
+    const width = Math.max(0, Math.min(remToPx(20), viewportWidth - edge * 2))
+    const contentHeight = drawer.scrollHeight
+    const maxDrawerHeight = remToPx(22)
+    const spaceAbove = blockRect.top - gap - edge
+    const spaceBelow = viewportHeight - blockRect.bottom - gap - edge
+    const wanted = Math.min(contentHeight, maxDrawerHeight)
+    const openBelow = placement === 'bottom' || (spaceAbove < wanted && spaceBelow > spaceAbove)
+    const maxHeight = Math.max(0, Math.min(maxDrawerHeight, openBelow ? spaceBelow : spaceAbove))
+    const top = openBelow
+      ? Math.min(blockRect.bottom + gap, viewportHeight - edge)
+      : Math.max(edge, blockRect.top - gap - Math.min(contentHeight, maxHeight))
+    const left = Math.min(
+      Math.max(edge, blockRect.left + block.clientLeft + remToPx(0.5)),
+      viewportWidth - width - edge
+    )
+
+    setBox(previous => {
+      const next = { left, maxHeight, top, width }
+
+      return sameBox(previous, next) ? previous : next
+    })
+  }, [anchorRef, drawerRef, placement])
+
+  // Every render may change the row set (a keystroke filters the list), so the
+  // height is re-measured after commit rather than on a dependency list.
+  useLayoutEffect(measure)
+
+  useEffect(() => {
+    window.addEventListener('resize', measure)
+    // Capture catches the composer's own scroller and the floating window's, not
+    // just the page's. Repositioning while open mirrors what an anchored menu does.
+    window.addEventListener('scroll', measure, true)
+
+    return () => {
+      window.removeEventListener('resize', measure)
+      window.removeEventListener('scroll', measure, true)
+    }
+  }, [measure])
+
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') {
+      return undefined
+    }
+
+    const drawer = drawerRef.current
+
+    if (!drawer) {
+      return undefined
+    }
+
+    const observer = new ResizeObserver(measure)
+    observer.observe(drawer)
+
+    return () => observer.disconnect()
+  }, [drawerRef, measure])
+
+  return box
+}
+
 interface ComposerTriggerPopoverProps {
   activeIndex: number
   items: readonly Unstable_TriggerItem[]
@@ -59,7 +214,7 @@ interface ComposerTriggerPopoverProps {
   loading: boolean
   onHover: (index: number) => void
   onPick: (item: Unstable_TriggerItem) => void
-  placement?: 'bottom' | 'top'
+  placement?: DrawerPlacement
   /** The `@kind:` browse the list is filtered to, when there is one. Rendered
    *  as a header so the scope reads as the mode it is — the raw `@folder:` in
    *  the editor otherwise looks like syntax the user has to finish by hand. */
@@ -93,7 +248,17 @@ export function ComposerTriggerPopover({
   const isSlash = kind === '/'
   const isEmoji = kind === ':'
   const listRef = useRef<HTMLDivElement>(null)
+  const anchorRef = useRef<HTMLSpanElement>(null)
   const hoverIndexRef = useRef(-1)
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null)
+  const box = useAnchoredDrawer(placement, anchorRef, listRef)
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current
+    const host = anchor ? shellPortalHost(anchor) : null
+
+    setPortalHost(previous => (previous === host ? previous : host))
+  })
 
   // Only keyboard navigation should move the drawer. A hover echo already points
   // at a visible row and scrolling it can shift another row under the pointer.
@@ -147,18 +312,21 @@ export function ComposerTriggerPopover({
     }
 
     list.scrollTop += Math.abs(topDelta) < Math.abs(bottomDelta) ? topDelta : bottomDelta
-  }, [activeIndex, items])
+  }, [activeIndex, items, portalHost])
 
   let lastGroup: string | undefined
 
-  return (
+  const drawer = (
     <div
-      className={placement === 'bottom' ? COMPLETION_DRAWER_BELOW_CLASS : COMPLETION_DRAWER_CLASS}
+      className={PORTAL_DRAWER_CLASS}
       data-slot="composer-completion-drawer"
       data-state="open"
       onMouseDown={event => event.preventDefault()}
       ref={listRef}
       role="listbox"
+      style={
+        box ? { left: box.left, maxHeight: box.maxHeight, top: box.top, width: box.width } : { visibility: 'hidden' }
+      }
     >
       {scope && <div className={cn(GROUP_HEADER_CLASS, 'pt-0.5')}>{referenceStyle(scope).label}</div>}
       {items.length === 0 ? (
@@ -237,5 +405,14 @@ export function ComposerTriggerPopover({
         })
       )}
     </div>
+  )
+
+  return (
+    <>
+      {/* The anchor keeps the drawer's old containing block measurable without
+          adding layout of its own. */}
+      <span aria-hidden className="pointer-events-none absolute left-0 top-0 h-0 w-0" ref={anchorRef} />
+      {portalHost && createPortal(drawer, portalHost)}
+    </>
   )
 }

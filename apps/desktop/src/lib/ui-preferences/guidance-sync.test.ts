@@ -33,7 +33,10 @@ async function load(file: string) {
   })
 
   return {
+    firstTimeSplash: await import('@/store/first-time-splash'),
     onboarding: await import('@/store/onboarding'),
+    renameSplash: await import('@/store/rename-splash'),
+    starterIdeas: await import('@/store/starter-ideas'),
     stop,
     tips: await import('@/store/tips')
   }
@@ -60,4 +63,53 @@ it('onboarding skipped and tips seen or dismissed in one browser stay so in anot
   expect(second.onboarding.$desktopOnboarding.get().firstRunSkipped).toBe(true)
   expect(second.tips.$retiredTips.get()).toContain('catalog:two')
   expect(Object.keys(second.tips.$tipShownAt.get())).toContain('catalog:one')
+})
+
+it('the rename splash seen in one browser is not shown again in another', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ui-guidance-'))
+  dirs.push(dir)
+  const file = path.join(dir, 'ui-preferences.json')
+
+  const first = await load(file)
+  await tick()
+  first.renameSplash.considerRenameSplash('existing')
+  first.renameSplash.dismissRenameSplash('button')
+  await tick()
+  first.stop()
+
+  const second = await load(file)
+  await tick()
+  second.renameSplash.considerRenameSplash('existing')
+  second.stop()
+
+  expect(second.renameSplash.$renameSplash.get()).toBeNull()
+  expect(second.renameSplash.$renameSplashReopenable.get()).toBe(true)
+})
+
+it('a newcomer’s first-time splash and finished tasks carry to their other browsers', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ui-guidance-'))
+  dirs.push(dir)
+  const file = path.join(dir, 'ui-preferences.json')
+
+  const first = await load(file)
+  await tick()
+  first.renameSplash.considerRenameSplash('fresh')
+  first.firstTimeSplash.considerFirstTimeSplash('fresh')
+  first.firstTimeSplash.closeFirstTimeSplash('close')
+  first.starterIdeas.noteTaskFinished('chat-a')
+  first.starterIdeas.noteTaskFinished('chat-b')
+  await tick()
+  first.stop()
+
+  // A phone: its own empty storage, and by now the machine has chats, so its verdict is `existing`.
+  const second = await load(file)
+  await tick()
+  second.renameSplash.considerRenameSplash('existing')
+  second.firstTimeSplash.considerFirstTimeSplash('existing')
+  second.stop()
+
+  expect(second.firstTimeSplash.$firstTimeSplash.get()).toBeNull()
+  expect(second.firstTimeSplash.$firstTimeSplashReopenable.get()).toBe(true)
+  expect(second.renameSplash.$renameSplash.get()).toBeNull()
+  expect(second.starterIdeas.$starterIdeas.get()).toBe('retired')
 })

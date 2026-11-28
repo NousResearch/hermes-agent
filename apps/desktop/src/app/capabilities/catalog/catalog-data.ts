@@ -292,12 +292,12 @@ const catalogQuery = (kind: CatalogKind) =>
     retry: false
   })
 
-export function useCatalog(kind: CatalogKind) {
+export function useCatalog(kind: CatalogKind, wanted = true) {
   return useQuery({
     ...catalogQuery(kind),
     // A failed catalog stays parked across remounts (tab switches) until the
-    // user explicitly chooses Try again.
-    enabled: query => query.state.status !== 'error'
+    // user explicitly chooses Try again. A page that lists only what is installed never asks.
+    enabled: query => wanted && query.state.status !== 'error'
   })
 }
 

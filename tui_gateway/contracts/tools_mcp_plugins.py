@@ -628,6 +628,7 @@ class PluginsAction(WireEnum):
     presence = "presence"
     update_all = "update_all"
     auto_update = "auto_update"
+    check = "check"
 
 
 class PluginsManageParams(ProfileParams):
@@ -642,7 +643,7 @@ class PluginsManageParams(ProfileParams):
     security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only);
     ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only);
     ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields;
-    ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it)."""
+    ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it); ``check``: no fields."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -840,6 +841,20 @@ class PluginUpdateAllSkip(Result):
     reason: str
 
 
+class PluginCheckRow(Result):
+    """``hermes_cli.plugins_updates.CheckResult.to_json()`` — one plugin's read-only update check
+    (``plugins.manage check``); ``update_available`` is None when the check could not tell."""
+
+    name: str
+    klass: str = Field(alias="class")  # ``class`` is a keyword
+    current: str | None = None
+    latest: str | None = None
+    update_available: bool | None = None
+    needs_fixing: str | None = None
+    min_hermes: str | None = None
+    reason: str = ""
+
+
 class PluginsManageResult(Result):
     """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
     (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
@@ -908,6 +923,8 @@ class PluginsManageResult(Result):
     results: list[PluginUpdateAllRow] | None = None
     skipped: list[PluginUpdateAllSkip] | None = None
     current: int | None = None
+    # ``check`` → one read-only check row per installed plugin; nothing was installed or applied.
+    check_results: list[PluginCheckRow] | None = None
     # ``auto_update`` → the profile's ``plugins.auto_apply`` and ``plugins.auto_update_check_hours``.
     auto_apply: bool | None = None
     check_hours: float | None = None

@@ -1,26 +1,36 @@
 import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
-import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
+import { type ComponentProps, type CSSProperties, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
-import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { $widthClass } from '@/app/redesign/breakpoints'
+import { $developerToolShown, toggleDeveloperToolPanel } from '@/app/redesign/developer-tool-panel'
+import { PortalBandAgentSettings } from '@/app/redesign/portal-agent-settings'
+import { togglePaneReveal } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
-import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { paneChrome } from '@/components/pane-shell/tree/renderer/track-model'
+import {
+  $dismissedPanes,
+  $hiddenTreePanes,
+  $narrowViewport,
+  resetLayoutTree,
+  restoreTreePane
+} from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { hostHas } from '@/lib/host-capabilities'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
-import { canUseHud, toggleHud } from '@/store/hud'
+import { toggleHud } from '@/store/hud'
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
@@ -30,14 +40,35 @@ import {
   FILE_BROWSER_PANE_ID,
   toggleLeftSide,
   togglePanesFlipped,
-  toggleRightSide
+  toggleRightSide,
+  toggleSidebarOpen
 } from '@/store/layout'
-import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
-import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
+import { usePortalShell } from '@/store/shell-variant'
+import { $titlebarAppActionsSide, type BandToolId, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
-import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
+import {
+  $workspaceIsPage,
+  type AppView,
+  appViewForPath,
+  hidesFixedTitlebarClusters,
+  isOverlayView
+} from '../routes'
 
+import { $sidebarRevealSurface, useBandHiddenTools } from './band-tools'
+import {
+  $historyPosition,
+  canGoBack,
+  canGoForward,
+  goBack,
+  historyForward,
+  useMouseHistoryButtons,
+  useTrackHistoryPosition
+} from './history-position'
+import { PanelRevealButton } from './panel-reveal'
+import { PortalSessionTab } from './portal-session-tab'
+import { $openSheet, toggleShellSheet } from './shell-sheet'
+import { ShellSheetScrim } from './shell-sheet-view'
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
@@ -46,6 +77,7 @@ import {
   titlebarToolClusterClass
 } from './titlebar'
 import { TitlebarIcon } from './titlebar-icon'
+import { useTitlebarHeight } from './use-touch-titlebar'
 
 export interface TitlebarTool extends Tiered {
   id: string
@@ -153,17 +185,31 @@ interface SidebarEdge {
 /** The titlebar's two sidebar buttons. The browser-hosted Desktop's narrow layout has no hover to
  * reveal by, so there the buttons read and drive the overlay itself, and they send an explicit open
  * or close: a visible hover reveal is not pinned, and a generic toggle would pin it rather than
- * perform the labelled Hide. A narrow native window keeps the docked toggles, which already route
- * through the overlay's toggle. */
+ * perform the labelled Hide. A narrow native CLASSIC window keeps the docked toggles, which already
+ * route through the overlay's toggle. The redesign shows its narrow panes as sheets on every host,
+ * so its native narrow window reads and drives the overlay too: docked state names panes those
+ * sheets never show, and the button sat out of sync with the side on screen (HADESK-90). A Show
+ * heals the two states the overlay's reveal event refuses: a dismissed pane, which has left the
+ * tree, and a chrome-hidden one, which the event skips outright — Files' DEFAULT closed state is
+ * the latter (`$fileBrowserOpen === false`), so without the heal the labelled Show opened no sheet
+ * on a medium/narrow redesign window. */
 function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const leftSideOpen = useStore($leftSideOpen)
   const narrow = useStore($narrowViewport)
   const overlayPanes = useStore($narrowOverlayPaneIds)
   const browserHost = hostHas('narrowOverlayChrome')
-  const overlayChrome = narrow && browserHost
-  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
-
+  const portal = usePortalShell()
+  const overlayChrome = narrow && (browserHost || portal)
+  const toolShown = useStore($developerToolShown)
+  // The right side's sheet. The set is one side at a time (the revealed pane plus its zone mates
+  // and aliases), so the chat sidebar's id means the LEFT sheet is up and any other id names the
+  // right one — whatever tool stands in it (Files, Review, Terminal, the chat's items). The band's
+  // one right button then names what Hide closes, instead of switching the panel to Files. Files
+  // stands in while the right side is clear: the tool a Show reveals.
+  const [shownOverlayId = FILE_BROWSER_PANE_ID] = overlayPanes
+  const leftOverlayId = overlayPanes.has(CHAT_SIDEBAR_PANE_ID) ? shownOverlayId : CHAT_SIDEBAR_PANE_ID
+  const rightOverlayId = overlayPanes.has(CHAT_SIDEBAR_PANE_ID) ? FILE_BROWSER_PANE_ID : shownOverlayId
   const edge = (id: string, dockedOpen: boolean, toggleDocked: () => void): SidebarEdge => {
     const open = overlayChrome ? overlayPanes.has(id) : dockedOpen
     const revealMode = open ? 'close' : 'open'
@@ -172,18 +218,133 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
       open,
       expanded: browserHost ? open : undefined,
       toggle: overlayChrome
-        ? () => window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: revealMode } }))
+        ? () => {
+            // A dismissed pane leaves the tree and a chrome-hidden one is skipped, and the overlay's
+            // reveal event only matches panes the tree holds and does not hide (narrow-overlays.tsx)
+            // — so the labelled Show pressed on nothing and the sheet never appeared (HADESK-90).
+            // Resolve the pane the overlay id names (the pane's own id, or the pane declaring it a
+            // reveal alias) and heal it first, the same restore the developer rail's tiles make, then
+            // send the reveal. `restoreTreePane` runs the owning store's opener ahead of the reveal,
+            // so `bindPaneVisibility` clears the hide instead of re-applying it.
+            if (revealMode === 'open') {
+              const pane = registry
+                .getArea('panes')
+                .find(c => c.id === id || paneChrome(c).revealAliases?.includes(id))
+
+              if (pane && ($dismissedPanes.get().has(pane.id) || $hiddenTreePanes.get().has(pane.id))) {
+                restoreTreePane(pane.id)
+              }
+            }
+
+            togglePaneReveal(id, revealMode)
+          }
         : toggleDocked
     }
   }
 
   return {
-    left: edge(CHAT_SIDEBAR_PANE_ID, leftSideOpen, toggleLeftSide),
-    right: edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
+    left: edge(leftOverlayId, leftSideOpen, toggleLeftSide),
+    // The redesign's right side is its one tool panel, whichever zone stands outermost.
+    right:
+      portal && !narrow
+        ? { open: toolShown, expanded: browserHost ? toolShown : undefined, toggle: toggleDeveloperToolPanel }
+        : edge(rightOverlayId, fileBrowserOpen, toggleRightSide)
   }
 }
 
+/** Simple mode's floating way back to the hidden chat sidebar, when that is the reveal surface. */
+function FloatingSidebarReveal() {
+  const { t } = useI18n()
+
+  return useStore($sidebarRevealSurface) === 'floating' ? (
+    <PanelRevealButton label={t.simplifiedAgents.showChats} onReveal={toggleSidebarOpen} />
+  ) : null
+}
+
+/** The band's sidebar button: the docked toggle, below wide the menu that opens the chat sidebar
+ *  as a sheet, and on a compact page (no chat sidebar, no rail) the menu that opens the rail. */
+function useBandMenuTool(
+  portal: boolean,
+  leftEdge: SidebarEdge
+): Pick<TitlebarTool, 'expanded' | 'hidden' | 'icon' | 'onSelect'> {
+  const hidden = useBandHiddenTools().has('sidebar')
+  const compact = useStore($widthClass) === 'compact' && portal
+  const workspacePage = useStore($workspaceIsPage)
+  const openSheet = useStore($openSheet)
+  const navSheet = compact && workspacePage
+
+  return {
+    expanded: navSheet ? openSheet === 'nav' : leftEdge.expanded,
+    hidden,
+    // Folded, the redesign's button shows the glyph of what it does: expand, not collapse.
+    icon: (
+      <TitlebarIcon
+        name={compact ? 'menu' : portal && !leftEdge.open ? 'layout-sidebar-left-off' : 'layout-sidebar-left'}
+      />
+    ),
+    onSelect: () => {
+      triggerHaptic('tap')
+
+      if (navSheet) {
+        toggleShellSheet('nav')
+      } else {
+        leftEdge.toggle()
+      }
+    }
+  }
+}
+
+/** The redesigned band leads with Back and Forward on every screen (Figma 906:19467, 856:2713):
+ *  the window's own router history. A workspace page with nothing behind it still has a way back
+ *  (`goBack`'s fallback). `$bandHiddenTools` drops them where the band has no room or a browser
+ *  toolbar already carries them. */
+function usePortalHistoryTools(bandHidden: ReadonlySet<BandToolId>): TitlebarTool[] {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+  const position = useStore($historyPosition)
+  const workspacePage = useStore($workspaceIsPage)
+
+  return [
+    {
+      disabled: !canGoBack(position) && !workspacePage,
+      hidden: bandHidden.has('history-back'),
+      icon: <TitlebarIcon name="arrow-left" />,
+      id: 'history-back',
+      label: t.common.back,
+      onSelect: () => goBack(navigate)
+    },
+    {
+      disabled: !canGoForward(position),
+      hidden: bandHidden.has('history-forward'),
+      icon: <TitlebarIcon name="arrow-right" />,
+      id: 'history-forward',
+      label: t.preview.web.goForward,
+      onSelect: historyForward
+    }
+  ]
+}
+
+/** The redesign centres its 30px chrome buttons in its 60px band; native controls are centred
+ *  there too, so the pre-Tahoe optical nudge stands down. The leading cluster starts at
+ *  `--portal-band-start` (portalBandLeadingInset: past macOS traffic lights, else on the content inset).
+ *  Classic keeps the stylesheet's placement. */
+function usePortalClusterStyles(portal: boolean): { clusterStyle?: CSSProperties; leftClusterStyle?: CSSProperties } {
+  const titlebarHeight = useTitlebarHeight()
+
+  if (!portal) {
+    return {}
+  }
+
+  const clusterStyle = {
+    '--titlebar-controls-top': `calc((${titlebarHeight}px - var(--titlebar-control-height)) / 2)`,
+    '--titlebar-controls-y-nudge': '0px'
+  } as CSSProperties
+
+  return { clusterStyle, leftClusterStyle: { ...clusterStyle, left: 'var(--portal-band-start)' } }
+}
+
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+  const portal = usePortalShell()
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -198,12 +359,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const shown = shownInMode(interfaceMode)
   const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
 
-  // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
-  // only while that surface is up — so a non-empty area means a page is
-  // actively projecting chrome into the band right now.
-  const titleBarLeft = useContributions('titleBar.left')
-  const titleBarRight = useContributions('titleBar.right')
-  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
+  const { pageOwnsTitlebar, posture } = useBandPosture(portal)
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
@@ -214,24 +370,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
+  const bandHidden = useBandHiddenTools()
+  const historyTools = usePortalHistoryTools(bandHidden)
+  useTrackHistoryPosition()
+  useMouseHistoryButtons(portal, navigate)
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
+    ...useBandMenuTool(portal, leftEdge),
     actionId: 'view.toggleSidebar',
     badge: panesFlipped ? undefined : unreadBadge,
-    icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
-    expanded: leftEdge.expanded,
-    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
-    onSelect: () => {
-      triggerHaptic('tap')
-      leftEdge.toggle()
-    }
+    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`
   }
 
   const flipTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS['flip-panes'],
     actionId: 'view.flipPanes',
+    // A compact window has one column: nothing to swap.
+    hidden: bandHidden.has('flip-panes'),
     icon: <TitlebarIcon name="arrow-swap" />,
     id: 'flip-panes',
     label: t.titlebar.swapSidebarSides,
@@ -264,6 +421,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
+      hidden: bandHidden.has('settings'),
       label: t.titlebar.openSettings,
       onSelect: () => {
         triggerHaptic('open')
@@ -272,6 +430,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     },
     {
       ...TITLEBAR_FIXED_TOOLS.layout,
+      hidden: bandHidden.has('layout'),
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
@@ -298,7 +457,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
       // from the action registry, same as every other tool here.
       actionId: 'view.toggleHud',
-      hidden: !canUseHud(),
+      hidden: bandHidden.has('hud'),
       icon: <TitlebarIcon name="comment-discussion" />,
       id: 'hud',
       label: t.titlebar.enterHud,
@@ -309,7 +468,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   ]
 
-  const view = appViewForPath(location.pathname)
+  const { clusterStyle, leftClusterStyle } = usePortalClusterStyles(portal)
 
   // Route changes can replace measured clusters without resizing the panels.
   useEffect(() => {
@@ -319,7 +478,14 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // Overlays own the window. These clusters are `fixed` at a higher z-index
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
-  if (isOverlayView(view)) {
+  // Classic unmounts them there, as it always has. In the redesign Agents,
+  // Schedules and Settings are primary destinations, so the clusters are
+  // parked instead (hidden, same tree): `titleBar.*` slots are permanent mount
+  // points, and a plugin's setup/cleanup must not run on every visit.
+  const parked = posture === 'parked'
+  const parkedProps = parked ? PARKED_CLUSTER : {}
+
+  if (posture === 'gone') {
     return null
   }
 
@@ -334,21 +500,22 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // the app's controls; an empty claim would leave a bare strip on every plugin
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
-  if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
+  if (posture === 'page') {
     const pageTools = [...leftTools, ...tools].filter(visibleTool)
 
     // Both markers are required even when a page contributes to only one side.
     return (
       <>
-        <div className={leftClusterClass} data-titlebar-cluster="left">
+        <div className={leftClusterClass} data-titlebar-cluster="left" style={leftClusterStyle}>
           {pageTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+            <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
           ))}
           <Slot area="titleBar.left" />
         </div>
         <div
           className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
           data-titlebar-cluster="right"
+          style={clusterStyle}
         >
           <Slot area="titleBar.right" />
         </div>
@@ -357,7 +524,9 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const visibleLeftTools = (
-    appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
+    appActionsSide === 'left'
+      ? [...historyTools, sidebarTool, ...systemTools, ...leftTools]
+      : [...historyTools, sidebarTool, ...leftTools]
   ).filter(visibleTool)
 
   const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(visibleTool) : []
@@ -366,50 +535,148 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   return (
     <>
-      <div aria-label={t.shell.windowControls} className={leftClusterClass} data-titlebar-cluster="left">
+      <div
+        aria-label={t.shell.windowControls}
+        className={leftClusterClass}
+        data-titlebar-cluster="left"
+        {...parkedProps}
+        style={leftClusterStyle}
+      >
         {visibleLeftTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
         <Slot area="titleBar.left" />
         <Slot area="titleBar.center" />
       </div>
 
-      {visiblePaneTools.length > 0 && (
-        <div
-          aria-label={t.shell.appControls}
-          className={cn(
-            titlebarToolClusterClass,
-            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
-          )}
-        >
-          {visiblePaneTools.map(tool => (
-            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-          ))}
-        </div>
+      {!parked && (
+        <BandOverlays
+          clusterStyle={clusterStyle}
+          navigate={navigate}
+          paneTools={visiblePaneTools}
+          portal={portal}
+        />
       )}
 
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
+        {...parkedProps}
+        style={clusterStyle}
       >
         {visibleSystemTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
         {visibleRightFixedTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
         ))}
+        <PortalBandAgentSettings />
         <Slot area="titleBar.right" />
       </div>
     </>
   )
 }
 
-function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof useNavigate>; tool: TitlebarTool }) {
-  // Titlebar actions never show an active background — state reads from the
-  // icon itself (e.g. the mute/unmute glyph). aria-pressed still carries it
-  // for a11y.
-  const className = cn(titlebarButtonClass, 'bg-transparent select-none', tool.className)
+/** What the band shows for a view: nothing (a classic overlay), its clusters parked (a redesign
+ *  overlay destination), only a contributed page's own chrome, or the full band. */
+function bandPosture(view: AppView, portal: boolean, pageOwnsTitlebar: boolean): 'full' | 'gone' | 'page' | 'parked' {
+  if (isOverlayView(view)) {
+    return portal ? 'parked' : 'gone'
+  }
+
+  return hidesFixedTitlebarClusters(view) && pageOwnsTitlebar ? 'page' : 'full'
+}
+
+function useBandPosture(portal: boolean) {
+  const location = useLocation()
+  // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
+  // only while that surface is up — so a non-empty area means a page is
+  // actively projecting chrome into the band right now.
+  const titleBarLeft = useContributions('titleBar.left')
+  const titleBarRight = useContributions('titleBar.right')
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
+
+  return { pageOwnsTitlebar, posture: bandPosture(appViewForPath(location.pathname), portal, pageOwnsTitlebar) }
+}
+
+/** The redesign's session tab. It sits mid-band, over the chat pane's window-drag handle, and
+ *  Electron folds app-region rects in document order with no regard for stacking: a drag rect
+ *  that comes later re-covers an earlier no-drag one, and macOS then drags the window instead of
+ *  delivering the click. So this mounts AFTER the pane tree, where its "+" is carved out last. */
+export function TitlebarSessionTab() {
+  const portal = usePortalShell()
+  const { posture } = useBandPosture(portal)
+  const { clusterStyle } = usePortalClusterStyles(portal)
+
+  if (!portal || posture !== 'full') {
+    return null
+  }
+
+  return (
+    <div
+      className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}
+      style={clusterStyle}
+    >
+      <PortalSessionTab />
+    </div>
+  )
+}
+
+/** A parked cluster: out of sight and out of the tab order, still mounted. */
+const PARKED_CLUSTER = { hidden: true, inert: true } as const
+
+interface BandOverlaysProps {
+  clusterStyle: CSSProperties | undefined
+  navigate: ReturnType<typeof useNavigate>
+  paneTools: TitlebarTool[]
+  portal: boolean
+}
+
+/** The band's chrome besides its two clusters: the redesign's sheet scrim, the floating sidebar
+ *  reveal, and the pane tools. None of it holds a plugin mount, so a parked band
+ *  drops it outright. */
+function BandOverlays({ clusterStyle, navigate, paneTools, portal }: BandOverlaysProps) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      {portal && <ShellSheetScrim />}
+      <FloatingSidebarReveal />
+      {paneTools.length > 0 && (
+        <div
+          aria-label={t.shell.appControls}
+          className={cn(
+            titlebarToolClusterClass,
+            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
+          )}
+          style={clusterStyle}
+        >
+          {paneTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} portal={portal} tool={tool} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+interface TitlebarToolButtonProps {
+  navigate: ReturnType<typeof useNavigate>
+  /** The redesign draws every titlebar tool as a 30px chrome button. */
+  portal: boolean
+  tool: TitlebarTool
+}
+
+function TitlebarToolButton({ navigate, portal, tool }: TitlebarToolButtonProps) {
+  // Classic titlebar actions never show an active background — state reads
+  // from the icon itself (e.g. the mute/unmute glyph). aria-pressed still
+  // carries it for a11y.
+  const className = cn(
+    portal ? 'portal-chrome-button' : [titlebarButtonClass, 'bg-transparent'],
+    'select-none',
+    tool.className
+  )
 
   const tooltipLabel = tool.actionId ? (
     <TipKeybindLabel actionId={tool.actionId} text={tool.title ?? tool.label} />

@@ -1,10 +1,14 @@
 import type { Translations } from '@/i18n'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import { hostHas } from '@/lib/host-capabilities'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { NATIVE_NOTIFICATION_KINDS } from '@/store/native-notifications'
 import { canUseQuickEntry } from '@/store/quick-entry'
+import { $portalShell } from '@/store/shell-variant'
 import { TRANSLUCENCY_SUPPORTED } from '@/store/translucency'
 
+import { appearanceAdvancedCopy } from './appearance-advanced-copy'
 import type { AppearanceSubpageId } from './appearance-subpages'
 import { nativeHostOnly } from './other-subpages'
 import type { SettingsView } from './types'
@@ -21,6 +25,21 @@ export interface SettingDefinition {
   keywords: readonly string[]
   /** The child page the row lives on; omitted when the view has no subpages. */
   subpage?: string
+}
+
+// A control whose only effect is in the native app. The redesign (`portal`) leaves a dead one out of
+// the Webapp, on the page and in search alike; classic keeps every row it has always drawn.
+const nativeControl = (works: () => boolean) => (portal: boolean) => !portal || works()
+
+export const NATIVE_CONTROL_OFFERED = {
+  /** Links leave a browser tab for another tab whatever this says; only the app has a pane to keep them in. */
+  alwaysExternalLinks: nativeControl(() => hostHas('inAppLinks')),
+  /** F12 is blocked in the main process; the Webapp's bridge has no such member. */
+  disableF12: nativeControl(() => Boolean(window.hermesDesktop?.setDisableF12)),
+  /** The power-save blocker lives in the main process, likewise. */
+  keepAwake: nativeControl(() => Boolean(window.hermesDesktop?.setKeepAwake)),
+  /** The Marketplace is searched by the main process; the Webapp's bridge answers every query with nothing. */
+  themeMarketplace: nativeControl(() => !isBrowserHostedDesktop())
 }
 
 type AppearanceCopy = Translations['settings']['appearance']
@@ -79,16 +98,26 @@ export const SETTINGS_MANIFEST = {
       ['font', 'monospace', 'nerd font', 'glyphs', 'shell'],
       'terminalFont'
     ),
+    simplifiedAgents: {
+      subpage: 'window-layout',
+      keywords: ['redesign', 'interface', 'classic', 'layout', 'agents', 'sidebar', 'bots'],
+      copy: t => ({ label: t.simplifiedAgents.title, description: t.simplifiedAgents.description })
+    },
     interfaceMode: {
       subpage: 'window-layout',
       keywords: ['simple', 'advanced', 'mode', 'interface', 'chrome', 'minimal', 'focus'],
       copy: t => ({ label: t.interfaceMode.title, description: t.interfaceMode.hint })
     },
-    sessionDensity: appearanceSetting(
-      'window-layout',
-      ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
-      'sessionDensity'
-    ),
+    // One id, two rows: classic's session list density, the redesign's Spacing.
+    sessionDensity: {
+      subpage: 'window-layout',
+      keywords: ['sidebar', 'sessions', 'compact', 'comfortable', 'density'],
+      copy: t => {
+        const [label, description] = appearanceAdvancedCopy(getRuntimeI18nLocale()).density
+
+        return $portalShell.get() ? { label, description } : appearanceCopy('sessionDensity')(t)
+      }
+    },
     tabStrip: appearanceSetting('window-layout', ['tabs', 'tab bar', 'strip'], 'tabStrip'),
     appActions: appearanceSetting(
       'window-layout',
@@ -158,11 +187,13 @@ export const SETTINGS_MANIFEST = {
     keepAwake: {
       subpage: 'desktop',
       keywords: ['sleep', 'awake', 'caffeinate', 'idle', 'overnight', 'power', 'while working', 'turn'],
+      available: () => NATIVE_CONTROL_OFFERED.keepAwake($portalShell.get()),
       copy: t => ({ label: t.settings.config.keepAwakeTitle, description: t.settings.config.keepAwakeDesc })
     },
     disableF12: {
       subpage: 'desktop',
       keywords: ['devtools', 'developer tools', 'f12', 'inspector', 'debug'],
+      available: () => NATIVE_CONTROL_OFFERED.disableF12($portalShell.get()),
       copy: t => ({ label: t.settings.config.disableF12Title, description: t.settings.config.disableF12Desc })
     },
     quickEntry: {
@@ -256,7 +287,20 @@ export const SETTINGS_MANIFEST = {
     connectionMode: {
       available: nativeHostOnly,
       subpage: 'connection',
-      keywords: ['gateway', 'connection', 'local', 'cloud', 'remote', 'ssh', 'url', 'token', 'host', 'port', 'key'],
+      keywords: [
+        'machine',
+        'machines',
+        'connection',
+        'local',
+        'cloud',
+        'remote',
+        'ssh',
+        'url',
+        'token',
+        'host',
+        'port',
+        'key'
+      ],
       copy: t => ({ label: t.settings.gateway.modeTitle, description: t.settings.gateway.intro })
     },
     keychainEncryption: {

@@ -367,11 +367,12 @@ method("profiles.get_asset", params=ProfilesGetAssetParams, result=ProfilesGetAs
 # ── onboarding (methods_onboarding) ───────────────────────────────────────────────────────────
 
 
-class OnboardingStateParams(Params):
+class OnboardingStateParams(ProfileParams):
     """``assume_fresh``: the unpackaged desktop's ``--fresh-install`` launch; the backend treats this
     machine as one that never used Hermes. Packaged builds never send it."""
 
     assume_fresh: bool = False
+    sessionless: bool = False
 
 
 class OnboardingRunStateResult(Result):
@@ -385,18 +386,23 @@ class OnboardingRunStateResult(Result):
     eligible: bool
     session_id: str | None = None
     run_id: str | None = None
+    step: Literal["preferences", "model"] = "preferences"
+    started: bool = False
 
 
 method("onboarding.state", params=OnboardingStateParams, result=OnboardingRunStateResult,
        doc="Whether desktop first-run onboarding is due, and the chat in progress; reads the root profile's config.")
 
 
-class OnboardingSetRunParams(Params):
+class OnboardingSetRunParams(ProfileParams):
     """``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config,
     so the first chat after onboarding gets the plain intro instead of the profile offer."""
 
     run: bool
     mark_profile_offered: bool = False
+    sessionless: bool = False
+    step: Literal["preferences", "model"] | None = None
+    restart: bool = False
 
 
 method("onboarding.set_run", params=OnboardingSetRunParams, result=OnboardingRunStateResult,

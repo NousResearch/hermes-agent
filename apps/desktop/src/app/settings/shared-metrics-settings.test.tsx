@@ -211,6 +211,8 @@ describe('SharedMetricsSettings', () => {
 
     await act(async () => {
       $connection.set({ ...sourceConnection, connectionId: 'target-server' })
+      // The focus change publishes its request scope before the metrics hook rebinds to it.
+      $apiRequestScope.set({ connectionId: 'target-server', profile: 'default' })
       bindDesktopMetrics(report, 'target-server|default')
       await setMetricsGate(captureDesktopMetricsGate, 'on')
     })

@@ -98,11 +98,11 @@ export function AgentsView({ onClose }: AgentsViewProps) {
 
   return (
     <Panel closeLabel={t.agents.close} onClose={onClose}>
+      <PanelHeader hideInClassic={!tree.length} subtitle={t.agents.subtitle} title={t.agents.title} />
       {tree.length === 0 ? (
         <PanelEmpty description={t.agents.emptyDesc} icon="hubot" title={t.agents.emptyTitle} />
       ) : (
         <>
-          <PanelHeader subtitle={t.agents.subtitle} title={t.agents.title} />
           <SubagentTree tree={tree} />
         </>
       )}

@@ -57,6 +57,7 @@ export function desktopFsProfile(): string | undefined {
 /** The chat a gateway file belongs to. A Docker agent's `/workspace` is that session's own
  *  sandbox, so a gateway read names it; a local (native) read has no use for it. */
 export interface DesktopFsSessionScope {
+  owner?: { connectionId?: string; profile?: string }
   sessionId?: null | string
 }
 
@@ -70,7 +71,8 @@ interface FsRoute {
  *  no known owner the request names no session and goes to the window's profile. */
 function fsRoute(scope?: DesktopFsSessionScope): FsRoute {
   const sessionId = scope?.sessionId || undefined
-  const owner = sessionId ? sessionFileOwnerScope(sessionId) : null
+  const explicitOwner = scope?.owner?.connectionId || scope?.owner?.profile ? scope.owner : null
+  const owner = explicitOwner ?? (sessionId ? sessionFileOwnerScope(sessionId) : null)
 
   return owner ? { owner, sessionId } : { owner: { profile: desktopFsProfile() } }
 }
@@ -135,7 +137,9 @@ export async function readDesktopFileText(
   path: string,
   scope?: DesktopFsSessionScope
 ): Promise<HermesReadFileTextResult> {
-  if (!isDesktopFsRemoteMode()) {
+  const remoteOwner = Boolean(scope?.owner?.connectionId && scope.owner.connectionId !== 'local')
+
+  if (!isDesktopFsRemoteMode() && !remoteOwner) {
     const result = await bridge().readFileText(path)
 
     if (isReadFileErrorResult(result)) {

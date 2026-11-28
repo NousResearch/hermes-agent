@@ -5,11 +5,14 @@
 
 import { host } from '@hermes/plugin-sdk'
 
-import { botSelectionKey } from './data'
+import { ensureBotMetadata } from './canonical-chat'
+import { botSelectionKey, saveBotMeta } from './data'
 import { botsText } from './i18n'
 import { displayName } from './labels'
 import { noteScreenTabClosed, noteScreenTabOpened } from './screen-autoraise'
+import { displayRequest, type DisplayStatus } from './screen-connection'
 import { BotScreenPane } from './screen-pane'
+import { setScreenStatus } from './screen-state'
 import { ID } from './shared'
 import type { BotMeta, RosterRow } from './types'
 
@@ -46,4 +49,29 @@ export function openBotScreen(bot: RosterRow, meta?: BotMeta | null): void {
 
   openTabs.set(key, close)
   noteScreenTabOpened(bot)
+}
+
+/** Flip "open Screen when the bot uses it" for one bot, from what is stored for it, and say which
+ *  way it went. */
+export async function toggleBotScreenAutoOpen(bot: RosterRow): Promise<void> {
+  const b = botsText()
+
+  try {
+    const current = await ensureBotMetadata(bot)
+    const next = !current.screenAutoOpen
+
+    void saveBotMeta(bot, { screenAutoOpen: next })
+    host.notify({
+      kind: 'info',
+      message: (next ? b.screen.autoOpenOnToast : b.screen.autoOpenOffToast)(displayName(bot, current))
+    })
+  } catch (error) {
+    host.notifyError?.(error, b.bot.metadataLoadFailed)
+  }
+}
+
+/** Start a bot's screen: the request its pane makes, with the status the backend answers taken as
+ *  what every surface shows. A screen that will not start rejects with the backend's reason. */
+export async function startBotScreen(bot: RosterRow): Promise<void> {
+  setScreenStatus(bot, await displayRequest<DisplayStatus>(bot, 'display.start'))
 }

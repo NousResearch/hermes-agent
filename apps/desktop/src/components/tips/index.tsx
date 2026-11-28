@@ -10,7 +10,8 @@
  * (a re-render swaps the node) or leave entirely (a pane closes, a route
  * changes). Re-resolving handles the first and closes the tip on the second,
  * which is the difference between an arrow that follows its subject and one
- * left pointing at empty screen.
+ * left pointing at empty screen. An anchor that is only covered for now hides
+ * the bubble and keeps the tip.
  */
 
 import './tips.css'
@@ -19,7 +20,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { useI18n } from '@/i18n'
-import { resolveTipAnchor } from '@/lib/tips/anchor'
+import { tipAnchorState } from '@/lib/tips/anchor'
 import { recordFriction } from '@/store/desktop-metrics'
 import { $activeTip, dismissTip, retireActiveTip } from '@/store/tips'
 
@@ -45,13 +46,14 @@ export function TipHost() {
     }
 
     const sync = () => {
-      const found = resolveTipAnchor(document, tip.targets)
+      const state = tipAnchorState(document, tip.targets)
 
-      if (found) {
-        setAnchor(previous => (previous === found ? previous : found))
-      } else {
+      if (state === 'gone') {
         // Whatever it was about is gone; so is the reason to point at it.
         dismissTip()
+      } else {
+        // Covered (a menu, a dialog, a toast): step back until it clears.
+        setAnchor(state === 'covered' ? null : state)
       }
     }
 

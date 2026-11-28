@@ -12,10 +12,13 @@
 
 import { useStore } from '@nanostores/react'
 
-import { findGroup } from '@/components/pane-shell/tree/model'
+import { DEVELOPER_TOOL_PANEL_WIDTH } from '@/app/redesign/developer-tool-panel'
+import { togglePaneReveal } from '@/components/pane-shell'
+import { findGroup, findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $activeTreeGroup,
   $layoutTree,
+  $narrowViewport,
   closeTabPane,
   revealTreePane,
   treePanesWithPrefix
@@ -30,6 +33,7 @@ import {
   $browserPages,
   $dockedVisiblePreviewTabs,
   $poppedBrowserTabIds,
+  $previewReveal,
   $previewTabs,
   $visiblePreviewTabs,
   adoptPersistedBrowserTab,
@@ -44,6 +48,7 @@ import {
   setPreviewTabPinned
 } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { $portalShell } from '@/store/shell-variant'
 import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
@@ -218,6 +223,15 @@ const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
  *  acyclic; adoption places a pane after an anchor arriving with it (store.ts).
  *  `undefined` means this is the first preview — it opens its own zone. */
 function existingPreviewAnchor(tabId: string): string | undefined {
+  if ($portalShell.get() && !$narrowViewport.get() && targetFor(tabId)?.kind === 'url') {
+    const tree = $layoutTree.get()
+    const panel = tree && findGroupOfPane(tree, 'files')
+
+    if (panel && !panel.panes.includes('workspace')) {
+      return 'files'
+    }
+  }
+
   const own = previewPaneId(tabId)
   const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PREFIX}:`).find(id => id !== own)
 
@@ -263,6 +277,24 @@ export function watchPreviewTiles(): void {
   $visiblePreviewTabs.listen(() => {
     rehome()
     reveal()
+  })
+  $previewReveal.listen(request => {
+    if (!request || !$portalShell.get() || !$narrowViewport.get() || !targetFor(request.id)) {
+      return
+    }
+
+    const paneId = `${PREVIEW_TILE_PREFIX}:${request.id}`
+
+    revealTreePane(paneId)
+    togglePaneReveal(paneId, 'open')
+
+    if (typeof requestAnimationFrame === 'function') {
+      requestAnimationFrame(() => {
+        if ($portalShell.get() && $narrowViewport.get() && $rightRailActiveTabId.get() === request.id) {
+          togglePaneReveal(paneId, 'open')
+        }
+      })
+    }
   })
 
   // A session switch (or an unpin) can leave the active tab outside the
@@ -355,6 +387,15 @@ const watchPreviewTileMirror = paneMirror<{ id: string }>({
   dir: tab => (existingPreviewAnchor(tab.id) ? 'center' : 'right'),
   anchor: tab => existingPreviewAnchor(tab.id),
   minWidth: '22rem',
+  // The redesign's tool panel shares one width across its tools (redesign/developer-tool-panel.ts).
+  width: () => ($portalShell.get() ? DEVELOPER_TOOL_PANEL_WIDTH : undefined),
+  // Below wide the redesign shows a side tool as a sheet over the full-width
+  // chat (NarrowOverlays), never as a docked column: a preview that stayed in
+  // the grid squeezed the chat to a 60px sliver at 900px. Classic keeps its
+  // panes docked (a preview is `placement: main` there), so the flag is
+  // portal-only.
+  collapsible: () => ($portalShell.get() ? true : undefined),
+  also: [$portalShell],
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,
   tabTitle: tabId => (targetFor(tabId)?.kind === 'url' ? <BrowserTabLabel tabId={tabId} /> : undefined),

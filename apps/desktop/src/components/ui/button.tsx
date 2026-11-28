@@ -19,6 +19,8 @@ const buttonVariants = cva(
         default: 'bg-primary text-primary-foreground hover:bg-primary/90',
         destructive:
           'bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:bg-destructive/60 dark:focus-visible:ring-destructive/40',
+        destructiveOutline:
+          'bg-destructive/12 text-destructive shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--dt-destructive)_30%,transparent)] hover:bg-destructive/20 focus-visible:ring-destructive/20',
         // Quiet action — transparent fill with a 1.5px inset ring (no layout-shifting border).
         outline:
           'bg-transparent text-(--ui-text-primary) shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--ui-stroke-secondary)_50%,transparent)] hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
@@ -58,6 +60,7 @@ const buttonVariants = cva(
           "h-auto gap-0.5 px-1 py-0 text-xs leading-4 font-normal has-[>svg]:px-0.5 [&_svg:not([class*='size-'])]:size-3",
         icon: 'size-9 rounded-[4px]',
         'icon-xs': "size-6 rounded-[4px] [&_svg:not([class*='size-'])]:size-3",
+        'icon-compact': 'size-7 rounded-[4px]',
         'icon-sm': 'size-8 rounded-[4px]',
         'icon-lg': 'size-10 rounded-[4px]',
         grip: 'h-4 w-12 rounded-full p-0',

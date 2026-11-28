@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
@@ -354,7 +355,11 @@ function InlineHtmlFrame({
   initialHeight: number | null
   streaming: boolean
 }) {
-  const cwd = useStore(useSessionView().$cwd)
+  const view = useSessionView()
+  const cwd = useStore(view.$cwd)
+  // The widget belongs to THIS transcript's chat: a tile's widget must send to
+  // its own composer, never to whichever sibling chat the bus calls active.
+  const composerTarget = useComposerScope().target
   const themeEpoch = useThemeEpoch()
   // vars/font/colorScheme come from one collectThemeBridge() call so they can
   // never disagree with each other, even while this lags a repaint behind
@@ -430,7 +435,7 @@ function InlineHtmlFrame({
           // but the row is typed hidden — no bubble, no UI space. The widget
           // updating IS the visible response. `false` means no visible
           // composer surface took it; the widget is told instead of assuming.
-          ack = requestComposerSubmit(decision.prompt, { target: 'active', displayKind: 'hidden' })
+          ack = requestComposerSubmit(decision.prompt, { displayKind: 'hidden', target: composerTarget })
             ? { ok: true }
             : { error: 'undelivered', ok: false }
         }
@@ -465,7 +470,7 @@ function InlineHtmlFrame({
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [initialHeight, token])
+  }, [composerTarget, initialHeight, token])
 
   const { vars, font, colorScheme } = bridge
 

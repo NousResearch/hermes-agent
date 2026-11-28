@@ -7,8 +7,6 @@ import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
-import { SearchField } from '@/components/ui/search-field'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
@@ -42,10 +40,10 @@ import { SidebarLoadMoreRow } from '../chat/sidebar/load-more-row'
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
-import { OverlayBreadcrumbHeader } from '../overlays/overlay-breadcrumb-header'
 import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
 
+import { CommandCenterHeader, type UsagePeriod } from './header'
 import { MaintenancePanel } from './maintenance'
 
 export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
@@ -54,9 +52,6 @@ const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfi
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
-
-const USAGE_PERIODS = [7, 30, 90] as const
-type UsagePeriod = (typeof USAGE_PERIODS)[number]
 
 // Stable empty arrays so the selector returns the same reference when we're
 // not on the Sessions tab — useStoreSelector bails out on Object.is, so the
@@ -204,26 +199,24 @@ export function CommandCenterView({
 
   const debouncedQuery = useDebouncedValue(query.trim(), 180)
 
+  const sortedSessions = useMemo(
+    () => [...sessions].sort((a, b) => (b.last_active || b.started_at || 0) - (a.last_active || a.started_at || 0)),
+    [sessions]
+  )
+
   const filteredSessions = useMemo(() => {
-    const sorted = [...sessions].sort((a, b) => {
-      const left = a.last_active || a.started_at || 0
-      const right = b.last_active || b.started_at || 0
-
-      return right - left
-    })
-
     const needle = debouncedQuery.toLowerCase()
 
     if (!needle) {
-      return sorted
+      return sortedSessions
     }
 
-    return sorted.filter(session => {
+    return sortedSessions.filter(session => {
       const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
 
       return haystack.includes(needle)
     })
-  }, [debouncedQuery, sessions])
+  }, [debouncedQuery, sortedSessions])
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
@@ -397,28 +390,12 @@ export function CommandCenterView({
 
         <OverlayMain className="px-0 pb-0">
           {activeGroup && (
-            <OverlayBreadcrumbHeader
+            <CommandCenterHeader
               group={activeGroup}
-              rootLabel={cc.commandCenter}
-              trailing={
-                <>
-                  {section === 'sessions' && (
-                    <SearchField
-                      containerClassName="max-w-[40vw]"
-                      onChange={next => setQuery(next)}
-                      placeholder={cc.searchPlaceholder}
-                      value={query}
-                    />
-                  )}
-                  {section === 'usage' && (
-                    <SegmentedControl
-                      onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
-                      options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
-                      value={String(usagePeriod)}
-                    />
-                  )}
-                </>
-              }
+              onPeriodChange={setUsagePeriod}
+              onQueryChange={setQuery}
+              period={usagePeriod}
+              query={query}
             />
           )}
           <div className={cn('flex min-h-0 flex-1 flex-col', PAGE_INSET_X)}>

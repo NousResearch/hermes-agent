@@ -3,6 +3,8 @@ import { atom } from 'nanostores'
 import { artifactContentHash, type ArtifactDetection, type ArtifactKind, artifactSlug } from '@/lib/artifact-detect'
 
 import { closeArtifactPreviewTabs, openPreview, type PreviewTarget } from './preview'
+import { $activeSessionId } from './session'
+import { $focusedStoredSessionId } from './session-focus'
 
 /**
  * ARTIFACT REGISTRY — substantial generated content (HTML pages, large SVGs,
@@ -354,7 +356,16 @@ export function openArtifact(artifactId: string, versionIndex?: number) {
   }
 
   selectArtifactVersion(artifactId, versionIndex ?? record.versions.length - 1)
-  openPreview(artifactPreviewTarget(record))
+
+  // The artifact belongs to the chat that generated it: clicking its card in a
+  // split tile must file the preview under THAT tile's session, not whichever
+  // chat happens to hold focus. Before the chat's first stored id binds the
+  // registry is keyed by the live runtime id instead — that artifact is a
+  // pending-runtime tab, so it opens ownerless and adopts the stored id when
+  // it arrives (passing the runtime id as a stored owner would strand it).
+  const liveRuntime = record.sessionId === $activeSessionId.get() && !$focusedStoredSessionId.get()
+
+  openPreview(artifactPreviewTarget(record), liveRuntime ? null : record.sessionId)
 }
 
 export function selectArtifactVersion(artifactId: string, versionIndex: number) {

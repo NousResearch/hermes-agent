@@ -1,5 +1,5 @@
 import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { type ComponentProps, createContext, useMemo } from 'react'
+import { type ComponentProps, createContext, memo, useMemo } from 'react'
 
 import { contentHasVisibleText, messageContentText, PROCESS_NOTIFICATION_RE } from './content'
 
@@ -25,11 +25,12 @@ export const ResponseMessageIds = createContext<readonly string[]>([])
 
 interface ResponseMessagesProps {
   components: ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
-  indices: readonly number[]
+  /** The turn's messages, by id. Ids, not positions: older history loading in front of a turn
+   *  moves every position after it, and a row addressed by position was rebuilt on each load. */
+  ids: readonly string[]
 }
 
 interface ResponseRow {
-  index: number
   id: string
   role: string
   hasText: boolean
@@ -37,69 +38,91 @@ interface ResponseRow {
 
 interface ResponseSection {
   key: string
-  indices: number[]
+  ids: string[]
   assistantIds: string[]
   response: boolean
 }
 
-/** Keep message runtimes intact; only their visual container and footer are shared. */
-export function ResponseMessages({ components, indices }: ResponseMessagesProps) {
-  const signature = useAuiState(s =>
-    JSON.stringify(
-      indices.flatMap(index => {
-        const message = s.thread.messages[index]
+type ThreadMessages = readonly (GroupMessage & { id: string })[]
 
-        // A history replacement can notify this row before its parent updates indices.
-        return message
-          ? [
-              {
-                index,
-                id: message.id,
-                role: responseMessageRole(message),
-                hasText: contentHasVisibleText(message.content)
-              }
-            ]
-          : []
-      })
-    )
-  )
+const messagesById = new WeakMap<ThreadMessages, Map<string, ThreadMessages[number]>>()
 
-  const sections = useMemo(() => {
-    const rows = JSON.parse(signature) as ResponseRow[]
-    const result: ResponseSection[] = []
+/** One id index per message list, shared by every row that reads that list. */
+function messageById(messages: ThreadMessages, id: string) {
+  let index = messagesById.get(messages)
 
-    for (const row of rows) {
-      const response = row.role === 'assistant' || row.role === 'background'
-      const previous = result.at(-1)
+  if (!index) {
+    index = new Map(messages.map(message => [message.id, message]))
+    messagesById.set(messages, index)
+  }
 
-      const section: ResponseSection =
-        response && previous?.response ? previous : { key: row.id, indices: [], assistantIds: [], response }
-
-      if (section !== previous) {
-        result.push(section)
-      }
-
-      section.indices.push(row.index)
-
-      if (row.role === 'assistant' && row.hasText) {
-        section.assistantIds.push(row.id)
-      }
-    }
-
-    return result
-  }, [signature])
-
-  return sections.map(section =>
-    section.response ? (
-      <ResponseMessageIds.Provider key={section.key} value={section.assistantIds}>
-        <div className="group flex min-w-0 flex-col gap-(--scaffold-block-gap)" data-slot="aui_response-group">
-          {section.indices.map(index => (
-            <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
-          ))}
-        </div>
-      </ResponseMessageIds.Provider>
-    ) : (
-      <ThreadPrimitive.MessageByIndex components={components} index={section.indices[0]!} key={section.key} />
-    )
-  )
+  return index.get(id)
 }
+
+const sameIds = (a: readonly string[], b: readonly string[]) =>
+  a === b || (a.length === b.length && a.every((id, index) => id === b[index]))
+
+/**
+ * Keep message runtimes intact; only their visual container and footer are shared.
+ *
+ * memo() on the ids themselves: the list rebuilds its groups whenever the transcript changes
+ * shape, and a turn whose own messages did not change must not re-render for it. With rows
+ * addressed by position, every older page loading in front remounted each loaded reply (their keys
+ * were positions), a freeze that grew with the transcript: 1s at 240 messages, 4s at 1,200.
+ */
+export const ResponseMessages = memo(
+  function ResponseMessages({ components, ids }: ResponseMessagesProps) {
+    const signature = useAuiState(s =>
+      JSON.stringify(
+        ids.flatMap(id => {
+          const message = messageById(s.thread.messages, id)
+
+          // A history replacement can notify this row before its parent updates ids.
+          return message
+            ? [{ id, role: responseMessageRole(message), hasText: contentHasVisibleText(message.content) }]
+            : []
+        })
+      )
+    )
+
+    const sections = useMemo(() => {
+      const rows = JSON.parse(signature) as ResponseRow[]
+      const result: ResponseSection[] = []
+
+      for (const row of rows) {
+        const response = row.role === 'assistant' || row.role === 'background'
+        const previous = result.at(-1)
+
+        const section: ResponseSection =
+          response && previous?.response ? previous : { key: row.id, ids: [], assistantIds: [], response }
+
+        if (section !== previous) {
+          result.push(section)
+        }
+
+        section.ids.push(row.id)
+
+        if (row.role === 'assistant' && row.hasText) {
+          section.assistantIds.push(row.id)
+        }
+      }
+
+      return result
+    }, [signature])
+
+    return sections.map(section =>
+      section.response ? (
+        <ResponseMessageIds.Provider key={section.key} value={section.assistantIds}>
+          <div className="group flex min-w-0 flex-col gap-(--scaffold-block-gap)" data-slot="aui_response-group">
+            {section.ids.map(id => (
+              <ThreadPrimitive.Unstable_MessageById components={components} key={id} messageId={id} />
+            ))}
+          </div>
+        </ResponseMessageIds.Provider>
+      ) : (
+        <ThreadPrimitive.Unstable_MessageById components={components} key={section.key} messageId={section.ids[0]!} />
+      )
+    )
+  },
+  (previous, next) => previous.components === next.components && sameIds(previous.ids, next.ids)
+)

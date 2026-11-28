@@ -1,11 +1,29 @@
+import { useStore } from '@nanostores/react'
+
+import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { cn } from '@/lib/utils'
+import { $petActive } from '@/store/pet'
+import { $petOverlayActive } from '@/store/pet-overlay'
+
+import { COMPOSER_FADE_BACKGROUND } from './composer-utils'
+
+interface ComposerDockGlowProps {
+  dockProximity: number
+  dragging: boolean
+  poppedOut: boolean
+}
 
 /**
  * Radial dock-target glow shown while a popped-out composer is dragged.
  * Intensity tracks how close the composer is to the dock (1 = peak).
  */
-export function ComposerDockGlow({ dockProximity }: { dockProximity: number }) {
+export function ComposerDockGlow({ dockProximity, dragging, poppedOut }: ComposerDockGlowProps) {
+  if (!dragging || !poppedOut) {
+    return null
+  }
+
   return (
     <div
       aria-hidden
@@ -25,6 +43,44 @@ export function ComposerDockGlow({ dockProximity }: { dockProximity: number }) {
         opacity: `calc(${0.1 + dockProximity * 0.57} * var(--dock-glow-scale, 1))`
       }}
     />
+  )
+}
+
+interface ComposerPopoutChromeProps {
+  dragging: boolean
+  onToggle: () => void
+  popoutAllowed: boolean
+  poppedOut: boolean
+}
+
+/** The fade and grab margin sit behind the surface, never over its controls. */
+export function ComposerPopoutChrome({
+  dragging,
+  onToggle,
+  popoutAllowed,
+  poppedOut
+}: ComposerPopoutChromeProps) {
+  return (
+    <>
+      {!poppedOut && (
+        <div
+          className="pointer-events-none absolute inset-0 rounded-[inherit]"
+          data-slot="composer-backdrop-fade"
+          style={{ background: COMPOSER_FADE_BACKGROUND }}
+        />
+      )}
+      {/* The surface's z-4 leaves only its transparent margin draggable.
+          Hover hatching and opacity are owned by styles.css. */}
+      {popoutAllowed && (
+        <div
+          aria-hidden
+          className={cn('pointer-events-auto absolute inset-0', dragging ? 'cursor-grabbing' : 'cursor-grab')}
+          data-dragging={dragging ? '' : undefined}
+          data-slot="composer-drag-region"
+          onDoubleClick={onToggle}
+        />
+      )}
+    </>
   )
 }
 
@@ -49,5 +105,24 @@ export function QueuedEditBanner({ onExit }: { onExit: (action: 'cancel' | 'save
         </Button>
       </div>
     </div>
+  )
+}
+
+// Vibe hearts rise from the composer only when no pet is out (else they play
+// on the pet). Keep the pet subscriptions with this reaction-event surface.
+export function ComposerHeartField() {
+  const petActive = useStore($petActive)
+  const petOverlayActive = useStore($petOverlayActive)
+
+  if (petActive || petOverlayActive) {
+    return null
+  }
+
+  return (
+    <HeartField
+      className="absolute inset-x-0 z-30"
+      config={COMPOSER_HEART_CONFIG}
+      style={{ top: 0, bottom: 'calc(var(--composer-measured-height) + 0.25rem)' }}
+    />
   )
 }

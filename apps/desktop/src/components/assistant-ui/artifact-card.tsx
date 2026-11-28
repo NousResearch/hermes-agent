@@ -44,9 +44,11 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
+  const transcriptStoredId = useStore(view.$transcriptStoredId)
   const registry = useStore($artifactRegistry)
-  const sessionId = storedId || runtimeId || ''
-
+  // The chat this card's message belongs to: prefer the live transcript's stored id when bound,
+  // else fall back to runtimeId or storedId so cold-resumed / read-only transcripts still register.
+  const sessionId = transcriptStoredId || runtimeId || storedId || ''
   const trimmed = code.trim()
 
   // Register/version the artifact once its fence has finished streaming.

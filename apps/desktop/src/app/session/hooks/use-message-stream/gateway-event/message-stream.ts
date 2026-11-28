@@ -22,6 +22,7 @@ import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control
 import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates } from '@/store/session-states'
 import { lightDesktopMessagingCompletion } from '@/store/session-unread'
+import { noteTaskFinished } from '@/store/starter-ideas'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -466,6 +467,11 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     if (payload?.status === 'complete') {
       noteFreeTierTurnComplete()
+
+      // A task finished in this chat (an answer, not an error or a stop): the starter ideas count it.
+      if (finalText.trim()) {
+        noteTaskFinished($sessionStates.get()[sessionId]?.storedSessionId ?? sessionId)
+      }
     }
 
     // Structured billing wall forwarded by the gateway (out of credits /

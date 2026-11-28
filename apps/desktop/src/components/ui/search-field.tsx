@@ -1,4 +1,4 @@
-import { type KeyboardEventHandler, type ReactNode, type RefObject, useState } from 'react'
+import { type FocusEventHandler, type KeyboardEventHandler, type ReactNode, type RefObject, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -21,6 +21,7 @@ interface SearchFieldProps {
   inputClassName?: string
   loading?: boolean
   onClear?: () => void
+  onFocus?: FocusEventHandler<HTMLInputElement>
   onKeyDown?: KeyboardEventHandler<HTMLInputElement>
   inputRef?: RefObject<HTMLInputElement | null>
   trailingAction?: ReactNode
@@ -34,6 +35,8 @@ interface SearchFieldProps {
    */
   variant?: 'underline' | 'box'
   'aria-label'?: string
+  /** Escape clears the text first, then a second press leaves the field (one press, one thing). */
+  escapeClears?: boolean
 }
 
 /**
@@ -52,11 +55,13 @@ export function SearchField({
   loading = false,
   onClear,
   onKeyDown,
+  onFocus,
   inputRef,
   trailingAction,
   leadingContent,
   variant = 'underline',
-  'aria-label': ariaLabel
+  'aria-label': ariaLabel,
+  escapeClears = false
 }: SearchFieldProps) {
   const { t } = useI18n()
   const clear = onClear ?? (() => onChange(''))
@@ -67,6 +72,23 @@ export function SearchField({
   const [hintIndex] = useState(() => Math.floor(Math.random() * 4096))
   const hintCount = hints?.length ?? 0
   const effectivePlaceholder = hintCount > 0 ? hints![hintIndex % hintCount] : placeholder
+
+  const handleKeyDown: KeyboardEventHandler<HTMLInputElement> = event => {
+    onKeyDown?.(event)
+
+    if (!escapeClears || event.defaultPrevented || event.key !== 'Escape') {
+      return
+    }
+
+    event.preventDefault()
+    event.stopPropagation()
+
+    if (value) {
+      clear()
+    } else {
+      event.currentTarget.blur()
+    }
+  }
 
   return (
     <div
@@ -84,6 +106,8 @@ export function SearchField({
             ),
         containerClassName
       )}
+      data-slot="search-field"
+      data-variant={variant}
     >
       <Search className={cn('pointer-events-none shrink-0 text-muted-foreground/70', boxed ? 'size-4' : 'size-3.5')} />
       {leadingContent}
@@ -104,7 +128,8 @@ export function SearchField({
           inputClassName
         )}
         onChange={event => onChange(event.target.value)}
-        onKeyDown={onKeyDown}
+        onFocus={onFocus}
+        onKeyDown={escapeClears ? handleKeyDown : onKeyDown}
         placeholder={effectivePlaceholder}
         ref={inputRef}
         type="text"

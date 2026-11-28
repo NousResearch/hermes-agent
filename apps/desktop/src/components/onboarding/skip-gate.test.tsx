@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { makeOAuthProvider } from '@/test/oauth-provider'
@@ -9,8 +10,6 @@ import { DesktopOnboardingOverlay } from '.'
 
 // The boot due check has run and no first-run onboarding is open.
 markOnboardingDecided()
-
-const HEADER = "Let's get you setup with Hermes Agent"
 
 // Never answers: the readiness effect stays in flight, so each case is observed
 // on exactly the state it set up instead of racing a round to completion.
@@ -50,7 +49,7 @@ describe('DesktopOnboardingOverlay first-run skip gate', () => {
 
     render(<DesktopOnboardingOverlay enabled profile="default" requestGateway={pendingGateway} />)
 
-    expect(screen.queryByText(HEADER)).toBeNull()
+    expect(screen.queryByRole('heading', { name: en.onboarding.headerTitle })).toBeNull()
   })
 
   it('still opens when a real credential wall asked for it', () => {
@@ -61,6 +60,6 @@ describe('DesktopOnboardingOverlay first-run skip gate', () => {
 
     render(<DesktopOnboardingOverlay enabled profile="default" requestGateway={pendingGateway} />)
 
-    expect(screen.getByText(HEADER)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: en.onboarding.headerTitle })).toBeTruthy()
   })
 })

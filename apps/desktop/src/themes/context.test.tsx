@@ -1,12 +1,19 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $shellChoice } from '@/store/shell-variant'
+
 import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { readableInk } from './color'
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { everforestTheme, midnightTheme } from './presets'
 import type { DesktopTheme } from './types'
 import { installUserTheme } from './user-themes'
+
+// These cases pin the CLASSIC shell's default skin (Nous); the redesign's own
+// default (Portal) is covered in shell-default-skin.test.tsx.
+beforeEach(() => $shellChoice.set(false))
+afterEach(() => $shellChoice.set(null))
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.

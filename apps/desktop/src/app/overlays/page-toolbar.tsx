@@ -1,0 +1,113 @@
+import { useStore } from '@nanostores/react'
+import type { ReactNode } from 'react'
+
+import { $widthClass } from '@/app/redesign/breakpoints'
+import {
+  $historyPosition,
+  bandOffersHistory,
+  canGoBack,
+  canGoForward,
+  historyBack,
+  historyForward
+} from '@/app/shell/history-position'
+import { PanelRevealButton } from '@/app/shell/panel-reveal'
+import { $openSheet, toggleShellSheet } from '@/app/shell/shell-sheet'
+import { ShellSheetScrim } from '@/app/shell/shell-sheet-view'
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
+import { Button } from '@/components/ui/button'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
+import { $interfaceMode } from '@/store/interface-mode'
+import { $sidebarOpen, toggleSidebarOpen } from '@/store/layout'
+
+import { $pageHasSidebar } from './page-sidebar'
+
+/** The redesigned page's titlebar band (Figma 856:2713): Back and Forward through the window's
+ *  history where the band's leading cluster starts (`--portal-band-start`, past macOS traffic lights),
+ *  as on the chat's band; the page's own controls centered, its actions at the end. The toolbar
+ *  begins at the rail's edge, so it insets by the rest. Only redesigned pages mount it. With nothing
+ *  behind the page (a deep link), Back closes it instead (`onBack`).
+ *
+ *  Below wide (DESIGN.md › Responsive) the band's sidebar button is the page's menu: it opens the
+ *  page's panel as a sheet, and on a compact window with no panel, the rail. A compact band drops Back
+ *  and Forward, and so does the browser-hosted app at any width (`bandOffersHistory`). */
+
+export function PageToolbar({
+  actions,
+  children,
+  onBack
+}: {
+  actions?: ReactNode
+  children?: ReactNode
+  onBack: () => void
+}) {
+  const { t } = useI18n()
+  const hasSidebar = useStore($pageHasSidebar)
+  const sidebarOpen = useStore($sidebarOpen)
+  const position = useStore($historyPosition)
+  const width = useStore($widthClass)
+  const sheet = useStore($openSheet)
+  const simple = useStore($interfaceMode) === 'simple'
+  const compact = width === 'compact'
+  const menuSheet = hasSidebar ? 'page' : 'nav'
+  // Wide: a folded panel comes back the way the chat sidebar does: Simple's floating button at the
+  // stage corner, Advanced's band toggle, ⌘B in both. Below wide the panel is a sheet; a compact page
+  // without one still needs its destinations.
+  const folded = width === 'wide' && hasSidebar && !sidebarOpen
+  const menu = width === 'wide' ? folded && !simple : hasSidebar || compact
+
+  return (
+    <header className="flex h-full min-h-0 shrink-0 items-center gap-(--titlebar-control-gap) ps-[calc(var(--portal-band-start)-var(--global-nav-width))] pe-5 rtl:ps-5">
+      {bandOffersHistory(compact) && (
+        <>
+          <Tip label={t.common.back} placement="toolbar">
+            <Button
+              aria-label={t.common.back}
+              className="portal-chrome-button [-webkit-app-region:no-drag]"
+              onClick={canGoBack(position) ? historyBack : onBack}
+              size="icon"
+              variant="ghost"
+            >
+              <TitlebarIcon name="arrow-left" />
+            </Button>
+          </Tip>
+          <Tip label={t.preview.web.goForward} placement="toolbar">
+            <Button
+              aria-label={t.preview.web.goForward}
+              className="portal-chrome-button [-webkit-app-region:no-drag]"
+              disabled={!canGoForward(position)}
+              onClick={historyForward}
+              size="icon"
+              variant="ghost"
+            >
+              <TitlebarIcon name="arrow-right" />
+            </Button>
+          </Tip>
+        </>
+      )}
+      {menu && (
+        <Tip
+          label={<TipKeybindLabel actionId="view.toggleSidebar" text={t.titlebar.showSidebar} />}
+          placement="toolbar"
+        >
+          <Button
+            aria-expanded={width === 'wide' ? undefined : sheet === menuSheet}
+            aria-label={t.titlebar.showSidebar}
+            className="portal-chrome-button [-webkit-app-region:no-drag]"
+            onClick={() => (width === 'wide' ? toggleSidebarOpen() : toggleShellSheet(menuSheet))}
+            size="icon"
+            variant="ghost"
+          >
+            <TitlebarIcon name={compact ? 'menu' : 'layout-sidebar-left-off'} />
+          </Button>
+        </Tip>
+      )}
+      <div className="flex min-w-0 flex-1 items-center justify-center gap-2 [-webkit-app-region:no-drag]">
+        {children}
+      </div>
+      {actions && <div className="flex shrink-0 items-center gap-1.5 [-webkit-app-region:no-drag]">{actions}</div>}
+      {folded && simple && <PanelRevealButton label={t.simplifiedAgents.showPanel} onReveal={toggleSidebarOpen} />}
+      <ShellSheetScrim />
+    </header>
+  )
+}

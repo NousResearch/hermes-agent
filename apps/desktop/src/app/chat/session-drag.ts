@@ -64,9 +64,9 @@ import { type SessionDragPayload, sessionInlineRef, sessionLabel } from './compo
 import { NO_PROJECT_ID } from './sidebar/projects/workspace-groups'
 import { tileZoneHost } from './tile-zone-host'
 
-const PROJECT_ROW_DROP_ATTR = 'data-session-drop-hover'
-const PIN_DROP_SELECTOR = '[data-session-pin-drop]'
-const UNPIN_DROP_SELECTOR = '[data-session-unpin-drop]'
+export const PROJECT_ROW_DROP_ATTR = 'data-session-drop-hover'
+export const PIN_DROP_SELECTOR = '[data-session-pin-drop]'
+export const UNPIN_DROP_SELECTOR = '[data-session-unpin-drop]'
 
 /** A sidebar project row's drop geometry — tagged by `ProjectOverviewRow` via
  *  `data-sessions-project`. */
@@ -129,8 +129,19 @@ function snapshotSurfaces(): SurfaceSnapshot[] {
 export function startSessionDrag(
   payload: SessionDragPayload,
   e: ReactPointerEvent<HTMLElement>,
-  opts?: { onTap?: () => void }
+  opts?: {
+    onTap?: () => void
+    /**
+     * Whether this drag resolves the sidebar's own pin · unpin targets (Pinned, and every other
+     * session list as an unpin target). Classic rows do: this drag is their only pin gesture.
+     * The redesigned rows don't — their list's own drag (dnd-kit) lands those drops and writes
+     * through the sidebar's owner-qualified pin, so a second resolver on the same press would
+     * resolve one drop twice.
+     */
+    pins?: boolean
+  }
 ) {
+  const pins = opts?.pins !== false
   let zones: EngineZone[] = []
   let strips: StripSnapshot[] = []
   let surfaces: SurfaceSnapshot[] = []
@@ -203,17 +214,20 @@ export function startSessionDrag(
       projectRows = snapshotProjectRows(cwd ? projectIdForCwd(cwd) : null)
       // A row dragged out of Pinned has nothing to pin (it reorders there) —
       // instead the session lists become unpin targets. Any other row gets
-      // Pinned as its pin target.
-      const fromPinned = Boolean(source?.closest(PIN_DROP_SELECTOR))
+      // Pinned as its pin target. A drag whose own list lands those drops
+      // (`opts.pins`) resolves neither.
+      const fromPinned = pins && Boolean(source?.closest(PIN_DROP_SELECTOR))
 
       // A session that's already pinned (e.g. dragged from its tile tab) has
       // nothing to pin either: pinSession would re-append it to the bottom.
-      const alreadyPinned = draggedSession
-        ? $pinnedSessionIds.get().includes(sessionPinId(draggedSession))
-        : $pinnedSessionIds.get().includes(payload.id)
+      const alreadyPinned =
+        pins &&
+        (draggedSession
+          ? $pinnedSessionIds.get().includes(sessionPinId(draggedSession))
+          : $pinnedSessionIds.get().includes(payload.id))
 
       const pinEl = fromPinned || alreadyPinned ? null : queryAllVisible<HTMLElement>(PIN_DROP_SELECTOR)[0]
-      pinTarget = pinEl ? { el: pinEl, rect: snapRect(pinEl) } : null
+      pinTarget = pins && pinEl ? { el: pinEl, rect: snapRect(pinEl) } : null
       unpinTargets = fromPinned
         ? queryAllVisible<HTMLElement>(UNPIN_DROP_SELECTOR).map(el => ({ el, rect: snapRect(el) }))
         : []
@@ -326,8 +340,18 @@ export function startSessionDrag(
     onCommit() {
       if (split) {
         const fromMain = payload.id === $selectedStoredSessionId.get()
+        const ownerRoute = payload.ownerRoute
 
-        openSessionTile(payload.id, split.pos, split.anchor, split.before)
+        // A row that knows its owner routes the split's tile to that exact backend; a classic
+        // caller (no ownerRoute) keeps the old four-argument call byte-for-byte.
+        if (ownerRoute) {
+          openSessionTile(payload.id, split.pos, split.anchor, split.before, {
+            ownerRoute,
+            workspaceMode: 'sessions'
+          })
+        } else {
+          openSessionTile(payload.id, split.pos, split.anchor, split.before)
+        }
         // A tile for this session may already exist (openSessionTile is
         // idempotent — e.g. persisted from an earlier run): a drop must never
         // feel dead, so front/unhide/un-dismiss it either way.

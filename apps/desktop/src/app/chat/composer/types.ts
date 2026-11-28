@@ -53,7 +53,11 @@ export interface ChatBarProps {
   /** The tile's routed profile: scopes the slash palette while a draft has no session yet. */
   profile?: string | null
   cwd?: string | null
+  /** The redesign's empty-chat landing around the composer: the greeting that sits above it, moving
+   *  with it wherever it docks. */
+  landing?: { above: ReactNode }
   onCancel: () => Promise<void> | void
+  onChangeCwd?: (cwd: string, sessionId?: string) => Promise<void>
   onAddContextRef?: (refText: string, label?: string, detail?: string) => void
   onAddUrl?: (url: string) => void
   onAttachImageBlob?: (blob: Blob, isCurrent?: () => boolean) => Promise<boolean | void> | boolean | void

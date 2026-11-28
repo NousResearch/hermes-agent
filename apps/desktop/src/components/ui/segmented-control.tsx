@@ -40,6 +40,7 @@ export function SegmentedControl<T extends string>({
         disabled && 'opacity-50',
         className
       )}
+      data-slot="segmented-control"
     >
       {options.map(({ id, label, icon: Icon }) => {
         const active = value === id

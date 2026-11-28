@@ -1,9 +1,15 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { $shellChoice } from '@/store/shell-variant'
 
 import { ConfirmDialog } from './confirm-dialog'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $shellChoice.set(null)
+})
 
 describe('ConfirmDialog secondary action', () => {
   function renderWithSecondary() {
@@ -46,5 +52,49 @@ describe('ConfirmDialog secondary action', () => {
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
     expect(onSecondary).not.toHaveBeenCalled()
+  })
+})
+
+describe('ConfirmDialog destructive confirm', () => {
+  function renderDestructive() {
+    const onConfirm = vi.fn()
+
+    render(
+      <ConfirmDialog
+        confirmLabel="Delete"
+        destructive
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        open
+        title="Delete session?"
+      />
+    )
+
+    return { onConfirm }
+  }
+
+  it('opens on Cancel in the redesign, so a stray Enter never destroys', async () => {
+    const { onConfirm } = renderDestructive()
+    const cancel = await screen.findByRole('button', { name: 'Cancel' })
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(cancel))
+    fireEvent.keyDown(cancel, { key: 'Enter' })
+
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull()
+  })
+
+  it('keeps classic opening on the destructive action, with its corner close', async () => {
+    act(() => $shellChoice.set(false))
+    const { onConfirm } = renderDestructive()
+    const confirm = await screen.findByRole('button', { name: 'Delete' })
+
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(document.activeElement).toBe(confirm))
+    fireEvent.keyDown(confirm, { key: 'Enter' })
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1))
+    expect(screen.getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0)
   })
 })

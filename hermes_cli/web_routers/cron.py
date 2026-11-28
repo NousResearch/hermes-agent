@@ -720,7 +720,11 @@ def _update_cron_job_sync(job_id: str, body: CronJobUpdate, profile: Optional[st
 
 
 def _pause_cron_job_sync(job_id: str, profile: Optional[str] = None):
-    return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "pause_job", job_id))
+    try:
+        return _found(_mutate_cron_for_profile(_job_profile(job_id, profile), "pause_job", job_id))
+    except ValueError as exc:
+        # A finished job has nothing to pause: the job's state refuses it, not a server fault.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _resume_cron_job_sync(job_id: str, profile: Optional[str] = None):
@@ -946,7 +950,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     """Built-in + ``profile``'s plugin blueprints, with the ``deliver`` slot's options rewritten
     from that profile's configured gateway platforms. Plugin discovery can import plugin code, so
     this runs off the event loop, inside the profile scope that picks the plugin manager."""
-    from cron.blueprint_catalog import blueprint_catalog_entry, list_blueprints
+    from cron.blueprint_catalog import blueprint_catalog_entry, blueprint_prefill, list_blueprints
 
     with _config_profile_scope(profile):  # an unknown ?profile= raises the scope's 404
         catalog = list_blueprints()
@@ -962,6 +966,7 @@ def _blueprint_catalog_sync(profile: Optional[str]) -> list:
     entries = []
     for r in catalog:
         entry = blueprint_catalog_entry(r)
+        entry["prefill"] = blueprint_prefill(r)
         if deliver_options:
             for f in entry.get("fields", []):
                 if f.get("name") == "deliver":

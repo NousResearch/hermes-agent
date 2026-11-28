@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#0a0a0a" />
+    <!-- The redesign's two faces (fonts/*.ttf, @font-face in app/redesign/tokens/type.css). Preloaded
+         so the first portal paint already has them instead of swapping them in a beat later; Vite
+         rewrites a link href like any other HTML asset reference, so these follow the hashed build
+         assets. -->
+    <link rel="preload" as="font" type="font/ttf" href="/src/fonts/Oswald.ttf" crossorigin />
+    <link rel="preload" as="font" type="font/ttf" href="/src/fonts/MonaSans.ttf" crossorigin />
     <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="shortcut icon" href="/apple-touch-icon.png" />

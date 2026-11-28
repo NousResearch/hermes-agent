@@ -23,6 +23,7 @@ import { setSidebarOpen } from '@/store/layout'
 import { $chatOnboardingSolo, $introView } from '@/store/onboarding-intro'
 import { $paneStates, type PaneStateSnapshot } from '@/store/panes'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
+import { $setupGuideOnboarding } from '@/store/shell-policy'
 
 // The demo is borrowed: nothing it changes is persisted as the user's layout.
 $chatOnboardingSolo.subscribe(solo => {
@@ -149,44 +150,6 @@ export function assembleChatOnboarding(id: string, tree: LayoutNode, mode?: Inte
   reconcileLayout(id, tree)
 }
 
-/** Continue keeps a preview through `send` (true once the pick is applied); leaving without it reverts. */
-export interface PreviewUndo {
-  keep: (send: () => boolean) => boolean
-  revert: () => void
-}
-
-/** A layout preview's undo. A preview never switches Simple/Advanced and never ends the intro, so the
- *  arrangement is all there is to put back. */
-export function snapshotChatLayout(): PreviewUndo {
-  const snapshot = {
-    id: $activePresetId.get(),
-    panes: $paneStates.get(),
-    placed: $userPlacedPanes.get(),
-    tree: $layoutTree.get()
-  }
-
-  const restore = () => {
-    if (snapshot.tree) {
-      $layoutTree.set(snapshot.tree)
-      $paneStates.set(snapshot.panes)
-      $userPlacedPanes.set(snapshot.placed)
-      markActivePreset(snapshot.id)
-      persistTree()
-    }
-  }
-
-  return {
-    // The pick applies over the user's own arrangement, so a Simple/Advanced switch remembers that one
-    // for the mode it leaves, not the preview.
-    keep: send => {
-      restore()
-
-      return send()
-    },
-    revert: restore
-  }
-}
-
 /** The setup chat is guided only while the intro runs; in `ended` or `off` it is a normal chat. */
 export function useOnboardingChatActive(): boolean {
   const solo = useStore($chatOnboardingSolo)
@@ -207,6 +170,7 @@ export function useOnboardingChatActive(): boolean {
  *  session ids are known; in `ended` or `off` the setup chat is a normal chat. */
 export function useSetupChatView(): boolean {
   const view = useSessionView()
+  const setupGuide = useStore($setupGuideOnboarding)
   const solo = useStore($chatOnboardingSolo)
   const intro = useStore($introView) === 'intro'
   const runtimeId = useStore(view.$runtimeId)
@@ -216,5 +180,5 @@ export function useSetupChatView(): boolean {
     [runtimeId, storedId].some(id => id != null && ids.includes(id))
   )
 
-  return (view.kind === 'primary' && solo) || (intro && inThread)
+  return !setupGuide && ((view.kind === 'primary' && solo) || (intro && inThread))
 }

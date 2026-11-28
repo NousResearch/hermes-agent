@@ -118,6 +118,24 @@ class TestValidation:
         )
         assert "from my CEO" in spec["prompt"]
 
+    def test_prefill_is_the_default_filled_job_spec(self):
+        from cron.blueprint_catalog import blueprint_prefill
+
+        prefill = blueprint_prefill(get_blueprint("news-digest"))
+        assert prefill == fill_blueprint(get_blueprint("news-digest"), {})
+        assert "AI and technology" in prefill["prompt"]
+        assert prefill["schedule"] == "0 18 * * 1-5"
+
+    def test_prefill_is_none_while_a_required_slot_has_no_default(self):
+        from cron.blueprint_catalog import AutomationBlueprint, blueprint_prefill
+
+        blueprint = AutomationBlueprint(
+            key="needs-topic", title="Topic", description="", category="general",
+            schedule_template="0 9 * * *", prompt_template="Look into {topic}",
+            slots=[BlueprintSlot(name="topic", type="text", label="Topic?")],
+        )
+        assert blueprint_prefill(blueprint) is None
+
     def test_origin_threads_through(self):
         spec = fill_blueprint(
             get_blueprint("morning-brief"), {"time": "08:00"}, origin={"platform": "telegram", "chat_id": "9"}

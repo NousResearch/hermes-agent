@@ -26,6 +26,7 @@ export {
   type PluginLocaleBundles,
   type PluginMessages,
   type PluginMessageValue,
+  type PluginShellWording,
   type PluginTranslate,
   registerPluginLocales,
   translatePlugin,

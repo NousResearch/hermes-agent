@@ -1,20 +1,23 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as Hermes from '@/hermes'
+import type * as Profile from '@/store/profile'
 import type { MemoryProviderConfig } from '@/types/hermes'
 
 const getMemoryProviderConfig = vi.fn()
 const saveMemoryProviderConfig = vi.fn()
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/hermes', async importOriginal => ({
+  ...(await importOriginal<typeof Hermes>()),
   getMemoryProviderConfig: (provider: string) => getMemoryProviderConfig(provider),
   saveMemoryProviderConfig: (provider: string, values: unknown) => saveMemoryProviderConfig(provider, values)
 }))
 
-vi.mock('@/store/profile', async () => {
+vi.mock('@/store/profile', async importOriginal => {
   const { atom } = await import('nanostores')
 
-  return { $activeGatewayProfile: atom('default') }
+  return { ...(await importOriginal<typeof Profile>()), $activeGatewayProfile: atom('default') }
 })
 
 vi.mock('@/store/notifications', () => ({

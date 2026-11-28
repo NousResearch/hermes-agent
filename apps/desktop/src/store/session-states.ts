@@ -19,7 +19,7 @@
 import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { setSessionOwnerResolver } from '@/api/client'
+import { ambientOwnerConnectionId, setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -40,6 +40,7 @@ import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
 
+import { dropAgentSidebarPreferences, migrateAgentSidebarPreferences } from './agent-sidebar-preferences'
 import { dropQueuedLaunchPicksForProfile, migrateQueuedLaunchPicksForProfile } from './composer-queued-pick'
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
 import { registryConnectionKind } from './connection-registry-state'
@@ -97,9 +98,19 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
-import { mergeSessionTile, ownerProfileKey, sameSessionOwner, tilesShareOwner } from './session-tile-identity'
-import { orderTilesByTree } from './session-tile-order'
+import {
+  mergeSessionTile,
+  ownerProfileKey,
+  parseTileList,
+  sameSessionOwner,
+  type StoredTile,
+  tilesShareOwner,
+  tileWorkspaceMode,
+  toStoredTile
+} from './session-tile-identity'
+import { nextWorkspaceSession, orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, isMessagingCompletion, markSessionUnreadFinished } from './session-unread'
+import { $sessionListSpansProfiles } from './shell-policy'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -1257,80 +1268,6 @@ const TILES_KEY = 'hermes.desktop.sessionTiles.v2'
 const LEGACY_TILES_KEY = 'hermes.desktop.sessionTiles.v1'
 const BOTS_TILE_BUCKET = '__bots_workspace__'
 
-/** Persisted placement — `dir` + strip slot (`before`) + dock `anchor` so a
- *  restart / profile swap re-adopts tiles in the same order, not all stacked
- *  right of workspace. */
-type StoredTile = Pick<
-  SessionTile,
-  | 'anchor'
-  | 'before'
-  | 'dir'
-  | 'ownerProfile'
-  | 'ownerRoute'
-  | 'storedSessionId'
-  | 'workspaceMode'
-  | 'workspaceOwnerKey'
-  | 'workspaceTabTitle'
->
-
-const toStored = (t: SessionTile): StoredTile => ({
-  anchor: t.anchor,
-  before: t.before,
-  dir: t.dir,
-  ...(t.ownerProfile ? { ownerProfile: t.ownerProfile } : {}),
-  ...(t.ownerRoute ? { ownerRoute: t.ownerRoute } : {}),
-  storedSessionId: t.storedSessionId,
-  ...(t.workspaceMode ? { workspaceMode: t.workspaceMode } : {}),
-  ...(t.workspaceOwnerKey ? { workspaceOwnerKey: t.workspaceOwnerKey } : {}),
-  ...(t.workspaceTabTitle ? { workspaceTabTitle: t.workspaceTabTitle } : {})
-})
-
-function parseTileList(value: unknown): StoredTile[] {
-  return Array.isArray(value)
-    ? value
-        .filter((t): t is SessionTile => Boolean(t && typeof (t as SessionTile).storedSessionId === 'string'))
-        .map(t => {
-          const raw = t as SessionTile
-
-          return {
-            // #108679: a tile whose anchor is its OWN pane id is
-            // self-referential — the re-dock target can never exist (the
-            // pane is not in the tree at adoption time), so the dock falls
-            // through to an arbitrary same-placement neighbor instead of the
-            // recorded layout. Rewrite it to the workspace anchor at load,
-            // the same surface an anchorless tile re-docks against.
-            anchor:
-              typeof raw.anchor === 'string' && raw.anchor !== `${TILE_PANE_PREFIX}${raw.storedSessionId}`
-                ? raw.anchor
-                : undefined,
-            before: typeof raw.before === 'string' || raw.before === null ? raw.before : undefined,
-            dir: raw.dir,
-            ownerProfile: typeof raw.ownerProfile === 'string' ? normalizeProfileKey(raw.ownerProfile) : undefined,
-            ownerRoute:
-              raw.ownerRoute &&
-              typeof raw.ownerRoute.connectionId === 'string' &&
-              typeof raw.ownerRoute.profile === 'string'
-                ? {
-                    connectionId: raw.ownerRoute.connectionId,
-                    mode: raw.ownerRoute.mode,
-                    profile: raw.ownerRoute.profile,
-                    ...(typeof raw.ownerRoute.targetProfile === 'string'
-                      ? { targetProfile: raw.ownerRoute.targetProfile }
-                      : {})
-                  }
-                : undefined,
-            storedSessionId: raw.storedSessionId,
-            workspaceMode: raw.workspaceMode === 'bots' ? 'bots' : 'sessions',
-            workspaceOwnerKey:
-              raw.workspaceMode === 'bots' && typeof raw.workspaceOwnerKey === 'string'
-                ? raw.workspaceOwnerKey
-                : undefined,
-            workspaceTabTitle: typeof raw.workspaceTabTitle === 'string' ? raw.workspaceTabTitle : undefined
-          }
-        })
-    : []
-}
-
 function loadTilesByProfile(): Record<string, StoredTile[]> {
   const byProfile: Record<string, StoredTile[]> = Object.create(null)
   const parsed = readJson<unknown>(TILES_KEY)
@@ -1468,7 +1405,7 @@ function persistTiles() {
 }
 
 function saveTiles(tiles: SessionTile[]) {
-  const stored = tiles.map(toStored)
+  const stored = tiles.map(toStoredTile)
   const sessionTiles = stored.filter(tile => tile.workspaceMode !== 'bots')
   const botTiles = stored.filter(tile => tile.workspaceMode === 'bots')
 
@@ -1489,7 +1426,7 @@ function saveTiles(tiles: SessionTile[]) {
 }
 
 function saveTileBucket(bucket: string, tiles: SessionTile[]) {
-  const stored = tiles.map(toStored)
+  const stored = tiles.map(toStoredTile)
 
   if (stored.length > 0) {
     tilesByProfile[bucket] = stored
@@ -1528,10 +1465,6 @@ if (!isSecondaryWindow() && !isBrowserWindow()) {
 
 export function patchSessionTile(storedSessionId: string, patch: Partial<SessionTile>) {
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
-}
-
-function tileWorkspaceMode(tile: SessionTile): WorkspaceMode {
-  return tile.workspaceMode ?? 'sessions'
 }
 
 function tileBelongsToMain(tile: SessionTile, selectedStoredSessionId: string, tileProfile = profileKey()): boolean {
@@ -1953,7 +1886,54 @@ export function isBotChatSession(sessionId: null | string | undefined): boolean 
   return Boolean(stored && $botChatSessionIds.get().has(stored))
 }
 
+/** Pane/runtime caches use bare stored IDs: never retarget an open surface to another gateway's
+ * same-ID session. Only the redesign's cross-profile list asks; classic opens as main does. A
+ * verdict only: the internal open paths refuse quietly, the user's open says why. */
+export function sessionOwnerOpenable(storedSessionId: string, owner?: SessionProfileRoute): boolean {
+  if (!owner?.connectionId || !$sessionListSpansProfiles.get()) {
+    return true
+  }
+
+  const tile = $sessionTiles.get().find(candidate => candidate.storedSessionId === storedSessionId)
+  const main = $selectedStoredSessionId.get() === storedSessionId
+
+  if (!tile && !main) {
+    return true
+  }
+
+  let current = tile
+    ? (tile.ownerRoute ?? runtimeSessionOwner(tile.runtimeId))
+    : runtimeSessionOwner($activeSessionId.get())
+
+  current ??= getSessionOwnerHint(storedSessionId)
+
+  if (!isSessionOwnerRoute(current)) {
+    const rows = ownerLookupSessionRows().filter(row => sessionMatchesStoredId(row, storedSessionId))
+    const owners = new Set(rows.map(row => JSON.stringify([row.connection_id || '', normalizeProfileKey(row.profile)])))
+
+    if (owners.size === 1) {
+      current = knownSessionOwner(rows, storedSessionId) ?? current
+    }
+  }
+
+  // A bare profile can retain the native-primary compatibility route, but it
+  // is not proof that a newly selected remote gateway owns this open surface.
+  const route =
+    typeof current === 'string'
+      ? { connectionId: ambientOwnerConnectionId() === 'local' ? 'local' : undefined, profile: current }
+      : current
+
+  return (
+    route?.connectionId === owner.connectionId &&
+    normalizeProfileKey(route.profile) === normalizeProfileKey(owner.profile)
+  )
+}
+
 export function setSessionTileWorkspaceScope(storedSessionId: string, scope: SessionTileWorkspaceScope): boolean {
+  if (!sessionOwnerOpenable(storedSessionId, scope.ownerRoute)) {
+    return false
+  }
+
   // Before the tile lookup: openSession routes every open through here, and a
   // bot chat usually has no tile to record the scope on.
   rememberBotChatScope(storedSessionId, scope)
@@ -2070,7 +2050,7 @@ export function resetTileRuntimeBindings(
   sessionTileDelegate()?.invalidateRuntimeBindings?.(preservedStoredIds)
 
   if (tiles.some(tile => tile.runtimeId && !preservedStoredIds.has(tile.storedSessionId))) {
-    $sessionTiles.set(tiles.map(tile => (preservedStoredIds.has(tile.storedSessionId) ? tile : toStored(tile))))
+    $sessionTiles.set(tiles.map(tile => (preservedStoredIds.has(tile.storedSessionId) ? tile : toStoredTile(tile))))
   }
 }
 
@@ -2107,7 +2087,7 @@ export function resetRouteOwnedTileRuntimeBindings(scope: RuntimeReconnectScope)
   sessionTileDelegate()?.dropRuntimeBindings?.(ownedStoredIds)
 
   if (tiles.some(tile => tile.runtimeId && ownedStoredIds.has(tile.storedSessionId))) {
-    $sessionTiles.set(tiles.map(tile => (ownedStoredIds.has(tile.storedSessionId) ? toStored(tile) : tile)))
+    $sessionTiles.set(tiles.map(tile => (ownedStoredIds.has(tile.storedSessionId) ? toStoredTile(tile) : tile)))
   }
 }
 
@@ -2237,6 +2217,10 @@ export function openSessionTile(
   before?: null | string,
   explicitScope?: SessionTileWorkspaceScope
 ) {
+  if (!sessionOwnerOpenable(storedSessionId, explicitScope?.ownerRoute)) {
+    return
+  }
+
   const tiles = $sessionTiles.get()
   const existing = tiles.find(t => t.storedSessionId === storedSessionId)
 
@@ -2306,6 +2290,10 @@ export function openSessionTile(
     setSessionTileWorkspaceScope(storedSessionId, explicitScope)
   }
 
+  moveSessionTile(storedSessionId, dir, dock, before)
+}
+
+function moveSessionTile(storedSessionId: string, dir: TileDock, dock?: string, before?: null | string) {
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
   const tree = $layoutTree.get()
@@ -2318,46 +2306,8 @@ export function openSessionTile(
   }
 }
 
-/** ⌘W on the MAIN tab: the next session tab stacked WITH the workspace, to
- *  shift into main. Walks the workspace group's strip from the workspace tab
- *  outward (the tab after it first, then wrapping to the ones before), and
- *  returns the first session tile's stored id. Null when the workspace has no
- *  session tab stacked beside it (⌘W then stays the no-op it was). */
 export function nextSessionTileForWorkspace(): null | string {
-  const tree = $layoutTree.get()
-  const group = tree ? findGroupOfPane(tree, 'workspace') : null
-
-  if (!group) {
-    return null
-  }
-
-  const tiles = $sessionTiles.get()
-  const idx = group.panes.indexOf('workspace')
-  // After the workspace tab first, then the ones before it (nearest-out).
-  const ordered = [...group.panes.slice(idx + 1), ...group.panes.slice(0, idx).reverse()]
-
-  for (const paneId of ordered) {
-    if (paneId.startsWith(TILE_PANE_PREFIX)) {
-      const storedSessionId = paneId.slice(TILE_PANE_PREFIX.length)
-
-      if (tiles.some(t => t.storedSessionId === storedSessionId)) {
-        return storedSessionId
-      }
-    }
-  }
-
-  // Nothing stacked WITH main — but a session tile in another zone can still
-  // shift in. Without this, closing main in a side-by-side layout skipped
-  // promotion entirely and dropped to a fresh "New session" draft, which read
-  // as "closing a pane gave me a new session" (#88924). Promoting the tile
-  // also collapses its zone, so Close is how a multi-pane layout shrinks.
-  for (const tile of tiles) {
-    if (tree && findGroupOfPane(tree, `${TILE_PANE_PREFIX}${tile.storedSessionId}`)) {
-      return tile.storedSessionId
-    }
-  }
-
-  return null
+  return nextWorkspaceSession($layoutTree.get(), $sessionTiles.get())
 }
 
 /** If a session is already ON SCREEN — an open tile OR the one loaded in main —
@@ -2372,6 +2322,10 @@ export function focusOpenSession(
   storedSessionId: string,
   workspaceScope: SessionTileWorkspaceScope = { workspaceMode: 'sessions' }
 ): 'main' | 'tile' | null {
+  if (!sessionOwnerOpenable(storedSessionId, workspaceScope.ownerRoute)) {
+    return null
+  }
+
   // Compression rotates a conversation's tip id while tiles stay keyed by
   // whichever segment id they were opened with. An exact-id test right after
   // a rotation said "not open" for a conversation that IS on screen, and
@@ -2585,7 +2539,7 @@ export function closeSessionTile(storedSessionId: string) {
     const group = tree ? findGroupOfPane(tree, paneId) : null
     const siblings = group?.panes.filter(id => id !== paneId) ?? []
     closedStack().push({
-      ...toStored(tile),
+      ...toStoredTile(tile),
       ...(group && siblings.length
         ? {
             anchor: siblings[0],
@@ -2686,6 +2640,10 @@ export function dropTilesForProfile(
   // connection scope so deletion cannot erase same-named local tabs instead.
   const ambientConnection = tileConnectionId || LOCAL_CONNECTION_ID
   const removedScope = backendScopeKey(route ? routeConnection : ambientConnection, routeProfile || name)
+  dropAgentSidebarPreferences({
+    connectionId: route ? routeConnection || null : ambientConnection,
+    profile: routeTarget || routeProfile || name
+  })
   dropDesktopMetricsForProfile(name, (route ? routeConnection : ambientConnection) || LOCAL_CONNECTION_ID)
 
   const ownerMatches = (owner: SessionProfileRoute | undefined): boolean => {
@@ -2756,10 +2714,17 @@ export function dropTilesForProfile(
   }
 
   persistTiles()
-  // The rail is a profile-keyed family too (a later same-named profile must not inherit the tabs).
+  dropProfileKeyedFamilies(name, route)
+}
+
+/** The other profile-keyed families a deleted profile leaves behind: a later same-named profile must
+ *  not inherit its browser tabs, browser prefs or queued launch picks. */
+function dropProfileKeyedFamilies(name: string, route?: { connectionId?: string }): void {
+  const connection = String(route?.connectionId ?? '').trim()
+
   // F4: the cookie jar lives in LOCAL userData — clear it only for a LOCAL delete, never a remote one.
-  dropPreviewTabsForProfile(name, (String(route?.connectionId ?? '').trim() || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
-  dropBrowserProfilePrefs(name, route?.connectionId?.trim() || undefined)
+  dropPreviewTabsForProfile(name, (connection || LOCAL_CONNECTION_ID) === LOCAL_CONNECTION_ID)
+  dropBrowserProfilePrefs(name, connection || undefined)
   dropQueuedLaunchPicksForProfile(name, route ? (route.connectionId ?? '') : undefined)
 }
 
@@ -2818,6 +2783,7 @@ export async function migrateTilesForProfile(oldProfile: string, newProfile: str
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)
   migrateBrowserProfilePrefs(from, to)
+  migrateAgentSidebarPreferences({ connectionId: null, profile: from }, to)
   migrateQueuedLaunchPicksForProfile(from, to)
 }
 

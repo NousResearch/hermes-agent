@@ -1,5 +1,6 @@
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
+import { simplifiedAgentsCopy } from './simplified-agents'
 import { zhHantArtifacts } from './zh-hant_artifacts'
 import { zhHantAssistant } from './zh-hant_assistant'
 import { zhHantBoot } from './zh-hant_boot'
@@ -14,10 +15,12 @@ import { zhHantFirstRun } from './zh-hant_first_run'
 import { zhHantSettings } from './zh-hant_settings'
 
 export const zhHantOverrides = {
+  simplifiedAgents: simplifiedAgentsCopy['zh-hant'],
+  keybinds: { actions: { 'agents.new': '新增設定檔（設定檔頁面）', 'nav.back': '上一頁', 'nav.forward': '下一頁' } },
   gatewayGroupOpen: {
-    opening: "正在開啟群組聊天…",
+    opening: '正在開啟群組聊天…',
     lookupFailed: "無法在閘道上查找此群組，請重試。",
-    missing: "此群組聊天已不存在。"
+    missing: '此群組聊天已不存在。'
   },
 
   catalog: {

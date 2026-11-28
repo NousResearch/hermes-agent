@@ -220,6 +220,11 @@ describe('AttachmentList', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Remove doc.pdf' }))
     expect(onRemove).toHaveBeenCalledWith('a')
+    // CSS keeps this control visible and finger-sized on touch; the hook is the
+    // contract between the chip markup and portal-composer.css.
+    expect(screen.getByRole('button', { name: 'Remove doc.pdf' }).getAttribute('data-slot')).toBe(
+      'composer-attachment-remove'
+    )
   })
 
   it('still routes a non-image attachment to the preview rail', async () => {

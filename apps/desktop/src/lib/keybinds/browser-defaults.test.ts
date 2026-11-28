@@ -36,6 +36,7 @@ const BROWSER_RESERVED = {
 }
 
 const shortcuts = [
+  { id: 'agents.new', native: ['mod+n'], mac: 'mod+ctrl+n', other: 'alt+n' },
   { id: 'session.new', native: ['mod+n'], mac: 'mod+ctrl+n', other: 'alt+n' },
   { id: 'session.newTab', native: ['mod+t'], mac: 'mod+ctrl+t', other: 'alt+t' },
   { id: 'session.newWindow', native: ['mod+shift+n'], mac: 'mod+ctrl+shift+n', other: 'alt+shift+n' },
@@ -46,6 +47,10 @@ const shortcuts = [
   // ⌃⇧W is literal Control on macOS, which the browser leaves to the page.
   { id: 'view.closeTerminal', native: ['ctrl+shift+w'], mac: 'ctrl+shift+w', other: 'alt+shift+w' }
 ]
+
+// Back/Forward: the browser's own Back/Forward chords and mouse buttons walk the same (hash) history,
+// so a browser tab binds none of its own and only an app window does.
+const BROWSER_OWNED = ['nav.back', 'nav.forward']
 
 // The keydown a real keyboard sends for a combo: macOS reports Cmd (`mod`)
 // and Control separately; Windows and Linux report the key with Alt held.
@@ -112,11 +117,15 @@ describe('browser-hosted shortcut defaults', () => {
       ).map(action => action.id)
 
       expect(changed.sort()).toEqual(
-        shortcuts
-          .filter(shortcut => !(mac && shortcut.mac === shortcut.native[0]))
-          .map(shortcut => shortcut.id)
-          .sort()
+        [
+          ...shortcuts.filter(shortcut => !(mac && shortcut.mac === shortcut.native[0])).map(shortcut => shortcut.id),
+          ...BROWSER_OWNED
+        ].sort()
       )
+
+      for (const id of BROWSER_OWNED) {
+        expect(browser.keybindAction(id)?.defaults).toEqual([])
+      }
     })
 
     it.each(['webapp', 'authenticated', 'bridge'])(
@@ -155,7 +164,12 @@ describe('browser-hosted shortcut defaults', () => {
             expect(formatCombo(expected).startsWith('Alt+')).toBe(true)
           }
 
-          expect($comboIndex.get().get(comboFromEvent(keydownFor(expected))!)).toEqual([shortcut.id])
+          // The Agents page's New agent layers over new chat on its chord and passes it on elsewhere.
+          const owners = ['agents.new', 'session.new'].includes(shortcut.id)
+            ? ['agents.new', 'session.new']
+            : [shortcut.id]
+
+          expect($comboIndex.get().get(comboFromEvent(keydownFor(expected))!)).toEqual(owners)
 
           setBinding(shortcut.id, ['mod+shift+f6'])
           expect(bindingsFor(shortcut.id)).toEqual(['mod+shift+f6'])

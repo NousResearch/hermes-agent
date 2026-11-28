@@ -40,6 +40,7 @@ import {
   type SharedMetricsConsent,
   sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
+import { $portalPreferred } from '@/store/shell-variant'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
 
@@ -133,6 +134,8 @@ export function useDesktopMetrics({
 
   // The focused profile and its collection switch: re-read on attach, profile switch and window
   // focus (a CLI or another window may have changed it meanwhile).
+  // Keyed on `scope` too: any publication revokes the bound owner (store/desktop-metrics), so
+  // rebind even when the derived key is unchanged (the launch profile becoming named, say).
   useEffect(() => {
     if (!enabled || !gatewayOpen) {
       bindDesktopMetrics(null)
@@ -162,8 +165,7 @@ export function useDesktopMetrics({
       cancelled = true
       window.removeEventListener('focus', refresh)
     }
-  }, [connectionId, enabled, gatewayOpen, profileKey, request])
-
+  }, [connectionId, enabled, gatewayOpen, profileKey, request, scope])
 
   useEffect(() => {
     const area = enabled
@@ -204,6 +206,7 @@ export function useDesktopMetrics({
         if (now - last >= INTERACTION_THROTTLE_MS) {
           last = now
           noteInteraction(now)
+          recordFeatureUse($portalPreferred.get() ? 'simplified_sidebar' : 'classic_sidebar', now)
         }
       }
     })()

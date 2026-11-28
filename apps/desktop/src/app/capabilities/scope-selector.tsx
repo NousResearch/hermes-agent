@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
+import { useLocation } from 'react-router'
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import type { DesktopRosterAgent } from '@/global'
@@ -9,8 +10,12 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
+
+/** The profile roster the scope selector lists (warmed by ./prefetch). */
+export const CAPABILITY_PROFILES_KEY = ['capabilities-profiles'] as const
 
 interface ScopeOption {
   key: string
@@ -32,6 +37,9 @@ export interface CapabilityScope {
   /** Display name of the selected profile (the Plugins tab's Agent column). */
   label?: string
   options: ScopeOption[]
+  /** The redesign: the selected agent's machine has not said yet which profile serves it, so
+   *  nothing should be written for it. */
+  resolving?: boolean
   value: string
   onChange: (value: string) => void
 }
@@ -51,10 +59,24 @@ export function useCapabilityScope({
   fixedConnection?: string
   fixedProfile?: string
 }): CapabilityScope {
+  const redesign = usePortalShell()
   const activeProfile = useStore($activeGatewayProfile)
-  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(null)
+  const { search } = useLocation()
 
-  const scopeProfile: ProfileScope = useMemo(
+  // An agent link opens this page on that agent, in either shell (the redesign's agent pages link
+  // here for its Connectors; a live flip to classic must not fall back to the active profile).
+  const [scopeOverride, setScopeOverride] = useState<null | string | { connectionId: string; profile: string }>(() => {
+    const params = new URLSearchParams(search)
+    const profile = fixedProfile ? null : params.get('agentProfile')
+    const connectionId = params.get('connection')
+
+    return profile && connectionId && connectionId !== (activeGatewayConnectionId() ?? 'local')
+      ? { connectionId, profile }
+      : profile
+  })
+
+  // The picked row, as the selector names it.
+  const selection: ProfileScope = useMemo(
     () =>
       fixedProfile
         ? fixedConnection
@@ -64,15 +86,14 @@ export function useCapabilityScope({
     [activeProfile, fixedConnection, fixedProfile, scopeOverride]
   )
 
-  const scopeKey = profileScopeKey(scopeProfile)
+  const selectionKey = profileScopeKey(selection)
 
   // The registry connection an explicit override pins — null for the ambient
   // active-profile path and for fixed-profile pins without a connection.
-  const scopeConnectionId =
-    scopeProfile && typeof scopeProfile === 'object' ? (scopeProfile.connectionId ?? '').trim() || 'local' : null
+  const scopeConnectionId = profileScopeConnectionId(selection)
 
   const { data: profilesData } = useQuery({
-    queryKey: ['capabilities-profiles'],
+    queryKey: CAPABILITY_PROFILES_KEY,
     queryFn: () => getProfiles(),
     staleTime: 60_000,
     // Pinned scope never shows the selector, so don't fetch the roster for it.
@@ -86,21 +107,32 @@ export function useCapabilityScope({
   const registryBridge = window.hermesDesktop?.connections
   const rosterBridge = window.hermesDesktop?.getAgentRoster
 
-  const { data: registryData } = useQuery({
+  const registryEnabled = !fixedProfile && Boolean(registryBridge) && Boolean(rosterBridge)
+
+  const { data: registryData, isPending: registryPending } = useQuery({
     queryKey: ['capabilities-connections-registry'],
     queryFn: () => registryBridge!.list(),
     staleTime: 60_000,
-    enabled: !fixedProfile && Boolean(registryBridge) && Boolean(rosterBridge)
+    enabled: registryEnabled
   })
 
   const multiConnection = (registryData?.connections.length ?? 0) > 1
 
-  const { data: rosterData } = useQuery({
+  const { data: rosterData, isPending: rosterPending } = useQuery({
     queryKey: ['capabilities-agent-roster'],
     queryFn: () => rosterBridge!(),
     staleTime: 60_000,
     enabled: !fixedProfile && multiConnection
   })
+
+  // The redesign reads and writes a roster alias on the profile it serves from; classic keeps
+  // addressing the alias by its own name.
+  const scopeProfile: ProfileScope = useMemo(
+    () => (redesign ? servedProfile(selection, rosterData?.agents) : selection),
+    [redesign, rosterData, selection]
+  )
+
+  const scopeKey = profileScopeKey(scopeProfile)
 
   // An app-wide profile switch drops any scope override — the user just
   // changed what "here" means, and a stale override pointing at the previous
@@ -135,16 +167,16 @@ export function useCapabilityScope({
   // roster path an ambient (non-override) scope is the active gateway's
   // profile, which lives at `activeConnectionId::profile`.
   const value = useMemo(() => {
-    if (scopeProfile && typeof scopeProfile === 'object') {
-      return `${(scopeProfile.connectionId ?? '').trim() || 'local'}::${scopeProfile.profile ?? ''}`
+    if (selection && typeof selection === 'object') {
+      return `${(selection.connectionId ?? '').trim() || 'local'}::${selection.profile ?? ''}`
     }
 
     if (multiConnection && rosterData?.agents?.length) {
-      return `${activeGatewayConnectionId() ?? 'local'}::${normalizeProfileKey(scopeProfile)}`
+      return `${activeGatewayConnectionId() ?? 'local'}::${normalizeProfileKey(selection)}`
     }
 
-    return scopeProfile ?? ''
-  }, [multiConnection, rosterData, scopeProfile])
+    return selection ?? ''
+  }, [multiConnection, rosterData, selection])
 
   // Selector option values are `connectionId::profile` on multi-connection
   // desktops (the roster path) and bare profile names otherwise, so one
@@ -158,7 +190,7 @@ export function useCapabilityScope({
     const next: ProfileScope =
       sep >= 0 ? { connectionId: picked.slice(0, sep), profile: picked.slice(sep + 2) } : picked
 
-    if (profileScopeKey(next) === scopeKey) {
+    if (profileScopeKey(next) === selectionKey) {
       return
     }
 
@@ -172,8 +204,38 @@ export function useCapabilityScope({
     onChange,
     options,
     profile: scopeProfile,
+    // An agent picked on another machine is addressed through that machine's roster (an alias
+    // serves from another profile's home). Hold switches only while a cross-connection selection
+    // actually awaits registry/roster resolution — local bare-string selections never wait, and a
+    // single-connection or settled/errored query never locks controls forever.
+    resolving:
+      redesign &&
+      !fixedProfile &&
+      selection !== null &&
+      typeof selection === 'object' &&
+      ((registryEnabled && registryPending) || (multiConnection && rosterPending)),
     value
   }
+}
+
+/** The registry connection a scope pins: null for a bare profile name, which follows the active
+ *  gateway. */
+export function profileScopeConnectionId(scope: ProfileScope): null | string {
+  return scope && typeof scope === 'object' ? (scope.connectionId ?? '').trim() || 'local' : null
+}
+
+/** A roster alias is listed under its own name but served from `targetProfile` on its backend. */
+function servedProfile(selection: ProfileScope, agents: DesktopRosterAgent[] | undefined): ProfileScope {
+  if (!selection || typeof selection !== 'object') {
+    return selection
+  }
+
+  const connectionId = profileScopeConnectionId(selection)
+  const agent = agents?.find(row => row.connectionId === connectionId && row.profile === selection.profile)
+
+  return agent?.targetProfile && agent.targetProfile !== agent.profile
+    ? { ...selection, profile: agent.targetProfile }
+    : selection
 }
 
 /**
@@ -184,10 +246,13 @@ export function useCapabilityScope({
  */
 export function CapabilityScopeSelector({
   compact = false,
+  quiet = false,
   scope
 }: {
   /** In Plugins, the selector belongs only to the Agent column. */
   compact?: boolean
+  /** In the redesigned header the trigger names the scope itself; its look is the header's. */
+  quiet?: boolean
   scope: CapabilityScope
 }) {
   const { t } = useI18n()
@@ -197,17 +262,15 @@ export function CapabilityScopeSelector({
   }
 
   return (
-    <div
-      className={cn(
-        'flex min-w-0 items-center gap-2',
-        compact && 'flex-1'
-      )}
-    >
-      {!compact && (
+    <div className={cn('flex min-w-0 items-center gap-2', compact && 'flex-1')}>
+      {!compact && !quiet && (
         <span className="text-[0.7rem] font-medium text-(--ui-text-tertiary)">{t.skills.configuringProfile}</span>
       )}
       <Select onValueChange={scope.onChange} value={scope.value}>
-        <SelectTrigger className={cn('text-xs', compact ? 'h-6 min-w-0 w-full px-2 truncate' : 'h-7 w-56')}>
+        <SelectTrigger
+          aria-label={quiet ? t.skills.configuringProfile : undefined}
+          className={quiet ? undefined : cn('text-xs', compact ? 'h-6 min-w-0 w-full px-2 truncate' : 'h-7 w-56')}
+        >
           {compact ? (
             <span className="min-w-0 truncate" data-slot="compact-select-value">
               <SelectValue />

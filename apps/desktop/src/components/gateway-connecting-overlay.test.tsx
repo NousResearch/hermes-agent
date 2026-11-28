@@ -1,12 +1,14 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $introView } from '@/store/onboarding-intro'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import { setGatewayState } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
 import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
@@ -25,6 +27,7 @@ import { GatewayConnectingOverlay } from './gateway-connecting-overlay'
 // reconnects, leaving chat/settings usable while the reconnect loop runs.
 
 function resetStores() {
+  $shellChoice.set(false)
   setGatewayState('idle')
   $gatewaySwitching.set(false)
   $desktopBoot.set({
@@ -61,7 +64,11 @@ const isConnectingShown = () =>
   screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
 
 const isRecoveryShown = () =>
-  Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
+  Boolean(
+    screen.queryByText(en.boot.failure.useLocalGateway) ||
+    screen.queryByText(/retry/i) ||
+    screen.queryByText(/sign in/i)
+  )
 
 describe('connecting overlay vs recovery surface', () => {
   it('post-boot socket drops do not re-cover the app with the initial CONNECTING overlay', async () => {
@@ -172,7 +179,7 @@ describe('connecting overlay vs recovery surface', () => {
 
     // Escape hatch is reachable; the connecting overlay bows out.
     expect(isRecoveryShown()).toBe(true)
-    expect(screen.getByRole('button', { name: /gateway settings/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: en.boot.failure.gatewaySettings })).toBeTruthy()
     expect(isConnectingShown()).toBe(false)
   })
 })

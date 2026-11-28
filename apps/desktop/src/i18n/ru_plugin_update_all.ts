@@ -11,6 +11,11 @@ export const ruPluginUpdateAll: PluginUpdateAllTranslations = {
     (failed ? `, с ошибкой: ${failed}` : ''),
   updateAllNone: 'Все плагины в актуальном состоянии',
   updateAllFailed: 'Не удалось обновить плагины',
+  checkForUpdates: 'Проверить обновления',
+  checkingForUpdates: 'Проверка…',
+  updatesAvailable: (count: number) => `Доступно обновлений плагинов: ${count}`,
+  checkFailed: 'Не удалось проверить обновления',
+  checkUnsupported: 'Этот бэкенд не умеет проверять обновления плагинов. Обновите Hermes, чтобы включить это',
   autoUpdate: 'Автообновление',
   autoUpdateTip: (hours: number) =>
     `Автоматически применять обновления плагинов при проверке шлюзом (каждые ${hours} ч). Новый код загружается в новых сессиях.`,

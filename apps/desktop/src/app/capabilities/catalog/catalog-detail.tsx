@@ -1,5 +1,6 @@
 import { type ReactNode, useLayoutEffect, useRef } from 'react'
 
+import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -10,6 +11,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { catalogIcon, CatalogImage } from './catalog-card'
 import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
@@ -74,6 +76,7 @@ export function CatalogDetail({
   dialog
 }: CatalogDetailProps) {
   const { t } = useI18n()
+  const redesign = usePortalShell()
   const c = t.catalog
   const root = useRef<HTMLDivElement>(null)
 
@@ -107,11 +110,16 @@ export function CatalogDetail({
       <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-secondary)">
         {entry.description}
       </p>
-      {entry.overview && entry.overview !== entry.description && (
-        <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
-          {entry.overview}
-        </p>
-      )}
+      {entry.overview &&
+        entry.overview !== entry.description &&
+        (redesign ? (
+          // Feed overviews are markdown (links, emphasis); the redesign renders them.
+          <CompactMarkdown className="capability-markdown" text={entry.overview} />
+        ) : (
+          <p className="whitespace-pre-wrap break-words text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
+            {entry.overview}
+          </p>
+        ))}
 
       <div className="space-y-3">
         <CatalogMetadata entry={entry} limit={Infinity} onCategory={onCategory} onSearch={onSearch} onTag={onTag} />

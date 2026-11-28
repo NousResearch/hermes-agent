@@ -11,18 +11,22 @@ import { notifyError } from '@/store/notifications'
 
 import { installBundledEntry } from '../mcp/install-catalog-entry'
 import { useMcpServers } from '../mcp/use-mcp-servers'
+import { AgentCapabilityBanner } from '../ui/agent-capability'
+import { useAgentCapabilityCopy } from '../ui/agent-capability-copy'
 
 import { AddServerDialog } from './add-dialog'
+import { AgentConnectors } from './agent-connectors'
 import { ConnectorsDirectory } from './connectors-directory'
 import { $abandonedConnects } from './data/account-operations'
 import { claimRouteLink } from './data/deep-link'
 import { useHostedActions } from './data/hosted-actions'
-import { joinBundledEntries, joinLocalServers } from './data/join'
+import { accountsFor, joinBundledEntries, joinLocalServers } from './data/join'
 import { invalidateConnectors } from './data/keys'
-import { useRenameAccount } from './data/mutations'
+import { useRenameAccount, type WriteOutcome } from './data/mutations'
 import { seedLocalServers, startConnectorPersistence, storeLocalServers } from './data/persist'
 import { prefetchConnectorTools, usePrefetchConnectedTools } from './data/prefetch'
 import { useHostedConnectors, usePluginServers } from './data/queries'
+import { asConnectorError } from './data/rpc'
 import {
   cardKey,
   deriveCards,
@@ -36,6 +40,7 @@ import { HostedConnectorDialog, type PendingRename } from './hosted-dialog'
 import { HostedNotice } from './hosted-notice'
 import { LocalConnectorDialog } from './local-dialog'
 import { RemoveServerConfirm } from './local-slots'
+import { ConnectionsView } from './redesign/connections-view'
 import { openToolsList, resetOpenedTools } from './tools-summary'
 import type { AccountRow, ConnectorCardModel, ConnectorsFilter } from './types'
 
@@ -44,11 +49,29 @@ const toolsListKey = (card: ConnectorCardModel) => (card.residency === 'local' ?
 export interface ConnectorsTabProps {
   gateway: HermesGateway | null
   profile: ProfileScope
+  agentControls?: boolean
+  /** The agent whose connectors these are, where the page can show more than one agent's. */
+  ownerLabel?: string
+  agentLayout?: boolean
+  /** The portal shell's redesigned Connections page rather than the classic directory. */
+  redesignLayout?: boolean
+  /** The redesigned page entered a category See-All or an app's Tools page. */
+  onSubviewChange?: (inSubview: boolean) => void
 }
 
-export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
+export function ConnectorsTab({
+  gateway,
+  profile,
+  agentControls = true,
+  agentLayout = false,
+  ownerLabel,
+  redesignLayout = false,
+  onSubviewChange
+}: ConnectorsTabProps) {
   const { t } = useI18n()
+  const navigate = useNavigate()
   const copy = t.connectorsPage
+  const agentCopy = useAgentCapabilityCopy()
 
   const hosted = useHostedConnectors(profile)
   const mcp = useMcpServers({ gateway, profile })
@@ -150,6 +173,12 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   }
 
   const runVerb = (card: ConnectorCardModel) => {
+    if (!agentControls && card.verb === 'turnBackOn') {
+      setOpenKey(cardKey(card))
+
+      return
+    }
+
     if (hostedActions.runHostedVerb(card)) {
       return
     }
@@ -179,35 +208,143 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
   const busySlug = hostedActions.busySlug
   const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
 
-  return (
-    <div className="capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2">
-      <ConnectorsDirectory
-        addYourOwn={
-          <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
-            {copy.add.action}
-          </Button>
-        }
-        busyKey={busyKey}
-        cards={cards}
-        filter={filter}
-        hostedFailed={hosted.phase === 'failed'}
-        loading={(hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0}
-        notices={<HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />}
-        onFilterChange={setFilter}
-        onOpen={card => setOpenKey(cardKey(card))}
-        onPrefetch={card => prefetchConnectorTools(profile, card)}
-        onRetryHosted={hosted.refetch}
-        onServerToggle={(card, next) => {
-          if (card.plugin === undefined) {
-            void mcp.setServerEnabled(localServerName(card), next)
-          }
-        }}
-        onVerb={runVerb}
-        selectedKey={openKey}
-      />
+  const loading = (hosted.phase === 'loading' || mcp.configLoading || mcp.catalogLoading) && cards.length === 0
+  const notices = <HostedNotice hasGuest={freeTier?.has_guest === true} phase={hosted.phase} />
 
-      {openCard && openCard.ways.hosted === null ? (
+  const onServerToggle = agentControls
+    ? (card: ConnectorCardModel, next: boolean) => {
+        if (card.plugin === undefined) {
+          void mcp.setServerEnabled(localServerName(card), next)
+        }
+      }
+    : undefined
+
+  const redesigned = redesignLayout && !agentLayout
+
+  // The app-level disconnect speaks for every active account the summary names, one after another.
+  const disconnectApp = async (card: ConnectorCardModel): Promise<WriteOutcome> => {
+    const accounts = accountsFor(hosted.accounts, card.slug)
+
+    if (accounts.length === 0) {
+      return {
+        error: asConnectorError(new Error(copy.page.disconnectNoAccount)),
+        ok: false
+      }
+    }
+
+    for (const account of accounts) {
+      const outcome = await remover.disconnect(account.connection_id)
+
+      if (!outcome.ok) {
+        return outcome
+      }
+    }
+
+    return { ok: true }
+  }
+
+  return (
+    <div
+      className={
+        agentLayout ? 'agent-capability-list' : 'capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2'
+      }
+    >
+      {agentLayout ? (
+        <>
+          <AgentCapabilityBanner
+            action={
+              <Button onClick={() => navigate('/capabilities?tab=connectors')} variant="outline">
+                {agentCopy.connectors.browse}
+              </Button>
+            }
+            description={agentCopy.connectors.bannerBody}
+            title={agentCopy.connectors.bannerTitle}
+          />
+          <AgentConnectors
+            addDisabled={mcp.profilePending}
+            busyKey={busyKey}
+            cards={cards}
+            filter={filter}
+            hostedFailed={hosted.phase === 'failed'}
+            loading={loading}
+            notices={notices}
+            onAddServer={() => setAddOpen(true)}
+            onFilterChange={setFilter}
+            onOpen={card => setOpenKey(cardKey(card))}
+            onPrefetch={card => prefetchConnectorTools(profile, card)}
+            onRetryHosted={hosted.refetch}
+            onServerToggle={onServerToggle}
+            onVerb={runVerb}
+            selectedKey={openKey}
+          />
+        </>
+      ) : redesigned ? (
+        <ConnectionsView
+          addDisabled={mcp.profilePending}
+          agentControls={agentControls}
+          busyKey={busyKey}
+          cards={cards}
+          controller={mcp}
+          hosted={hosted}
+          hostedFailed={hosted.phase === 'failed'}
+          installFieldsFor={card => bundledEntry(card)?.required_env}
+          installingKey={installing}
+          loading={loading}
+          notices={notices}
+          onAddServer={() => setAddOpen(true)}
+          onCloseCard={() => setOpenKey(null)}
+          onConnect={(card, alias) =>
+            connectAccount(card, false, alias === undefined ? undefined : { alias })
+          }
+          onDisconnectApp={disconnectApp}
+          onGiveUp={opId => void write(connector.giveUp(opId))}
+          onInstall={(card, env) => void startInstall(card, env)}
+          onOpenCard={card => setOpenKey(cardKey(card))}
+          onPrefetch={card => prefetchConnectorTools(profile, card)}
+          onReconnect={(card, account) => void startConnect(card, true, account)}
+          onRemoveAccount={(_, account) => remover.disconnect(account.connection_id)}
+          onRemoveLocalServer={setRemoveServer}
+          onRenameAccount={renamer.rename}
+          onRenameOpened={renameOpened}
+          onRetryHosted={hosted.refetch}
+          onStopWaiting={card => {
+            void hostedActions.runHostedVerb({ ...card, verb: 'stopWaiting' })
+          }}
+          onSubviewChange={onSubviewChange}
+          onToggleForMe={(card, next) => void write(switcher.setEnabled(card.slug, next))}
+          onVerb={runVerb}
+          openCard={openCard}
+          pendingRename={pendingRename}
+          profile={profile}
+          togglePendingKey={switcher.pending}
+        />
+      ) : (
+        <ConnectorsDirectory
+          addYourOwn={
+            <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">
+              {copy.add.action}
+            </Button>
+          }
+          busyKey={busyKey}
+          cards={cards}
+          filter={filter}
+          hostedFailed={hosted.phase === 'failed'}
+          loading={loading}
+          notices={notices}
+          onFilterChange={setFilter}
+          onOpen={card => setOpenKey(cardKey(card))}
+          onPrefetch={card => prefetchConnectorTools(profile, card)}
+          onRetryHosted={hosted.refetch}
+          onServerToggle={onServerToggle}
+          onVerb={runVerb}
+          owner={ownerLabel ? t.skills.plugins.halfAgentIn(ownerLabel) : undefined}
+          selectedKey={openKey}
+        />
+      )}
+
+      {!redesigned && openCard && openCard.ways.hosted === null ? (
         <LocalConnectorDialog
+          agentControls={agentControls}
           card={openCard}
           controller={mcp}
           installFields={bundledEntry(openCard)?.required_env}
@@ -221,7 +358,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         />
       ) : null}
 
-      {openCard?.ways.hosted ? (
+      {!redesigned && openCard?.ways.hosted ? (
         <HostedConnectorDialog
           accountActions={{
             add: async alias => {
@@ -237,6 +374,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
             rename: renamer.rename,
             renameOpened
           }}
+          agentControls={agentControls}
           card={openCard}
           controller={mcp}
           hosted={hosted}
@@ -252,7 +390,7 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           onInstall={env => void startInstall(openCard, env)}
           onReconnect={() => void startConnect(openCard, true)}
           onRemoveServer={() => setRemoveServer(openCard)}
-          onToggleForMe={next => void write(switcher.setEnabled(openCard.slug, next))}
+          onToggleForMe={agentControls ? next => void write(switcher.setEnabled(openCard.slug, next)) : undefined}
           onVerb={() => runVerb(openCard)}
           profile={profile}
           togglePending={switcher.pending === openCard.slug}
@@ -268,13 +406,15 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
         onRemoved={() => setOpenKey(null)}
       />
 
-      <DisconnectConfirm
-        accounts={hosted.accounts}
-        disconnect={remover.disconnect}
-        onClose={() => setDisconnecting(null)}
-        onDisconnected={() => setOpenKey(null)}
-        target={disconnecting}
-      />
+      {redesigned ? null : (
+        <DisconnectConfirm
+          accounts={hosted.accounts}
+          disconnect={remover.disconnect}
+          onClose={() => setDisconnecting(null)}
+          onDisconnected={() => setOpenKey(null)}
+          target={disconnecting}
+        />
+      )}
     </div>
   )
 }

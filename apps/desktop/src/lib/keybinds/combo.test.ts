@@ -109,6 +109,13 @@ describe('actionAllowedInInput', () => {
     expect(actionAllowedInInput('composer.dictate', 'shift+d')).toBe(true)
   })
 
+  it('leaves Back/Forward to an editable target, even on a primary-modifier chord', () => {
+    // ⌘[ is indentLess inside a code editor; navigating away there could drop unsaved edits.
+    expect(actionAllowedInInput('nav.back', 'mod+[')).toBe(false)
+    expect(actionAllowedInInput('nav.forward', 'mod+]')).toBe(false)
+    expect(actionAllowedInInput('nav.back', 'mod+alt+left')).toBe(false)
+  })
+
   it('leaves text navigation chords with the focused input even when rebound to an allowed action', () => {
     expect(actionAllowedInInput('session.next', 'mod+right')).toBe(false)
     expect(actionAllowedInInput('session.prev', 'mod+left')).toBe(false)

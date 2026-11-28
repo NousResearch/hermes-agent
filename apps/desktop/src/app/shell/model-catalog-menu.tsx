@@ -101,7 +101,11 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
   const cache = pricing.cache || null
 
   if (pricing.free) {
-    return <span className="shrink-0 pl-2 text-[0.625rem] text-(--ui-green)">{copy.free}</span>
+    return (
+      <span className="shrink-0 pl-2 text-[0.625rem] text-(--ui-green)" data-slot="model-price">
+        {copy.free}
+      </span>
+    )
   }
 
   if (!input && !output) {
@@ -114,6 +118,7 @@ function ModelPrice({ pricing }: { pricing: ModelPricing }) {
   return (
     <span
       className="flex shrink-0 items-center gap-1.5 pl-2 text-[0.625rem] tabular-nums text-(--ui-text-tertiary)"
+      data-slot="model-price"
       title={copy.priceTitle(input ?? '—', output ?? '—', cache ?? '')}
     >
       <span>
@@ -764,7 +769,7 @@ export function ModelCatalogMenu({
           {copy.noModels}
         </DropdownMenuItem>
       ) : hasList ? (
-        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" ref={listRef}>
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5" data-slot="model-catalog-menu" ref={listRef}>
           {/* Favorites first — the shortcut the star exists for. The section
               paints nothing with no favorites, and nothing while searching,
               where every match is listed in its provider's place instead. */}

@@ -10,6 +10,19 @@ export interface BootTranslations {
     startingDesktopConnection: string
     startingHermesDesktop: string
   }
+  /**
+   * Boot/loading copy for the browser-hosted renderer (the Webapp): a browser tab runs the same
+   * cold-boot flow but is not the Desktop app, so its steps and ready message never name one.
+   * `lib/boot-copy` selects these under `hostHas('webappCopy')`; native Desktop keeps the
+   * `steps`/`ready` copy above.
+   */
+  webapp: {
+    ready: string
+    steps: {
+      startingConnection: string
+      startingHermes: string
+    }
+  }
   errors: {
     backgroundExited: string
     backgroundExitedDuringStartup: string

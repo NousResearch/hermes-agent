@@ -1,0 +1,141 @@
+import { useStore } from '@nanostores/react'
+
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
+import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
+import { $hiddenSidebarAgents, agentSidebarKey, setSidebarAgentHidden } from '@/store/agent-sidebar-preferences'
+import { $fleetRoster } from '@/store/fleet-roster'
+import { notify, notifyError } from '@/store/notifications'
+import { runExportProfileFlow, runImportProfileFlow } from '@/store/profile-share'
+import { canOpenNewWindow, openNewWindow } from '@/store/windows'
+import type { ProfileInfo } from '@/types/hermes'
+
+import { useHiddenAgentCopy } from '../chat/sidebar/hidden-agent-copy'
+
+import { useAgentDialogs } from './agent-dialogs'
+import { useAgentSettingsCopy } from './copy'
+import type { AgentRouteOwner } from './data'
+import { useDefaultAgent } from './default-agent'
+import { useOverviewActionsCopy } from './overview-actions-copy'
+import { useAgentSettingsEditorCopy } from './settings-copy'
+
+interface AgentOverviewActionsProps {
+  owner: AgentRouteOwner
+  profile?: ProfileInfo
+}
+
+export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsProps) {
+  const { t } = useI18n()
+  const c = useOverviewActionsCopy()
+  const shared = useHiddenAgentCopy()
+  const overview = useAgentSettingsCopy()
+  const general = useAgentSettingsEditorCopy().generalPage
+  const { open, dialogs } = useAgentDialogs()
+  const hiddenAgents = useStore($hiddenSidebarAgents)
+  const roster = useStore($fleetRoster)
+  const { canSetDefault, isDefault, makeDefault, saving: savingDefault } = useDefaultAgent(owner, profile)
+  const route = { connectionId: owner.connectionId, profile: owner.profile }
+
+  const sidebarOwner = {
+    ...route,
+    profile:
+      roster?.agents.find(agent => agent.connectionId === route.connectionId && agent.profile === owner.profile)
+        ?.targetProfile || owner.profile
+  }
+
+  const hidden = hiddenAgents.includes(agentSidebarKey(sidebarOwner))
+
+  async function copyPath() {
+    if (!profile?.path) {
+      return
+    }
+
+    try {
+      await writeClipboardText(profile.path)
+      notify({ kind: 'success', title: t.common.copied, message: profile.path })
+    } catch (error) {
+      notifyError(error, t.common.copyFailed)
+    }
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button aria-label={shared.actions} size="icon" variant="secondary">
+            <Codicon name="ellipsis" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          aria-label={shared.actions}
+          className="agent-overview-menu w-66 max-w-[calc(100vw-2rem)] p-2"
+        >
+          <DropdownMenuItem
+            disabled={!profile}
+            onSelect={() => open({ kind: 'duplicate', owner })}
+            title={!profile ? overview.unavailable : undefined}
+          >
+            <Codicon name="copy" />
+            <span>{c.duplicate}</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={isDefault || !canSetDefault || savingDefault} onSelect={() => void makeDefault()}>
+            <Codicon name={isDefault ? 'check' : 'star-empty'} />
+            <span>{isDefault ? t.profiles.defaultProfile : c.setDefault}</span>
+          </DropdownMenuItem>
+          {/* A disabled item shows no tooltip, so the reason stays readable under it. */}
+          {!canSetDefault && (
+            <p className="px-2 py-1 text-[length:var(--portal-type-meta-size)] text-(--ui-text-tertiary)">
+              {c.defaultUnavailable}
+            </p>
+          )}
+          <DropdownMenuItem onSelect={() => setSidebarAgentHidden(sidebarOwner, !hidden)}>
+            <Codicon name="eye-closed" />
+            <span>{hidden ? shared.showInChatList : shared.hide}</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          {canOpenNewWindow() && (
+            <DropdownMenuItem
+              onSelect={() =>
+                void openNewWindow({
+                  connectionId: owner.connectionId === 'local' ? null : owner.connectionId,
+                  profile: owner.profile
+                })
+              }
+            >
+              <Codicon name="empty-window" />
+              <span>{t.sidebar.row.newWindow}</span>
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem disabled={!profile} onSelect={() => void runExportProfileFlow(owner.profile)}>
+            <Codicon name="cloud-upload" />
+            <span>{t.profiles.exportProfile}</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void runImportProfileFlow()}>
+            <Codicon name="cloud-download" />
+            <span>{t.profiles.importProfile}</span>
+          </DropdownMenuItem>
+          <DropdownMenuItem disabled={!profile?.path} onSelect={() => void copyPath()} title={profile?.path}>
+            <Codicon name="copy" />
+            <span>{c.copyPath}</span>
+          </DropdownMenuItem>
+          {profile && !profile.is_default && owner.profile !== 'default' && (
+            <DropdownMenuItem onSelect={() => open({ kind: 'delete', owner, profile })} variant="destructive">
+              <Codicon name="trash" />
+              <span>{general.deleteTitle}…</span>
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {dialogs}
+    </>
+  )
+}

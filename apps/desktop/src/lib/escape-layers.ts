@@ -19,10 +19,16 @@
 
 // Higher number = closer to the user. Gaps leave room to slot new layers.
 export const ESCAPE_PRIORITY = {
+  // A redesign splash in the chat area (app/discovery/splash-surface.tsx): the lowest layer, so Esc
+  // closes anything opened over it first.
+  splash: 5,
   narrowOverlay: 10,
   layoutEdit: 20,
   zoneEditor: 30,
   overlay: 40,
+  // A redesign sheet below wide (app/shell/shell-sheet.ts): it opens over a page, so Esc closes the
+  // sheet before the page under it.
+  sheet: 45,
   // An in-flight pane drag: Esc means "abort the drag", never ALSO exit edit
   // mode / close the overlay the drag started over. Registered only for the
   // drag's few-hundred-ms lifetime (drag-session.ts).

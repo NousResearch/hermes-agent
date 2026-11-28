@@ -16,15 +16,21 @@ const toolCallsCache = new Map<string, { at: number; value: Record<string, numbe
 // screen pick the fresh counts up instead of sitting out the TTL.
 const $toolCallsRefreshed = atom(0)
 
+function freshToolCalls(scopeKey: string): null | Record<string, number> {
+  const cached = toolCallsCache.get(scopeKey)
+
+  return cached && Date.now() - cached.at < TOOL_CALLS_TTL_MS ? cached.value : null
+}
+
 async function loadToolCalls(
   scopeKey: string,
   scopeProfile: ProfileScope,
   force = false
 ): Promise<Record<string, number>> {
-  const cached = toolCallsCache.get(scopeKey)
+  const cached = force ? null : freshToolCalls(scopeKey)
 
-  if (!force && cached && Date.now() - cached.at < TOOL_CALLS_TTL_MS) {
-    return cached.value
+  if (cached) {
+    return cached
   }
 
   const analytics = await getUsageAnalytics(365, scopeProfile)
@@ -60,8 +66,9 @@ export async function refreshToolCalls(profile: ProfileScope): Promise<void> {
  */
 export function useToolCalls(profile: ProfileScope): null | Record<string, number> {
   const refreshed = useStore($toolCallsRefreshed)
-  const [toolCalls, setToolCalls] = useState<null | Record<string, number>>(null)
   const scopeKey = profileScopeKey(profile)
+  // A revisit within the TTL paints its counts (and the order they rank) in the first frame.
+  const [toolCalls, setToolCalls] = useState<null | Record<string, number>>(() => freshToolCalls(scopeKey))
 
   useEffect(() => {
     let cancelled = false

@@ -1,0 +1,58 @@
+/* Bridge: the portal's roles under the names shared (classic) components already read. Components in
+   components/ui and the chat stay single-sourced; under the gate these names resolve to portal roles. */
+:root[data-shell='portal'] {
+  /* Brand marks belong to the shell, not the skin: neutral fills and rows take no accent tint. */
+  --theme-fill-primary-accent-mix: 0%;
+  --theme-fill-secondary-accent-mix: 0%;
+  --theme-fill-tertiary-accent-mix: 0%;
+  --theme-fill-quaternary-accent-mix: 0%;
+  --theme-fill-quinary-accent-mix: 0%;
+  --theme-row-hover-accent-mix: 0%;
+  --theme-row-active-accent-mix: 0%;
+  --theme-control-hover-accent-mix: 0%;
+  --theme-control-active-accent-mix: 0%;
+  --ui-text-primary: var(--portal-text-primary);
+  --ui-text-secondary: var(--portal-text-secondary);
+  --ui-text-tertiary: var(--portal-text-tertiary);
+  --ui-text-quaternary: var(--portal-text-quaternary);
+  --ui-bg-card: var(--portal-surface-card);
+  --ui-stroke-primary: var(--portal-stroke-strong);
+  /* Ink 14 in both modes; the field role is 14 / 18 (Phase B). */
+  --ui-stroke-secondary: var(--portal-raw-ink-14);
+  --ui-stroke-tertiary: var(--portal-stroke-hairline);
+  --ui-stroke-quaternary: var(--portal-stroke-hairline);
+  --sidebar-edge-border: var(--portal-stroke-edge);
+  --ui-sidebar-surface-background: var(--portal-sidebar-background);
+  --ui-chat-surface-background: var(--portal-surface-stage);
+  --ui-editor-surface-background: var(--portal-surface-stage);
+  /* Tailwind rounded-* in shared components: the redesign's squarer scale. */
+  --radius-scalar: 0.6;
+  --terminal-panel-min-width: min(22rem, 40vw);
+  --global-nav-width: var(--portal-rail-reserve);
+  --page-nav-row-height: var(--portal-row-panel);
+  --composer-width: var(--portal-column-conversation);
+  --dialog-body-padding: 1.5rem;
+  --dialog-body-gap: 1.5rem;
+  /* Figma's 30×30 chrome buttons (r3, 16px glyphs): titlebar, rails, pane headers; breadcrumb spacing
+     906:19467. */
+  --titlebar-control-size: var(--portal-row-chrome);
+  --titlebar-control-height: var(--portal-row-chrome);
+  --titlebar-icon-size: 1rem;
+  --titlebar-control-gap: 0.625rem;
+  /* One status family: shared components' success inks read the redesign's online green. */
+  --ui-green: var(--portal-status-online);
+}
+
+/* The theme writes --ui-success inline on the root (themes/context.tsx), which no root rule can
+   override; it is re-pointed one level down, where every surface (and every body-portalled one)
+   inherits it. */
+:root[data-shell='portal'] body {
+  --ui-success: var(--portal-status-online);
+}
+
+/* Pages (overlays and workspace pages) lay their body on the page canvas, not on chat panels. */
+:root[data-shell='portal'] :is([data-overlay-surface][data-page-surface], [data-tree-group][data-zone-page]) {
+  --ui-chat-surface-background: var(--portal-page-background);
+  --ui-editor-surface-background: var(--portal-page-background);
+  --ui-sidebar-surface-background: var(--portal-page-sidebar-background);
+}

@@ -3,10 +3,12 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { toggleDeveloperToolPanel } from '@/app/redesign/developer-tool-panel'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { toggleTerminalPane } from '@/app/right-sidebar/terminal/reveal-focus'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { appViewForPath, isOverlayView } from '@/app/routes'
+import { goBack, historyForward } from '@/app/shell/history-position'
 import {
   activateTreeTabSlot,
   cycleTreeTabInFocusedZone,
@@ -20,6 +22,7 @@ import { findBarClaimsCombo } from '@/lib/find-in-page'
 import {
   contributedKeybindHandler,
   keybindAction,
+  keybindActionAvailable,
   PROFILE_SLOT_COUNT,
   SESSION_SLOT_COUNT,
   TAB_SLOT_COUNT
@@ -51,7 +54,9 @@ import {
   toggleRightSide,
   toggleSidebarOpen
 } from '@/store/layout'
+import { requestNewAgent } from '@/store/new-agent-request'
 import { notifyError } from '@/store/notifications'
+import { togglePortalStatusBarOpen } from '@/store/portal-status-bar'
 import { toggleBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -87,6 +92,8 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { $portalShell } from '@/store/shell-variant'
+import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { requestThreadPageScroll } from '@/store/thread-scroll'
 import { openNewWindow } from '@/store/windows'
@@ -138,6 +145,15 @@ const SWITCHER_MODIFIER_KEYS = new Set(['Alt', 'Control', 'Meta', 'Shift'])
 
 function hasWordEraseModifier(event: KeyboardEvent): boolean {
   return IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey
+}
+
+/** The actions bound to `combo` that this window offers, or undefined when none. An action it does
+ *  not offer (e.g. the statusbar toggle in the redesign) never claims its chord, so the key reaches
+ *  the next action or the page untouched instead of being swallowed as a silent no-op. */
+function offeredActionsFor(combo: string): string[] | undefined {
+  const offered = $comboIndex.get().get(combo)?.filter(keybindActionAvailable)
+
+  return offered?.length ? offered : undefined
 }
 
 // Mount once near the top of the app. Owns the single global keydown listener
@@ -315,8 +331,15 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
+    'nav.back': () => goBack(navigate),
+    'nav.forward': historyForward,
 
     'session.new': () => {
+      // The redesigned sidebar's New-chat row claims this command and starts the chat in the agent of
+      // the chat being viewed. Its claim answers whether it opened one, so a row that is unmounted, a
+      // picker-only mount, or a row still loading its roster falls through to the plain fresh draft
+      // below — the chord is never swallowed by a sidebar that cannot service it.
+      if (requestSimplifiedNewSession()) { return }
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.
@@ -351,9 +374,11 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // ⌘J toggles the physical right side — whatever column lives there in the
     // live tree (the Browser preview column, the files column). Falls back to
     // the terminal when nothing lives on the right (terminal-on-bottom).
-    'view.toggleRightSidebar': () => (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
+    // The redesign's right side is its one tool panel (as the band's button, titlebar-controls.tsx).
+    'view.toggleRightSidebar': () =>
+      toggleDeveloperToolPanel() || (layoutHasRightSide() ? toggleRightSide() : toggleTerminalPane()),
     'view.toggleReview': toggleReview,
-    'view.toggleStatusbar': toggleStatusbarVisible,
+    'view.toggleStatusbar': () => ($portalShell.get() ? togglePortalStatusBarOpen() : toggleStatusbarVisible()),
     'view.toggleProfileRail': toggleProfileRailVisible,
     'view.toggleSimpleMode': toggleSimpleMode,
     'view.toggleTabStrip': () => void toggleTargetZoneTabStrip(),
@@ -404,7 +429,8 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.next': () => cycleProfile(1),
     'profile.prev': () => cycleProfile(-1),
     'profile.toggleAll': toggleShowAllProfiles,
-    'profile.create': requestProfileCreate
+    'profile.create': requestProfileCreate,
+    'agents.new': requestNewAgent
   }
 
   // Plugins run built-in actions by id (`ctx.runAction`) through this same
@@ -552,7 +578,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
         return
       }
 
-      const actionIds = $comboIndex.get().get(combo)
+      const actionIds = offeredActionsFor(combo)
 
       // Unbound printable → type-to-focus. Bound chords (shift+n, …) win above.
       if (!actionIds) {

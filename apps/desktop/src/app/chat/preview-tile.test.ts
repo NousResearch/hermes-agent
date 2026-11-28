@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 vi.mock('./right-rail/preview', () => ({
   PreviewTilePane: () => null
@@ -10,6 +10,7 @@ vi.mock('./right-rail/preview-console-store', () => ({
 
 import { registry } from '@/contrib/registry'
 import { $previewTabs, closeRightRail, noteBrowserPage, openPreview } from '@/store/preview'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { browserTabExternalUrl, browserTabLabel, watchPreviewTiles } from './preview-tile'
 
@@ -79,7 +80,9 @@ describe('browserTabExternalUrl', () => {
   })
 })
 
-type DockData = { dock?: { pane?: string; pos?: string }; lifecycleKeepAlive?: boolean } | undefined
+type DockData =
+  | { collapsible?: boolean; dock?: { pane?: string; pos?: string }; lifecycleKeepAlive?: boolean }
+  | undefined
 
 function paneDataOf(paneId: string) {
   return registry.getArea('panes').find(entry => entry.id === paneId)?.data as DockData
@@ -104,6 +107,23 @@ describe('preview tiles keep a live page alive across Hide', () => {
 
     expect(paneDataOf(`preview-tile:${browserId}`)?.lifecycleKeepAlive).toBe(true)
     expect(paneDataOf('preview-tile:file:/tmp/a.ts')?.lifecycleKeepAlive).toBeFalsy()
+  })
+})
+
+describe('preview tiles are narrow sheets in the redesign', () => {
+  // Below wide a docked preview column crushed the chat; the redesign routes
+  // preview panes through NarrowOverlays instead, which needs `collapsible`.
+  it('registers as collapsible in the portal shell and never in classic', () => {
+    onTestFinished(() => $shellChoice.set(null))
+
+    $shellChoice.set(false)
+    openPreview(fileTarget('/tmp/classic.ts'))
+
+    expect(paneDataOf('preview-tile:file:/tmp/classic.ts')?.collapsible).toBeUndefined()
+
+    $shellChoice.set(true)
+
+    expect(paneDataOf('preview-tile:file:/tmp/classic.ts')?.collapsible).toBe(true)
   })
 })
 
@@ -185,6 +205,31 @@ describe('preview tiles mirror the visible session tabs', () => {
 
     return { model, preview, session, tree }
   }
+
+  it('docks a redesigned browser into the prepared tool panel, including after a session switch', async () => {
+    const { preview, session, tree, model } = await setup()
+    const { registry } = await import('@/contrib/registry')
+    const { $shellChoice } = await import('@/store/shell-variant')
+    const { prepareDeveloperToolPanel } = await import('../redesign/developer-tool-panel')
+    $shellChoice.set(true)
+
+    for (const id of ['files', 'review', 'terminal']) {
+      registry.register({ area: 'panes', id, data: { placement: 'right' }, render: () => null })
+    }
+
+    tree.$layoutTree.set(model.split('row', [model.group(['workspace']), model.group(['files', 'review', 'terminal'])]))
+    prepareDeveloperToolPanel('terminal')
+    session.$selectedStoredSessionId.set('sess-1')
+    preview.openBrowserTab()
+    const browser = tree.treePanesWithPrefix('preview-tile:')[0]
+    expect(browser).toBeTruthy()
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, browser)?.id)
+      .toBe(model.findGroupOfPane(tree.$layoutTree.get()!, 'files')?.id)
+    session.$selectedStoredSessionId.set('sess-2')
+    session.$selectedStoredSessionId.set('sess-1')
+    expect(model.findGroupOfPane(tree.$layoutTree.get()!, browser)?.id)
+      .toBe(model.findGroupOfPane(tree.$layoutTree.get()!, 'files')?.id)
+  })
 
   const htmlTarget = (path: string) =>
     ({

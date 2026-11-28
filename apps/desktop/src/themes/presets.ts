@@ -20,6 +20,7 @@
 
 import { THEME_PRESET_PALETTES } from '@hermes/shared'
 
+import { portalTheme } from './portal'
 import { skinToDesktopTheme } from './skin'
 import type { DesktopTheme, DesktopThemeTypography } from './types'
 
@@ -442,6 +443,7 @@ export const slateTheme: DesktopTheme = {
 }
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  portal: portalTheme,
   nous: nousTheme,
   github: githubTheme,
   catppuccin: catppuccinTheme,
@@ -460,6 +462,23 @@ export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
 export const DEFAULT_SKIN_NAME = 'nous'
+
+/** The redesigned shell's out-of-the-box skin: its Figma palette. */
+export const PORTAL_SKIN_NAME = 'portal'
+
+/** The skin a window paints without an explicit pick. The default follows the
+ *  shell, so flipping the redesign repaints an unchosen skin and leaves a chosen
+ *  one alone; nothing is persisted by the flip itself. */
+export function defaultSkinName(portalShell: boolean): string {
+  return portalShell ? PORTAL_SKIN_NAME : DEFAULT_SKIN_NAME
+}
+
+/** Whether `name` belongs to this shell's skin set. The Portal skin is the redesign's own
+ *  palette: classic neither lists nor paints it (its picker is main's), so a stored Portal pick
+ *  reads as "no pick" there — classic paints its default and the pick returns with the redesign. */
+export function skinInShell(name: string, portalShell: boolean): boolean {
+  return portalShell || name !== PORTAL_SKIN_NAME
+}
 
 /** Names that no longer resolve to a skin of their own. A stored pick of one
  *  falls back to DEFAULT_SKIN_NAME, and a cached backend theme under one is

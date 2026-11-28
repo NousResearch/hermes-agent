@@ -1,5 +1,7 @@
 import { type ReactNode, type RefObject, useLayoutEffect, useRef } from 'react'
 
+import { browserUiScale } from '@/lib/browser-zoom'
+
 const GROUP = '[data-slot="aui_message-group"]'
 const PROMPT = '[data-slot="aui_user-message-root"]'
 // Registered as a non-inherited <length> in styles.css. That registration is
@@ -7,16 +9,23 @@ const PROMPT = '[data-slot="aui_user-message-root"]'
 // whole turns, and an unregistered property forces Blink to restyle every
 // descendant on each write. See the @property block there before changing it.
 const CLIP = '--sticky-prompt-clip'
+// Where a pinned prompt at rest ends, measured from the viewport's top, while it covers anything.
+// It is written on `edgeRef`'s element, a still box beside the viewport, so a skin can soften the
+// clip's edge there (thread/redesign.css) without touching what scrolls. Softening the covered
+// turns themselves means a mask that changes on every scroll frame and redraws each one whole.
+// Registered like CLIP, for the same reason.
+const EDGE = '--sticky-prompt-edge'
 
 interface StickyPromptClipOptions {
   contentRef: RefObject<HTMLElement | null>
+  edgeRef?: RefObject<HTMLElement | null>
   scrollRef: RefObject<HTMLElement | null>
   paneVisible: boolean
   rows: ReactNode
 }
 
 /** Clip covered content instead of painting a solid rectangle over the glass. */
-export function useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows }: StickyPromptClipOptions) {
+export function useStickyPromptClip({ contentRef, edgeRef, scrollRef, paneVisible, rows }: StickyPromptClipOptions) {
   const controller = useRef<ReturnType<typeof observeStickyPromptClip> | null>(null)
 
   useLayoutEffect(() => {
@@ -30,12 +39,12 @@ export function useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows }
     }
 
     if (paneVisible && viewport && content) {
-      controller.current ??= observeStickyPromptClip(viewport, content)
+      controller.current ??= observeStickyPromptClip(viewport, content, edgeRef?.current ?? null)
       // Reconcile before paint without tearing down surviving clips when a
       // stream appends a message or the history window changes its rows.
       controller.current.reconcile()
     }
-  }, [contentRef, scrollRef, paneVisible, rows])
+  }, [contentRef, edgeRef, scrollRef, paneVisible, rows])
 
   useLayoutEffect(
     () => () => {
@@ -46,7 +55,7 @@ export function useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows }
   )
 }
 
-function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
+function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement, edge: HTMLElement | null) {
   const observed = new Set<HTMLElement>()
   const visible = new Set<HTMLElement>()
   const clipped = new Set<HTMLElement>()
@@ -54,10 +63,14 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
 
   const measure = () => {
     frame = 0
+    // Boxes are measured in screen pixels; CSS lengths (a prompt's `top`, the clips written below)
+    // are not, under the web app's own UI scale. One factor converts between them.
+    const scale = browserUiScale()
     const viewportTop = viewport.getBoundingClientRect().top
     const next = new Map<HTMLElement, number>()
     let activePrompt: HTMLElement | null = null
     let exclusionBottom = viewportTop
+    let atRest = false
 
     for (const group of visible) {
       // Read only intersecting groups: measuring a skipped turn's descendants
@@ -69,7 +82,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
       }
 
       const promptRect = prompt.getBoundingClientRect()
-      const stickyTop = Number.parseFloat(getComputedStyle(prompt).top) || 0
+      const stickyTop = (Number.parseFloat(getComputedStyle(prompt).top) || 0) * scale
 
       if (promptRect.top > viewportTop + stickyTop + 1 || promptRect.bottom <= viewportTop) {
         continue
@@ -80,6 +93,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
       if (!activePrompt || activePrompt.compareDocumentPosition(prompt) & Node.DOCUMENT_POSITION_FOLLOWING) {
         activePrompt = prompt
         exclusionBottom = promptRect.bottom
+        atRest = promptRect.top >= viewportTop + stickyTop - 1
       }
     }
 
@@ -131,7 +145,7 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
     clipped.clear()
 
     for (const [element, inset] of next) {
-      const value = `${inset}px`
+      const value = `${inset / scale}px`
 
       if (element.style.getPropertyValue(CLIP) !== value) {
         element.style.setProperty(CLIP, value)
@@ -139,6 +153,20 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
       }
 
       clipped.add(element)
+    }
+
+    // Only a prompt at rest has an edge: one being pushed out by the next turn moves every frame.
+    // The last position stays written when the edge goes, so the skin can fade it out in place.
+    if (edge && next.size && atRest) {
+      const value = `${Math.round((exclusionBottom - viewportTop) / scale)}px`
+
+      if (edge.style.getPropertyValue(EDGE) !== value) {
+        edge.style.setProperty(EDGE, value)
+      }
+
+      edge.setAttribute('data-sticky-prompt-edge', '')
+    } else {
+      edge?.removeAttribute('data-sticky-prompt-edge')
     }
   }
 
@@ -219,6 +247,9 @@ function observeStickyPromptClip(viewport: HTMLElement, content: HTMLElement) {
       element.style.removeProperty(CLIP)
       element.removeAttribute('data-sticky-prompt-clip')
     }
+
+    edge?.style.removeProperty(EDGE)
+    edge?.removeAttribute('data-sticky-prompt-edge')
   }
 
   return { viewport, content, reconcile, dispose }

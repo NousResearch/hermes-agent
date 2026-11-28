@@ -19,7 +19,15 @@ vi.mock('@nanostores/react', () => ({
 vi.mock('nanostores', async () => {
   const actual = await vi.importActual<typeof Nanostores>('nanostores')
 
-  return { ...actual, computed: (deps: unknown, fn: unknown) => fn }
+  const isStore = (dep: unknown) => typeof (dep as { listen?: unknown } | null)?.listen === 'function'
+
+  // The stores mocked below are plain values, which a real `computed` cannot listen to: those
+  // derive to their function. Real stores loaded along the way keep the real `computed`.
+  return {
+    ...actual,
+    computed: (deps: unknown, fn: unknown) =>
+      [deps].flat().every(isStore) ? actual.computed(deps as never, fn as never) : fn
+  }
 })
 
 vi.mock('@/i18n', () => ({

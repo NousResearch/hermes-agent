@@ -14,10 +14,21 @@ import {
   $sharedMetricsDetailsOpen,
   answerSharedMetricsOffer,
   type SharedMetricsChoice,
+  sharedMetricsOfferPending,
   sharedMetricsProfileRequester
 } from '@/store/shared-metrics'
+import { usePortalShell } from '@/store/shell-variant'
 
 const CHOICES: readonly SharedMetricsChoice[] = ['share', 'off']
+
+/** Whether a composer stack paints the strip, given that it may (it owns the offer lane and nothing
+ *  outranks the question). Classic only: the redesign asks in the chat sidebar (`UsageStatsCard`). */
+export function useSharedMetricsStripShown(mayOffer: boolean): boolean {
+  const pending = sharedMetricsOfferPending(useStore($sharedMetricsConsent))
+  const portal = usePortalShell()
+
+  return mayOffer && !portal && pending
+}
 
 /**
  * The first-run shared-metrics offer, in the composer status stack beside the
@@ -67,6 +78,7 @@ function SharedMetricsConsentStripForOwner({ connectionId, profile }: SharedMetr
 
   return (
     <StatusRow
+      className="status-notice-row"
       leading={<Codicon aria-hidden className="text-(--ui-text-tertiary)" name="graph" size="0.8rem" />}
       trailing={
         <>

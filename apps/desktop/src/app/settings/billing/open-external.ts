@@ -7,3 +7,9 @@ export function openExternal(url?: string) {
     openExternalLink(url)
   }
 }
+
+// Strip a trailing Unicode arrow (`↗`) from labels that render beside an
+// `<ExternalLink />` icon so the button never shows two arrows side by side.
+export function externalActionLabel(label: string): string {
+  return label.replace(/\s*↗\s*$/, '')
+}

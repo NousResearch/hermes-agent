@@ -51,7 +51,7 @@ import { VirtualSessionList } from './virtual-session-list'
 export const VIRTUALIZE_THRESHOLD = 25
 
 interface SidebarSectionHeaderProps {
-  label: string
+  label?: string
   open: boolean
   onToggle: () => void
   action?: React.ReactNode
@@ -72,6 +72,10 @@ function SidebarSectionHeader({
   icon,
   collapsible = true
 }: SidebarSectionHeaderProps) {
+  if (label === undefined) {
+    return null
+  }
+
   const labelBody = (
     <>
       {icon}
@@ -109,7 +113,7 @@ function SidebarSectionHeader({
 }
 
 interface SidebarSessionsSectionProps {
-  label: string
+  label?: string
   open: boolean
   onToggle: () => void
   sessions: SessionInfo[]

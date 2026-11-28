@@ -9,11 +9,18 @@ import { writeClipboardText } from '@/lib/clipboard'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { usePortalShell } from '@/store/shell-variant'
 
 type CopyPayload = string | (() => Promise<string> | string)
 type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
+
+// Classic opens an icon button's tip below. The redesign leaves the side to Tip's control placement
+// (above), as every icon button beside it does: a copy among a message's actions opened under the row
+// while its neighbours opened over it (design review 2026-11-17).
+const iconTipSide = (side: React.ComponentProps<typeof Tip>['side'], portal: boolean) =>
+  side ?? (portal ? undefined : 'bottom')
 
 export interface CopyButtonProps {
   appearance?: CopyButtonAppearance
@@ -57,6 +64,7 @@ export function CopyButton({
   title
 }: CopyButtonProps) {
   const { t } = useI18n()
+  const portal = usePortalShell()
   const resolvedErrorMessage = errorMessage ?? t.common.copyFailed
   const resolvedLabel = label ?? t.common.copy
   const [status, setStatus] = React.useState<CopyStatus>('idle')
@@ -215,7 +223,7 @@ export function CopyButton({
 
   // Only icon-only buttons need a tooltip; the text variant already shows its label.
   return appearance === 'icon' ? (
-    <Tip label={feedbackLabel} side={side ?? 'bottom'}>
+    <Tip label={feedbackLabel} side={iconTipSide(side, portal)}>
       {button}
     </Tip>
   ) : (

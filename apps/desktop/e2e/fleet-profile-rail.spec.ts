@@ -26,7 +26,7 @@ import {
   launchDesktop,
   type MockBackendFixture,
   type Sandbox,
-  waitForAppReady,
+  waitForAppReady
 } from './fixtures'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
@@ -104,10 +104,10 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
       env: {
         ...process.env,
         HERMES_HOME: home,
-        HERMES_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN,
+        HERMES_DASHBOARD_SESSION_TOKEN: REMOTE_TOKEN
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    },
+      stdio: ['ignore', 'pipe', 'pipe']
+    }
   )
 
   let log = ''
@@ -127,7 +127,7 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
 
     try {
       const response = await fetch(`${url}/api/status`, {
-        headers: { 'X-Hermes-Session-Token': REMOTE_TOKEN },
+        headers: { 'X-Hermes-Session-Token': REMOTE_TOKEN }
       })
 
       if (response.ok) {
@@ -157,7 +157,7 @@ async function startRemoteGateway(root: string, mockUrl: string, profiles: strin
       }
 
       await new Promise(resolve => setTimeout(resolve, 500))
-    },
+    }
   }
 }
 
@@ -178,14 +178,14 @@ function writeConnectionsRegistry(sandbox: Sandbox, remoteUrl: string): void {
             label: REMOTE_LABEL,
             url: remoteUrl,
             authMode: 'token',
-            token: { encoding: 'plain', value: REMOTE_TOKEN },
-          },
-        ],
+            token: { encoding: 'plain', value: REMOTE_TOKEN }
+          }
+        ]
       },
       null,
-      2,
+      2
     ),
-    { encoding: 'utf8', mode: 0o600 },
+    { encoding: 'utf8', mode: 0o600 }
   )
 }
 
@@ -203,13 +203,24 @@ async function capture(page: Page, name: string): Promise<void> {
 }
 
 const rail = (page: Page) => page.locator('[data-slot="profile-rail"]')
-const gatewayGroup = (page: Page, id: string) => rail(page).locator(`[data-slot="profile-rail-gateway"][data-connection-id="${id}"]`)
-const activeGatewayLabel = (page: Page) => page.getByRole('button', { name: /^Registered gateways: / })
+
+const gatewayGroup = (page: Page, id: string) =>
+  rail(page).locator(`[data-slot="profile-rail-gateway"][data-connection-id="${id}"]`)
+
+const activeGatewayLabel = (page: Page) => page.getByRole('button', { name: /^Machines: / })
 
 async function groupOrder(page: Page): Promise<Array<[string, boolean]>> {
-  return rail(page).locator('[data-slot="profile-rail-gateway"]').evaluateAll(nodes =>
-    nodes.map(node => [node.getAttribute('data-connection-id') ?? '', node.getAttribute('data-active') === 'true'] as [string, boolean]),
-  )
+  return rail(page)
+    .locator('[data-slot="profile-rail-gateway"]')
+    .evaluateAll(nodes =>
+      nodes.map(
+        node =>
+          [node.getAttribute('data-connection-id') ?? '', node.getAttribute('data-active') === 'true'] as [
+            string,
+            boolean
+          ]
+      )
+    )
 }
 
 test.describe('fleet profile rail — two registered gateways', () => {
@@ -240,7 +251,9 @@ test.describe('fleet profile rail — two registered gateways', () => {
     // Let boot settle fully (the gateway health item reports "ready" once the
     // primary socket is open) so the boot-time launch-mode restore has run
     // before any click — the rail must then hold whatever the user picks.
-    await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({ timeout: 120_000 })
+    await expect(page.locator('[data-slot="statusbar"]').getByText('ready', { exact: true })).toBeVisible({
+      timeout: 120_000
+    })
     await page.waitForTimeout(2_000)
   })
 
@@ -253,7 +266,7 @@ test.describe('fleet profile rail — two registered gateways', () => {
 
   test('lays both gateways on one strip, active gateway in its registry slot', async () => {
     // The statusbar readout names the gateway the workspace is on.
-    await expect(activeGatewayLabel(page)).toHaveAttribute('aria-label', 'Registered gateways: This device', { timeout: 60_000 })
+    await expect(activeGatewayLabel(page)).toHaveAttribute('aria-label', 'Machines: This device', { timeout: 60_000 })
 
     // The remote gateway's group appears once the roster has enumerated it.
     const homelab = gatewayGroup(page, REMOTE_ID)
@@ -265,7 +278,9 @@ test.describe('fleet profile rail — two registered gateways', () => {
 
     // Its marker carries the remote (network) glyph.
     await expect(
-      rail(page).locator(`[data-slot="profile-rail-divider"][data-connection-id="${REMOTE_ID}"] [data-connection-kind="remote"]`),
+      rail(page).locator(
+        `[data-slot="profile-rail-divider"][data-connection-id="${REMOTE_ID}"] [data-connection-kind="remote"]`
+      )
     ).toBeVisible()
 
     // This device is the active group: its squares are unqualified, as before.
@@ -276,24 +291,32 @@ test.describe('fleet profile rail — two registered gateways', () => {
     // Registry order: This device first, Homelab second.
     expect(await groupOrder(page)).toEqual([
       ['local', true],
-      [REMOTE_ID, false],
+      [REMOTE_ID, false]
     ])
 
-    await gatewayGroup(page, REMOTE_ID).getByRole('button', { name: `inbox · ${REMOTE_LABEL}` }).hover()
+    await gatewayGroup(page, REMOTE_ID)
+      .getByRole('button', { name: `inbox · ${REMOTE_LABEL}` })
+      .hover()
     await capture(page, '1-on-this-device-hover-inbox-homelab')
   })
 
   test('clicking an at-rest square re-homes onto that exact gateway and profile', async () => {
     test.setTimeout(180_000)
-    await gatewayGroup(page, REMOTE_ID).getByRole('button', { name: `inbox · ${REMOTE_LABEL}` }).click()
+    await gatewayGroup(page, REMOTE_ID)
+      .getByRole('button', { name: `inbox · ${REMOTE_LABEL}` })
+      .click()
 
     // The workspace follows the agent: statusbar readout flips to Homelab…
-    await expect(activeGatewayLabel(page)).toHaveAttribute('aria-label', `Registered gateways: ${REMOTE_LABEL}`, { timeout: 120_000 })
+    await expect(activeGatewayLabel(page)).toHaveAttribute('aria-label', `Machines: ${REMOTE_LABEL}`, {
+      timeout: 120_000
+    })
 
     // …Homelab's group is now the active one, on the clicked profile…
     const homelab = gatewayGroup(page, REMOTE_ID)
     await expect(homelab).toHaveAttribute('data-active', 'true', { timeout: 30_000 })
-    await expect(homelab.getByRole('button', { name: 'inbox', exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
+    await expect(homelab.getByRole('button', { name: 'inbox', exact: true })).toHaveAttribute('aria-pressed', 'true', {
+      timeout: 30_000
+    })
 
     // …This device is at rest with qualified squares…
     const local = gatewayGroup(page, 'local')
@@ -303,7 +326,7 @@ test.describe('fleet profile rail — two registered gateways', () => {
     // …and nothing moved: the order is still This device, then Homelab.
     expect(await groupOrder(page)).toEqual([
       ['local', false],
-      [REMOTE_ID, true],
+      [REMOTE_ID, true]
     ])
 
     await capture(page, '2-re-homed-on-homelab-inbox')
@@ -325,15 +348,17 @@ test.describe('fleet profile rail — two registered gateways', () => {
     test.setTimeout(180_000)
     await gatewayGroup(page, 'local').getByRole('button', { name: 'research · This device' }).click()
 
-    await expect(activeGatewayLabel(page)).toHaveAttribute('aria-label', 'Registered gateways: This device', { timeout: 120_000 })
+    await expect(activeGatewayLabel(page)).toHaveAttribute('aria-label', 'Machines: This device', { timeout: 120_000 })
     const local = gatewayGroup(page, 'local')
     await expect(local).toHaveAttribute('data-active', 'true', { timeout: 30_000 })
-    await expect(local.getByRole('button', { name: 'research', exact: true })).toHaveAttribute('aria-pressed', 'true', { timeout: 30_000 })
+    await expect(local.getByRole('button', { name: 'research', exact: true })).toHaveAttribute('aria-pressed', 'true', {
+      timeout: 30_000
+    })
     await expect(gatewayGroup(page, REMOTE_ID).getByRole('button', { name: `inbox · ${REMOTE_LABEL}` })).toBeVisible()
 
     expect(await groupOrder(page)).toEqual([
       ['local', true],
-      [REMOTE_ID, false],
+      [REMOTE_ID, false]
     ])
   })
 })

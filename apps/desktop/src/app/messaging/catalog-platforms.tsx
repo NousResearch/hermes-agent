@@ -3,7 +3,7 @@ import { useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { ErrorBanner } from '@/components/ui/error-state'
-import { installMessagingCatalogPlatform, type MessagingCatalogPlatform } from '@/hermes'
+import { installMessagingCatalogPlatform, type MessagingCatalogPlatform, type ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Download } from '@/lib/icons'
 import { normalize } from '@/lib/text'
@@ -107,7 +107,7 @@ export interface CatalogInstallHandlers {
   /** It settled, either way. */
   onInstallEnd: (row: MessagingCatalogPlatform) => void
   /** It succeeded under `profile`; `platformIds` are the ids the plugin registered. */
-  onInstalled: (row: MessagingCatalogPlatform, platformIds: string[], profile: string | undefined) => Promise<void>
+  onInstalled: (row: MessagingCatalogPlatform, platformIds: string[], profile: ProfileScope | undefined) => Promise<void>
 }
 
 /** A catalog platform's pane: what it is, then Install, or why it cannot install
@@ -121,7 +121,7 @@ export function CatalogPlatformDetail({
   scopeProfile
 }: CatalogInstallHandlers & {
   row: MessagingCatalogPlatform
-  scopeProfile: string | undefined
+  scopeProfile: ProfileScope | undefined
 }) {
   const { t } = useI18n()
   const c = t.messaging.catalog

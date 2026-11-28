@@ -10,6 +10,17 @@ interface LayoutEntry {
   restore(): void
 }
 
+/** Which shell draws the window. The redesign merges developer tools into one side panel and
+ *  marks them user-placed, so it keeps its own arrangement: turning it off must hand back the
+ *  classic layout exactly as it was left. */
+export type LayoutShell = 'classic' | 'portal'
+
+/** One arrangement per interface mode × shell. */
+export interface LayoutScope {
+  mode: InterfaceMode
+  shell: LayoutShell
+}
+
 export const LAYOUT_KEYS = {
   floating: 'hermes.desktop.floatingPanes.v1',
   tree: 'hermes.desktop.layoutTree.v2',
@@ -24,7 +35,20 @@ export const LAYOUT_KEYS = {
   collapsed: 'hermes.desktop.collapsedTreeSides.v1'
 } as const
 
-function migrateLayoutScopes(initialMode: InterfaceMode) {
+// The classic shell keeps the keys it shipped with (bare = Advanced, `.simple`), so classic
+// users' layouts are untouched. The redesign never had a key of its own; it starts from the
+// declared default rather than inheriting a classic arrangement it would immediately rewrite.
+const SCOPE_SUFFIX: Record<LayoutShell, Record<InterfaceMode, string>> = {
+  classic: { advanced: '', simple: '.simple' },
+  portal: { advanced: '.portal', simple: '.portal.simple' }
+}
+
+const scopeId = (scope: LayoutScope) => SCOPE_SUFFIX[scope.shell][scope.mode]
+
+// Only classic Simple has a pre-scope legacy record to fall back to (see migrateLayoutScopes).
+const hasLegacyFallback = (scope: LayoutScope) => scope.shell === 'classic' && scope.mode === 'simple'
+
+function migrateLayoutScopes(initial: LayoutScope) {
   const marker = 'hermes.desktop.layoutModeScopes.v1'
   const legacy = new Map<string, string>()
 
@@ -34,7 +58,7 @@ function migrateLayoutScopes(initialMode: InterfaceMode) {
 
   let saved = true
 
-  if (initialMode === 'simple') {
+  if (initial.mode === 'simple') {
     for (const key of Object.values(LAYOUT_KEYS)) {
       const raw = readKey(key)
 
@@ -58,28 +82,30 @@ function migrateLayoutScopes(initialMode: InterfaceMode) {
   return legacy
 }
 
-/** Layout state switches as a unit: changing visibility must not edit either
- * tree while the other stores are still loading. Advanced keeps the legacy
- * keys; Simple writes only its own namespace. */
-export function createLayoutPersistence(initialMode: InterfaceMode, persistent: boolean) {
+/** Layout state switches as a unit: changing scope must not edit either tree while the other
+ *  stores are still loading. Each scope reads and writes only its own keys. */
+export function createLayoutPersistence(initial: LayoutScope, persistent: boolean) {
   const entries: LayoutEntry[] = []
-  const listeners = new Set<() => void>()
   const snapshots = new Set<string>()
-  let mode = initialMode
+  // Manual atoms changed in memory but not yet written (a resize mid-gesture).
+  const unsaved = new Set<string>()
+  const listeners = new Set<() => void>()
+  let scope = initial
   let restoring = false
   let held = false
 
-  const legacy = persistent ? migrateLayoutScopes(initialMode) : new Map<string, string>()
+  const legacy = persistent ? migrateLayoutScopes(initial) : new Map<string, string>()
 
-  const keyFor = (key: string) => (mode === 'advanced' ? key : `${key}.simple`)
+  const keyFor = (key: string) => `${key}${scopeId(scope)}`
 
   function write(key: string, raw: null | string) {
     if (!restoring) {
+      unsaved.delete(key)
       snapshots.add(keyFor(key))
 
       if (persistent && !held) {
         // Explicit empties keep migration retries from reviving cleared state.
-        writeKey(keyFor(key), mode === 'simple' ? (raw ?? 'null') : raw)
+        writeKey(keyFor(key), hasLegacyFallback(scope) ? (raw ?? 'null') : raw)
       }
     }
   }
@@ -90,14 +116,16 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
     codec: Codec<T> = Codecs.json<T>(),
     manual = false
   ): WritableAtom<T> {
-    const memory = new Map<InterfaceMode, T>()
+    const memory = new Map<string, T>()
 
     const load = (): T => {
-      if (memory.has(mode)) {
-        return memory.get(mode)!
+      if (memory.has(scopeId(scope))) {
+        return memory.get(scopeId(scope))!
       }
 
-      const raw = persistent ? (readKey(keyFor(key)) ?? (mode === 'simple' ? (legacy.get(key) ?? null) : null)) : null
+      const raw = persistent
+        ? (readKey(keyFor(key)) ?? (hasLegacyFallback(scope) ? (legacy.get(key) ?? null) : null))
+        : null
 
       if (raw !== null) {
         try {
@@ -106,7 +134,7 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
 
           return value
         } catch {
-          // Invalid storage falls back only within this mode.
+          // Invalid storage falls back only within this scope.
         }
       }
 
@@ -115,15 +143,24 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
 
     const $value = atom<T>(load())
 
-    if (!manual) {
-      $value.listen(value => write(key, codec.encode(value)))
-    }
+    $value.listen(value => {
+      if (!manual) {
+        write(key, codec.encode(value))
+      } else if (!restoring) {
+        unsaved.add(key)
+      }
+    })
 
     entries.push({
+      // Writes only what this window changed and has not saved yet. A scope switch driven by
+      // another window's storage event must never write this window's values over that window's.
       capture() {
         const value = $value.get()
-        memory.set(mode, value)
-        write(key, codec.encode(value))
+        memory.set(scopeId(scope), value)
+
+        if (unsaved.has(key)) {
+          write(key, codec.encode(value))
+        }
       },
       restore() {
         $value.set(load())
@@ -136,7 +173,10 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
   return {
     atom: scopedAtom,
     get mode() {
-      return mode
+      return scope.mode
+    },
+    get scope(): LayoutScope {
+      return scope
     },
     get restoring() {
       return restoring
@@ -155,17 +195,19 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
       return () => void listeners.delete(listener)
     },
     write,
-    change(next: InterfaceMode, publishMode: () => void) {
-      if (mode === next) {
+    /** Capture every atom into the current scope, then load `next`'s. `publish` runs between the
+     *  two so readers of the scope's inputs see the new value as the new layout loads. */
+    change(next: LayoutScope, publish: () => void = () => {}) {
+      if (scopeId(scope) === scopeId(next)) {
         return
       }
 
       entries.forEach(entry => entry.capture())
-      mode = next
+      scope = next
       restoring = true
 
       try {
-        publishMode()
+        publish()
         entries.forEach(entry => entry.restore())
         listeners.forEach(listener => listener())
       } finally {

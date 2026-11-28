@@ -13,6 +13,7 @@ import {
   type SharedMetricsConsent,
   sharedMetricsOfferPending
 } from '@/store/shared-metrics'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { SharedMetricsConsentDialog } from './consent-dialog'
 
@@ -57,11 +58,14 @@ beforeEach(() => {
   $apiRequestScope.set({ connectionId: null, profile: null })
   resetDesktopMetricsForTests()
   bindDesktopMetrics(null, '|havoc')
+  // Classic's long dialog; the redesign's short one is usage-stats-offer.test.tsx's.
+  $shellChoice.set(false)
   $desktopOnboarding.set({ ...initialOnboarding, configured: true })
 })
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   resetDesktopMetricsForTests()
   requestGatewayForAgent.mockReset()
   $apiRequestScope.set(initialScope)

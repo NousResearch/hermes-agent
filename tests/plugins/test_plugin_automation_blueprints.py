@@ -96,6 +96,11 @@ async def test_plugin_blueprint_in_api_catalog_and_instantiates_real_job(homes):
     assert [f["name"] for f in entry["fields"]] == ["repo", "time", "deliver"]
     builtin = next(e for e in listed["blueprints"] if e["key"] == "morning-brief")
     assert builtin["source"] == "builtin" and builtin["plugin"] is None
+    # A form that edits the routine's own fields starts from the job the defaults would create.
+    assert entry["prefill"]["prompt"] == "Summarize yesterday's commits for acme/app."
+    assert entry["prefill"]["schedule"] == "15 9 * * 1-5"
+    reviewed = next(e for e in listed["blueprints"] if e["key"] == "weekly-review")
+    assert reviewed["prefill"]["skills"] == ["weekly-review-planning"]
 
     created = await _rt_cron.instantiate_blueprint(
         _web_models.AutomationBlueprintInstantiate(

@@ -806,7 +806,7 @@ export interface SharedMetricsDesktopModeDay {
 }
 export interface SharedMetricsDesktopActionDay {
   action: string
-  via: 'click' | 'menu' | 'palette' | 'shortcut'
+  via: 'click' | 'menu' | 'palette' | 'shortcut' | 'state'
   count: number
 }
 export interface SharedMetricsDesktopDailyResult {
@@ -2359,7 +2359,9 @@ export interface ProfilesGetAssetResult {
 }
 /** ``assume_fresh``: the unpackaged desktop's ``--fresh-install`` launch; the backend treats this machine as one that never used Hermes. Packaged builds never send it. */
 export interface OnboardingStateParams {
+  profile?: string | null
   assume_fresh?: boolean
+  sessionless?: boolean
 }
 /** ``run``: onboarding opens on this launch (root config ``onboarding.run``, else a machine that never used Hermes). ``eligible``: this is the desktop's local backend and the welcome trial or a configured provider can carry the first chat. ``session_id``: the stored id of the onboarding chat still in progress, so a relaunch reopens it; ``run_id``: that run's id, which ``onboarding.ended`` names. */
 export interface OnboardingRunStateResult {
@@ -2367,11 +2369,17 @@ export interface OnboardingRunStateResult {
   eligible: boolean
   session_id?: string | null
   run_id?: string | null
+  step?: 'preferences' | 'model'
+  started?: boolean
 }
 /** ``mark_profile_offered`` also latches ``onboarding.seen.profile_build_offered`` in the root config, so the first chat after onboarding gets the plain intro instead of the profile offer. */
 export interface OnboardingSetRunParams {
+  profile?: string | null
   run: boolean
   mark_profile_offered?: boolean
+  sessionless?: boolean
+  step?: 'preferences' | 'model' | null
+  restart?: boolean
 }
 /** ``rerun``: start a new onboarding chat even when one is in progress (Settings, Run onboarding again; it never claims the welcome trial). ``fresh_launch``: the app's once-per-launch start; a run the app was closed on does not count, so its chat is deleted and the run starts over. ``facts_source``: whether the backend runs on the user's own computer. ``locale``: the desktop's UI language, preferred over the backend OS locale. ``assume_fresh``: as on ``onboarding.state``. A new run on a first install claims the welcome trial before its chat exists; a failed claim is error 5079 and leaves no guest and no chat. A claim that is blocked (another install took the trial) with no trial or provider to run on is error 5080 and opens no chat. */
 export interface OnboardingStartParams {
@@ -4597,7 +4605,7 @@ export interface PluginToolsetRow {
   label: string
   description: string
 }
-/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto the host that serves this client; ``remove_desktop``: ``name`` (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields; ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it). */
+/** ``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name`` (+ ``force``, ``enable``, ``ref``, ``inspected_sha`` = the commit ``inspect`` read: a custom source with no ``ref`` whose branch moved since is refused); ``inspect``: ``identifier``/``repo`` or ``catalog_name``; ``install_desktop``: ``identifier``/``repo`` (any source ``install`` takes) or ``catalog_name``, always with ``ref`` (the commit ``inspect`` read and the dialog showed; another commit is refused) (+ ``force``) — the desktop half onto the host that serves this client; ``remove_desktop``: ``name`` (+ ``force`` for a package's own half); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin that widened the plugin after the user confirmed the ``delta``, + ``force`` to apply an update whose security scan returned caution after the user saw the findings); ``remove``: ``name`` (user installs only); ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only); ``presence``: ``names`` (catalog names, answered in that order); ``update_all``: no fields; ``auto_update``: ``enable`` to set ``plugins.auto_apply`` (omit to read it); ``check``: no fields. */
 export interface PluginsManageParams {
   profile?: string | null
   action?: PluginsAction
@@ -4614,7 +4622,7 @@ export interface PluginsManageParams {
   values?: Record<string, unknown> | null
   names?: string[] | null
 }
-export type PluginsAction = 'list' | 'toggle' | 'install' | 'inspect' | 'install_desktop' | 'remove_desktop' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence' | 'update_all' | 'auto_update'
+export type PluginsAction = 'list' | 'toggle' | 'install' | 'inspect' | 'install_desktop' | 'remove_desktop' | 'update' | 'remove' | 'settings' | 'onboarding' | 'presence' | 'update_all' | 'auto_update' | 'check'
 /** ``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name`` (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``inspect`` → ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit read)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is live now vs deferred, so ``restart_required`` is True only when no gateway answered or the running gateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the client retries with ``accept_capabilities`` — or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` / ``scan_findings`` (retry a caution verdict with ``force``); ``remove`` → ``ok``/``name`` plus ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``. */
 export interface PluginsManageResult {
   plugins?: AgentPluginRow[] | null
@@ -4657,6 +4665,7 @@ export interface PluginsManageResult {
   results?: PluginUpdateAllRow[] | null
   skipped?: PluginUpdateAllSkip[] | null
   current?: number | null
+  check_results?: PluginCheckRow[] | null
   auto_apply?: boolean | null
   check_hours?: number | null
 }
@@ -4768,6 +4777,17 @@ export type PluginUpdateAllStatus = 'updated' | 'current' | 'failed' | 'needs_re
 export interface PluginUpdateAllSkip {
   name: string
   reason: string
+}
+/** ``hermes_cli.plugins_updates.CheckResult.to_json()`` — one plugin's read-only update check (``plugins.manage check``); ``update_available`` is None when the check could not tell. */
+export interface PluginCheckRow {
+  name: string
+  class: string
+  current?: string | null
+  latest?: string | null
+  update_available?: boolean | null
+  needs_fixing?: string | null
+  min_hermes?: string | null
+  reason?: string
 }
 export interface PluginCatalogLookupParams {
   profile?: string | null

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { CONFIG_SUBPAGES, configSubpageForField } from './config-subpages'
 import { SECTIONS } from './constants'
@@ -141,10 +142,60 @@ describe('settings subpage routing', () => {
       expect.arrayContaining([
         'In-App Tips',
         'Guided Tours',
-        'Keep computer awake',
         'Auto-archive stale chats',
         TRANSLATIONS.en.settings.about.updates
       ])
     )
+  })
+
+  // The redesign has Spacing where classic has its session list density: one setting id, two rows.
+  describe('the density setting in search', () => {
+    const target = () => settingSearchTargets(TRANSLATIONS.en).find(row => row.id === SETTING_IDS.appearance.sessionDensity)!
+
+    afterEach(() => $shellChoice.set(null))
+
+    it('is Spacing in the redesign', () => {
+      $shellChoice.set(true)
+
+      expect(target().label).toBe('Spacing')
+    })
+
+    it('is the session list density in classic, which a search for "spacing" does not find', () => {
+      $shellChoice.set(false)
+
+      expect(target().label).toBe(TRANSLATIONS.en.settings.appearance.sessionDensityTitle)
+      expect([target().label, target().description, ...target().keywords].join(' ').toLowerCase()).not.toContain('spacing')
+    })
+  })
+
+  // Two controls act only through the native app's bridge.
+  describe('the native-only controls in search', () => {
+    const NATIVE_ONLY = ['Keep computer awake', 'Disable F12 DevTools']
+    const labels = () => settingSearchTargets(TRANSLATIONS.en).map(target => target.label)
+    const bridge = window.hermesDesktop
+
+    afterEach(() => {
+      window.hermesDesktop = bridge
+      $shellChoice.set(null)
+    })
+
+    it('are offered where the app can act on them', () => {
+      window.hermesDesktop = { ...bridge, setDisableF12: () => undefined, setKeepAwake: () => undefined } as never
+      $shellChoice.set(true)
+
+      expect(labels()).toEqual(expect.arrayContaining(NATIVE_ONLY))
+    })
+
+    it('are left out of the redesigned Webapp, whose bridge has neither', () => {
+      $shellChoice.set(true)
+
+      expect(labels().filter(label => NATIVE_ONLY.includes(label))).toEqual([])
+    })
+
+    it('stay in classic on either host', () => {
+      $shellChoice.set(false)
+
+      expect(labels()).toEqual(expect.arrayContaining(NATIVE_ONLY))
+    })
   })
 })

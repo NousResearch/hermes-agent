@@ -1,8 +1,9 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { createContext, useContext, useEffect } from 'react'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { activeGatewayConnectionId } from '@/store/gateway'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey, profileLabel, refreshProfiles } from '@/store/profile'
 import {
   $settingsScopeEditsNonDefault,
@@ -12,6 +13,31 @@ import {
 } from '@/store/settings-scope'
 import type { ProfileInfo } from '@/types/hermes'
 
+export interface SettingsOwner {
+  connectionId?: string
+  profile: string
+}
+
+/** An embedded agent editor cannot retarget its controls through the global scope chip. */
+export const SettingsOwnerContext = createContext<SettingsOwner | undefined>(undefined)
+export const useSettingsOwner = () => useContext(SettingsOwnerContext)
+
+/** An agent whose settings are open while another machine's gateway is the active one: pages that
+ *  reach only the active machine's agents (the Capabilities library) are not a way out for it. */
+export const settingsOwnerElsewhere = (owner: SettingsOwner | undefined): boolean =>
+  Boolean(owner?.connectionId) && owner?.connectionId !== (activeGatewayConnectionId() ?? 'local')
+
+/** The scope a settings control's requests carry: an embedded agent page's owner pins its
+ *  connection and profile; otherwise the profile the page was asked to edit (unset → active). */
+export function useSettingsRequestScope<T extends null | string | undefined>(requested: T): SettingsOwner | T {
+  return useSettingsOwner() ?? requested
+}
+
+/** The profile name a settings request scope edits. */
+export function settingsScopeProfile<T extends null | string | undefined>(scope: SettingsOwner | T): string | T {
+  return typeof scope === 'object' && scope ? scope.profile : (scope as T)
+}
+
 // Settings-chip label: the Bot Mode title the Bots roster shows when set
 // (ui_meta['hermes-bots'].title), else the app-wide profileLabel
 // (display_name → slug). Scoped to this selector on purpose — the profile
@@ -20,19 +46,18 @@ export function settingsScopeLabel(profile: Pick<ProfileInfo, 'bot_title' | 'dis
   return (profile.bot_title ?? '').trim() || profileLabel(profile)
 }
 
-// The same chip affordance the Gateway page uses for its per-profile
-// connection overrides (gateway-settings ScopeChip). That one stays local to
-// gateway-settings — its `null` chip means "all profiles", while here every
-// chip is a concrete profile whose config the page edits.
+// One chip per profile; every chip is a concrete profile whose config the page edits.
 export function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
   return (
     <button
+      aria-pressed={active}
       className={cn(
         'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
         active
           ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
           : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
       )}
+      data-slot="scope-chip"
       onClick={onSelect}
       type="button"
     >
@@ -48,6 +73,7 @@ export function ScopeChip({ active, label, onSelect }: { active: boolean; label:
  *  fewer than two profiles, so single-profile users never see it and every
  *  request keeps its unscoped default shape. */
 export function SettingsProfileScope({ className }: { className?: string }) {
+  const owner = useSettingsOwner()
   const { t } = useI18n()
   const scope = t.settings.profileScope
   const override = useStore($settingsScopeOverride)
@@ -63,10 +89,12 @@ export function SettingsProfileScope({ className }: { className?: string }) {
   // Refresh lazily so a profile created elsewhere shows up; the cached list
   // paints immediately. Best-effort — a failure keeps the cached roster.
   useEffect(() => {
-    void refreshProfiles().catch(() => undefined)
-  }, [])
+    if (!owner) {
+      void refreshProfiles().catch(() => undefined)
+    }
+  }, [owner])
 
-  if (profiles.length < 2) {
+  if (owner || profiles.length < 2) {
     return null
   }
 

@@ -1,0 +1,451 @@
+/* The column is the page stage contract's (portal-pages.css). No bottom padding: the scrollers run
+   to the stage's edge and keep their own end space. */
+[data-page-surface] .management-panel.agent-management {
+  /* The page hero's containing block (page-hero.css). */
+  position: relative;
+  padding-block: var(--portal-page-eyebrow-top) 0;
+  font-family: var(--portal-font-body);
+}
+
+/* This page's content scrolls in the children below, not in the stage, so the stage hands the
+   column's paddings down (portal-pages.css) and lays none itself: the scrollers — and the header
+   that stays put — take the column, and the wheel then scrolls over the blank gutters beside it.
+   Only while such a scroller is up: a state with none (waiting for another agent to be activated)
+   keeps the stage's own padding and its card's column. */
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage:has(> :is(.agent-management-scroll, .agent-management-editor, .agent-history)) {
+  padding-inline: 0;
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage:has(> :is(.agent-management-scroll, .agent-management-editor, .agent-history))
+  > :is(.portal-page-header, .agent-management-scroll, .agent-history) {
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
+}
+
+/* The Settings tab scrolls the body inside that editor, the editor itself does not scroll: the body
+   takes the column, so it too spans the stage. With the sections menu inline in the editor (a folded
+   panel or a narrow window) the editor's own box is the column, and menu and body scroll in it. */
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage
+  > .agent-management-editor:has(> .agent-settings-editor[data-inline-navigation]) {
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
+}
+
+:root[data-shell='portal']
+  [data-page-surface]
+  .management-panel.agent-management.page-stage
+  > .agent-management-editor
+  > .agent-settings-editor:not([data-inline-navigation])
+  > .agent-settings-body {
+  padding-inline: var(--page-stage-pad-start) var(--page-stage-pad-end);
+}
+
+.agent-management-avatar {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: var(--portal-radius-card);
+}
+
+.agent-management-avatar > img {
+  width: 32px;
+  height: 32px;
+  margin: auto;
+}
+
+/* The machine chip beside the name (18563:12863): 10px caps on the status green, black ink, as the
+   sign-in steps' "ok" badge; the quiet waiting fill while this window's gateway is not connected. */
+.agent-management-machine {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--portal-radius-control);
+  background-color: var(--portal-badge-waiting-fill);
+  color: var(--portal-badge-waiting-ink);
+  font-size: var(--portal-type-micro-size);
+  font-weight: var(--portal-weight-medium);
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* A long machine name gives way before the agent's own name does: it keeps at most 14rem and ends
+   in an ellipsis (the shared header holds everything beside an H1 at its full width). */
+.portal-page-header-name > .agent-management-machine {
+  min-width: 0;
+  max-width: 14rem;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-machine[data-connected='true'] {
+  background-color: var(--portal-badge-ok-fill);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--portal-badge-ok-ink) 24%, transparent);
+  color: var(--portal-badge-ok-ink);
+}
+
+/* The overflow sits on the hero's brightest corner: it takes the solid floating fill (page-hero.css). */
+:root[data-shell='portal'] .agent-management .portal-page-header .portal-page-header-actions button[data-variant='secondary'] {
+  background-color: var(--portal-surface-elevated);
+}
+
+/* The description row is held for every agent (one 14px line at 1.4 and its 6px gap), so the tab
+   bar lands at one y whether the agent is the default (which fills it) or not. */
+:root[data-shell='portal'] .agent-management .portal-page-header-title {
+  grid-template-rows: auto auto minmax(1.6rem, auto);
+}
+
+/* "DEFAULT AGENT" under the name (18563:12868): the 10px caps caption at the quiet ink. */
+.agent-management-role {
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-meta-size);
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+
+/* Warning banner (877:4212, 878:7066): the danger tint and stroke, r4, orange warn glyph. */
+.agent-channel-warning {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+  padding: 0.75rem 0.75rem 0.75rem 1rem;
+  border: 1px solid var(--portal-stroke-danger);
+  border-radius: var(--portal-radius-card);
+  background: var(--portal-surface-danger);
+  font-size: var(--portal-type-body-size);
+  font-weight: var(--portal-weight-medium);
+  line-height: 1.4;
+}
+
+.agent-channel-warning > svg {
+  flex-shrink: 0;
+  width: 1rem;
+  height: 1rem;
+  color: var(--portal-status-pending);
+}
+
+.agent-channel-warning p + p {
+  margin-top: 0.125rem;
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: var(--portal-weight-regular);
+}
+
+/* Status cell (877:4307): 6px dot + label; green when connected, red when it dropped. */
+.agent-channel-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-channel-status::before {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+.agent-channel-status[data-tone='connected'] {
+  color: var(--portal-status-online);
+}
+
+/* 877:4307: a #a22a20 dot beside softer #cc8a84 text (the dot alone carries the alarm colour). */
+.agent-channel-status[data-tone='disconnected'] {
+  color: var(--portal-status-error-ink);
+}
+
+.agent-channel-status[data-tone='disconnected']::before {
+  background: var(--portal-surface-danger-solid);
+}
+
+.agent-overview-menu {
+  border-radius: var(--portal-radius-floating);
+}
+
+.agent-overview-menu [data-slot='dropdown-menu-item'] {
+  min-height: 2.75rem;
+  gap: 0.75rem;
+  border-radius: var(--portal-radius-surface);
+  padding: 0.5rem 0.75rem;
+  font-size: var(--portal-type-body-size);
+}
+
+.agent-management-scroll,
+.agent-management-editor {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+/* Every agent page scroller ends like a Settings page: the last row clears the stage edge by the
+   page's end space and the content fades out under it while more is below. */
+.agent-management-scroll,
+.agent-history {
+  padding-bottom: var(--portal-page-end-space);
+}
+
+.agent-management-scroll {
+  container: agent-overview / inline-size;
+}
+
+.agent-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 436fr) minmax(0, 300fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.agent-overview-column {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 32px;
+}
+
+.agent-overview-section {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+}
+
+.agent-overview-section h2 {
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-section-size);
+  font-weight: var(--portal-weight-medium);
+  line-height: 1.1;
+}
+
+.agent-overview-section-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-align: start;
+}
+
+.agent-overview-section-link .codicon {
+  color: var(--ui-text-quaternary);
+}
+
+.agent-overview-section-link:hover .codicon {
+  color: var(--ui-text-secondary);
+}
+
+.agent-overview-section-link:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+  border-radius: var(--portal-radius-chip);
+}
+
+.agent-overview-row:has(.agent-overview-row-subtitle) {
+  min-height: 64px;
+}
+
+.agent-overview-card {
+  overflow: hidden;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: var(--portal-radius-card);
+  background: var(--ui-bg-card);
+}
+
+/* List row (877:4230): 44px, label 14 Medium, value 13 at .6, chevron at .4. */
+.agent-overview-row {
+  display: flex;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  text-align: start;
+  font-size: var(--portal-type-body-size);
+  font-weight: var(--portal-weight-medium);
+  line-height: 1.4;
+}
+
+.agent-overview-row + .agent-overview-row,
+.agent-overview-footer {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+/* A stopped screen's row with Start beside it: the row keeps its own inset and the button stands
+   in the card's, so the pair reads as one row. */
+.agent-overview-screen-stopped {
+  display: flex;
+  align-items: center;
+  gap: var(--portal-space-compact);
+  padding-inline-end: var(--portal-space-compact);
+}
+
+.agent-overview-row + .agent-overview-screen-stopped {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+/* A running screen in the Screen row's place: the plugin's own tile (its colours and caption are
+   classic's), never wider than a comfortable preview, with the radius of a control nested in the
+   card. The row around it is not itself a control. */
+.agent-overview-row.agent-overview-screen:hover {
+  background: none;
+}
+
+.portal-agent-screen-thumbnail {
+  width: 100%;
+  max-width: 30rem;
+}
+
+.portal-agent-screen-thumbnail > button {
+  border-radius: var(--portal-radius-control);
+}
+
+.agent-overview-row:hover {
+  background: var(--portal-surface-row-hover);
+}
+
+.agent-overview-row:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+
+.agent-overview-row > span:nth-child(2) {
+  font-size: var(--portal-type-ui-size);
+  font-weight: var(--portal-weight-regular);
+}
+
+.agent-overview-row > .codicon {
+  color: var(--ui-text-quaternary);
+}
+
+.agent-overview-empty,
+.agent-overview-footer {
+  padding: 12px 16px;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+}
+
+.agent-instructions-preview {
+  display: block;
+  width: 100%;
+  padding: 16px;
+  color: var(--ui-text-primary);
+  font-family: var(--portal-font-mono);
+  font-size: var(--portal-type-body-size);
+  line-height: 1.55;
+  text-align: start;
+  cursor: pointer;
+}
+
+.agent-instructions-preview:hover {
+  background: var(--portal-surface-row-hover);
+}
+
+.agent-instructions-preview:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-inset);
+}
+.agent-instructions-preview p {
+  display: -webkit-box;
+  overflow: hidden;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.agent-instructions-preview p.agent-instructions-skeleton {
+  display: grid;
+}
+
+/* Three 18px lines, the clamped preview's height. */
+.agent-instructions-skeleton > span {
+  height: 8px;
+  margin-block: 5px;
+  translate: none;
+}
+
+/* "SOUL.md · ~/.hermes" (877:4228): one line, the path elided in its middle. */
+.agent-instructions-source {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 10px;
+  white-space: nowrap;
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-meta-size);
+}
+
+.agent-instructions-path {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375em;
+  overflow: hidden;
+}
+
+.agent-instructions-edit {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.125rem;
+  color: var(--ui-text-secondary);
+  font-family: var(--portal-font-body);
+  font-weight: var(--portal-weight-medium);
+}
+
+.agent-instructions-preview:hover .agent-instructions-edit {
+  color: var(--ui-text-primary);
+}
+.agent-management-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  font-size: var(--portal-type-ui-size);
+}
+
+.agent-management-editor {
+  container: agent-editor / inline-size;
+  overflow: hidden;
+}
+
+@container agent-overview (max-width: 640px) {
+  .agent-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Below wide (breakpoints.ts: max-width 1023.98px). */
+@media (max-width: 1023.98px) {
+  .agent-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 32px;
+  }
+}
+
+/* DEFAULT chip (877:4186): brand tint with a 0.5px brand ring, 9px uppercase. */
+.agent-management-default {
+  align-self: center;
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-brand-selected);
+  box-shadow: inset 0 0 0 0.5px var(--portal-text-brand);
+  color: var(--ui-text-primary);
+  font-size: var(--portal-type-chip-size);
+  letter-spacing: var(--portal-tracking-chip);
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+:root:not(.dark) .agent-management-default {
+  color: var(--portal-text-brand);
+}

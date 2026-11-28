@@ -1,0 +1,60 @@
+/* Redesign-only Appearance landing (856:2641). Shared cards, sections and the Advanced disclosure
+   come from global-overviews.css; this file owns the intro and the theme-mode cards. */
+.appearance-overview {
+  display: grid;
+  gap: var(--portal-page-rhythm);
+  min-width: 0;
+  font-family: var(--portal-font-body);
+  container-type: inline-size;
+  font-size: var(--portal-type-body-size);
+  line-height: 1.4;
+}
+
+.appearance-overview-intro {
+  color: var(--ui-text-tertiary);
+  font-size: var(--portal-type-ui-size);
+  line-height: 1.4;
+  font-weight: var(--portal-weight-regular);
+}
+
+.appearance-mode-section {
+  min-width: 0;
+}
+
+.appearance-make-it-yours {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.appearance-make-it-yours .discovery-artworks-track {
+  margin-inline: 0;
+  padding-inline: 0;
+  scroll-padding-inline: 0;
+  mask-image: none;
+}
+
+/* Advanced groups (829:2712): a quiet group label over hairline-divided rows. */
+.appearance-advanced-groups {
+  display: grid;
+  gap: 1.5rem;
+  padding-top: 0.25rem;
+}
+
+.appearance-advanced-group-title {
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--portal-stroke-divider);
+  color: var(--ui-text-secondary);
+  font-size: var(--portal-type-ui-size);
+  font-weight: var(--portal-weight-medium);
+  line-height: 1.3;
+}
+
+.appearance-advanced-groups [data-slot='settings-row'] + [data-slot='settings-row'],
+.appearance-advanced-groups section > div > * + * {
+  border-top: 1px solid var(--portal-stroke-divider);
+}
+
+.appearance-advanced-groups [data-slot='settings-row'] {
+  padding-inline: 0;
+}

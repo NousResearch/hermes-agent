@@ -49,6 +49,8 @@ export interface SessionCommandNotices {
   busy: (command: string) => string
   /** The same refusal while another writer holds the compression lock: Stop does not end it, so wait. */
   busyCompressing: (command: string) => string
+  titleSet: (title: string, queued: boolean) => string
+  titleCleared: string
   steerUsage: string
   steerQueued: (preview: string) => string
   steerNoActiveTurn: (preview: string) => string

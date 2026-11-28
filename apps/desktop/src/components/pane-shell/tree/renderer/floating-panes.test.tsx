@@ -9,6 +9,7 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PORTAL_TITLEBAR_HEIGHT, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import type { registry as contributionRegistry } from '@/contrib/registry'
 import { reactRoot } from '@/test/react-root'
 
@@ -81,11 +82,22 @@ describe('FloatingPanes (live DOM)', () => {
     const el = card()!
 
     expect(el).toBeTruthy()
-    // 1440 - 224 - 12 margin = 1204; titlebar 34 + 12 = 46.
+    // 1440 - 224 - 12 margin = 1204; the (redesigned) titlebar band + 12 margin.
     expect(el.style.left).toBe('1204px')
-    expect(el.style.top).toBe('46px')
+    expect(el.style.top).toBe(`${PORTAL_TITLEBAR_HEIGHT + 12}px`)
     expect(el.style.width).toBe('224px')
     expect(document.querySelector('[data-testid="hud-body"]')?.textContent).toBe('live')
+  })
+
+  it('clears the classic band when the redesign is rolled back', async () => {
+    // Imported after resetModules, so it is the instance FloatingPanes reads.
+    const { $shellChoice } = await import('@/store/shell-variant')
+
+    $shellChoice.set(false)
+    registerHud({ anchor: 'top-right', height: '132px', placement: 'floating', width: '224px' })
+    mount.render(<FloatingPanes />)
+
+    expect(card()!.style.top).toBe(`${TITLEBAR_HEIGHT + 12}px`)
   })
 
   it('renders nothing for a non-floating placement', () => {
@@ -106,7 +118,7 @@ describe('FloatingPanes (live DOM)', () => {
     pointer(grab(), 'pointerup', 260, 240)
 
     expect(card()!.style.left).toBe('172px')
-    expect(card()!.style.top).toBe('186px')
+    expect(card()!.style.top).toBe(`${PORTAL_TITLEBAR_HEIGHT + 12 + 140}px`)
   })
 
   it('persists the dragged position across a remount', () => {

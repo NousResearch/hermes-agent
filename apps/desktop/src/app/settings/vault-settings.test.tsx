@@ -23,6 +23,7 @@ vi.mock('@/store/gateway', async importActual => ({
 
 import { queryClient } from '@/lib/query-client'
 import { $connection, $gatewayState } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { VaultSettings } from './vault-settings'
 
@@ -57,7 +58,27 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   vi.restoreAllMocks()
+})
+
+describe('VaultSettings in the redesign while the gateway is closed', () => {
+  it('says the vault is offline and still shows the page below it', () => {
+    $shellChoice.set(true)
+    $gatewayState.set('closed')
+
+    render(
+      <MemoryRouter initialEntries={['/settings?tab=vault']}>
+        <QueryClientProvider client={queryClient}>
+          <VaultSettings after={<p>Advanced</p>} />
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+
+    expect(screen.getByText('Hermes is offline. Saved credentials appear once it reconnects.')).toBeTruthy()
+    expect(screen.getByText('Advanced')).toBeTruthy()
+    expect(requestGateway).not.toHaveBeenCalled()
+  })
 })
 
 describe('VaultSettings', () => {

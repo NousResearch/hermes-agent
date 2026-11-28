@@ -13,6 +13,14 @@ export const ruBoot = {
       startingDesktopConnection: 'Запуск подключения приложения',
       startingHermesDesktop: 'Запуск Hermes Desktop…'
     },
+    // Тексты запуска Webapp: вкладка браузера не называет десктопное приложение (lib/boot-copy).
+    webapp: {
+      ready: 'Hermes готов',
+      steps: {
+        startingConnection: 'Запуск подключения',
+        startingHermes: 'Запускаем Hermes…'
+      }
+    },
     errors: {
       backgroundExited: 'Фоновый процесс Hermes завершён.',
       backgroundExitedDuringStartup: 'Фоновый процесс Hermes завершился при запуске.',

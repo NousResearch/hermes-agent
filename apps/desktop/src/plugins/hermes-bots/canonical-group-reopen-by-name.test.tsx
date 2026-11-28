@@ -185,14 +185,14 @@ it('a late lookup from a superseded connection does not publish its room', async
 
   await act(async () => { state.connectionId.set('remote') })
   // The remote lookup answered (no such room); these Bots live on `local`, so it cannot seat them.
-  const elsewhere = 'This group chat can’t continue here: it has bots on other computers'
-  expect(screen.getByText(text => text.startsWith(elsewhere))).toBeTruthy()
+  expect(screen.queryByRole('textbox')).toBeNull()
   expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
 
   await act(async () => { releaseA({ rooms: [original], next_offset: null }) })
   expect(methods()).not.toContain('groups.state')
   expect(Object.values($canonicalGroupBindings.get()).some(binding => binding.connectionId === 'local')).toBe(false)
-  expect(screen.getByText(text => text.startsWith(elsewhere))).toBeTruthy()
+  expect(screen.queryByRole('textbox')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Start new group' })).toBeNull()
 })
 
 // Review on #140972 (F4): a room NAME spelled like another connection's key

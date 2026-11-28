@@ -243,9 +243,9 @@ async function selectGateway(page: Page, id: string, label: string, profile: str
   const group = gatewayGroup(page, id)
   await expect(group).toBeVisible({ timeout: 60_000 })
   await group.getByRole('button', { name: `${profile} · ${label}`, exact: true }).click()
-  await expect(page.getByRole('button', { name: /^Registered gateways: / })).toHaveAttribute(
+  await expect(page.getByRole('button', { name: `Machines: ${label}`, exact: true })).toHaveAttribute(
     'aria-label',
-    `Registered gateways: ${label}`,
+    `Machines: ${label}`,
     { timeout: 90_000 }
   )
   await expect(group).toHaveAttribute('data-active', 'true')

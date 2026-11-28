@@ -12,7 +12,7 @@ import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { FreeTierNoticeStrip, useFreeTierNoticeOwner } from '@/components/free-tier/notice-strip'
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
-import { SharedMetricsConsentStrip } from '@/components/shared-metrics/consent-strip'
+import { SharedMetricsConsentStrip, useSharedMetricsStripShown } from '@/components/shared-metrics/consent-strip'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -35,7 +35,6 @@ import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/f
 import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
-import { $sharedMetricsConsent, sharedMetricsOfferPending } from '@/store/shared-metrics'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $retainedTodosBySession } from '@/store/todos'
 import { openSessionInNewWindow } from '@/store/windows'
@@ -145,8 +144,7 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const ownsFreeTierNotice = useFreeTierNoticeOwner()
   const freeTierNotice = ownsFreeTierNotice && freeTierStripPending(freeTierStatus, freeTierRoute)
   // Same single owner, one offer at a time: the metrics question waits for the free-tier notice.
-  const sharedMetricsConsent = useStore($sharedMetricsConsent)
-  const sharedMetricsOffer = ownsFreeTierNotice && !freeTierNotice && sharedMetricsOfferPending(sharedMetricsConsent)
+  const sharedMetricsOffer = useSharedMetricsStripShown(ownsFreeTierNotice && !freeTierNotice)
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 

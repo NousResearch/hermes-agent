@@ -1,9 +1,10 @@
+import '../redesign/portal-hud.css'
+
 import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
 import { useViewedInterval } from '@/hooks/use-viewed-interval'
-import { chatMessageText } from '@/lib/chat-messages'
 import { $activeSessionAwaitingInput } from '@/store/prompts'
 import { $busy, $messages } from '@/store/session'
 
@@ -96,7 +97,9 @@ function useRecentActivity(): [boolean, () => void] {
     const onMessages = () => {
       const messages = $messages.get()
       const last = messages[messages.length - 1]
-      const next = `${messages.length}:${last?.id ?? ''}:${last ? chatMessageText(last).length : 0}`
+      const lastParts = last?.parts
+      const tail = lastParts?.[lastParts.length - 1] as { text?: string } | undefined
+      const next = `${messages.length}:${last?.id ?? ''}:${lastParts?.length ?? 0}:${tail?.text?.length ?? 0}`
 
       if (next === signature) {
         return

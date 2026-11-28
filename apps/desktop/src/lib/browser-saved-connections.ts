@@ -146,14 +146,30 @@ export function createBrowserSavedConnections({
     return next
   }
 
-  const list = async () => {
-    const read = await api<DesktopConnectionsRegistry | null>({ path: ROUTE })
+  let listInFlight: Promise<DesktopConnectionsRegistry> | null = null
 
-    if (!Array.isArray(read?.connections)) {
-      throw new Error('Hermes did not return the saved connections')
+  const list = () => {
+    if (listInFlight) {
+      return listInFlight
     }
 
-    return publish(read)
+    const pending = api<DesktopConnectionsRegistry | null>({ path: ROUTE })
+      .then(read => {
+        if (!Array.isArray(read?.connections)) {
+          throw new Error('Hermes did not return the saved connections')
+        }
+
+        return publish(read)
+      })
+      .finally(() => {
+        if (listInFlight === pending) {
+          listInFlight = null
+        }
+      })
+
+    listInFlight = pending
+
+    return pending
   }
 
   const mutated = async <T extends { registry: DesktopConnectionsRegistry }>(request: HermesApiRequest) => {

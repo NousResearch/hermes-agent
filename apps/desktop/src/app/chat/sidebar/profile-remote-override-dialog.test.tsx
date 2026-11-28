@@ -1,6 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $remoteOverrideDialogProfile, openRemoteOverrideDialog } from '@/store/profile-remote-override'
 
 import { ProfileRemoteOverrideDialog } from './profile-remote-override-dialog'
@@ -64,10 +65,12 @@ describe('ProfileRemoteOverrideDialog', () => {
 
     // No write yet — the risk note comes first.
     expect(applyConnectionConfig).not.toHaveBeenCalled()
-    expect(screen.getByText('Connect this profile to a remote host?')).toBeTruthy()
-    expect(screen.getByText(/Only connect to a host you trust/)).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+    fireEvent.click(
+      within(screen.getByRole('dialog', { name: en.profiles.remoteOverride.confirmTitle })).getByRole('button', {
+        name: en.profiles.remoteOverride.connect
+      })
+    )
 
     await waitFor(() =>
       expect(applyConnectionConfig).toHaveBeenCalledWith({
@@ -138,14 +141,14 @@ describe('ProfileRemoteOverrideDialog', () => {
     )
   })
 
-  it('warns when the profile name collides with a registered gateway', async () => {
+  it('warns when the profile name collides with a registered machine', async () => {
     list.mockResolvedValue({
       ...emptyRegistry,
       connections: [{ id: 'abc123', kind: 'remote', label: 'Work', tokenPreview: null, tokenSet: true }]
     })
     await openDialog('work')
 
-    await screen.findByText(/A gateway named “Work” already exists in Settings/)
+    expect((await screen.findByRole('status')).textContent).toContain('Work')
   })
 
   it('keeps the dialog open and shows the error when the write fails', async () => {

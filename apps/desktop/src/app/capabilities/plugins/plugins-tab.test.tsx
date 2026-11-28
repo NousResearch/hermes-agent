@@ -5,14 +5,23 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginDecisions, $pluginRecords, dropPlugin, patchPlugin, publishPlugin } from '@/contrib/plugins-store'
+import { TRANSLATIONS } from '@/i18n'
 import { queryClient } from '@/lib/query-client'
-import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import {
+  $agentPluginBusy,
+  $agentPlugins,
+  $agentPluginsError,
+  $agentPluginsOwnerKey,
+  $agentPluginsProfile,
+  $agentPluginsStatus
+} from '@/store/agent-plugins'
 import { $confirmRequest, settleConfirm } from '@/store/confirm'
-import { $notifications } from '@/store/notifications'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection, $gatewayState } from '@/store/session'
+import { $shellChoice } from '@/store/shell-variant'
 
 import { PageSearchShell } from '../../page-search-shell'
+import { SettingsOwnerContext } from '../../settings/profile-scope'
 import { parseCatalog } from '../catalog/catalog-data'
 import { $catalogCardView } from '../catalog/store'
 
@@ -34,6 +43,9 @@ function PluginsHarness({ query: initialQuery, ...props }: ComponentProps<typeof
 }
 
 function renderPlugins(props: ComponentProps<typeof PluginsTab>) {
+  $agentPluginsProfile.set(typeof props.profile === 'string' ? props.profile : (props.profile?.profile ?? null))
+  $agentPluginsOwnerKey.set(undefined)
+
   return render(
     <QueryClientProvider client={queryClient}>
       <PluginsHarness {...props} />
@@ -84,8 +96,7 @@ vi.mock('@/contrib/runtime-loader', async importOriginal => ({
   uninstallDiskPlugin: (id: string) => uninstallDiskPlugin(id)
 }))
 
-// #96969: a Desktop switch whose feature also ships an agent toolset must
-// reach the same PUT /api/tools/toolsets/{name} the Toolsets tab uses.
+// App-level plugin switches must never change a selected agent's toolsets.
 const setToolsetEnabled = vi.fn(async (..._args: unknown[]) => ({ enabled: true, name: 'kanban', ok: true }))
 const getToolsets = vi.fn(async (..._args: unknown[]): Promise<{ enabled: boolean; name: string }[]> => [])
 
@@ -96,10 +107,15 @@ vi.mock('@/api/toolsets', async importOriginal => ({
 }))
 
 beforeEach(() => {
+  $shellChoice.set(true)
   $gatewayState.set('open')
   $pluginRecords.set({})
+  $agentPluginBusy.set(null)
   $agentPlugins.set([])
+  $agentPluginsProfile.set(null)
+  $agentPluginsOwnerKey.set(undefined)
   $agentPluginsStatus.set('ready')
+  $agentPluginsError.set(null)
   $catalogCardView.set(false)
   seedCatalog([])
   closePluginInstallRequest()
@@ -114,6 +130,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $shellChoice.set(null)
   settleConfirm(false)
   $connection.set(null)
   queryClient.clear()
@@ -267,7 +284,6 @@ describe('PluginsTab', () => {
     expect(screen.getByText('Agent + Desktop')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Desktop: Media Studio' }).getAttribute('aria-checked')).toBe('true')
     expect(screen.getByRole('switch', { name: 'Agent: Media Studio' }).getAttribute('aria-checked')).toBe('false')
-    expect(screen.getAllByText('Agent in workbot').length).toBeGreaterThan(0)
   })
 
   it('offers "Install here" for a desktop half whose agent half is not in the selected profile', async () => {
@@ -408,55 +424,112 @@ describe('PluginsTab', () => {
     )
   })
 
-  it('turns a unified package on with ONE switch: Agent on also turns its desktop half on', async () => {
+  it.each([false, true])(
+    'only classic couples an agent plugin to its desktop half (redesigned=%s)',
+    async redesigned => {
+      $shellChoice.set(redesigned)
+      publishPlugin(
+        { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
+        { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+      )
+      $agentPlugins.set([
+        { description: '', key: 'meter', name: 'meter', source: 'git', status: 'not enabled', version: '1' }
+      ])
+      requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+        params?.action === 'toggle'
+          ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+          : { plugins: [] }) as never)
+
+      renderPlugins({ profile: null })
+
+      screen.getByRole('switch', { name: 'Agent: Meter' }).click()
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'toggle', key: 'meter', enable: true })
+        )
+      )
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: 'Desktop: Meter' }).getAttribute('aria-checked')).toBe(
+          redesigned ? 'false' : 'true'
+        )
+      )
+
+      if (redesigned) {
+        expect($pluginDecisions.get()['meter-ui']).not.toBe(true)
+      } else {
+        expect($pluginDecisions.get()['meter-ui']).toBe(true)
+      }
+
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+      $pluginDecisions.set({})
+    }
+  )
+
+  it.each([false, true])(
+    'the inventory’s one package switch turns both halves on and off (redesigned=%s)',
+    async redesigned => {
+      $shellChoice.set(redesigned)
+      publishPlugin(
+        { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
+        { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+      )
+      $agentPlugins.set([
+        { description: '', key: 'meter', name: 'meter', source: 'git', status: 'not enabled', version: '1' }
+      ])
+      requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
+        params?.action === 'toggle'
+          ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+          : { plugins: [] }) as never)
+
+      // The redesign's Capabilities inventory renders without agent controls; classic with them.
+      renderPlugins({ agentControls: !redesigned, profile: 'workbot' })
+
+      const card = screen.getByRole('switch', { name: 'Meter' })
+      expect(card.getAttribute('aria-checked')).toBe('false')
+
+      card.click()
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'toggle', key: 'meter', enable: true })
+        )
+      )
+      expect($pluginDecisions.get()['meter-ui']).toBe(true)
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+      $pluginDecisions.set({})
+    }
+  )
+
+  it('an agent’s own Plugins column switches only that agent’s half, over the inventory', async () => {
+    $shellChoice.set(true)
     publishPlugin(
-      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
-      { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
+      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'loaded', packageName: 'meter' },
+      { activate: () => undefined, deactivate: () => patchPlugin('meter-ui', { status: 'disabled' }) }
     )
     $agentPlugins.set([
-      { description: '', key: 'meter', name: 'meter', source: 'git', status: 'not enabled', version: '1' }
+      { description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }
     ])
     requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
       params?.action === 'toggle'
-        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
+        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'not enabled' } }
         : { plugins: [] }) as never)
 
-    renderPlugins({ profile: null })
-
-    screen.getByRole('switch', { name: 'Agent: Meter' }).click()
-
-    await waitFor(() =>
-      expect(screen.getByRole('switch', { name: 'Desktop: Meter' }).getAttribute('aria-checked')).toBe('true')
-    )
-    expect($pluginDecisions.get()['meter-ui']).toBe(true)
-    requestGateway.mockImplementation(async () => ({ plugins: [] }))
-    $pluginDecisions.set({})
-  })
-
-  it('shows a package switch Off while its desktop half is off, and one click turns both halves on', async () => {
-    publishPlugin(
-      { id: 'meter-ui', name: 'Meter', kind: 'disk', status: 'disabled', packageName: 'meter' },
-      { activate: () => patchPlugin('meter-ui', { status: 'loaded' }), deactivate: () => undefined }
-    )
-    $agentPlugins.set([{ description: '', key: 'meter', name: 'meter', source: 'git', status: 'enabled', version: '1' }])
-    requestGateway.mockImplementation((async (_method: string, params?: { action?: string }) =>
-      params?.action === 'toggle'
-        ? { ok: true, plugin: { key: 'meter', name: 'meter', status: 'enabled' } }
-        : { plugins: [] }) as never)
-
-    renderPlugins({ profile: null })
+    renderPlugins({ agentControls: true, profile: 'workbot' })
 
     const card = screen.getByRole('switch', { name: 'Meter' })
-    expect(card.getAttribute('aria-checked')).toBe('false')
-
+    expect(card.getAttribute('aria-checked')).toBe('true')
     card.click()
 
-    await waitFor(() => expect(card.getAttribute('aria-checked')).toBe('true'))
-    expect(requestGateway).toHaveBeenCalledWith(
-      'plugins.manage',
-      expect.objectContaining({ action: 'toggle', key: 'meter', enable: true })
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'toggle', key: 'meter', enable: false })
+      )
     )
-    expect($pluginDecisions.get()['meter-ui']).toBe(true)
+    expect($pluginDecisions.get()['meter-ui']).toBeUndefined()
     requestGateway.mockImplementation(async () => ({ plugins: [] }))
     $pluginDecisions.set({})
   })
@@ -534,147 +607,29 @@ describe('PluginsTab', () => {
     })
   })
 
-  // #96969: the Desktop Kanban switch enabled only this app's UI panel; the
-  // agent-side kanban toolset stayed off, so the board existed but the agent
-  // had no kanban tools. The switch must flip both, scoped to the profile the
-  // page shows (the toolset is per-profile config), and refresh the Toolsets
-  // tab's cache so its row repaints.
-  it('enables the kanban agent toolset when the Desktop panel is switched on', async () => {
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    // Panel currently off: clicking the switch turns it on.
-    $pluginRecords.set({
-      kanban: { id: 'kanban', name: 'Kanban', kind: 'bundled', status: 'disabled' }
-    })
-
-    renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
-
-    screen.getByRole('switch', { name: 'Desktop: Kanban' }).click()
-
-    await waitFor(() => {
-      expect(setToolsetEnabled).toHaveBeenCalledWith('kanban', true, 'workbot')
-    })
-    expect(invalidate).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ['toolsets-list'] }))
-    invalidate.mockRestore()
-  })
-
-  it('disables the kanban agent toolset when the Desktop panel is switched off', async () => {
-    // Panel currently on: clicking the switch turns it off.
-    $pluginRecords.set({
-      kanban: { id: 'kanban', name: 'Kanban', kind: 'bundled', status: 'loaded' }
-    })
-
-    renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
-
-    screen.getByRole('switch', { name: 'Desktop: Kanban' }).click()
-
-    await waitFor(() => {
-      expect(setToolsetEnabled).toHaveBeenCalledWith('kanban', false, 'workbot')
-    })
-  })
-
-  describe('Desktop Kanban switch when the toolset write fails', () => {
-    // A real loader handle, so the switch's `checked` (desktop.status) and the
-    // persisted decision genuinely move when the panel is toggled.
-    const publishKanban = (status: 'disabled' | 'loaded') =>
+  it.each([false, true])(
+    'the Desktop Kanban switch turns the agent’s kanban tools on with the panel (redesigned=%s)',
+    async redesigned => {
+      $shellChoice.set(redesigned)
+      const status = 'disabled'
+      $pluginDecisions.set({})
       publishPlugin(
         { id: 'kanban', name: 'Kanban', kind: 'bundled', status },
         { activate: () => patchPlugin('kanban', { status: 'loaded' }), deactivate: () => undefined }
       )
 
-    const kanbanSwitch = () => screen.getByRole<HTMLButtonElement>('switch', { name: 'Desktop: Kanban' })
-    const checked = () => kanbanSwitch().getAttribute('aria-checked')
-    const notices = (kind: string) => $notifications.get().filter(n => n.kind === kind)
-    const toolsetReads = (enabled: boolean) => [{ enabled, name: 'kanban' }]
-
-    // Resolves once the write attempt (and any re-read) has settled.
-    const settled = () => waitFor(() => expect(kanbanSwitch().disabled).toBe(false))
-
-    beforeEach(() => {
-      $pluginDecisions.set({})
-      $notifications.set([])
-      window.localStorage.clear()
-    })
-
-    afterEach(() => dropPlugin('kanban'))
-
-    it('keeps panel and tools off when enabling is rejected, then retries', async () => {
-      publishKanban('disabled')
-      setToolsetEnabled.mockRejectedValueOnce(new Error('HTTP 500'))
-      getToolsets.mockResolvedValueOnce(toolsetReads(false))
-
-      renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
-      fireEvent.click(kanbanSwitch())
-      await waitFor(() => expect(notices('error')).toHaveLength(1))
-      await settled()
-
-      expect(checked()).toBe('false')
-      expect($pluginRecords.get().kanban.status).toBe('disabled')
-      expect($pluginDecisions.get()).not.toHaveProperty('kanban')
-      expect(window.localStorage.getItem('hermes.desktop.pluginDecisions.v2')).toBeNull()
-      expect(notices('success')).toHaveLength(0)
-
-      // Same intended value again, backend healthy: both halves turn on.
-      fireEvent.click(kanbanSwitch())
-      await waitFor(() => expect(checked()).toBe('true'))
-
-      expect(setToolsetEnabled).toHaveBeenLastCalledWith('kanban', true, 'workbot')
-      expect($pluginDecisions.get().kanban).toBe(true)
-      expect(notices('success')).toHaveLength(1)
-    })
-
-    it('keeps panel and tools on when disabling is rejected, then retries', async () => {
-      publishKanban('loaded')
-      setToolsetEnabled.mockRejectedValueOnce(new Error('HTTP 500'))
-      getToolsets.mockResolvedValueOnce(toolsetReads(true))
-
-      renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
-      fireEvent.click(kanbanSwitch())
-      await waitFor(() => expect(notices('error')).toHaveLength(1))
-      await settled()
-
-      expect(checked()).toBe('true')
-      expect($pluginRecords.get().kanban.status).toBe('loaded')
-      expect($pluginDecisions.get()).not.toHaveProperty('kanban')
-      expect(notices('success')).toHaveLength(0)
-
-      fireEvent.click(kanbanSwitch())
-      await waitFor(() => expect(checked()).toBe('false'))
-
-      expect(setToolsetEnabled).toHaveBeenLastCalledWith('kanban', false, 'workbot')
-      expect($pluginDecisions.get().kanban).toBe(false)
-      expect(notices('success')).toHaveLength(1)
-    })
-
-    it('follows the backend when a timed-out write actually committed', async () => {
-      publishKanban('disabled')
-      setToolsetEnabled.mockRejectedValueOnce(new Error('Request timed out'))
-      getToolsets.mockResolvedValueOnce(toolsetReads(true))
-
-      renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
-      fireEvent.click(kanbanSwitch())
-      await waitFor(() => expect(checked()).toBe('true'))
-
-      expect(getToolsets).toHaveBeenCalledWith('workbot')
-      expect($pluginDecisions.get().kanban).toBe(true)
-      expect(notices('error')).toHaveLength(0)
-    })
-
-    it('leaves the panel alone and stays retryable when the outcome is unknown', async () => {
-      publishKanban('loaded')
-      setToolsetEnabled.mockRejectedValueOnce(new Error('Request timed out'))
-      getToolsets.mockRejectedValueOnce(new Error('Request timed out'))
-
-      renderPlugins({ profile: 'workbot', scopeLabel: 'workbot' })
-      fireEvent.click(kanbanSwitch())
-      await waitFor(() => expect(notices('error')).toHaveLength(1))
-      await settled()
-
-      expect(checked()).toBe('true')
-      expect($pluginRecords.get().kanban.status).toBe('loaded')
-      expect($pluginDecisions.get()).not.toHaveProperty('kanban')
-      expect(notices('success')).toHaveLength(0)
-    })
-  })
+      try {
+        renderPlugins({ agentControls: false, profile: 'workbot', scopeLabel: 'workbot' })
+        fireEvent.click(screen.getByRole('switch', { name: 'Desktop: Kanban' }))
+        await waitFor(() => expect($pluginDecisions.get().kanban).toBe(status === 'disabled'))
+        expect(setToolsetEnabled).toHaveBeenCalledWith('kanban', true, 'workbot')
+        expect(getToolsets).not.toHaveBeenCalled()
+      } finally {
+        dropPlugin('kanban')
+        $pluginDecisions.set({})
+      }
+    }
+  )
 
   it('leaves toolsets alone for desktop plugins with no agent toolset', () => {
     $pluginRecords.set({
@@ -887,6 +842,307 @@ describe('PluginsTab catalog UX', () => {
       )
     )
     await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
+  })
+
+  describe('an agent’s own Plugins page (installed only)', () => {
+    const agentPage = (props: Partial<ComponentProps<typeof PluginsTab>> = {}) =>
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <PluginsHarness agentControls agentLayout installedOnly profile="workbot" {...props} />
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+
+    const installed = (source: string) => ({
+      description: '',
+      key: 'demo-weather',
+      name: 'demo-weather',
+      source,
+      status: 'enabled' as const,
+      version: '1.0.0'
+    })
+
+    beforeEach(() => {
+      $shellChoice.set(true)
+      $agentPluginsProfile.set('workbot')
+      $agentPluginsOwnerKey.set(undefined)
+      queryClient.clear()
+    })
+
+    it('lists what the agent has and nothing from the library, without asking for the library', async () => {
+      const fetchCatalog = vi.fn().mockResolvedValue({ ok: true, json: async () => [weatherEntry] })
+      vi.stubGlobal('fetch', fetchCatalog)
+      // Another page may already hold the library: it is still not this page's to show.
+      seedCatalog()
+      $agentPlugins.set([installed('git')])
+      requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByText('demo-weather')).toBeTruthy()
+      expect(screen.queryByText('weather-plugin')).toBeNull()
+      expect(fetchCatalog).not.toHaveBeenCalled()
+      expect(screen.queryByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })).toBeNull()
+      expect(screen.getByRole('link', { name: 'Browse the plugin catalog' }).getAttribute('href')).toBe(
+        '/capabilities?tab=plugins'
+      )
+    })
+
+    it('uninstalls from the row, for that agent, only after the confirm is accepted', async () => {
+      $agentPlugins.set([installed('git')])
+      requestGateway.mockImplementation(async (_method, params) =>
+        params?.action === 'remove' ? { ok: true, name: 'demo-weather' } : { plugins: $agentPlugins.get() }
+      )
+
+      await act(async () => {
+        agentPage()
+      })
+      ;(await screen.findByRole('button', { name: 'Uninstall: demo-weather' })).click()
+
+      await waitFor(() => expect($confirmRequest.get()?.title).toContain('demo-weather'))
+      expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+
+      settleConfirm(true)
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' })
+        )
+      )
+    })
+
+    it('offers no uninstall for a plugin the backend cannot remove, and still its switch', async () => {
+      $agentPlugins.set([installed('entrypoint')])
+      requestGateway.mockImplementation(async () => ({ plugins: $agentPlugins.get() }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByRole('switch', { name: 'demo-weather' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Uninstall: demo-weather' })).toBeNull()
+    })
+
+    const forOwner = (owner: { connectionId: string; profile: string }) =>
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <SettingsOwnerContext.Provider value={owner}>
+              <PluginsHarness agentControls agentLayout installedOnly profile={owner.profile} />
+            </SettingsOwnerContext.Provider>
+          </MemoryRouter>
+        </QueryClientProvider>
+      )
+
+    it('browses the library for this agent, not whichever one is active', async () => {
+      await act(async () => {
+        forOwner({ connectionId: 'local', profile: 'workbot' })
+      })
+
+      expect((await screen.findByRole('link', { name: 'Browse the plugin catalog' })).getAttribute('href')).toBe(
+        '/capabilities?tab=plugins&agentProfile=workbot&connection=local'
+      )
+      // An installed list advertises nothing above itself.
+      expect(screen.queryByText('Extend Hermes with plugins')).toBeNull()
+    })
+
+    it('keeps Install from Git for an agent on another machine, which the Capabilities page cannot reach', async () => {
+      const git = TRANSLATIONS.en.settings.plugins.installModal.installFromGit
+
+      await act(async () => {
+        forOwner({ connectionId: 'homelab', profile: 'workbot' })
+      })
+
+      expect(await screen.findByRole('button', { name: git })).toBeTruthy()
+    })
+
+    it('does not show the library\'s failure: it never asked for the library', async () => {
+      queryClient.setQueryData(['public-catalog', 'plugins'], undefined)
+      await queryClient
+        .fetchQuery({ queryKey: ['public-catalog', 'plugins'], queryFn: () => Promise.reject(new Error('catalog down')), retry: false })
+        .catch(() => undefined)
+      $agentPlugins.set([])
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeTruthy()
+      expect(screen.queryByText('catalog down')).toBeNull()
+    })
+
+    it('offers no Browse for an agent on another machine: the library page cannot reach it', async () => {
+      await act(async () => {
+        forOwner({ connectionId: 'homelab', profile: 'workbot' })
+      })
+
+      await screen.findByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })
+      expect(screen.queryByRole('link', { name: 'Browse the plugin catalog' })).toBeNull()
+    })
+
+    it('holds its place while the installed list loads, instead of saying nothing was found', async () => {
+      $agentPlugins.set([])
+      $agentPluginsStatus.set('loading')
+      requestGateway.mockImplementation(() => new Promise(() => {}))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(document.querySelector('[data-capability-skeleton]')).not.toBeNull()
+      expect(screen.queryByText(TRANSLATIONS.en.catalog.noResults)).toBeNull()
+      expect(screen.queryByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeNull()
+    })
+
+    it('a list that failed to load shows its error, not a skeleton that never ends', async () => {
+      $agentPlugins.set([])
+      $agentPluginsStatus.set('loading')
+      requestGateway.mockImplementation(() => new Promise(() => {}))
+
+      await act(async () => {
+        agentPage()
+      })
+      expect(document.querySelector('[data-capability-skeleton]')).not.toBeNull()
+
+      act(() => $agentPluginsStatus.set('error'))
+
+      expect(document.querySelector('[data-capability-skeleton]')).toBeNull()
+    })
+
+    it('a dialog that embeds the agent layout keeps the library and Install from Git', async () => {
+      seedCatalog()
+      $agentPlugins.set([])
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+
+      await act(async () => {
+        render(
+          <QueryClientProvider client={queryClient}>
+            <MemoryRouter>
+              <PluginsHarness agentControls agentLayout profile="workbot" />
+            </MemoryRouter>
+          </QueryClientProvider>
+        )
+      })
+
+      expect(await screen.findByText('weather-plugin')).toBeTruthy()
+      expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })).toBeTruthy()
+    })
+
+    it('says so in a line when nothing is installed', async () => {
+      $agentPlugins.set([])
+      requestGateway.mockImplementation(async () => ({ plugins: [] }))
+
+      await act(async () => {
+        agentPage()
+      })
+
+      expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Browse the plugin catalog' })).toBeTruthy()
+    })
+
+    it('shows only the error when the installed list fails, never an empty state under it', async () => {
+      $agentPluginsProfile.set('error-bot')
+      $agentPlugins.set([])
+      $agentPluginsStatus.set('loading')
+      requestGateway.mockImplementation(async (_method, params) => {
+        if (params?.action === 'list') {
+          throw new Error('scan failed')
+        }
+
+        return {}
+      })
+
+      await act(async () => {
+        agentPage({ profile: 'error-bot' })
+      })
+
+      expect(await screen.findByText(TRANSLATIONS.en.skills.plugins.loadFailed)).toBeTruthy()
+      expect(screen.getByText('scan failed')).toBeTruthy()
+      expect(screen.queryByText(TRANSLATIONS.en.skills.plugins.emptyAll)).toBeNull()
+    })
+
+    it('checks for updates on demand, refreshes the list, and updates a row that has one', async () => {
+      const updated = {
+        ...installed('git'),
+        catalog_name: 'demo-weather',
+        catalog_version: '1.2.0',
+        update_available: true
+      }
+
+      $agentPluginsProfile.set('update-bot')
+      $agentPlugins.set([installed('git')])
+      requestGateway.mockImplementation(async (_method, params) => {
+        if (params?.action === 'check') {
+          return {
+            check_results: [{ name: 'demo-weather', class: 'git', update_available: true }],
+            plugins: [updated]
+          }
+        }
+
+        return params?.action === 'update' ? { ok: true, unchanged: false } : { plugins: $agentPlugins.get() }
+      })
+
+      await act(async () => {
+        agentPage({ profile: 'update-bot' })
+      })
+
+      fireEvent.click(await screen.findByRole('button', { name: TRANSLATIONS.en.skills.plugins.checkForUpdates }))
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'check', profile: 'update-bot' }),
+          expect.any(Number)
+        )
+      )
+
+      // The check's refreshed list lands, and the row it found behind offers Update beside Uninstall.
+      ;(await screen.findByRole('button', { name: 'Update to 1.2.0' })).click()
+
+      await waitFor(() =>
+        expect(requestGateway).toHaveBeenCalledWith(
+          'plugins.manage',
+          expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'update-bot' }),
+          expect.any(Number)
+        )
+      )
+      await waitFor(() => expect($agentPluginBusy.get()).toBeNull())
+    })
+  })
+
+  it('keeps the check and inline row update off the classic header, which keeps its detail-pane update', () => {
+    $agentPlugins.set([
+      {
+        catalog_name: 'demo-weather',
+        catalog_version: '1.2.0',
+        description: '',
+        key: 'demo-weather',
+        name: 'demo-weather',
+        source: 'git',
+        status: 'enabled',
+        update_available: true,
+        version: '1.0.0'
+      }
+    ])
+
+    renderPlugins({ profile: 'workbot' })
+
+    expect(screen.queryByRole('button', { name: TRANSLATIONS.en.skills.plugins.checkForUpdates })).toBeNull()
+    // Only the detail pane's own Update remains: the inline row action is the agent page's.
+    expect(screen.getAllByRole('button', { name: 'Update to 1.2.0' })).toHaveLength(1)
+  })
+
+  it('keeps Install from Git on the Capabilities page', async () => {
+    await act(async () => {
+      renderPlugins({ profile: 'workbot' })
+    })
+
+    expect(screen.getByRole('button', { name: TRANSLATIONS.en.settings.plugins.installModal.installFromGit })).toBeTruthy()
   })
 
   it('uninstalls a standalone desktop plugin through Electron only after the confirm dialog is accepted', async () => {

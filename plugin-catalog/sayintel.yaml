@@ -1,0 +1,40 @@
+name: sayintel
+title: Sayintel
+repo: https://github.com/dennis-noah/sayintel-plugin
+sha: 9eda583f22b1e2513a4bf44bd2426b34b6061c10
+description: "Conference outbound for B2B teams with Sayintel: start a campaign from a conference speaker or agenda page, follow the research and drafting run, and review qualified leads and LinkedIn drafts. Portable Agent Plugins v1 package (root plugin.json, streamable-http mcp.json, one skill, plus Cursor and Claude Code manifests), submitted by Sayintel, which runs the service. Disclosure: no code of its own runs in Hermes. mcp.json points Hermes' native remote MCP client at https://sayintel.com/mcp. Sign-in is OAuth 2.1 with PKCE and dynamic client registration in the browser; Hermes stores tokens under the profile mcp-tokens directory. Write tools change Sayintel account state (campaigns, drafts, selections) and some spend credits; no tool on this door sends a message or arms a sending campaign. The package marks the server trust: untrusted, so Hermes asks before every call that is not annotated readOnlyHint. Campaign, speaker and draft data returned by the tools reach the user's model provider. The remote tool list can change without a new pin of this package. No telemetry, no background process, no self-update."
+maintainer: Sayintel
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://sayintel.com/docs/mcp
+version: "1.0.0"
+readme: true
+known_issues:
+  - "Sign-in opens a browser on the machine running Hermes. Cron, the messaging gateway and other unattended runs cannot complete the sign-in; use the bearer door at https://sayintel.com/api/public/mcp with a token from Connections, documented at https://sayintel.com/docs/mcp."
+  - "The OAuth door exposes a large read-and-write tool list and no send tools. Prune it with hermes mcp configure sayintel if the model is overwhelmed."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,25 @@
+name: send-cards
+title: Send Cards
+repo: https://github.com/kenhendricks00/hermes-send-cards
+sha: dcf5e6494107dbea5c27c3a789fda5603e224d74
+description: "Approval cards for outgoing messages: before the agent sends an email, Discord/Slack message, LinkedIn/SMS DM or X post, it shows an inline card (::preview) with the recipients and exact text, editable in place, with Discard and a Send split pill; after sending, the card collapses into a 'Sent' pill that expands to the read-only message. A GitHub channel shows pull request drafts with Repo, Branch and Changes rows, a Markdown preview and an Open PR / Update PR button; the card only relays approval and never calls GitHub itself. Portable Agent Plugins v1 package (skills/ only, two stdlib Python scripts). Disclosure: the skill tells the agent to send only after you tap Send on the card or give a clear yes; that approval is an instruction to the model, not a Hermes approval prompt, and Hermes does not block a send that skips the card. Allow rules and 'Disable drafts' (set from the Send menu, stored by draft_rules.py in HERMES_HOME/draft_rules.json) let the agent send without showing a card at all. Sending uses your existing Hermes tools; card buttons send fixed prompts back as your message via data-hermes-send / window.hermes.send; the scripts make no network calls, read only the draft JSON and any local image files it lists, and write one HTML file plus draft_rules.json; the rendered card loads remote images only when the draft includes them (an icon such as www.google.com/s2/favicons, X image URLs, and, only with the opt-in avatar: unavatar, the X profile photo from the third-party unavatar.io); no credentials, telemetry or background processes. Not affiliated with the separate draft-cards entry."
+maintainer: kenhendricks00
+tier: community
+category: tools
+version: "1.2.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/kenhendricks00/hermes-send-cards#readme
+image: https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/banner.png
+screenshots:
+- https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/email-pending.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/discord.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/x-post.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/github-pr.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/sent-expanded.png
+- https://raw.githubusercontent.com/kenhendricks00/hermes-send-cards/dcf5e6494107dbea5c27c3a789fda5603e224d74/docs/discarded.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

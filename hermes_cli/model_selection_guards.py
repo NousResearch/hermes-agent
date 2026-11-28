@@ -82,8 +82,8 @@ def _data_policy_guard(
     return _wrap("data_policy", "Data-Training Tier Warning", warning, model_name, provider)
 
 
-# Context-token threshold above which a mid-session switch asks for confirmation: providers key
-# prompt caches per model, so the first call after a switch re-reads the whole context uncached.
+# Context-token threshold above which a mid-session switch asks for confirmation: a new model may
+# need a cold input pass. The guard does not observe provider cache residency or billing.
 DEFAULT_CONTEXT_CACHE_SWITCH_THRESHOLD = 100_000
 
 
@@ -104,9 +104,9 @@ def _context_cache_threshold() -> int:
 def _context_cache_guard(
     model_name: str, provider: Optional[str], base_url: Optional[str], api_key: Optional[str],
     model_info: Optional[ModelInfo], ctx: Optional[SelectionContext] = None) -> Optional[SelectionWarning]:
-    """Confirm a mid-session switch that abandons a large cached context. Fires only when the surface
+    """Confirm a mid-session switch with a potentially large cold input pass. Fires only when the surface
     supplied live facts showing the active context at/above the threshold; smaller sessions, sessions
-    with no measured size and same-model re-selects (cache stays warm) are silent."""
+    with no measured size and same-model re-selects are silent. Cache residency is not checked."""
     if ctx is None or not ctx.context_tokens:
         return None
     target = (model_name or "").strip()
@@ -121,8 +121,9 @@ def _context_cache_guard(
         "!!! LARGE CONTEXT MODEL SWITCH !!!",
         "",
         f"This session holds ~{tokens:,} tokens of context.",
-        f"Switching to {target} makes the next reply re-read all of it uncached (providers key "
-        "prompt caches per model) — a one-time full-price input cost.",
+        f"{target} may need to process this context without reusing a cached prefix. "
+        "If the previous model's cache is already cold, staying on that model may also require "
+        "a cold input pass. Processing time and input charges or quota depend on the selected route.",
         "",
         f"Threshold: model.switch_context_confirm_tokens (currently {threshold:,}; 0 disables this check).",
         "Confirm only if you intend to switch now."])

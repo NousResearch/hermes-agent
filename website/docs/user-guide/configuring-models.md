@@ -57,22 +57,22 @@ Hermes creates the **GPT-6.1 Sol-900k** choice from an eligible discovered GPT-6
 
 When you switch models **inside an active session** (Herm TUI model picker, `hermes` CLI, or `/model` on Telegram/Discord), Hermes estimates whether your **next message** will run **preflight context compression** against the new model's window. If the session is already near or above that model's compression threshold (see [Context Compression](./configuration.md#context-compression)), the switch reply includes a warning — the same `warning_message` path used for expensive-model notices. The switch still applies immediately; compression runs on the **first user message after the switch**, before the model answers.
 
-:::warning Mid-session switches reset the prompt cache
-Prompt caches are keyed to the model serving the request, so any mid-conversation model change — an explicit `/model` switch, an [automatic fallback](./features/fallback-providers.md), or a [credential-pool](./features/credential-pools.md) rotation onto a different account — means the next message re-reads the entire conversation at full input-token price instead of the cached (~75–90% discounted) rate. On a long session this one-time re-read can dwarf the per-token difference between the two models. Switch when you need to, but prefer doing it early in a conversation or right after starting a fresh session.
+:::warning Mid-session switches may require a cold input pass
+Changing models, providers or accounts — through an explicit `/model` switch, an [automatic fallback](./features/fallback-providers.md), or a [credential-pool](./features/credential-pools.md) rotation — can prevent reuse of a cached prefix. The new route may need to process a large context again. If the previous model's cache is already cold, staying on that model may also require a cold input pass; switching does not necessarily forfeit a still-available cache benefit. Processing time and input charges or quota depend on the selected route, not just the amount of context.
 
-An explicit `/model` switch also rewrites the `Model:` (and `Provider:`) line inside the system prompt so the agent knows what it is running on. That is a deliberate, one-time change: the first request after the switch misses the cached prefix once, and everything after the system prompt stays byte-identical. Automatic fallbacks rewrite the same line only in memory — the stored session keeps the primary's labels, so a restored primary replays a byte-identical prompt.
+An explicit `/model` switch also rewrites the `Model:` (and `Provider:`) line inside the system prompt so the agent knows what it is running on. That deliberate prompt change can prevent prefix reuse; it does not establish whether the previous route still had a reusable entry. Automatic fallbacks rewrite the same line only in memory — the stored session keeps the primary's labels, so a restored primary replays a byte-identical prompt.
 :::
 
-Because of that one-time re-read cost, Hermes asks for **explicit confirmation** before applying a mid-session switch when the live session already holds a large context (default: **100,000 tokens**, measured from the latest provider-billed prompt size). The confirmation renders through the same selection-guard prompt as the expensive-model and data-training warnings wherever a live session is switching: the CLI and TUI `/model` command and picker, and a typed gateway `/model` in a chat with an active agent. Tune or disable it in `config.yaml`:
+Because a large context may need to be processed again, Hermes asks for **explicit confirmation** before applying a mid-session switch when the supplied context measurement meets the threshold (default: **100,000 tokens**, measured from the latest provider-billed prompt size). This guard does not check cache age or residency and does not predict a bill. The confirmation renders through the same selection-guard prompt as the expensive-model and data-training warnings wherever a live session is switching: the CLI and TUI `/model` command and picker, and a typed gateway `/model` in a chat with an active agent. Tune or disable it in `config.yaml`:
 
 ```yaml
 model:
   # Ask before mid-session switches when the session exceeds this many
-  # context tokens (the next reply re-reads them uncached). 0 disables.
+  # context tokens (a cold input pass may be needed). 0 disables.
   switch_context_confirm_tokens: 100000
 ```
 
-Re-selecting the model you're already on never prompts (the cache stays warm), and sessions with no measured context (fresh sessions, non-live surfaces) are exempt.
+Re-selecting the model you're already on does not trigger this context-cache guard; that is not a cache-warmth check. Sessions without a supplied context measurement are exempt.
 
 ### Unattended data-training tiers
 

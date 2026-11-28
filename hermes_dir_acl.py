@@ -268,11 +268,22 @@ def _components_below_home(path: Path) -> list[Path]:
 def _expected_final(path: Path) -> str | None:
     """Where *path* must resolve when nothing below the home is a link: the home's real path plus
     the relative parts. None off-home (only the leaf's own open-reparse check applies there)."""
+    absolute = Path(os.path.abspath(path))
+    try:
+        from hermes_constants import get_hermes_home
+        home = Path(os.path.abspath(get_hermes_home()))
+    except (ImportError, OSError):
+        home = None
+    if home is not None and os.path.normcase(str(absolute)) == os.path.normcase(str(home)):
+        # The home itself is the operator's own choice (HERMES_HOME), so it IS the trusted root:
+        # pin it exactly like a component below it. A reparse point there is refused before this
+        # matters, and the icacls call keeps its ``/L``, so the pin costs no safety.
+        return os.path.realpath(home)
     components = _components_below_home(path)
     if not components:
         return None
     home = components[0].parent
-    return os.path.join(os.path.realpath(home), *Path(os.path.abspath(path)).relative_to(home).parts)
+    return os.path.join(os.path.realpath(home), *absolute.relative_to(home).parts)
 
 
 def _warn_refused(path: Path, exc: BaseException) -> None:

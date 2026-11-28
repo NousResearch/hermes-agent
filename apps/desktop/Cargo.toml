@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/engine", "crates/desktop", "crates/library", "crates/gateway"]
+default-members = ["crates/desktop"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util"] }
+async-channel = "2"
+tokio-util = "0.7"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.release]
+strip = true

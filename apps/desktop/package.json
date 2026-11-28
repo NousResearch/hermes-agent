@@ -20,6 +20,8 @@
     "clean:e2e": "tsc --build tsconfig.e2e.json --clean",
     "clean:renderer": "tsc --build tsconfig.json --clean ",
     "clean:electron": "tsc --build tsconfig.electron.json --clean",
+    "dev:rust": "cargo run --locked -p hermes-desktop",
+    "build:rust": "cargo build --locked --release -p hermes-desktop -p hermes-gateway",
     "dev": "concurrently -k \"pnpm:dev:renderer\" \"pnpm:dev:electron\"",
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 pnpm run dev",
     "dev:mock": "node ../../tests-js/scripts/mock-server.ts",

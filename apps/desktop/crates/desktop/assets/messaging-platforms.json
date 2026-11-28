@@ -1,0 +1,2048 @@
+[
+ {
+  "id": "a2a",
+  "name": "A2A",
+  "description": "A2A (Agent-to-Agent) protocol v1.0 support for Hermes Agent \u2014 both directions of the open Linux Foundation standard for inter-agent communication.",
+  "fields": [
+   {
+    "name": "A2A_PEER_TOKENS",
+    "label": "A2A per-peer tokens (name:token, comma-separated; or empty)",
+    "description": "Per-peer bearer tokens ('alice:tok1,bob:tok2'). Each remote agent gets its own credential; the matched name is the authenticated identity used for rate limiting, trust, and audit.",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_BEARER_TOKEN",
+    "label": "A2A shared bearer token (or empty for localhost-only)",
+    "description": "Shared bearer token for inbound A2A calls (identity falls back to caller IP). With no token of any kind => bind to 127.0.0.1 only (no remote access).",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_PUSH_SECRET",
+    "label": "A2A push signing secret (or empty)",
+    "description": "HMAC secret for signing push notifications (default: the shared bearer token).",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_HOST",
+    "label": "A2A bind host (default 127.0.0.1)",
+    "description": "Inbound bind host. Defaults to 127.0.0.1; only widens to 0.0.0.0 when a bearer token is set AND you opt in here.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_PORT",
+    "label": "A2A port (default 9900)",
+    "description": "Inbound A2A server port (default 9900).",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_AGENT_NAME",
+    "label": "A2A agent name",
+    "description": "Name advertised on this agent's Agent Card (default: hostname-derived).",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_ALLOW_ALL_USERS",
+    "label": "Allow all A2A peers? (true/false)",
+    "description": "Allow any authenticated A2A peer to reach the agent (dev only).",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "A2A_HOME_CHANNEL",
+    "label": "A2A home channel (or empty)",
+    "description": "Task/context id used as the cron / notification delivery target for deliver=a2a.",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "bluebubbles",
+  "name": "BlueBubbles (iMessage)",
+  "description": "BlueBubbles (Apple iMessage) gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "BLUEBUBBLES_SERVER_URL",
+    "label": "BlueBubbles server URL",
+    "description": "BlueBubbles server URL (e.g. http://192.168.1.10:1234)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "BLUEBUBBLES_PASSWORD",
+    "label": "BlueBubbles server password",
+    "description": "BlueBubbles server password (BlueBubbles Server \u2192 Settings \u2192 API)",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "BLUEBUBBLES_ALLOWED_USERS",
+    "label": "Allowed iMessage addresses (comma-separated)",
+    "description": "Comma-separated iMessage addresses (phone/email) allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any iMessage sender to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_HOME_CHANNEL",
+    "label": "Home channel address",
+    "description": "Default iMessage address / chat GUID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_HOME_CHANNEL_NAME",
+    "label": "Home channel name",
+    "description": "Display name for the home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_WEBHOOK_HOST",
+    "label": "Webhook host",
+    "description": "Webhook listener bind host (default 127.0.0.1)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_WEBHOOK_PORT",
+    "label": "Webhook port",
+    "description": "Webhook listener port (default 8645)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_WEBHOOK_PATH",
+    "label": "Webhook path",
+    "description": "Webhook listener path (default /bluebubbles-webhook)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_SEND_READ_RECEIPTS",
+    "label": "Send read receipts? (true/false)",
+    "description": "Auto-mark inbound messages read (default true; needs the Private API helper)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_REQUIRE_MENTION",
+    "label": "Require mention in groups? (true/false)",
+    "description": "Require a wake word in group chats (default false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BLUEBUBBLES_MENTION_PATTERNS",
+    "label": "Mention patterns",
+    "description": "Group wake-word regexes (JSON list or comma/newline-separated); default Hermes wake words",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "buzz",
+  "name": "Buzz",
+  "description": "Buzz gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "BUZZ_RELAY_URL",
+    "label": "Buzz relay URL",
+    "description": "Base URL of the Buzz community relay (e.g. https://mycommunity.communities.buzz.xyz)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "BUZZ_PRIVATE_KEY",
+    "label": "Nostr private key (nsec or hex)",
+    "description": "Nostr private key for the agent's Buzz identity (nsec or hex) \u2014 the only Buzz secret",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "BUZZ_TRANSPORT",
+    "label": "Transport (auto/websocket/poll)",
+    "description": "Inbound transport: auto (WebSocket w/ poll fallback, default), websocket, or poll",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_AUTH_TAG",
+    "label": "NIP-OA auth tag JSON (or empty)",
+    "description": "Optional NIP-OA owner-attestation auth tag JSON for NIP-42 WebSocket auth",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_CHANNELS",
+    "label": "Channel UUIDs (comma-separated)",
+    "description": "Comma-separated channel UUIDs to watch (default: all joined channels)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_HOME_CHANNEL",
+    "label": "Home channel UUID (or empty)",
+    "description": "Channel UUID for cron / notification delivery (defaults to the first watched channel)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated npubs or hex pubkeys allowed to talk to the agent",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any community member to talk to the agent (true/false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_POLL_INTERVAL",
+    "label": "Poll interval seconds",
+    "description": "Seconds between inbound poll sweeps (default: 4)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_CLI_PATH",
+    "label": "buzz CLI path (or empty)",
+    "description": "Path to the buzz CLI binary (default: 'buzz' on PATH, then ~/bin/buzz)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_CREDENTIALS_FILE",
+    "label": "Credentials file path (or empty)",
+    "description": "JSON credentials file holding the nsec (fallback when BUZZ_PRIVATE_KEY is unset)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "BUZZ_REPLY_IN_THREAD",
+    "label": "Reply in thread? (true/false)",
+    "description": "Thread replies under the triggering message (true/false, default: true); false posts flat to the channel timeline",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "dingtalk",
+  "name": "DingTalk",
+  "description": "DingTalk gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "DINGTALK_CLIENT_ID",
+    "label": "DingTalk Client ID (app key)",
+    "description": "DingTalk app key (Client ID)",
+    "secret": false,
+    "url": "https://open-dev.dingtalk.com",
+    "required": true
+   },
+   {
+    "name": "DINGTALK_CLIENT_SECRET",
+    "label": "DingTalk Client Secret",
+    "description": "DingTalk app secret (Client Secret)",
+    "secret": true,
+    "url": "https://open-dev.dingtalk.com",
+    "required": true
+   },
+   {
+    "name": "DINGTALK_WEBHOOK_URL",
+    "label": "DingTalk robot webhook URL (optional)",
+    "description": "Static robot webhook URL for cross-platform / cron delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "DINGTALK_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated staff/sender IDs allowed to talk to the bot (* = any)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "DINGTALK_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default conversation ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "DINGTALK_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the DingTalk home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "discord",
+  "name": "Discord",
+  "description": "Discord gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "DISCORD_BOT_TOKEN",
+    "label": "Discord bot token",
+    "description": "Discord bot token",
+    "secret": true,
+    "url": "https://discord.com/developers/applications",
+    "required": true
+   },
+   {
+    "name": "DISCORD_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Discord user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "DISCORD_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Discord user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "DISCORD_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default channel ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "DISCORD_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the Discord home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "email",
+  "name": "Email",
+  "description": "Email gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "EMAIL_ADDRESS",
+    "label": "Email address",
+    "description": "Email account address",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "EMAIL_PASSWORD",
+    "label": "Email password",
+    "description": "Email account password / app password",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "EMAIL_SMTP_HOST",
+    "label": "SMTP host",
+    "description": "SMTP host (e.g. smtp.gmail.com)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "EMAIL_SMTP_PORT",
+    "label": "SMTP port",
+    "description": "SMTP port (default 587)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "EMAIL_IMAP_HOST",
+    "label": "IMAP host",
+    "description": "IMAP host for inbound polling (e.g. imap.gmail.com)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "EMAIL_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated email addresses allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "EMAIL_HOME_ADDRESS",
+    "label": "Home address",
+    "description": "Default address for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "EMAIL_AUTHSERV_ID",
+    "label": "Receiving MTA authserv-id",
+    "description": "Exact authserv-id on your mail server's topmost Authentication-Results header, e.g. mx.google.com (required unless EMAIL_TRUST_FROM_HEADER=true)",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "feishu",
+  "name": "Feishu / Lark",
+  "description": "Feishu / Lark gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "FEISHU_APP_ID",
+    "label": "Feishu App ID",
+    "description": "Feishu/Lark app ID",
+    "secret": false,
+    "url": "https://open.feishu.cn/",
+    "required": true
+   },
+   {
+    "name": "FEISHU_APP_SECRET",
+    "label": "Feishu App Secret",
+    "description": "Feishu/Lark app secret",
+    "secret": true,
+    "url": "https://open.feishu.cn/",
+    "required": true
+   },
+   {
+    "name": "FEISHU_DOMAIN",
+    "label": "Domain (feishu/lark)",
+    "description": "Domain: 'feishu' (China) or 'lark' (International)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "FEISHU_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Feishu user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "FEISHU_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Feishu user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "FEISHU_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default chat ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "FEISHU_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the Feishu home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "google_chat",
+  "name": "Google Chat",
+  "description": "Google Chat gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
+    "label": "Path to SA JSON (or empty for ADC)",
+    "description": "Path to Service Account JSON key (or inline JSON). Leave empty to use Application Default Credentials on Cloud Run / GCE. Falls back to GOOGLE_APPLICATION_CREDENTIALS.",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "GOOGLE_CHAT_HTTP_EVENTS_URL",
+    "label": "HTTP events callback URL",
+    "description": "Authenticated HTTP endpoint for Chat message events.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "GOOGLE_CHAT_HTTP_EVENTS_AUDIENCE",
+    "label": "HTTP events token audience",
+    "description": "Expected audience for Google-signed HTTP event bearer tokens. Defaults to GOOGLE_CHAT_HTTP_EVENTS_URL.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "GOOGLE_CHAT_HTTP_EVENTS_SERVICE_ACCOUNT_EMAIL",
+    "label": "HTTP events service account email",
+    "description": "Expected Google service account email for HTTP event bearer tokens.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "GOOGLE_CHAT_PROJECT_ID",
+    "label": "GCP project ID",
+    "description": "GCP project ID for optional Pub/Sub inbound mode. Falls back to GOOGLE_CLOUD_PROJECT.",
+    "secret": false,
+    "url": "https://console.cloud.google.com/",
+    "required": false
+   },
+   {
+    "name": "GOOGLE_CHAT_SUBSCRIPTION_NAME",
+    "label": "Pub/Sub subscription name",
+    "description": "Optional Pub/Sub subscription path for pull-mode inbound events.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "GOOGLE_CHAT_ALLOWED_USERS",
+    "label": "Allowed user emails (comma-separated)",
+    "description": "Comma-separated user emails allowed to interact with the bot.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "GOOGLE_CHAT_HOME_CHANNEL",
+    "label": "Home space ID (or empty)",
+    "description": "Default space for cron / notification delivery (e.g. spaces/AAAA...).",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "irc",
+  "name": "IRC",
+  "description": "IRC gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "IRC_SERVER",
+    "label": "IRC server",
+    "description": "IRC server hostname (e.g. irc.libera.chat)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "IRC_CHANNEL",
+    "label": "IRC channel",
+    "description": "Channel to join (e.g. #hermes \u2014 comma-separate for multiple)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "IRC_NICKNAME",
+    "label": "Bot nickname",
+    "description": "Bot nickname on IRC (default: hermes-bot)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "IRC_PORT",
+    "label": "IRC port",
+    "description": "IRC server port (default: 6697 with TLS, 6667 without)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "IRC_USE_TLS",
+    "label": "Use TLS? (true/false)",
+    "description": "Use TLS for the IRC connection (1/true/yes to enable, default: true on port 6697)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "IRC_SERVER_PASSWORD",
+    "label": "Server password (optional)",
+    "description": "Server password for the IRC PASS command (optional)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "IRC_NICKSERV_PASSWORD",
+    "label": "NickServ password (optional)",
+    "description": "NickServ password for automatic IDENTIFY on connect (optional)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "IRC_ALLOWED_USERS",
+    "label": "Allowed nicks (comma-separated)",
+    "description": "Comma-separated IRC nicks allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "IRC_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow anyone in the channel to talk to the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "IRC_HOME_CHANNEL",
+    "label": "Home channel (or empty)",
+    "description": "Channel for cron / notification delivery (defaults to IRC_CHANNEL)",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "line",
+  "name": "LINE",
+  "description": "LINE Messaging API gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "LINE_CHANNEL_ACCESS_TOKEN",
+    "label": "LINE channel access token",
+    "description": "LINE channel long-lived access token (LINE Developers Console > Messaging API > Channel access token)",
+    "secret": true,
+    "url": "https://developers.line.biz/console/",
+    "required": true
+   },
+   {
+    "name": "LINE_CHANNEL_SECRET",
+    "label": "LINE channel secret",
+    "description": "LINE channel secret (used for HMAC-SHA256 webhook signature verification)",
+    "secret": true,
+    "url": "https://developers.line.biz/console/",
+    "required": true
+   },
+   {
+    "name": "LINE_PORT",
+    "label": "Webhook port",
+    "description": "Webhook listen port (default: 8646)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_HOST",
+    "label": "Webhook host",
+    "description": "Webhook bind host (default: unset \u2192 dual-stack, all interfaces IPv4+IPv6)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_PUBLIC_URL",
+    "label": "Public HTTPS base URL",
+    "description": "Public HTTPS base URL for serving images/audio/video to LINE (e.g. https://my-tunnel.example.com). Required for media sending when the bind address is not directly reachable.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_ALLOWED_USERS",
+    "label": "Allowed user IDs (comma-separated)",
+    "description": "Comma-separated LINE user IDs allowed to DM the bot (U-prefixed)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_ALLOWED_GROUPS",
+    "label": "Allowed group IDs (comma-separated)",
+    "description": "Comma-separated LINE group IDs the bot will respond in (C-prefixed)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_ALLOWED_ROOMS",
+    "label": "Allowed room IDs (comma-separated)",
+    "description": "Comma-separated LINE room IDs the bot will respond in (R-prefixed)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any LINE user to talk to the bot (dev only \u2014 disables allowlist)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_HOME_CHANNEL",
+    "label": "Home channel ID (or empty)",
+    "description": "Default user/group/room ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "LINE_SLOW_RESPONSE_THRESHOLD",
+    "label": "Slow response threshold (seconds)",
+    "description": "Seconds before the slow-LLM postback button fires (default: 45; set 0 to disable and always Push-fallback)",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "matrix",
+  "name": "Matrix",
+  "description": "Matrix gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "MATRIX_HOMESERVER",
+    "label": "Matrix homeserver URL",
+    "description": "Matrix homeserver URL (e.g. https://matrix.org)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "MATRIX_ACCESS_TOKEN",
+    "label": "Matrix access token",
+    "description": "Matrix access token (or use MATRIX_PASSWORD for password login)",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "MATRIX_PASSWORD",
+    "label": "Matrix password",
+    "description": "Matrix account password (alternative to MATRIX_ACCESS_TOKEN)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATRIX_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Matrix user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATRIX_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Matrix user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATRIX_HOME_CHANNEL",
+    "label": "Home room ID",
+    "description": "Default room ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATRIX_HOME_CHANNEL_NAME",
+    "label": "Home room display name",
+    "description": "Display name for the Matrix home room",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "mattermost",
+  "name": "Mattermost",
+  "description": "Mattermost gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "MATTERMOST_URL",
+    "label": "Mattermost server URL",
+    "description": "Mattermost server URL (e.g. https://mm.example.com)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "MATTERMOST_TOKEN",
+    "label": "Mattermost bot token",
+    "description": "Bot account token or personal-access token",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "MATTERMOST_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Mattermost user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATTERMOST_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Mattermost user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATTERMOST_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default channel ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATTERMOST_REPLY_MODE",
+    "label": "Reply mode (thread|off)",
+    "description": "How replies are sent: 'thread' (nested) or 'off' (flat). Default: off.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATTERMOST_REQUIRE_MENTION",
+    "label": "Require @mention? (true/false)",
+    "description": "Require @bot mention in channels (default true). Set false for free-response everywhere.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATTERMOST_FREE_RESPONSE_CHANNELS",
+    "label": "Free-response channel IDs (comma-separated)",
+    "description": "Comma-separated channel IDs where @mention is not required.",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "MATTERMOST_ALLOWED_CHANNELS",
+    "label": "Allowed channel IDs (comma-separated)",
+    "description": "If set, the bot only responds in these channels (whitelist).",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "ntfy",
+  "name": "ntfy",
+  "description": "ntfy push-notification gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "NTFY_TOPIC",
+    "label": "ntfy subscribe topic",
+    "description": "Topic name to subscribe to (e.g. hermes-in)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "NTFY_SERVER_URL",
+    "label": "ntfy server URL",
+    "description": "ntfy server URL (default: https://ntfy.sh)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_TOKEN",
+    "label": "ntfy auth token (or empty)",
+    "description": "Bearer token or 'user:pass' for Basic auth (optional)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_PUBLISH_TOPIC",
+    "label": "ntfy publish topic (or empty)",
+    "description": "Topic to publish replies to (defaults to NTFY_TOPIC)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_MARKDOWN",
+    "label": "Enable markdown formatting? (true/false)",
+    "description": "Send replies with X-Markdown: true header (true/false, default: false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_ALLOWED_USERS",
+    "label": "Allowed topic names (comma-separated)",
+    "description": "Comma-separated topic names allowed (allowlist)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_ALLOW_ALL_USERS",
+    "label": "Allow all topics? (true/false)",
+    "description": "Allow any topic to talk to the bot (dev only \u2014 disables allowlist)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_HOME_CHANNEL",
+    "label": "Home channel topic (or empty)",
+    "description": "Default topic for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "NTFY_HOME_CHANNEL_NAME",
+    "label": "Home channel display name (or empty)",
+    "description": "Human label for the home channel (defaults to the topic name)",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "photon",
+  "name": "iMessage via Photon",
+  "description": "Photon Spectrum gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "PHOTON_PROJECT_ID",
+    "label": "Photon Spectrum project id",
+    "description": "Spectrum project id (the project's spectrumProjectId; set by `hermes photon setup`)",
+    "secret": false,
+    "url": "https://app.photon.codes/",
+    "required": true
+   },
+   {
+    "name": "PHOTON_PROJECT_SECRET",
+    "label": "Photon project secret",
+    "description": "Project secret paired with the Spectrum project id (set by `hermes photon setup`)",
+    "secret": true,
+    "url": "https://app.photon.codes/",
+    "required": true
+   },
+   {
+    "name": "PHOTON_SIDECAR_PORT",
+    "label": "Sidecar control port",
+    "description": "Loopback port for the Node sidecar control + inbound channel (default 8789)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_SIDECAR_TOKEN",
+    "label": "Sidecar token",
+    "description": "Shared secret for the loopback sidecar channel (default: random per start)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_SIDECAR_AUTOSTART",
+    "label": "Auto-start the sidecar?",
+    "description": "Spawn the Node sidecar on connect (true/false, default true)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_NODE_BIN",
+    "label": "Node executable path",
+    "description": "Path to the node binary (default: PM's pinned node, then PATH)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_DASHBOARD_HOST",
+    "label": "Dashboard host",
+    "description": "Photon Dashboard API host (default https://app.photon.codes)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_SPECTRUM_HOST",
+    "label": "Spectrum API host",
+    "description": "Photon Spectrum API host (default https://spectrum.photon.codes)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated E.164 phone numbers allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any sender to trigger the bot (dev only \u2014 disables allowlist)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_READ_RECEIPTS",
+    "label": "Send read receipts? (true/false)",
+    "description": "Mark inbound iMessages read after forwarding to Hermes (true/false, default true)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_REQUIRE_MENTION",
+    "label": "Require a mention in group chats?",
+    "description": "Ignore group-chat messages unless they match a mention wake word (true/false, default false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_MENTION_PATTERNS",
+    "label": "Group mention patterns",
+    "description": "Mention wake-word regexes for group chats (JSON list or comma/newline-separated; defaults to Hermes wake words)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_HOME_CHANNEL",
+    "label": "Home Photon target",
+    "description": "Default Photon target for cron / notification delivery: Spectrum space id, DM GUID, or bare E.164 phone number",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Human label for the home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_TELEMETRY",
+    "label": "Enable Spectrum telemetry? (true/false)",
+    "description": "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_MARKDOWN",
+    "label": "Render replies as markdown? (true/false)",
+    "description": "Send agent replies as markdown \u2014 iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "PHOTON_REACTIONS",
+    "label": "Enable reaction tapbacks? (true/false)",
+    "description": "Tapback \ud83d\udc40/\ud83d\udc4d/\ud83d\udc4e on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "qqbot",
+  "name": "QQ Bot",
+  "description": "QQ Bot gateway adapter (Official QQ Bot API v2).",
+  "fields": [
+   {
+    "name": "QQ_APP_ID",
+    "label": "QQ App ID",
+    "description": "QQ Bot App ID from QQ Open Platform (q.qq.com)",
+    "secret": false,
+    "url": "https://q.qq.com",
+    "required": true
+   },
+   {
+    "name": "QQ_CLIENT_SECRET",
+    "label": "QQ Client Secret",
+    "description": "QQ Bot Client Secret from QQ Open Platform",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "QQ_ALLOWED_USERS",
+    "label": "QQ Allowed Users",
+    "description": "Comma-separated QQ user OpenIDs allowed to use the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_GROUP_ALLOWED_USERS",
+    "label": "QQ Group Allowed Users",
+    "description": "Comma-separated QQ group OpenIDs allowed to interact with the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_ALLOW_ALL_USERS",
+    "label": "Allow All QQ Users",
+    "description": "Allow all QQ users without an allowlist (true/false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQBOT_HOME_CHANNEL",
+    "label": "QQ Home Channel",
+    "description": "Default QQ channel/group for cron delivery and notifications",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQBOT_HOME_CHANNEL_NAME",
+    "label": "QQ Home Channel Name",
+    "description": "Display name for the QQ home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQBOT_HOME_CHANNEL_THREAD_ID",
+    "label": "QQ Home Channel Thread ID",
+    "description": "Thread id for the QQ home channel, when the target is a thread",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_MARKDOWN_SUPPORT",
+    "label": "QQ Markdown Support",
+    "description": "Send QQ messages as markdown when the bot is allowed to (true/false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_SANDBOX",
+    "label": "QQ Sandbox Mode",
+    "description": "Enable QQ sandbox mode for development testing (true/false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_PORTAL_HOST",
+    "label": "QQ Portal Host",
+    "description": "QQ Open Platform portal host (default q.qq.com)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_STT_API_KEY",
+    "label": "QQ STT API Key",
+    "description": "API key for QQ voice transcription fallback",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_STT_BASE_URL",
+    "label": "QQ STT Base URL",
+    "description": "Base URL for the QQ voice transcription provider",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "QQ_STT_MODEL",
+    "label": "QQ STT Model",
+    "description": "Model name for the QQ voice transcription provider",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "raft",
+  "name": "Raft",
+  "description": "Raft gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "RAFT_PROFILE",
+    "label": "Raft agent profile",
+    "description": "Raft agent profile slug \u2014 auto-enables the adapter when set",
+    "secret": false,
+    "url": "",
+    "required": true
+   }
+  ]
+ },
+ {
+  "id": "signal",
+  "name": "Signal",
+  "description": "Signal gateway adapter for Hermes Agent via a signal-cli daemon in HTTP mode (SSE inbound, JSON-RPC 2.0 outbound).",
+  "fields": [
+   {
+    "name": "SIGNAL_HTTP_URL",
+    "label": "signal-cli HTTP URL",
+    "description": "signal-cli HTTP daemon URL (e.g. http://127.0.0.1:8080)",
+    "secret": false,
+    "url": "https://github.com/AsamK/signal-cli",
+    "required": true
+   },
+   {
+    "name": "SIGNAL_ACCOUNT",
+    "label": "Signal account number",
+    "description": "Signal account phone number in E.164 format (e.g. +15551234567)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "SIGNAL_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated phone numbers or UUIDs allowed to DM the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIGNAL_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Signal user to talk to the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIGNAL_GROUP_ALLOWED_USERS",
+    "label": "Allowed group IDs",
+    "description": "Comma-separated group IDs allowed to talk to the bot (* for all groups)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIGNAL_REQUIRE_MENTION",
+    "label": "Require mention in groups? (true/false)",
+    "description": "Only answer group messages that mention the bot (true/false, default: false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIGNAL_IGNORE_STORIES",
+    "label": "Ignore stories? (true/false)",
+    "description": "Ignore Signal stories (true/false, default: true)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIGNAL_HOME_CHANNEL",
+    "label": "Home channel",
+    "description": "Default chat (phone number or group:<id>) for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIGNAL_HOME_CHANNEL_NAME",
+    "label": "Home channel name",
+    "description": "Display name for the Signal home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "simplex",
+  "name": "SimpleX Chat",
+  "description": "SimpleX Chat gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "SIMPLEX_WS_URL",
+    "label": "SimpleX daemon WebSocket URL",
+    "description": "WebSocket URL of the simplex-chat daemon (e.g. ws://127.0.0.1:5225)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "SIMPLEX_ALLOWED_USERS",
+    "label": "Allowed contact IDs (comma-separated)",
+    "description": "Comma-separated SimpleX contact IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIMPLEX_ALLOW_ALL_USERS",
+    "label": "Allow all contacts? (true/false)",
+    "description": "Allow any contact to talk to the bot (dev only \u2014 disables allowlist)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIMPLEX_AUTO_ACCEPT",
+    "label": "Auto-accept contact requests? (true/false)",
+    "description": "Auto-accept incoming contact requests (default: true)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIMPLEX_GROUP_ALLOWED",
+    "label": "Allowed group IDs (comma-separated, or '*' for any)",
+    "description": "Comma-separated SimpleX group IDs the bot should participate in, or '*' to allow any group. Omit to ignore group messages entirely (safer default \u2014 a bot in a group otherwise processes every member's traffic).",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIMPLEX_HOME_CHANNEL",
+    "label": "Home channel contact/group ID (or empty)",
+    "description": "Default contact/group ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SIMPLEX_HOME_CHANNEL_NAME",
+    "label": "Home channel display name (or empty)",
+    "description": "Human label for the home channel (defaults to the ID)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "HERMES_SIMPLEX_TEXT_BATCH_DELAY",
+    "label": "Text batch flush delay in seconds (default 0.8)",
+    "description": "Quiet-period seconds (default: 0.8) used to concatenate rapid-fire inbound text messages into a single MessageEvent \u2014 same pattern as Telegram's text batching.",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "slack",
+  "name": "Slack",
+  "description": "Slack gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "SLACK_BOT_TOKEN",
+    "label": "Slack Bot Token (xoxb-...)",
+    "description": "Slack bot token (xoxb-...)",
+    "secret": true,
+    "url": "https://api.slack.com/apps",
+    "required": true
+   },
+   {
+    "name": "SLACK_APP_TOKEN",
+    "label": "Slack App Token (xapp-...)",
+    "description": "Slack app-level token for Socket Mode (xapp-..., scope connections:write)",
+    "secret": true,
+    "url": "https://api.slack.com/apps",
+    "required": true
+   },
+   {
+    "name": "SLACK_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Slack member IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SLACK_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Slack user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SLACK_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default channel ID for cron / notification delivery (starts with C)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SLACK_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the Slack home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SLACK_THREAD_REQUIRE_MENTION",
+    "label": "Require mentions in Slack threads? (true/false)",
+    "description": "Require an explicit @mention for Slack thread replies while preserving top-level free response channels",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "sms",
+  "name": "SMS (Twilio)",
+  "description": "SMS gateway adapter for Hermes Agent via Twilio.",
+  "fields": [
+   {
+    "name": "TWILIO_ACCOUNT_SID",
+    "label": "Twilio Account SID",
+    "description": "Twilio Account SID",
+    "secret": false,
+    "url": "https://www.twilio.com/",
+    "required": true
+   },
+   {
+    "name": "TWILIO_AUTH_TOKEN",
+    "label": "Twilio Auth Token",
+    "description": "Twilio Auth Token",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "TWILIO_PHONE_NUMBER",
+    "label": "Twilio phone number",
+    "description": "Twilio phone number (SMS-capable, E.164 format)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "SMS_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated phone numbers allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "SMS_HOME_CHANNEL",
+    "label": "Home number",
+    "description": "Default phone number for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "teams",
+  "name": "Microsoft Teams",
+  "description": "Microsoft Teams gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "TEAMS_CLIENT_ID",
+    "label": "Teams / Azure AD client ID",
+    "description": "Azure AD application (Bot Framework) client ID",
+    "secret": false,
+    "url": "https://portal.azure.com/",
+    "required": true
+   },
+   {
+    "name": "TEAMS_CLIENT_SECRET",
+    "label": "Teams / Azure AD client secret",
+    "description": "Azure AD application client secret",
+    "secret": true,
+    "url": "https://portal.azure.com/",
+    "required": true
+   },
+   {
+    "name": "TEAMS_TENANT_ID",
+    "label": "Teams / Azure AD tenant ID",
+    "description": "Azure AD tenant ID hosting the bot application",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "TEAMS_PORT",
+    "label": "Webhook port",
+    "description": "Webhook listen port (Bot Framework default: 3978)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_HOST",
+    "label": "Webhook host",
+    "description": "Webhook bind host (default: unset \u2192 dual-stack, all interfaces IPv4+IPv6)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Teams user IDs / UPNs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Teams user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_REQUIRE_MENTION",
+    "label": "Require @mention in channels and group chats? (true/false)",
+    "description": "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_HOME_CHANNEL",
+    "label": "Home channel (or empty)",
+    "description": "Default chat/channel ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the Teams home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_INCOMING_WEBHOOK_URL",
+    "label": "Incoming webhook URL (or empty)",
+    "description": "Incoming-webhook URL for meeting-summary delivery in webhook mode (the URL is the credential)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TEAMS_GRAPH_ACCESS_TOKEN",
+    "label": "Graph access token (or empty)",
+    "description": "Microsoft Graph access token for meeting-summary delivery in graph mode",
+    "secret": true,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "telegram",
+  "name": "Telegram",
+  "description": "Telegram gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "TELEGRAM_BOT_TOKEN",
+    "label": "Telegram bot token",
+    "description": "Telegram bot token from @BotFather",
+    "secret": true,
+    "url": "https://t.me/BotFather",
+    "required": true
+   },
+   {
+    "name": "TELEGRAM_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Telegram user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TELEGRAM_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Telegram user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TELEGRAM_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default chat ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TELEGRAM_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the Telegram home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "TELEGRAM_WEBHOOK_SECRET",
+    "label": "Webhook secret",
+    "description": "Secret token Telegram sends with each webhook update (required with TELEGRAM_WEBHOOK_URL)",
+    "secret": true,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "wecom",
+  "name": "WeCom (Enterprise WeChat)",
+  "description": "WeCom / Enterprise WeChat gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "WECOM_BOT_ID",
+    "label": "WeCom bot ID",
+    "description": "WeCom Smart Robot bot ID",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WECOM_SECRET",
+    "label": "WeCom secret",
+    "description": "WeCom Smart Robot secret",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WECOM_WEBSOCKET_URL",
+    "label": "WeCom WebSocket URL",
+    "description": "WeCom Smart Robot WebSocket URL",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default chat ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated WeCom user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_CALLBACK_CORP_ID",
+    "label": "WeCom callback corp ID",
+    "description": "WeCom callback-mode corp ID (self-built apps)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_CALLBACK_CORP_SECRET",
+    "label": "WeCom callback corp secret",
+    "description": "WeCom callback-mode corp secret",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_CALLBACK_AGENT_ID",
+    "label": "WeCom callback agent ID",
+    "description": "WeCom callback-mode agent ID",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_CALLBACK_TOKEN",
+    "label": "WeCom callback token",
+    "description": "WeCom callback verification token",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WECOM_CALLBACK_ENCODING_AES_KEY",
+    "label": "WeCom callback EncodingAESKey",
+    "description": "WeCom callback EncodingAESKey for message crypto",
+    "secret": true,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "weixin",
+  "name": "Weixin / WeChat",
+  "description": "Weixin (personal WeChat) gateway adapter for Hermes Agent over Tencent's iLink Bot API.",
+  "fields": [
+   {
+    "name": "WEIXIN_ACCOUNT_ID",
+    "label": "iLink Bot account ID",
+    "description": "iLink Bot account ID obtained through QR login in hermes gateway setup",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WEIXIN_TOKEN",
+    "label": "iLink Bot token",
+    "description": "iLink Bot token obtained through QR login in hermes gateway setup",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WEIXIN_BASE_URL",
+    "label": "iLink API base URL",
+    "description": "iLink API base URL saved by QR login (default: https://ilinkai.weixin.qq.com)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_CDN_BASE_URL",
+    "label": "iLink CDN base URL",
+    "description": "iLink media CDN base URL (default: https://novac2c.cdn.weixin.qq.com/c2c)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_DM_POLICY",
+    "label": "DM policy (pairing|open|allowlist|disabled)",
+    "description": "Direct-message policy: pairing, open, allowlist, or disabled (default: pairing)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_GROUP_POLICY",
+    "label": "Group policy (disabled|open|allowlist)",
+    "description": "Group-chat policy: disabled, open, or allowlist (default: disabled)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated Weixin user IDs allowed to DM the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_GROUP_ALLOWED_USERS",
+    "label": "Allowed group chat IDs (comma-separated)",
+    "description": "Comma-separated group chat IDs allowed when WEIXIN_GROUP_POLICY=allowlist",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any Weixin user to trigger the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default chat ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the Weixin home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WEIXIN_SPLIT_MULTILINE_MESSAGES",
+    "label": "Split multi-line messages? (true/false)",
+    "description": "Send each line of a multi-line reply as its own message (default: false)",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "whatsapp",
+  "name": "WhatsApp",
+  "description": "WhatsApp gateway adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "WHATSAPP_ENABLED",
+    "label": "Enable WhatsApp? (true/false)",
+    "description": "Enable the WhatsApp adapter (requires the Node.js bridge running)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WHATSAPP_ALLOWED_USERS",
+    "label": "Allowed users (comma-separated)",
+    "description": "Comma-separated WhatsApp user IDs allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any WhatsApp user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_HOME_CHANNEL",
+    "label": "Home channel ID",
+    "description": "Default chat ID for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_HOME_CHANNEL_NAME",
+    "label": "Home channel display name",
+    "description": "Display name for the WhatsApp home channel",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ },
+ {
+  "id": "whatsapp_cloud",
+  "name": "WhatsApp Business (Cloud)",
+  "description": "WhatsApp Business Cloud API adapter for Hermes Agent.",
+  "fields": [
+   {
+    "name": "WHATSAPP_CLOUD_PHONE_NUMBER_ID",
+    "label": "WhatsApp Cloud phone number ID",
+    "description": "WhatsApp phone number ID from the Meta App Dashboard (WhatsApp \u2192 API Setup)",
+    "secret": false,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WHATSAPP_CLOUD_ACCESS_TOKEN",
+    "label": "WhatsApp Cloud access token",
+    "description": "System User permanent access token",
+    "secret": true,
+    "url": "",
+    "required": true
+   },
+   {
+    "name": "WHATSAPP_CLOUD_APP_SECRET",
+    "label": "WhatsApp Cloud app secret",
+    "description": "App secret \u2014 HMAC key for X-Hub-Signature-256 webhook verification",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_VERIFY_TOKEN",
+    "label": "WhatsApp Cloud verify token",
+    "description": "Shared secret for the webhook verification handshake (hub.verify_token)",
+    "secret": true,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_APP_ID",
+    "label": "WhatsApp Cloud app ID",
+    "description": "Meta app ID (optional)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_WABA_ID",
+    "label": "WhatsApp Business Account ID",
+    "description": "WhatsApp Business Account ID; when set, inbound webhooks must match it",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_WEBHOOK_HOST",
+    "label": "Webhook host",
+    "description": "Webhook bind host (unset = dual-stack all interfaces)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_WEBHOOK_PORT",
+    "label": "Webhook port",
+    "description": "Webhook bind port (default: 8090)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_WEBHOOK_PATH",
+    "label": "Webhook path",
+    "description": "Webhook path (default: /whatsapp/webhook)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_API_VERSION",
+    "label": "Graph API version",
+    "description": "Graph API version (default: v20.0)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_ALLOWED_USERS",
+    "label": "Allowed phone numbers (comma-separated)",
+    "description": "Comma-separated WhatsApp phone numbers allowed to talk to the bot",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
+    "label": "Allow all users? (true/false)",
+    "description": "Allow any WhatsApp user to trigger the bot (dev only)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_DM_POLICY",
+    "label": "DM policy",
+    "description": "DM policy: open | allowlist | disabled (falls back to WHATSAPP_DM_POLICY)",
+    "secret": false,
+    "url": "",
+    "required": false
+   },
+   {
+    "name": "WHATSAPP_CLOUD_HOME_CHANNEL",
+    "label": "Home channel phone number",
+    "description": "Default phone number for cron / notification delivery",
+    "secret": false,
+    "url": "",
+    "required": false
+   }
+  ]
+ }
+]

@@ -1,0 +1,31 @@
+[package]
+name = "hermes-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+async-channel.workspace = true
+ring = "0.17"
+base64 = "0.22"
+chrono-tz = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+directories = "6"
+cap-std = "3"
+eventsource-stream = "0.2"
+fs2 = "0.4"
+regex = "1"
+flate2 = "1"
+fancy-regex = "0.16"
+unicode-normalization = "0.1"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+
+[dev-dependencies]
+axum = "0.8"

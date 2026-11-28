@@ -339,3 +339,7 @@ infografico/
 /pm/.lock.json.lock
 
 apps/desktop/.dist-build*
+
+# Native Rust desktop build output
+apps/desktop/target/
+apps/desktop/dist/

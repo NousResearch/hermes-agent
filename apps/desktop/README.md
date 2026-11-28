@@ -81,6 +81,19 @@ shortcut helper. Prebuilt installers include it; no compiler is needed at runtim
 
 ## Development
 
+### Native Rust app
+
+This directory also holds a native Rust port of the desktop app (Iced; no Electron or Tauri), in `crates/`. Downloads of the native build:
+
+| Platform | Download |
+| --- | --- |
+| macOS (Apple Silicon) | [Hermes-macOS.zip](https://github.com/itsflownium/hermes-agent/releases/download/desktop-rust-v0.1.0/Hermes-macOS.zip) |
+| Windows (x64) | [Hermes-windows-AMD64.zip](https://github.com/itsflownium/hermes-agent/releases/download/desktop-rust-v0.1.0/Hermes-windows-AMD64.zip) |
+| Linux (x86_64) | [Hermes-linux-x86_64.tar.gz](https://github.com/itsflownium/hermes-agent/releases/download/desktop-rust-v0.1.0/Hermes-linux-x86_64.tar.gz) |
+
+The builds are not notarized or code-signed with a developer certificate: on macOS, right-click the app and choose Open the first time. Run from source with `cargo run --locked -p hermes-desktop` from `apps/desktop`. The original renderer, assets and tests stay the compatibility reference. See the [native build instructions](NATIVE_PORT.md) and the [feature comparison with published Hermes Desktop](FEATURE_PARITY.md).
+
+
 Want to hack on the app itself? Install workspace deps from the repo root once, then run the dev server from this directory:
 
 ```bash

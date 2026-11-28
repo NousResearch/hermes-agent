@@ -1,0 +1,18 @@
+: OpenAI-compatible fixture: parallel tool deltas, usage tail and SSE comments.
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1795219200,"model":"tool-model","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"I'll inspect the workspace."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"read_file","arguments":""}},{"index":1,"id":"call_clock","type":"function","function":{"name":"get_current_time","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{}"}},{"index":0,"function":{"arguments":"{\"path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"notes/hello.txt\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: {"id":"chatcmpl_fixture","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":91,"completion_tokens":38,"total_tokens":129}}
+
+data: [DONE]
+

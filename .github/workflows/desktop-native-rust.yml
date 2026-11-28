@@ -1,0 +1,46 @@
+name: Hermes Desktop (Rust)
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'apps/desktop/crates/**'
+      - 'apps/desktop/Cargo.*'
+      - 'apps/desktop/packaging/**'
+      - 'apps/desktop/scripts/package-*'
+      - '.github/workflows/desktop-native-rust.yml'
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+      - run: rustup update stable
+      # Iced (winit, wgpu), the OS webview (wry → WebKitGTK), global-hotkey (X11) and audio.
+      - if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y
+          libxkbcommon-dev libwayland-dev libdbus-1-dev libasound2-dev libfontconfig1-dev
+          libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libxdo-dev
+      - run: cargo test --locked --workspace
+        shell: bash
+      - if: runner.os == 'Linux'
+        run: scripts/package-linux.sh
+      - if: runner.os == 'Windows'
+        run: ./scripts/package-windows.ps1
+      - if: runner.os == 'macOS'
+        run: scripts/package-macos.sh && ditto -c -k --sequesterRsrc --keepParent dist/Hermes.app dist/Hermes-macOS.zip
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Hermes-native-${{ runner.os }}
+          path: |
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.tar.gz
+          if-no-files-found: error

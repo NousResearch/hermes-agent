@@ -1,0 +1,4033 @@
+{
+  "source": "apps/shared/src/json-rpc-gateway.ts",
+  "upstream_tests": [
+    "apps/shared/src/json-rpc-gateway-replay.test.ts",
+    "apps/shared/src/json-rpc-gateway-legacy-replay.test.ts"
+  ],
+  "generator": "tests/replay-reference.mjs",
+  "vectors": [
+    {
+      "name": "live_watermarks_preserve_late_dispatch",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 4
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "tool.start",
+            "session_id": "s2",
+            "seq": 9
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "skin.changed"
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 4
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2
+          },
+          {
+            "type": "tool.start",
+            "session_id": "s2",
+            "seq": 9
+          },
+          {
+            "type": "skin.changed"
+          }
+        ],
+        "watermarks": {
+          "s1": 4,
+          "s2": 9
+        },
+        "session_epochs": {},
+        "replay_requests": [],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "replay_gap_precedes_held_live_and_deduplicates",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "replayed"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 5
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 6
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 3
+              },
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 4
+              },
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 5
+              }
+            ],
+            "latest_seq": 5,
+            "truncated": false
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3,
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 4,
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 5,
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 6,
+            "replayed": true
+          }
+        ],
+        "watermarks": {
+          "s1": 6
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 2
+          }
+        ],
+        "barriers": [
+          {
+            "label": "replayed",
+            "valid": true,
+            "event_count": 5,
+            "last_event": "s1:message.delta:6"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "stale_replay_never_regresses_cursor",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 10
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 2
+              }
+            ],
+            "latest_seq": 10,
+            "truncated": false
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 10
+          }
+        ],
+        "watermarks": {
+          "s1": 10
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 10
+          }
+        ],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "envelope_shaped_elements_are_ignored",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {
+                  "type": "message.delta",
+                  "session_id": "s1",
+                  "seq": 2
+                }
+              }
+            ],
+            "latest_seq": 2,
+            "truncated": false
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1
+          }
+        ],
+        "watermarks": {
+          "s1": 1
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 1
+          }
+        ],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "canonical_epochs_stay_session_local",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "gateway-A"
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 7,
+            "replay_epoch": "s1-A"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 9,
+            "replay_epoch": "s2-A"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "legacy",
+            "seq": 20
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replay_epoch": "s1-B"
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 2
+              }
+            ],
+            "epoch": "s1-B",
+            "replay_epoch": "s1-B"
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s2",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s2",
+                "seq": 10
+              }
+            ],
+            "epoch": "s2-A",
+            "replay_epoch": "s2-A"
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "legacy",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "legacy",
+                "seq": 21
+              }
+            ],
+            "epoch": "gateway-A"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "gateway-B"
+            }
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "gateway-A"
+            },
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 7,
+            "replay_epoch": "s1-A",
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 9,
+            "replay_epoch": "s2-A",
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "legacy",
+            "seq": 20,
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replay_epoch": "s1-B",
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2,
+            "replayed": true,
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 10,
+            "replayed": true,
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "legacy",
+            "seq": 21,
+            "replayed": true,
+            "replayEpoch": "gateway-A"
+          },
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "gateway-B"
+            },
+            "replayEpoch": "gateway-B"
+          }
+        ],
+        "watermarks": {
+          "s1": 2,
+          "s2": 10
+        },
+        "session_epochs": {
+          "s1": "s1-B",
+          "s2": "s2-A"
+        },
+        "replay_requests": [
+          {
+            "session_id": "s2",
+            "last_seen": 9,
+            "replay_epoch": "s2-A"
+          },
+          {
+            "session_id": "legacy",
+            "last_seen": 20
+          },
+          {
+            "session_id": "s1",
+            "last_seen": 1,
+            "replay_epoch": "s1-B"
+          }
+        ],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "parked_session_epoch_adopts_after_old_gap",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 5,
+            "replay_epoch": "old"
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replay_epoch": "new"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2,
+            "replay_epoch": "new"
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 5,
+                "replay_epoch": "old"
+              },
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 6,
+                "replay_epoch": "old"
+              },
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 7,
+                "replay_epoch": "old"
+              }
+            ],
+            "epoch": "old",
+            "replay_epoch": "old",
+            "latest_seq": 7
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 5,
+            "replay_epoch": "old"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 6,
+            "replay_epoch": "old",
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 7,
+            "replay_epoch": "old",
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replay_epoch": "new",
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2,
+            "replay_epoch": "new",
+            "replayed": true
+          }
+        ],
+        "watermarks": {
+          "s1": 2
+        },
+        "session_epochs": {
+          "s1": "new"
+        },
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 5,
+            "replay_epoch": "old"
+          },
+          {
+            "session_id": "s1",
+            "last_seen": 2,
+            "replay_epoch": "new"
+          }
+        ],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "old_socket_cleanup_cannot_flush_replacement",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "disconnected"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "old"
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "replacement"
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 99
+              }
+            ],
+            "latest_seq": 99
+          },
+          "socket": 1
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 2
+              }
+            ],
+            "latest_seq": 2
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 2,
+            "replayed": true
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3,
+            "replayed": true
+          }
+        ],
+        "watermarks": {
+          "s1": 3
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 1
+          },
+          {
+            "session_id": "s1",
+            "last_seen": 1
+          }
+        ],
+        "barriers": [
+          {
+            "label": "disconnected",
+            "valid": false,
+            "event_count": 1,
+            "last_event": "s1:message.delta:1"
+          },
+          {
+            "label": "old",
+            "valid": false,
+            "event_count": 1,
+            "last_event": "s1:message.delta:1"
+          },
+          {
+            "label": "replacement",
+            "valid": true,
+            "event_count": 3,
+            "last_event": "s1:message.delta:3"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "sessions_settle_independently_on_unsupported",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "stable"
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "session.info",
+            "session_id": "slow",
+            "seq": 1
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "session.info",
+            "session_id": "fast",
+            "seq": 1
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "slow",
+          "label": "slow"
+        },
+        {
+          "op": "barrier",
+          "session_id": "fast",
+          "label": "fast"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.start",
+            "session_id": "slow",
+            "seq": 2
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.start",
+            "replayed": true,
+            "session_id": "fast",
+            "seq": 3
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.start",
+            "session_id": "new",
+            "seq": 1
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "fast",
+          "result": {
+            "events": [
+              {
+                "type": "message.complete",
+                "session_id": "fast",
+                "seq": 2
+              }
+            ],
+            "epoch": "stable"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "fast",
+            "seq": 4
+          }
+        },
+        {
+          "op": "error",
+          "session_id": "slow",
+          "error": {
+            "code": -32601,
+            "message": "method not found"
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "stable"
+            },
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "session.info",
+            "session_id": "slow",
+            "seq": 1,
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "session.info",
+            "session_id": "fast",
+            "seq": 1,
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "message.start",
+            "session_id": "new",
+            "seq": 1,
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "message.complete",
+            "session_id": "fast",
+            "seq": 2,
+            "replayed": true,
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "message.start",
+            "replayed": true,
+            "session_id": "fast",
+            "seq": 3,
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "fast",
+            "seq": 4,
+            "replayEpoch": "stable"
+          },
+          {
+            "type": "message.start",
+            "session_id": "slow",
+            "seq": 2,
+            "replayed": true,
+            "replayEpoch": "stable"
+          }
+        ],
+        "watermarks": {
+          "new": 1,
+          "fast": 4,
+          "slow": 2
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "slow",
+            "last_seen": 1
+          },
+          {
+            "session_id": "fast",
+            "last_seen": 1
+          }
+        ],
+        "barriers": [
+          {
+            "label": "fast",
+            "valid": true,
+            "event_count": 6,
+            "last_event": "fast:message.start:3"
+          },
+          {
+            "label": "slow",
+            "valid": true,
+            "event_count": 8,
+            "last_event": "slow:message.start:2"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "restart_ready_releases_barriers_after_held_frames",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "A"
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 97
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 97
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s2",
+          "label": "s2"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "s1"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "B"
+            }
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 98
+              }
+            ],
+            "epoch": "A"
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "A"
+            },
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 97,
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 97,
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replayed": true,
+            "replayEpoch": "B"
+          },
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "B"
+            },
+            "replayEpoch": "B"
+          }
+        ],
+        "watermarks": {
+          "s1": 1
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s2",
+            "last_seen": 97
+          },
+          {
+            "session_id": "s1",
+            "last_seen": 97
+          }
+        ],
+        "barriers": [
+          {
+            "label": "s2",
+            "valid": true,
+            "event_count": 5,
+            "last_event": ":gateway.ready:"
+          },
+          {
+            "label": "s1",
+            "valid": true,
+            "event_count": 5,
+            "last_event": ":gateway.ready:"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "restart_response_releases_barriers_after_held_frames",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "A"
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 97
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 97
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s2",
+          "label": "s2"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "s1"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s2",
+          "result": {
+            "events": [],
+            "epoch": "B"
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 98
+              }
+            ],
+            "epoch": "A"
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "A"
+            },
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 97,
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 97,
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replayed": true,
+            "replayEpoch": "B"
+          }
+        ],
+        "watermarks": {
+          "s1": 1
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s2",
+            "last_seen": 97
+          },
+          {
+            "session_id": "s1",
+            "last_seen": 97
+          }
+        ],
+        "barriers": [
+          {
+            "label": "s2",
+            "valid": true,
+            "event_count": 4,
+            "last_event": "s1:message.delta:1"
+          },
+          {
+            "label": "s1",
+            "valid": true,
+            "event_count": 4,
+            "last_event": "s1:message.delta:1"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "truncated_tail_is_never_painted",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "resync"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 700
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 701
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 699
+              },
+              {
+                "type": "message.delta",
+                "session_id": "s1",
+                "seq": 700
+              }
+            ],
+            "latest_seq": 700,
+            "truncated": true
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 701,
+            "replayed": true
+          }
+        ],
+        "watermarks": {
+          "s1": 701
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 3
+          }
+        ],
+        "barriers": [
+          {
+            "label": "resync",
+            "valid": true,
+            "event_count": 2,
+            "last_event": "s1:message.delta:701"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "legacy_response_epoch_retires_stale_process_cursor",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "A"
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 97
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [],
+            "latest_seq": 0,
+            "epoch": "B",
+            "truncated": false
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "A"
+            },
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 97,
+            "replayEpoch": "A"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3,
+            "replayEpoch": "B"
+          }
+        ],
+        "watermarks": {
+          "s1": 3
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 97
+          }
+        ],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "snapshot_required_signals_gap_and_retires_epoch",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "gone",
+            "seq": 7,
+            "replay_epoch": "e1"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "fine",
+            "seq": 3,
+            "replay_epoch": "f1"
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "gone",
+          "label": "gone"
+        },
+        {
+          "op": "answer",
+          "session_id": "gone",
+          "result": {
+            "events": [],
+            "latest_seq": 40,
+            "epoch": "e2",
+            "replay_epoch": "e2",
+            "truncated": true,
+            "snapshot_required": true
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "fine",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "fine",
+                "seq": 4
+              }
+            ],
+            "latest_seq": 4,
+            "epoch": "f1",
+            "replay_epoch": "f1",
+            "snapshot_required": false
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "gone",
+            "seq": 7,
+            "replay_epoch": "e1"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "fine",
+            "seq": 3,
+            "replay_epoch": "f1"
+          },
+          {
+            "type": "session.replay_gap",
+            "session_id": "gone",
+            "payload": {
+              "replay_epoch": "e2",
+              "latest_seq": 40
+            }
+          },
+          {
+            "type": "message.delta",
+            "session_id": "fine",
+            "seq": 4,
+            "replayed": true
+          }
+        ],
+        "watermarks": {
+          "fine": 4
+        },
+        "session_epochs": {
+          "fine": "f1"
+        },
+        "replay_requests": [
+          {
+            "session_id": "gone",
+            "last_seen": 7,
+            "replay_epoch": "e1"
+          },
+          {
+            "session_id": "fine",
+            "last_seen": 3,
+            "replay_epoch": "f1"
+          }
+        ],
+        "barriers": [
+          {
+            "label": "gone",
+            "valid": true,
+            "event_count": 3,
+            "last_event": "gone:session.replay_gap:"
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "not_found_retires_only_deleted_session",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "open",
+            "seq": 2,
+            "replay_epoch": "e-open"
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "deleted",
+            "seq": 4,
+            "replay_epoch": "e-del"
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "error",
+          "session_id": "deleted",
+          "error": {
+            "code": 4001,
+            "message": "not_found",
+            "data": {
+              "reason": "not_found"
+            }
+          }
+        },
+        {
+          "op": "answer",
+          "session_id": "open",
+          "result": {
+            "events": [
+              {
+                "type": "message.delta",
+                "session_id": "open",
+                "seq": 3,
+                "replay_epoch": "e-open"
+              }
+            ],
+            "latest_seq": 3,
+            "epoch": "e-open",
+            "replay_epoch": "e-open"
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "open",
+            "seq": 2,
+            "replay_epoch": "e-open"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "deleted",
+            "seq": 4,
+            "replay_epoch": "e-del"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "open",
+            "seq": 3,
+            "replay_epoch": "e-open",
+            "replayed": true
+          }
+        ],
+        "watermarks": {
+          "open": 3
+        },
+        "session_epochs": {
+          "open": "e-open"
+        },
+        "replay_requests": [
+          {
+            "session_id": "open",
+            "last_seen": 2,
+            "replay_epoch": "e-open"
+          },
+          {
+            "session_id": "deleted",
+            "last_seen": 4,
+            "replay_epoch": "e-del"
+          },
+          {
+            "session_id": "open",
+            "last_seen": 3,
+            "replay_epoch": "e-open"
+          }
+        ],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "cursor_retirement_is_lru_and_announces_gap",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "flood",
+          "count": 257,
+          "touch_every": 50
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 1,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 2,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 1,
+            "replay_epoch": "e1"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s2",
+            "seq": 1,
+            "replay_epoch": "e2"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s3",
+            "seq": 1,
+            "replay_epoch": "e3"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s4",
+            "seq": 1,
+            "replay_epoch": "e4"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s5",
+            "seq": 1,
+            "replay_epoch": "e5"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s6",
+            "seq": 1,
+            "replay_epoch": "e6"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s7",
+            "seq": 1,
+            "replay_epoch": "e7"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s8",
+            "seq": 1,
+            "replay_epoch": "e8"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s9",
+            "seq": 1,
+            "replay_epoch": "e9"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s10",
+            "seq": 1,
+            "replay_epoch": "e10"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s11",
+            "seq": 1,
+            "replay_epoch": "e11"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s12",
+            "seq": 1,
+            "replay_epoch": "e12"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s13",
+            "seq": 1,
+            "replay_epoch": "e13"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s14",
+            "seq": 1,
+            "replay_epoch": "e14"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s15",
+            "seq": 1,
+            "replay_epoch": "e15"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s16",
+            "seq": 1,
+            "replay_epoch": "e16"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s17",
+            "seq": 1,
+            "replay_epoch": "e17"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s18",
+            "seq": 1,
+            "replay_epoch": "e18"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s19",
+            "seq": 1,
+            "replay_epoch": "e19"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s20",
+            "seq": 1,
+            "replay_epoch": "e20"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s21",
+            "seq": 1,
+            "replay_epoch": "e21"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s22",
+            "seq": 1,
+            "replay_epoch": "e22"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s23",
+            "seq": 1,
+            "replay_epoch": "e23"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s24",
+            "seq": 1,
+            "replay_epoch": "e24"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s25",
+            "seq": 1,
+            "replay_epoch": "e25"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s26",
+            "seq": 1,
+            "replay_epoch": "e26"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s27",
+            "seq": 1,
+            "replay_epoch": "e27"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s28",
+            "seq": 1,
+            "replay_epoch": "e28"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s29",
+            "seq": 1,
+            "replay_epoch": "e29"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s30",
+            "seq": 1,
+            "replay_epoch": "e30"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s31",
+            "seq": 1,
+            "replay_epoch": "e31"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s32",
+            "seq": 1,
+            "replay_epoch": "e32"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s33",
+            "seq": 1,
+            "replay_epoch": "e33"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s34",
+            "seq": 1,
+            "replay_epoch": "e34"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s35",
+            "seq": 1,
+            "replay_epoch": "e35"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s36",
+            "seq": 1,
+            "replay_epoch": "e36"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s37",
+            "seq": 1,
+            "replay_epoch": "e37"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s38",
+            "seq": 1,
+            "replay_epoch": "e38"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s39",
+            "seq": 1,
+            "replay_epoch": "e39"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s40",
+            "seq": 1,
+            "replay_epoch": "e40"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s41",
+            "seq": 1,
+            "replay_epoch": "e41"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s42",
+            "seq": 1,
+            "replay_epoch": "e42"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s43",
+            "seq": 1,
+            "replay_epoch": "e43"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s44",
+            "seq": 1,
+            "replay_epoch": "e44"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s45",
+            "seq": 1,
+            "replay_epoch": "e45"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s46",
+            "seq": 1,
+            "replay_epoch": "e46"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s47",
+            "seq": 1,
+            "replay_epoch": "e47"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s48",
+            "seq": 1,
+            "replay_epoch": "e48"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s49",
+            "seq": 1,
+            "replay_epoch": "e49"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s50",
+            "seq": 1,
+            "replay_epoch": "e50"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 52,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s51",
+            "seq": 1,
+            "replay_epoch": "e51"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s52",
+            "seq": 1,
+            "replay_epoch": "e52"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s53",
+            "seq": 1,
+            "replay_epoch": "e53"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s54",
+            "seq": 1,
+            "replay_epoch": "e54"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s55",
+            "seq": 1,
+            "replay_epoch": "e55"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s56",
+            "seq": 1,
+            "replay_epoch": "e56"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s57",
+            "seq": 1,
+            "replay_epoch": "e57"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s58",
+            "seq": 1,
+            "replay_epoch": "e58"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s59",
+            "seq": 1,
+            "replay_epoch": "e59"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s60",
+            "seq": 1,
+            "replay_epoch": "e60"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s61",
+            "seq": 1,
+            "replay_epoch": "e61"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s62",
+            "seq": 1,
+            "replay_epoch": "e62"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s63",
+            "seq": 1,
+            "replay_epoch": "e63"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s64",
+            "seq": 1,
+            "replay_epoch": "e64"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s65",
+            "seq": 1,
+            "replay_epoch": "e65"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s66",
+            "seq": 1,
+            "replay_epoch": "e66"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s67",
+            "seq": 1,
+            "replay_epoch": "e67"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s68",
+            "seq": 1,
+            "replay_epoch": "e68"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s69",
+            "seq": 1,
+            "replay_epoch": "e69"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s70",
+            "seq": 1,
+            "replay_epoch": "e70"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s71",
+            "seq": 1,
+            "replay_epoch": "e71"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s72",
+            "seq": 1,
+            "replay_epoch": "e72"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s73",
+            "seq": 1,
+            "replay_epoch": "e73"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s74",
+            "seq": 1,
+            "replay_epoch": "e74"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s75",
+            "seq": 1,
+            "replay_epoch": "e75"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s76",
+            "seq": 1,
+            "replay_epoch": "e76"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s77",
+            "seq": 1,
+            "replay_epoch": "e77"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s78",
+            "seq": 1,
+            "replay_epoch": "e78"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s79",
+            "seq": 1,
+            "replay_epoch": "e79"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s80",
+            "seq": 1,
+            "replay_epoch": "e80"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s81",
+            "seq": 1,
+            "replay_epoch": "e81"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s82",
+            "seq": 1,
+            "replay_epoch": "e82"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s83",
+            "seq": 1,
+            "replay_epoch": "e83"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s84",
+            "seq": 1,
+            "replay_epoch": "e84"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s85",
+            "seq": 1,
+            "replay_epoch": "e85"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s86",
+            "seq": 1,
+            "replay_epoch": "e86"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s87",
+            "seq": 1,
+            "replay_epoch": "e87"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s88",
+            "seq": 1,
+            "replay_epoch": "e88"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s89",
+            "seq": 1,
+            "replay_epoch": "e89"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s90",
+            "seq": 1,
+            "replay_epoch": "e90"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s91",
+            "seq": 1,
+            "replay_epoch": "e91"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s92",
+            "seq": 1,
+            "replay_epoch": "e92"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s93",
+            "seq": 1,
+            "replay_epoch": "e93"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s94",
+            "seq": 1,
+            "replay_epoch": "e94"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s95",
+            "seq": 1,
+            "replay_epoch": "e95"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s96",
+            "seq": 1,
+            "replay_epoch": "e96"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s97",
+            "seq": 1,
+            "replay_epoch": "e97"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s98",
+            "seq": 1,
+            "replay_epoch": "e98"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s99",
+            "seq": 1,
+            "replay_epoch": "e99"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s100",
+            "seq": 1,
+            "replay_epoch": "e100"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 102,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s101",
+            "seq": 1,
+            "replay_epoch": "e101"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s102",
+            "seq": 1,
+            "replay_epoch": "e102"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s103",
+            "seq": 1,
+            "replay_epoch": "e103"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s104",
+            "seq": 1,
+            "replay_epoch": "e104"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s105",
+            "seq": 1,
+            "replay_epoch": "e105"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s106",
+            "seq": 1,
+            "replay_epoch": "e106"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s107",
+            "seq": 1,
+            "replay_epoch": "e107"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s108",
+            "seq": 1,
+            "replay_epoch": "e108"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s109",
+            "seq": 1,
+            "replay_epoch": "e109"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s110",
+            "seq": 1,
+            "replay_epoch": "e110"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s111",
+            "seq": 1,
+            "replay_epoch": "e111"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s112",
+            "seq": 1,
+            "replay_epoch": "e112"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s113",
+            "seq": 1,
+            "replay_epoch": "e113"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s114",
+            "seq": 1,
+            "replay_epoch": "e114"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s115",
+            "seq": 1,
+            "replay_epoch": "e115"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s116",
+            "seq": 1,
+            "replay_epoch": "e116"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s117",
+            "seq": 1,
+            "replay_epoch": "e117"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s118",
+            "seq": 1,
+            "replay_epoch": "e118"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s119",
+            "seq": 1,
+            "replay_epoch": "e119"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s120",
+            "seq": 1,
+            "replay_epoch": "e120"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s121",
+            "seq": 1,
+            "replay_epoch": "e121"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s122",
+            "seq": 1,
+            "replay_epoch": "e122"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s123",
+            "seq": 1,
+            "replay_epoch": "e123"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s124",
+            "seq": 1,
+            "replay_epoch": "e124"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s125",
+            "seq": 1,
+            "replay_epoch": "e125"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s126",
+            "seq": 1,
+            "replay_epoch": "e126"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s127",
+            "seq": 1,
+            "replay_epoch": "e127"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s128",
+            "seq": 1,
+            "replay_epoch": "e128"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s129",
+            "seq": 1,
+            "replay_epoch": "e129"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s130",
+            "seq": 1,
+            "replay_epoch": "e130"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s131",
+            "seq": 1,
+            "replay_epoch": "e131"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s132",
+            "seq": 1,
+            "replay_epoch": "e132"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s133",
+            "seq": 1,
+            "replay_epoch": "e133"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s134",
+            "seq": 1,
+            "replay_epoch": "e134"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s135",
+            "seq": 1,
+            "replay_epoch": "e135"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s136",
+            "seq": 1,
+            "replay_epoch": "e136"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s137",
+            "seq": 1,
+            "replay_epoch": "e137"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s138",
+            "seq": 1,
+            "replay_epoch": "e138"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s139",
+            "seq": 1,
+            "replay_epoch": "e139"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s140",
+            "seq": 1,
+            "replay_epoch": "e140"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s141",
+            "seq": 1,
+            "replay_epoch": "e141"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s142",
+            "seq": 1,
+            "replay_epoch": "e142"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s143",
+            "seq": 1,
+            "replay_epoch": "e143"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s144",
+            "seq": 1,
+            "replay_epoch": "e144"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s145",
+            "seq": 1,
+            "replay_epoch": "e145"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s146",
+            "seq": 1,
+            "replay_epoch": "e146"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s147",
+            "seq": 1,
+            "replay_epoch": "e147"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s148",
+            "seq": 1,
+            "replay_epoch": "e148"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s149",
+            "seq": 1,
+            "replay_epoch": "e149"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s150",
+            "seq": 1,
+            "replay_epoch": "e150"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 152,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s151",
+            "seq": 1,
+            "replay_epoch": "e151"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s152",
+            "seq": 1,
+            "replay_epoch": "e152"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s153",
+            "seq": 1,
+            "replay_epoch": "e153"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s154",
+            "seq": 1,
+            "replay_epoch": "e154"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s155",
+            "seq": 1,
+            "replay_epoch": "e155"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s156",
+            "seq": 1,
+            "replay_epoch": "e156"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s157",
+            "seq": 1,
+            "replay_epoch": "e157"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s158",
+            "seq": 1,
+            "replay_epoch": "e158"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s159",
+            "seq": 1,
+            "replay_epoch": "e159"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s160",
+            "seq": 1,
+            "replay_epoch": "e160"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s161",
+            "seq": 1,
+            "replay_epoch": "e161"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s162",
+            "seq": 1,
+            "replay_epoch": "e162"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s163",
+            "seq": 1,
+            "replay_epoch": "e163"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s164",
+            "seq": 1,
+            "replay_epoch": "e164"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s165",
+            "seq": 1,
+            "replay_epoch": "e165"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s166",
+            "seq": 1,
+            "replay_epoch": "e166"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s167",
+            "seq": 1,
+            "replay_epoch": "e167"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s168",
+            "seq": 1,
+            "replay_epoch": "e168"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s169",
+            "seq": 1,
+            "replay_epoch": "e169"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s170",
+            "seq": 1,
+            "replay_epoch": "e170"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s171",
+            "seq": 1,
+            "replay_epoch": "e171"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s172",
+            "seq": 1,
+            "replay_epoch": "e172"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s173",
+            "seq": 1,
+            "replay_epoch": "e173"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s174",
+            "seq": 1,
+            "replay_epoch": "e174"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s175",
+            "seq": 1,
+            "replay_epoch": "e175"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s176",
+            "seq": 1,
+            "replay_epoch": "e176"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s177",
+            "seq": 1,
+            "replay_epoch": "e177"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s178",
+            "seq": 1,
+            "replay_epoch": "e178"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s179",
+            "seq": 1,
+            "replay_epoch": "e179"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s180",
+            "seq": 1,
+            "replay_epoch": "e180"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s181",
+            "seq": 1,
+            "replay_epoch": "e181"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s182",
+            "seq": 1,
+            "replay_epoch": "e182"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s183",
+            "seq": 1,
+            "replay_epoch": "e183"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s184",
+            "seq": 1,
+            "replay_epoch": "e184"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s185",
+            "seq": 1,
+            "replay_epoch": "e185"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s186",
+            "seq": 1,
+            "replay_epoch": "e186"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s187",
+            "seq": 1,
+            "replay_epoch": "e187"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s188",
+            "seq": 1,
+            "replay_epoch": "e188"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s189",
+            "seq": 1,
+            "replay_epoch": "e189"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s190",
+            "seq": 1,
+            "replay_epoch": "e190"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s191",
+            "seq": 1,
+            "replay_epoch": "e191"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s192",
+            "seq": 1,
+            "replay_epoch": "e192"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s193",
+            "seq": 1,
+            "replay_epoch": "e193"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s194",
+            "seq": 1,
+            "replay_epoch": "e194"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s195",
+            "seq": 1,
+            "replay_epoch": "e195"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s196",
+            "seq": 1,
+            "replay_epoch": "e196"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s197",
+            "seq": 1,
+            "replay_epoch": "e197"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s198",
+            "seq": 1,
+            "replay_epoch": "e198"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s199",
+            "seq": 1,
+            "replay_epoch": "e199"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s200",
+            "seq": 1,
+            "replay_epoch": "e200"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 202,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s201",
+            "seq": 1,
+            "replay_epoch": "e201"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s202",
+            "seq": 1,
+            "replay_epoch": "e202"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s203",
+            "seq": 1,
+            "replay_epoch": "e203"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s204",
+            "seq": 1,
+            "replay_epoch": "e204"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s205",
+            "seq": 1,
+            "replay_epoch": "e205"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s206",
+            "seq": 1,
+            "replay_epoch": "e206"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s207",
+            "seq": 1,
+            "replay_epoch": "e207"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s208",
+            "seq": 1,
+            "replay_epoch": "e208"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s209",
+            "seq": 1,
+            "replay_epoch": "e209"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s210",
+            "seq": 1,
+            "replay_epoch": "e210"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s211",
+            "seq": 1,
+            "replay_epoch": "e211"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s212",
+            "seq": 1,
+            "replay_epoch": "e212"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s213",
+            "seq": 1,
+            "replay_epoch": "e213"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s214",
+            "seq": 1,
+            "replay_epoch": "e214"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s215",
+            "seq": 1,
+            "replay_epoch": "e215"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s216",
+            "seq": 1,
+            "replay_epoch": "e216"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s217",
+            "seq": 1,
+            "replay_epoch": "e217"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s218",
+            "seq": 1,
+            "replay_epoch": "e218"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s219",
+            "seq": 1,
+            "replay_epoch": "e219"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s220",
+            "seq": 1,
+            "replay_epoch": "e220"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s221",
+            "seq": 1,
+            "replay_epoch": "e221"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s222",
+            "seq": 1,
+            "replay_epoch": "e222"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s223",
+            "seq": 1,
+            "replay_epoch": "e223"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s224",
+            "seq": 1,
+            "replay_epoch": "e224"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s225",
+            "seq": 1,
+            "replay_epoch": "e225"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s226",
+            "seq": 1,
+            "replay_epoch": "e226"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s227",
+            "seq": 1,
+            "replay_epoch": "e227"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s228",
+            "seq": 1,
+            "replay_epoch": "e228"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s229",
+            "seq": 1,
+            "replay_epoch": "e229"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s230",
+            "seq": 1,
+            "replay_epoch": "e230"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s231",
+            "seq": 1,
+            "replay_epoch": "e231"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s232",
+            "seq": 1,
+            "replay_epoch": "e232"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s233",
+            "seq": 1,
+            "replay_epoch": "e233"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s234",
+            "seq": 1,
+            "replay_epoch": "e234"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s235",
+            "seq": 1,
+            "replay_epoch": "e235"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s236",
+            "seq": 1,
+            "replay_epoch": "e236"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s237",
+            "seq": 1,
+            "replay_epoch": "e237"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s238",
+            "seq": 1,
+            "replay_epoch": "e238"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s239",
+            "seq": 1,
+            "replay_epoch": "e239"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s240",
+            "seq": 1,
+            "replay_epoch": "e240"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s241",
+            "seq": 1,
+            "replay_epoch": "e241"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s242",
+            "seq": 1,
+            "replay_epoch": "e242"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s243",
+            "seq": 1,
+            "replay_epoch": "e243"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s244",
+            "seq": 1,
+            "replay_epoch": "e244"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s245",
+            "seq": 1,
+            "replay_epoch": "e245"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s246",
+            "seq": 1,
+            "replay_epoch": "e246"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s247",
+            "seq": 1,
+            "replay_epoch": "e247"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s248",
+            "seq": 1,
+            "replay_epoch": "e248"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s249",
+            "seq": 1,
+            "replay_epoch": "e249"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s250",
+            "seq": 1,
+            "replay_epoch": "e250"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s0",
+            "seq": 252,
+            "replay_epoch": "e0"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s251",
+            "seq": 1,
+            "replay_epoch": "e251"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s252",
+            "seq": 1,
+            "replay_epoch": "e252"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s253",
+            "seq": 1,
+            "replay_epoch": "e253"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s254",
+            "seq": 1,
+            "replay_epoch": "e254"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s255",
+            "seq": 1,
+            "replay_epoch": "e255"
+          },
+          {
+            "type": "session.replay_gap",
+            "session_id": "s1",
+            "payload": {
+              "replay_epoch": "e1",
+              "latest_seq": 1
+            }
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s256",
+            "seq": 1,
+            "replay_epoch": "e256"
+          }
+        ],
+        "watermarks": {
+          "s2": 1,
+          "s3": 1,
+          "s4": 1,
+          "s5": 1,
+          "s6": 1,
+          "s7": 1,
+          "s8": 1,
+          "s9": 1,
+          "s10": 1,
+          "s11": 1,
+          "s12": 1,
+          "s13": 1,
+          "s14": 1,
+          "s15": 1,
+          "s16": 1,
+          "s17": 1,
+          "s18": 1,
+          "s19": 1,
+          "s20": 1,
+          "s21": 1,
+          "s22": 1,
+          "s23": 1,
+          "s24": 1,
+          "s25": 1,
+          "s26": 1,
+          "s27": 1,
+          "s28": 1,
+          "s29": 1,
+          "s30": 1,
+          "s31": 1,
+          "s32": 1,
+          "s33": 1,
+          "s34": 1,
+          "s35": 1,
+          "s36": 1,
+          "s37": 1,
+          "s38": 1,
+          "s39": 1,
+          "s40": 1,
+          "s41": 1,
+          "s42": 1,
+          "s43": 1,
+          "s44": 1,
+          "s45": 1,
+          "s46": 1,
+          "s47": 1,
+          "s48": 1,
+          "s49": 1,
+          "s50": 1,
+          "s51": 1,
+          "s52": 1,
+          "s53": 1,
+          "s54": 1,
+          "s55": 1,
+          "s56": 1,
+          "s57": 1,
+          "s58": 1,
+          "s59": 1,
+          "s60": 1,
+          "s61": 1,
+          "s62": 1,
+          "s63": 1,
+          "s64": 1,
+          "s65": 1,
+          "s66": 1,
+          "s67": 1,
+          "s68": 1,
+          "s69": 1,
+          "s70": 1,
+          "s71": 1,
+          "s72": 1,
+          "s73": 1,
+          "s74": 1,
+          "s75": 1,
+          "s76": 1,
+          "s77": 1,
+          "s78": 1,
+          "s79": 1,
+          "s80": 1,
+          "s81": 1,
+          "s82": 1,
+          "s83": 1,
+          "s84": 1,
+          "s85": 1,
+          "s86": 1,
+          "s87": 1,
+          "s88": 1,
+          "s89": 1,
+          "s90": 1,
+          "s91": 1,
+          "s92": 1,
+          "s93": 1,
+          "s94": 1,
+          "s95": 1,
+          "s96": 1,
+          "s97": 1,
+          "s98": 1,
+          "s99": 1,
+          "s100": 1,
+          "s101": 1,
+          "s102": 1,
+          "s103": 1,
+          "s104": 1,
+          "s105": 1,
+          "s106": 1,
+          "s107": 1,
+          "s108": 1,
+          "s109": 1,
+          "s110": 1,
+          "s111": 1,
+          "s112": 1,
+          "s113": 1,
+          "s114": 1,
+          "s115": 1,
+          "s116": 1,
+          "s117": 1,
+          "s118": 1,
+          "s119": 1,
+          "s120": 1,
+          "s121": 1,
+          "s122": 1,
+          "s123": 1,
+          "s124": 1,
+          "s125": 1,
+          "s126": 1,
+          "s127": 1,
+          "s128": 1,
+          "s129": 1,
+          "s130": 1,
+          "s131": 1,
+          "s132": 1,
+          "s133": 1,
+          "s134": 1,
+          "s135": 1,
+          "s136": 1,
+          "s137": 1,
+          "s138": 1,
+          "s139": 1,
+          "s140": 1,
+          "s141": 1,
+          "s142": 1,
+          "s143": 1,
+          "s144": 1,
+          "s145": 1,
+          "s146": 1,
+          "s147": 1,
+          "s148": 1,
+          "s149": 1,
+          "s150": 1,
+          "s151": 1,
+          "s152": 1,
+          "s153": 1,
+          "s154": 1,
+          "s155": 1,
+          "s156": 1,
+          "s157": 1,
+          "s158": 1,
+          "s159": 1,
+          "s160": 1,
+          "s161": 1,
+          "s162": 1,
+          "s163": 1,
+          "s164": 1,
+          "s165": 1,
+          "s166": 1,
+          "s167": 1,
+          "s168": 1,
+          "s169": 1,
+          "s170": 1,
+          "s171": 1,
+          "s172": 1,
+          "s173": 1,
+          "s174": 1,
+          "s175": 1,
+          "s176": 1,
+          "s177": 1,
+          "s178": 1,
+          "s179": 1,
+          "s180": 1,
+          "s181": 1,
+          "s182": 1,
+          "s183": 1,
+          "s184": 1,
+          "s185": 1,
+          "s186": 1,
+          "s187": 1,
+          "s188": 1,
+          "s189": 1,
+          "s190": 1,
+          "s191": 1,
+          "s192": 1,
+          "s193": 1,
+          "s194": 1,
+          "s195": 1,
+          "s196": 1,
+          "s197": 1,
+          "s198": 1,
+          "s199": 1,
+          "s200": 1,
+          "s201": 1,
+          "s202": 1,
+          "s203": 1,
+          "s204": 1,
+          "s205": 1,
+          "s206": 1,
+          "s207": 1,
+          "s208": 1,
+          "s209": 1,
+          "s210": 1,
+          "s211": 1,
+          "s212": 1,
+          "s213": 1,
+          "s214": 1,
+          "s215": 1,
+          "s216": 1,
+          "s217": 1,
+          "s218": 1,
+          "s219": 1,
+          "s220": 1,
+          "s221": 1,
+          "s222": 1,
+          "s223": 1,
+          "s224": 1,
+          "s225": 1,
+          "s226": 1,
+          "s227": 1,
+          "s228": 1,
+          "s229": 1,
+          "s230": 1,
+          "s231": 1,
+          "s232": 1,
+          "s233": 1,
+          "s234": 1,
+          "s235": 1,
+          "s236": 1,
+          "s237": 1,
+          "s238": 1,
+          "s239": 1,
+          "s240": 1,
+          "s241": 1,
+          "s242": 1,
+          "s243": 1,
+          "s244": 1,
+          "s245": 1,
+          "s246": 1,
+          "s247": 1,
+          "s248": 1,
+          "s249": 1,
+          "s250": 1,
+          "s0": 252,
+          "s251": 1,
+          "s252": 1,
+          "s253": 1,
+          "s254": 1,
+          "s255": 1,
+          "s256": 1
+        },
+        "session_epochs": {
+          "s0": "e0",
+          "s2": "e2",
+          "s3": "e3",
+          "s4": "e4",
+          "s5": "e5",
+          "s6": "e6",
+          "s7": "e7",
+          "s8": "e8",
+          "s9": "e9",
+          "s10": "e10",
+          "s11": "e11",
+          "s12": "e12",
+          "s13": "e13",
+          "s14": "e14",
+          "s15": "e15",
+          "s16": "e16",
+          "s17": "e17",
+          "s18": "e18",
+          "s19": "e19",
+          "s20": "e20",
+          "s21": "e21",
+          "s22": "e22",
+          "s23": "e23",
+          "s24": "e24",
+          "s25": "e25",
+          "s26": "e26",
+          "s27": "e27",
+          "s28": "e28",
+          "s29": "e29",
+          "s30": "e30",
+          "s31": "e31",
+          "s32": "e32",
+          "s33": "e33",
+          "s34": "e34",
+          "s35": "e35",
+          "s36": "e36",
+          "s37": "e37",
+          "s38": "e38",
+          "s39": "e39",
+          "s40": "e40",
+          "s41": "e41",
+          "s42": "e42",
+          "s43": "e43",
+          "s44": "e44",
+          "s45": "e45",
+          "s46": "e46",
+          "s47": "e47",
+          "s48": "e48",
+          "s49": "e49",
+          "s50": "e50",
+          "s51": "e51",
+          "s52": "e52",
+          "s53": "e53",
+          "s54": "e54",
+          "s55": "e55",
+          "s56": "e56",
+          "s57": "e57",
+          "s58": "e58",
+          "s59": "e59",
+          "s60": "e60",
+          "s61": "e61",
+          "s62": "e62",
+          "s63": "e63",
+          "s64": "e64",
+          "s65": "e65",
+          "s66": "e66",
+          "s67": "e67",
+          "s68": "e68",
+          "s69": "e69",
+          "s70": "e70",
+          "s71": "e71",
+          "s72": "e72",
+          "s73": "e73",
+          "s74": "e74",
+          "s75": "e75",
+          "s76": "e76",
+          "s77": "e77",
+          "s78": "e78",
+          "s79": "e79",
+          "s80": "e80",
+          "s81": "e81",
+          "s82": "e82",
+          "s83": "e83",
+          "s84": "e84",
+          "s85": "e85",
+          "s86": "e86",
+          "s87": "e87",
+          "s88": "e88",
+          "s89": "e89",
+          "s90": "e90",
+          "s91": "e91",
+          "s92": "e92",
+          "s93": "e93",
+          "s94": "e94",
+          "s95": "e95",
+          "s96": "e96",
+          "s97": "e97",
+          "s98": "e98",
+          "s99": "e99",
+          "s100": "e100",
+          "s101": "e101",
+          "s102": "e102",
+          "s103": "e103",
+          "s104": "e104",
+          "s105": "e105",
+          "s106": "e106",
+          "s107": "e107",
+          "s108": "e108",
+          "s109": "e109",
+          "s110": "e110",
+          "s111": "e111",
+          "s112": "e112",
+          "s113": "e113",
+          "s114": "e114",
+          "s115": "e115",
+          "s116": "e116",
+          "s117": "e117",
+          "s118": "e118",
+          "s119": "e119",
+          "s120": "e120",
+          "s121": "e121",
+          "s122": "e122",
+          "s123": "e123",
+          "s124": "e124",
+          "s125": "e125",
+          "s126": "e126",
+          "s127": "e127",
+          "s128": "e128",
+          "s129": "e129",
+          "s130": "e130",
+          "s131": "e131",
+          "s132": "e132",
+          "s133": "e133",
+          "s134": "e134",
+          "s135": "e135",
+          "s136": "e136",
+          "s137": "e137",
+          "s138": "e138",
+          "s139": "e139",
+          "s140": "e140",
+          "s141": "e141",
+          "s142": "e142",
+          "s143": "e143",
+          "s144": "e144",
+          "s145": "e145",
+          "s146": "e146",
+          "s147": "e147",
+          "s148": "e148",
+          "s149": "e149",
+          "s150": "e150",
+          "s151": "e151",
+          "s152": "e152",
+          "s153": "e153",
+          "s154": "e154",
+          "s155": "e155",
+          "s156": "e156",
+          "s157": "e157",
+          "s158": "e158",
+          "s159": "e159",
+          "s160": "e160",
+          "s161": "e161",
+          "s162": "e162",
+          "s163": "e163",
+          "s164": "e164",
+          "s165": "e165",
+          "s166": "e166",
+          "s167": "e167",
+          "s168": "e168",
+          "s169": "e169",
+          "s170": "e170",
+          "s171": "e171",
+          "s172": "e172",
+          "s173": "e173",
+          "s174": "e174",
+          "s175": "e175",
+          "s176": "e176",
+          "s177": "e177",
+          "s178": "e178",
+          "s179": "e179",
+          "s180": "e180",
+          "s181": "e181",
+          "s182": "e182",
+          "s183": "e183",
+          "s184": "e184",
+          "s185": "e185",
+          "s186": "e186",
+          "s187": "e187",
+          "s188": "e188",
+          "s189": "e189",
+          "s190": "e190",
+          "s191": "e191",
+          "s192": "e192",
+          "s193": "e193",
+          "s194": "e194",
+          "s195": "e195",
+          "s196": "e196",
+          "s197": "e197",
+          "s198": "e198",
+          "s199": "e199",
+          "s200": "e200",
+          "s201": "e201",
+          "s202": "e202",
+          "s203": "e203",
+          "s204": "e204",
+          "s205": "e205",
+          "s206": "e206",
+          "s207": "e207",
+          "s208": "e208",
+          "s209": "e209",
+          "s210": "e210",
+          "s211": "e211",
+          "s212": "e212",
+          "s213": "e213",
+          "s214": "e214",
+          "s215": "e215",
+          "s216": "e216",
+          "s217": "e217",
+          "s218": "e218",
+          "s219": "e219",
+          "s220": "e220",
+          "s221": "e221",
+          "s222": "e222",
+          "s223": "e223",
+          "s224": "e224",
+          "s225": "e225",
+          "s226": "e226",
+          "s227": "e227",
+          "s228": "e228",
+          "s229": "e229",
+          "s230": "e230",
+          "s231": "e231",
+          "s232": "e232",
+          "s233": "e233",
+          "s234": "e234",
+          "s235": "e235",
+          "s236": "e236",
+          "s237": "e237",
+          "s238": "e238",
+          "s239": "e239",
+          "s240": "e240",
+          "s241": "e241",
+          "s242": "e242",
+          "s243": "e243",
+          "s244": "e244",
+          "s245": "e245",
+          "s246": "e246",
+          "s247": "e247",
+          "s248": "e248",
+          "s249": "e249",
+          "s250": "e250",
+          "s251": "e251",
+          "s252": "e252",
+          "s253": "e253",
+          "s254": "e254",
+          "s255": "e255",
+          "s256": "e256"
+        },
+        "replay_requests": [],
+        "barriers": [],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "unobserved_sessions_do_not_replay",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "absent",
+          "label": "absent"
+        }
+      ],
+      "expected": {
+        "events": [],
+        "watermarks": {},
+        "session_epochs": {},
+        "replay_requests": [],
+        "barriers": [
+          {
+            "label": "absent",
+            "absent": true
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "notification_only_feed_disables_replay",
+      "replay": false,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 5
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 6
+          }
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "disabled"
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 5
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 6
+          }
+        ],
+        "watermarks": {
+          "s1": 6
+        },
+        "session_epochs": {},
+        "replay_requests": [],
+        "barriers": [
+          {
+            "label": "disabled",
+            "absent": true
+          }
+        ],
+        "open_requests": []
+      }
+    },
+    {
+      "name": "legacy_pending_approval_redelivered_before_result",
+      "replay": true,
+      "steps": [
+        {
+          "op": "open"
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "proc-1"
+            }
+          }
+        },
+        {
+          "op": "event",
+          "event": {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3
+          }
+        },
+        {
+          "op": "drop"
+        },
+        {
+          "op": "open"
+        },
+        {
+          "op": "barrier",
+          "session_id": "s1",
+          "label": "approval"
+        },
+        {
+          "op": "answer",
+          "session_id": "s1",
+          "result": {
+            "events": [
+              {
+                "type": "message.complete",
+                "session_id": "s1",
+                "seq": 4
+              }
+            ],
+            "epoch": "proc-1",
+            "latest_seq": 4,
+            "truncated": false,
+            "open_requests": [
+              {
+                "id": "synthetic-approval",
+                "method": "approval",
+                "params": {
+                  "session_id": "s1"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "expected": {
+        "events": [
+          {
+            "type": "gateway.ready",
+            "payload": {
+              "replay_epoch": "proc-1"
+            },
+            "replayEpoch": "proc-1"
+          },
+          {
+            "type": "message.delta",
+            "session_id": "s1",
+            "seq": 3,
+            "replayEpoch": "proc-1"
+          },
+          {
+            "type": "message.complete",
+            "session_id": "s1",
+            "seq": 4,
+            "replayed": true,
+            "replayEpoch": "proc-1"
+          }
+        ],
+        "watermarks": {
+          "s1": 4
+        },
+        "session_epochs": {},
+        "replay_requests": [
+          {
+            "session_id": "s1",
+            "last_seen": 3
+          }
+        ],
+        "barriers": [
+          {
+            "label": "approval",
+            "valid": true,
+            "event_count": 3,
+            "last_event": "s1:message.complete:4"
+          }
+        ],
+        "open_requests": [
+          {
+            "id": "synthetic-approval",
+            "method": "approval",
+            "params": {
+              "session_id": "s1"
+            },
+            "replayed": true
+          }
+        ]
+      }
+    }
+  ],
+  "upstream_sha256": "6271ca1b034e50df8ce88a2e3f0149a66247d0a2b989880bf8a16e6df94eda8e",
+  "baseline": "NousResearch/hermes-agent v0.23.3",
+  "official_source": "work/official-audit/upstream/apps/shared/src/json-rpc-gateway.ts"
+}

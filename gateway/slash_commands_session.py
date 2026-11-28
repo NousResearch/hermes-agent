@@ -351,7 +351,9 @@ class GatewaySessionCommandsMixin:
         await self._fire_plugin_session_reset(source, session_key, _old_sid, _new_sid)
         try:
             from hermes_cli.tips import get_random_tip
-            _tip_line = t("gateway.reset.tip", tip=get_random_tip())
+            from tools.desktop_ui import user_enabled
+            _tip_line = (t("gateway.reset.tip", tip=get_random_tip())
+                         if user_enabled("in_app_tips", default=True) else "")
         except Exception:
             _tip_line = ""
         body = f"{header}\n\n{session_info}" if session_info else header

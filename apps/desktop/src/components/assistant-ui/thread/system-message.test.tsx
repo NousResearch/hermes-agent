@@ -50,6 +50,20 @@ function expectTimestampSeparated(container: HTMLElement, precedingText: string)
 
 afterEach(cleanup)
 
+describe('self-improvement review summaries', () => {
+  it.each([
+    ['Self-improvement review', ': ', "Skill 'hermes-agent' patched"],
+    ['自我改进回顾', '：', "技能 'hermes-agent' 已修补"],
+    ['自我改進檢閱', '：', "技能 'hermes-agent' 已修補"]
+  ])('renders the label and all action details separately for %s', (label, separator, action) => {
+    const detail = `${action} · ${action} (references/providers-and-models.md)`
+    const { container } = render(<Harness text={`review:${label}${separator}${detail}`} />)
+
+    expect(container.querySelector('.tool-memory-legendary-title')?.textContent).toBe(label)
+    expect(container.querySelector('.tool-memory-legendary-meta')?.textContent).toBe(detail)
+  })
+})
+
 describe('background report inline code', () => {
   // The report body is the same `aui-md prose` markdown renderer the
   // assistant turn uses, rendered with no assistant/room slot ancestor. The

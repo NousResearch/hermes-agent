@@ -78,6 +78,17 @@ def test_typed_and_bare_approval_use_the_same_separate_authority():
     assert ids == [entry.data["request_id"]] and refused is None
 
 
+def test_unadmitted_sender_cannot_deny_under_independent_approvers():
+    """``admitted=False`` (a relayed sender no allowlist admitted) keeps needing approver/admin
+    authority to deny, as it does without ``approvers_only``."""
+    _configure_independent_approvers()
+    entry = pending_from(PEER, "Peer bot", "sess-unadmitted", platform="matrix")
+    ids, refused = answerable_request_ids("sess-unadmitted", GUEST, choice="deny", admitted=False)
+    assert ids == [] and refused is not None
+    ids, refused = answerable_request_ids("sess-unadmitted", HUMAN, choice="deny", admitted=False)
+    assert ids == [entry.data["request_id"]] and refused is None
+
+
 def test_independent_mode_with_wildcard_fails_closed_for_approval():
     _configure_independent_approvers(["*"])
     pending_from(PEER, "Peer bot", "sess-wild", platform="matrix")

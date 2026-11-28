@@ -77,10 +77,11 @@ def _refusal(authority: dict, actor_id: Any, admin_ids: Any, extra: Any, command
     approvers = _coerce_id_list(authority.get("approvers"))
     if authority.get("approvers_only") is True and commands:
         # A requester (including a peer bot) is not implicitly an approver.
-        # A wildcard is not an explicit approver list. Denials remain available
-        # to admitted senders; callers enforce admission before this check.
+        # A wildcard is not an explicit approver list. Any admitted sender may
+        # deny; a sender no allowlist admitted (``admitted=False``) needs to be
+        # a listed approver or admin even to deny, as without this mode.
         # ``_refusal`` returns a refusal name, not a bool: None means allowed.
-        if commands == ("deny",):
+        if commands == ("deny",) and admitted:
             return None if actor else _NO_REQUESTER
         if actor and "*" not in approvers and (
             actor in approvers or actor in policy.admin_user_ids

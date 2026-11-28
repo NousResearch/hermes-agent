@@ -305,7 +305,8 @@ async def test_global_switch_clears_redundant_session_override(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["disk full", "managed by your administrator"])
+async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_path, monkeypatch, failure):
     """When the config.yaml write fails the switch must stay a truthful session override (memory +
     store) and the confirmation must not claim a clean global save (#100314)."""
     adapter = _FakePickerAdapter()
@@ -315,16 +316,23 @@ async def test_global_switch_keeps_session_override_when_config_write_fails(tmp_
     session_key = runner._session_key_for_source(source)
     runner.session_store.get_or_create_session(source)
 
-    async def _disk_full(result, config_path):
-        raise OSError("disk full")
+    if failure == "disk full":
+        async def _disk_full(result, config_path):
+            raise OSError("disk full")
 
-    monkeypatch.setattr("gateway.slash_commands_model._persist_model_switch_to_config", _disk_full)
+        monkeypatch.setattr("gateway.slash_commands_model._persist_model_switch_to_config", _disk_full)
+    else:
+        managed_dir = tmp_path / "managed"
+        managed_dir.mkdir()
+        (managed_dir / "config.yaml").write_text("model:\n  default: pinned-model\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
 
     confirmation = await _typed_global(runner)
 
     assert yaml.safe_load(cfg_path.read_text(encoding="utf-8"))["model"]["default"] == "old-model"
     assert "Saved to config.yaml" not in confirmation
-    assert "disk full" in confirmation
+    assert failure in confirmation
+    assert "(session only)" in confirmation
     assert runner._session_model_override(session_key)["model"] == "gpt-5.5"
     assert runner.session_store.get_model_override(session_key)["model"] == "gpt-5.5"
 

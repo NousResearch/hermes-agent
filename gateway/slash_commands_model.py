@@ -354,7 +354,7 @@ class GatewayModelCommandsMixin:
         if ctx.persist_global and global_error is not None:
             # Never claim a clean global commit the disk did not take (#100314).
             lines.append(t("gateway.model.warning_prefix", warning=global_error))
-            lines.append(t("gateway.model.session_only_hint"))
+            lines.append(t("gateway.model.session_only_unsaved"))
         elif ctx.persist_global:
             lines.append(t("gateway.model.saved_global"))
         elif one_turn:

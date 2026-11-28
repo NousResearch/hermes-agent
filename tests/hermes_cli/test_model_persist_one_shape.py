@@ -101,6 +101,28 @@ def test_every_persist_surface_writes_the_same_model_block(seeded_home, monkeypa
     assert yaml.safe_load((seeded_home / "config.yaml").read_text())["agent"]["system_prompt"] == "keepme"
 
 
+def test_cli_global_switch_reports_managed_selection_as_session_only(seeded_home, monkeypatch):
+    managed_dir = seeded_home / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text("model:\n  default: pinned-model\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    config_path = seeded_home / "config.yaml"
+    original = config_path.read_bytes()
+    messages = []
+    session = []
+    monkeypatch.setattr("cli._cprint", messages.append)
+    monkeypatch.setattr("cli.HermesCLI._persist_model_switch_to_session", lambda cli, result: session.append(result))
+    monkeypatch.setattr("hermes_cli.cli_model_switch_mixin._print_switch_summary", lambda *a, **k: None)
+
+    _via_cli(seeded_home)
+
+    assert config_path.read_bytes() == original
+    assert session == [_RESULT]
+    assert any("managed by your administrator" in message for message in messages)
+    assert any("(session only)" in message for message in messages)
+    assert not any("Saved to config.yaml" in message for message in messages)
+
+
 def test_same_route_repick_keeps_the_context_pin(seeded_home):
     """A model re-pick on the SAME route keeps ``context_length`` (only the owner change drops it)."""
     from hermes_cli.model_switch import persist_model_selection

@@ -85,6 +85,26 @@ def test_persist_publishes_only_a_complete_model_route(profile_config, monkeypat
     assert published == [_EXPECTED]
 
 
+@pytest.mark.parametrize("pinned", ["model: pinned-model\n", "model:\n  provider: pinned-provider\n"])
+def test_managed_route_rejects_global_selection(profile_config, monkeypatch, tmp_path, pinned):
+    from hermes_cli.config import read_user_config_raw
+    from hermes_cli.config_backend import ConfigWriteError
+    from hermes_cli.managed_scope import apply_managed_overlay
+
+    managed_dir = tmp_path / "managed"
+    managed_dir.mkdir()
+    (managed_dir / "config.yaml").write_text(pinned, encoding="utf-8")
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed_dir))
+    original = profile_config.read_bytes()
+    effective = apply_managed_overlay(read_user_config_raw(profile_config))["model"]
+
+    with pytest.raises(ConfigWriteError, match="managed by your administrator"):
+        persist_model_selection(_RESULT, profile_config)
+
+    assert profile_config.read_bytes() == original
+    assert apply_managed_overlay(read_user_config_raw(profile_config))["model"] == effective
+
+
 def test_failed_route_publication_leaves_original_bytes(profile_config, monkeypatch):
     import utils.files
 

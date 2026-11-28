@@ -184,6 +184,21 @@ def is_key_managed(dotted_key: str) -> bool:
     return dotted_key in managed_config_keys()
 
 
+def refuse_managed_model_write(updates) -> None:
+    """Reject a route write if it would change or clear a pinned field (including a scalar model)."""
+    from hermes_cli.config import _managed_source
+    from hermes_cli.config_backend import ConfigWriteError
+
+    managed_keys = managed_config_keys()
+    for key in updates:
+        if "model" in managed_keys or f"model.{key}" in managed_keys:
+            raise ConfigWriteError(
+                f"Cannot set 'model.{key}': it is managed by your administrator "
+                f"({_managed_source('config.yaml')}) and cannot be changed.",
+                code="config_key_managed",
+            )
+
+
 def is_env_managed(name: str) -> bool:
     """True if the env var name is pinned by the managed .env layer."""
     return name in load_managed_env()

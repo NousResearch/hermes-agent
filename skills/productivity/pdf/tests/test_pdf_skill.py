@@ -411,6 +411,16 @@ def test_stamp_image(report_pdf: Path, sample_image: Path, workdir: Path):
     assert image_xobjects(after.pages[0]) == image_xobjects(before.pages[0])
 
 
+def test_stamp_preserves_form_fields(form_pdf: Path, workdir: Path):
+    out = workdir / "stamp_form.pdf"
+    run("pdf_stamp.py", str(form_pdf), "-o", str(out),
+        "--text", "RECEIVED", "--x", "400", "--y", "760")
+    from pypdf import PdfReader
+    assert set(PdfReader(str(out)).get_fields() or {}) == {
+        "surname", "agree", "color", "size",
+    }
+
+
 # --------------------------------------------------------- metadata + attachments
 
 def test_meta_set_and_clear(report_pdf: Path, workdir: Path):

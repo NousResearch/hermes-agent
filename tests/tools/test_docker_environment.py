@@ -77,25 +77,29 @@ def test_ensure_docker_available_raises_when_not_found(monkeypatch):
         _make_dummy_env()
 
 
-def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
-    """Opt-in docker cwd mounting should bind the host cwd to /workspace."""
+@pytest.mark.parametrize(
+    ("target", "cwd_mount"),
+    [(None, "/workspace"), ("/workspace/projects", "/workspace"), ("/workspace:ro", "/host-cwd")],
+)
+def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path, target, cwd_mount):
+    """Bind the host cwd to /workspace when the target is free."""
     project_dir = tmp_path / "my-project"
     project_dir.mkdir()
 
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
-    _make_dummy_env(
+    volumes = [f"{tmp_path / 'data'}:{target}"] if target else []
+    env = _make_dummy_env(
         cwd="/workspace",
         host_cwd=str(project_dir),
         auto_mount_cwd=True,
+        volumes=volumes,
     )
 
-    # Find the docker run call and check its args
-    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
-    assert run_calls, "docker run should have been called"
-    run_args_str = " ".join(run_calls[0][0])
-    assert f"{project_dir}:/workspace" in run_args_str
+    specs = _bind_mount_specs(_run_args_from_calls(calls))
+    assert set(volumes + [f"{project_dir}:{cwd_mount}"]).issubset(specs)
+    assert env.host_cwd_mount == cwd_mount
 
 
 
@@ -665,6 +669,43 @@ def _bind_mount_specs(run_args):
         for i, flag in enumerate(run_args[:-1])
         if flag == "-v"
     ]
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize(
+    ("target", "overrides_workspace"),
+    [
+        ("/workspace", True),
+        ("/workspace/", True),
+        ("//workspace/.", True),
+        ("/tmp/../workspace", True),
+        ("/workspace/projects", False),
+        ("/workspace-cache", False),
+    ],
+)
+def test_user_volume_only_replaces_managed_workspace_at_workspace(
+    monkeypatch, tmp_path, persistent, target, overrides_workspace,
+):
+    sandbox_dir = tmp_path / "sandboxes"
+    monkeypatch.setenv("TERMINAL_SANDBOX_DIR", str(sandbox_dir))
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+    user_volume = f"{tmp_path / 'data'}:{target}:ro"
+
+    _make_dummy_env(
+        cwd="/workspace",
+        persistent_filesystem=persistent,
+        volumes=[user_volume],
+    )
+
+    run_args = _run_args_from_calls(calls)
+    specs = _bind_mount_specs(run_args)
+    managed_bind = f"{sandbox_dir / 'docker' / 'test-task' / 'workspace'}:/workspace"
+    assert user_volume in specs
+    assert (managed_bind in specs) == (persistent and not overrides_workspace)
+    assert ("/workspace:rw,exec,size=10g" in run_args) == (
+        not persistent and not overrides_workspace
+    )
 
 
 @pytest.mark.platforms("linux")

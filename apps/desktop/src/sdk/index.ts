@@ -1769,6 +1769,7 @@ export type { GatewayEventListener } from '@/contrib/events'
  *  `ctx.register` stays the door for permanent contributions. Namespace the
  *  id with your plugin slug (`kanban:board-switcher`). */
 export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
+export { SESSION_SOURCE_LABELS_AREA, type SessionSourceLabelContribution } from '@/contrib/session-sources'
 
 // -- contracts ----------------------------------------------------------------
 

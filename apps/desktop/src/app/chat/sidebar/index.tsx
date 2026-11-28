@@ -24,11 +24,11 @@ import {
 } from '@/components/ui/sidebar'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { SESSION_SOURCE_LABELS_AREA } from '@/contrib/session-sources'
 import { type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
-import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
@@ -157,6 +157,7 @@ import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
 import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
+import { buildMessagingGroups } from './messaging-groups'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
@@ -418,6 +419,7 @@ export function ChatSidebar({
   // Contributed nav rows (plugins pairing a page with a sidebar entry) render
   // below the built-ins with the same chrome; active = at their route.
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
+  const sourceLabelContributions = useContributions(SESSION_SOURCE_LABELS_AREA)
 
   const contributedNav = useMemo<SidebarNavItem[]>(
     () =>
@@ -1300,69 +1302,35 @@ export function ChatSidebar({
 
   // Reveal another batch of a platform's rows; fetch from the backend too if we
   // run past what's loaded and more remain on disk.
-  const revealMoreMessaging = (platform: string, loaded: number, hasMore: boolean) => {
-    const next = (messagingVisible[platform] ?? NON_SESSION_INITIAL_ROWS) + NON_SESSION_LOAD_STEP
+  const revealMoreMessaging = (groupId: string, sourceId: string, loaded: number, hasMore: boolean) => {
+    const next = (messagingVisible[groupId] ?? NON_SESSION_INITIAL_ROWS) + NON_SESSION_LOAD_STEP
 
-    setMessagingVisible(prev => ({ ...prev, [platform]: next }))
+    setMessagingVisible(prev => ({ ...prev, [groupId]: next }))
 
     if (next > loaded && hasMore) {
-      loadMoreForMessaging(platform)
+      loadMoreForMessaging(sourceId)
     }
   }
 
-  // Each messaging platform is its own self-managed section: split the
-  // separately-fetched messaging slice by source, newest platform first, rows
-  // within a platform by recency. Per-platform totals (when a "load more" has
-  // resolved them) drive the count + whether more remain on disk.
-  const messagingGroups = useMemo<MessagingSection[]>(() => {
-    if (!visibleMessagingSessions.length) {
-      return []
-    }
-
-    const bySource = new Map<string, SessionInfo[]>()
-    // Rows this platform owns that the Pinned section is showing instead. The
-    // backend's per-platform total counts them, so discount it or "load more"
-    // promises rows that will never appear.
-    const pinnedBySource = new Map<string, number>()
-
-    for (const session of visibleMessagingSessions) {
-      const sourceId = normalizeSessionSource(session.source)
-
-      if (!sourceId) {
-        continue
-      }
-
-      if (isPinnedSession(session)) {
-        pinnedBySource.set(sourceId, (pinnedBySource.get(sourceId) ?? 0) + 1)
-
-        continue
-      }
-
-      const list = bySource.get(sourceId) ?? []
-      list.push(session)
-      bySource.set(sourceId, list)
-    }
-
-    return [...bySource.entries()]
-      .map(([sourceId, list]) => {
-        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[messagingTotalsKey(messagingProfile, sourceId)]
-        const unpinnedKnown = known == null ? null : Math.max(0, known - (pinnedBySource.get(sourceId) ?? 0))
-        const total = Math.max(ordered.length, unpinnedKnown ?? 0)
-
-        return {
-          // Known exact total → more exist iff total exceeds loaded; otherwise
-          // the seed fetch was capped, so assume more until a per-platform load
-          // resolves the count.
-          hasMore: unpinnedKnown != null ? unpinnedKnown > ordered.length : messagingTruncated,
-          label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
-          sourceId,
-          total
-        }
-      })
-      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
+  const messagingGroups = useMemo(
+    () =>
+      buildMessagingGroups({
+        contributions: sourceLabelContributions,
+        getSourceTotal: sourceId => messagingPlatformTotals[messagingTotalsKey(messagingProfile, sourceId)],
+        isPinned: isPinnedSession,
+        profile: messagingProfile,
+        sessions: visibleMessagingSessions,
+        truncated: messagingTruncated
+      }),
+    [
+      visibleMessagingSessions,
+      messagingPlatformTotals,
+      messagingTruncated,
+      isPinnedSession,
+      messagingProfile,
+      sourceLabelContributions
+    ]
+  )
 
   // Recents and every messaging platform resolve owner groups the same way
   // ([connectionId, profile]), so a platform's groups line up with recents.
@@ -1980,7 +1948,7 @@ export function ChatSidebar({
             {!trimmedQuery &&
               !worktreeGroupingActive &&
               messagingGroups.map(group => {
-                const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
+                const visible = messagingVisible[group.groupId] ?? NON_SESSION_INITIAL_ROWS
                 const shownSessions = group.sessions.slice(0, visible)
                 // More to show if rows are hidden behind the cap, or the backend
                 // still has older threads on disk.
@@ -2005,13 +1973,15 @@ export function ChatSidebar({
                       canRevealMore ? (
                         <SidebarLoadMoreRow
                           loading={Boolean(messagingLoadMorePending[group.sourceId])}
-                          onClick={() => revealMoreMessaging(group.sourceId, group.sessions.length, group.hasMore)}
+                          onClick={() =>
+                            revealMoreMessaging(group.groupId, group.sourceId, group.sessions.length, group.hasMore)
+                          }
                           step={Math.min(NON_SESSION_LOAD_STEP, Math.max(0, group.total - shownSessions.length))}
                         />
                       ) : null
                     }
                     groups={ownerGroups}
-                    key={group.sourceId}
+                    key={group.groupId}
                     label={group.label}
                     labelIcon={
                       <PlatformAvatar
@@ -2023,10 +1993,10 @@ export function ChatSidebar({
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}
-                    onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
+                    onToggle={() => toggleSidebarMessagingOpen(group.groupId)}
                     onTogglePin={pinSession}
                     onToggleUnread={toggleUnread}
-                    open={messagingOpenIds.includes(group.sourceId)}
+                    open={messagingOpenIds.includes(group.groupId)}
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
@@ -2064,12 +2034,4 @@ export function ChatSidebar({
       <WorktreeDialog />
     </Sidebar>
   )
-}
-
-interface MessagingSection {
-  sourceId: string
-  label: string
-  sessions: SessionInfo[]
-  total: number
-  hasMore: boolean
 }

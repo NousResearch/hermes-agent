@@ -525,6 +525,24 @@ def _builtin_tool_names() -> list[str]:
         return []
 
 
+def _bundled_platform_tools(manifest: dict) -> set[str]:
+    """Tools a platform plugin may declare though core ships them: the platform's own extras in its
+    ``hermes-<platform>`` toolset, when core still bundles that platform. Such a plugin takes the
+    platform over and stands down on a core that ships it, so one manifest (declaring the tools the
+    loader needs to register them once core drops the platform) must pass on both cores. The shared
+    core tools in the bundle stay refused."""
+    name = str(manifest.get("name") or "").strip().lower()
+    if manifest.get("kind") != "platform" or not name:
+        return set()
+    from gateway.platform_registry import core_ships_platform
+    from toolsets import _HERMES_CORE_TOOLS, TOOLSETS
+
+    bundle = TOOLSETS.get(f"hermes-{name}")
+    if bundle is None or not core_ships_platform(name):
+        return set()
+    return set(bundle["tools"]) - set(_HERMES_CORE_TOOLS)
+
+
 def _check_builtin_collisions(
     report: ValidationReport, manifest: dict, recorded: Optional[dict]
 ) -> None:
@@ -535,7 +553,10 @@ def _check_builtin_collisions(
         report.add("built-in tool collisions", True, "no tools to check")
         return
     builtin = set(_builtin_tool_names())
-    collisions = sorted(candidate_tools & builtin)
+    # Registering one on this core would still shadow the built-in, so only declared names are exempt.
+    handed_over = candidate_tools & builtin & (
+        _bundled_platform_tools(manifest) - set((recorded or {}).get("tools") or []))
+    collisions = sorted((candidate_tools & builtin) - handed_over)
     if collisions:
         report.add(
             "built-in tool collisions",
@@ -543,6 +564,9 @@ def _check_builtin_collisions(
             "tool name(s) collide with built-in tools: "
             f"{', '.join(collisions)}",
         )
+    elif handed_over:
+        report.add("built-in tool collisions", True,
+                   f"declares {', '.join(sorted(handed_over))} of the bundled platform it takes over")
     else:
         report.add("built-in tool collisions", True, "no collisions")
 

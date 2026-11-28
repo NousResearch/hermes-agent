@@ -470,7 +470,7 @@ This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." 
 
 List every tool your `register()` registers in `provides_tools`. The field does **not** decide whether a user-installed plugin's tools load: once the plugin is enabled, everything `register()` registers is available, declared or not. What it does drive:
 
-- **`hermes plugins validate`**: the "declared tools" check fails when the registered tools don't match the list, which blocks catalog admission.
+- **`hermes plugins validate`**: the "declared tools" check fails when the registered tools don't match the list, which blocks catalog admission. The "built-in tool collisions" check fails a declared or registered name core already ships, with one exception: a `kind: platform` plugin named after a platform core still bundles may declare that platform's own tools (the extras in its `hermes-<platform>` toolset, never the shared core tools) as long as it does not register them on that core. That lets one manifest serve a core that ships the platform (the plugin stands down) and the core that drops it.
 - **Catalog listing**: the "N tools" chips and tool-name search in the catalog and the dashboard/Desktop Plugins page.
 - **Dashboard auth hint**: only declared tools' availability checks are used to show "needs auth" and the `hermes auth <name>` command.
 - **Bundled `kind: platform` plugins only**: the field is the switch that loads `tools.py` in CLI/TUI sessions while the adapter stays deferred. See [Outbound client tools](../adding-platform-adapters.md#outbound-client-tools-provides_tools).

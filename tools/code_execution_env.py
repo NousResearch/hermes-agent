@@ -193,6 +193,16 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _existing_pp:
         _pp_parts.append(_existing_pp)
     child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
+    # The kernel runs the same managed toolchain the terminal does, so a command it runs must
+    # resolve what the terminal resolves. The process PATH the scrub passed through lacks
+    # ``$HERMES_HOME/bin`` (the managed ``uv``: install.sh writes it there and nothing puts it on
+    # PATH) and ``~/.local/bin``, so on an install whose only uv is the managed one a kernel
+    # script's ``subprocess.run(["uv", ...])`` dies with FileNotFoundError. Appended, not
+    # prepended — the same completion the terminal subshell gets, so user entries keep
+    # precedence. POSIX-only by construction: the helper is a Windows no-op passthrough.
+    from tools.environments.local import _append_missing_sane_path_entries
+
+    child_env["PATH"] = _append_missing_sane_path_entries(child_env.get("PATH", ""))
     return child_env
 
 

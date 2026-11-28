@@ -128,6 +128,10 @@ def step_migrate_config() -> dict:
                 "migrated": f"{current_ver}->{post_ver}",
                 "error": f"config migration to v{failed} failed; kept v{current_ver}->v{post_ver}, "
                          "retried on the next start"}
+    # Most migrations never touch .env, so its backup is byte-identical to the
+    # live file. Leaving it behind creates a plaintext credential copy on every
+    # successful schema bump (issue #158376). Mirror the failed-step path.
+    _drop_unchanged_backups(backups)
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
 
 

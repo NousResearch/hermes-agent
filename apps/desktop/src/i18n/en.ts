@@ -4452,6 +4452,8 @@ export const en: Translations = {
     closeAll: 'Close all',
     newSessionTab: 'New session tab',
     newTab: 'New tab',
+    scrollTabsLeft: 'Scroll tabs left',
+    scrollTabsRight: 'Scroll tabs right',
     pluginDisabled: pluginId => `Plugin "${pluginId}" disabled`,
     pluginDisabledBody: 'Re-enable it in Capabilities → Plugins to bring the pane back.',
     missingPane: paneId => `missing pane: ${paneId}`,

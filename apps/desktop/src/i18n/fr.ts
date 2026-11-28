@@ -4883,6 +4883,8 @@ export const frOverrides = {
     closeAll: 'Tout fermer',
     newSessionTab: 'Nouvel onglet de session',
     newTab: 'Nouvel onglet',
+    scrollTabsLeft: 'Faire défiler les onglets vers la gauche',
+    scrollTabsRight: 'Faire défiler les onglets vers la droite',
     pluginDisabled: pluginId => `Plugin « ${pluginId} » désactivé`,
     pluginDisabledBody: 'Réactivez-le dans Paramètres → Plugins pour faire revenir le panneau.',
     missingPane: paneId => `panneau manquant : ${paneId}`,

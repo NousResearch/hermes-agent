@@ -3,6 +3,7 @@ import * as React from 'react'
 import { type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useTabStripScroll } from '@/components/ui/pane-tab-scroll'
 import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { isMetaClose, middleClickHandlers } from '@/lib/middle-click'
@@ -275,11 +276,38 @@ interface PaneTabStripProps extends React.ComponentProps<'div'> {
   titlebar?: boolean
 }
 
+/** One arrow on an overflowing strip: a scrim that eats the clipped tab's edge
+ *  plus a chevron. Pointer-only (`tabIndex={-1}`) — the tablist keeps its single
+ *  keyboard entry point, and focusing a tab already scrolls it into view. */
+function TabStripScrollCue({ direction, onSelect }: { direction: 'left' | 'right'; onSelect: () => void }) {
+  return (
+    <button
+      aria-label={translateNow(direction === 'left' ? 'zones.scrollTabsLeft' : 'zones.scrollTabsRight')}
+      className={cn(
+        'absolute inset-y-0 z-10 flex w-7 cursor-pointer items-center text-(--ui-text-tertiary) [-webkit-app-region:no-drag] hover:text-foreground',
+        // The scrim stays fully opaque under the glyph and fades over the last
+        // few pixels, so a half-scrolled tab reads as sliding away rather than
+        // as text colliding with the arrow.
+        direction === 'left'
+          ? 'left-0 justify-start bg-linear-to-r from-(--ui-sidebar-surface-background) from-60% to-transparent pl-1'
+          : 'right-0 justify-end bg-linear-to-l from-(--ui-sidebar-surface-background) from-60% to-transparent pr-1'
+      )}
+      onClick={onSelect}
+      onPointerDown={event => event.stopPropagation()}
+      tabIndex={-1}
+      type="button"
+    >
+      <Codicon name={direction === 'left' ? 'chevron-left' : 'chevron-right'} size="0.75rem" />
+    </button>
+  )
+}
+
 /**
  * The horizontal tab bar every strip in the app sits in. Owns the bar's height
  * and surface, the scroll behaviour (hidden scrollbars, contained overscroll),
- * and the pinned trailing slot — so a new strip inherits all of it instead of
- * re-deriving the geometry and drifting out of alignment.
+ * the overflow cues that appear once the tabs no longer fit, and the pinned
+ * trailing slot — so a new strip inherits all of it instead of re-deriving the
+ * geometry and drifting out of alignment.
  *
  * Tabs go in `children` as `PaneTab`s; per-strip extras (drag handlers,
  * `data-zone-tabstrip`, drop carets) ride on the usual div props.
@@ -288,6 +316,24 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
   { children, className, listRef, trailing, titlebar = false, ...props },
   ref
 ) {
+  const scrollerRef = React.useRef<HTMLDivElement | null>(null)
+  const { edges, scroll } = useTabStripScroll(scrollerRef)
+
+  // `listRef` is the caller's handle on the scroller (useActiveTabVisible
+  // scrolls through it), so the same node has to reach both refs.
+  const setScroller = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollerRef.current = node
+
+      if (typeof listRef === 'function') {
+        listRef(node)
+      } else if (listRef) {
+        ;(listRef as { current: HTMLDivElement | null }).current = node
+      }
+    },
+    [listRef]
+  )
+
   return (
     <div
       // Strip and active tab both sit on the sidebar surface, so the bar reads
@@ -301,13 +347,19 @@ export const PaneTabStrip = React.forwardRef<HTMLDivElement, PaneTabStripProps>(
       ref={ref}
       {...props}
     >
-      <div
-        aria-orientation="horizontal"
-        className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        ref={listRef}
-        role="tablist"
-      >
-        {children}
+      {/* The cues float over the scroller's ends, not the bar's: the trailing
+          "+"/chevron column must never be covered or pushed sideways. */}
+      <div className="relative flex min-w-0 flex-1">
+        <div
+          aria-orientation="horizontal"
+          className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          ref={setScroller}
+          role="tablist"
+        >
+          {children}
+        </div>
+        {edges.left && <TabStripScrollCue direction="left" onSelect={() => scroll('left')} />}
+        {edges.right && <TabStripScrollCue direction="right" onSelect={() => scroll('right')} />}
       </div>
       {trailing}
     </div>

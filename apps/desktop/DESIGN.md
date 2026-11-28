@@ -338,6 +338,13 @@ Close glyphs keep a 24px hit area, including session tabs wrapped in context men
 `PaneTab` owns its `data-slot` marker after forwarded props so composition cannot
 disable that width or the label mask.
 
+An overflowing strip hides its scrollbar but never its overflow: a chevron cue
+appears at each end that has tabs clipped behind it (pointer-only, never a
+keyboard stop — focusing a tab already reveals it), and a plain wheel over the
+strip moves it sideways while horizontal gestures and Ctrl/⌘ zoom pass through.
+The cues float over the scroller's ends, never over the pinned `+`/trailing
+column.
+
 Sticky user messages clip covered scrolling content, including the gap above
 them. Their wrappers stay unpainted; only the rounded user bubble owns a fill.
 Clipping follows the pinned prompt and its live height without changing layout,

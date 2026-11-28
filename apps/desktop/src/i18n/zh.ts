@@ -4287,6 +4287,8 @@ export const zhOverrides = {
     closeAll: '全部关闭',
     newSessionTab: '新建会话标签',
     newTab: '新建标签页',
+    scrollTabsLeft: '向左滚动标签',
+    scrollTabsRight: '向右滚动标签',
     pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
     pluginDisabledBody: '在 技能与工具 → 插件 中重新启用即可恢复面板。',
     missingPane: paneId => `缺少面板：${paneId}`,

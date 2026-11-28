@@ -391,7 +391,36 @@ class TestBridgeDispatch:
             {"name": "recovery-catalog", "tool_count": 1},
         ]
         assert group["hint"]
+        assert "tool_describe" in group["hint"]
+        assert "stop searching" in group["hint"]
+        assert "next" not in group
         assert "available_sources" not in result
+
+    def test_search_match_group_carries_next_pointer(self):
+        from tools.registry import registry
+        from tools.tool_search import dispatch_tool_search
+
+        name = "recovery_catalog_send_email"
+        tool_def = _td(name, "Send an email through the recovery catalog service.")
+        registry.register(
+            name=name,
+            handler=lambda args, **kwargs: "{}",
+            schema=tool_def,
+            toolset="mcp-recovery-catalog",
+        )
+
+        result = json.loads(dispatch_tool_search(
+            {"queries": ["send email"]},
+            current_tool_defs=[tool_def],
+        ))
+
+        [group] = result["results"]
+        assert name in group["matches"]
+        assert "next" in group
+        assert "tool_call" in group["next"]
+        assert "tool_describe" in group["next"]
+        assert "Do not search again" in group["next"]
+        assert "hint" not in group
 
 
     def test_resolve_underlying_call_parses_object_args(self):

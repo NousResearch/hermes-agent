@@ -213,6 +213,48 @@ def test_identical_call_streak_halts_any_tool_when_hard_stop_enabled():
     assert halt.tool_name == "terminal" and halt.count == 5
 
 
+def test_identical_call_streak_halt_message_renders_placeholders_and_routes_to_tool_describe():
+    # The halt text must render the configured streak count (never a hard-coded
+    # threshold) and point the model at tool_describe with a stop rule.
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=4)
+    )
+    args = {"queries": ["diablo history"]}
+    for _ in range(3):
+        controller.after_call("tool_search", args, "{}", failed=False)
+        controller.observe_call("tool_search", args, "{}", failed=False)
+        assert controller.halt_decision is None
+    controller.after_call("tool_search", args, "{}", failed=False)
+    controller.observe_call("tool_search", args, "{}", failed=False)
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_call_streak_halt"
+    assert halt.count == 4
+    assert f"Stopped {halt.tool_name}:" in halt.message
+    assert f"{halt.count} times in a row" in halt.message
+    assert "tool_describe" in halt.message
+    assert "answer the user" in halt.message
+
+
+def test_identical_call_streak_halts_tool_describe_with_describe_variant_message():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(hard_stop_enabled=True, no_progress_block_after=3)
+    )
+    args = {"names": ["does_not_exist"]}
+    for _ in range(2):
+        controller.after_call("tool_describe", args, "{}", failed=False)
+        controller.observe_call("tool_describe", args, "{}", failed=False)
+        assert controller.halt_decision is None
+    controller.after_call("tool_describe", args, "{}", failed=False)
+    controller.observe_call("tool_describe", args, "{}", failed=False)
+    halt = controller.halt_decision
+    assert halt is not None and halt.should_halt
+    assert halt.code == "identical_call_streak_tool_describe_halt"
+    assert halt.count == 3
+    assert "do not exist in this session" in halt.message
+    assert "answer the user" in halt.message
+
+
 def test_identical_call_streak_never_halts_when_hard_stop_disabled_or_for_pollers():
     soft = ToolCallGuardrailController(
         ToolCallGuardrailConfig(hard_stop_enabled=False, no_progress_block_after=2)

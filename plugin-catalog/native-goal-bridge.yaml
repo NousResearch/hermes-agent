@@ -1,0 +1,27 @@
+name: native-goal-bridge
+repo: https://github.com/genux99/native-goal-bridge
+sha: 88383dceb3d96b284c089776709b5988323fad26
+description: >-
+  Manage native current-session Goals through create, status, update, pause and budget-preserving resume.
+  Disclosure: reads active-profile configuration and native Goal records in state.db; uses private GoalManager and SessionDB APIs including db._execute_write, which validation warns about.
+  Creation is insert-only and controls use compare-and-swap; native judging and continuation consume the configured model budget.
+  No direct network requests, shell commands, runtime workers, credentials, telemetry or self-updater in the plugin.
+maintainer: genux99
+tier: community
+category: automation
+version: "0.2.0"
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/genux99/native-goal-bridge#readme
+readme: true
+platforms: []
+known_issues:
+  - Private Hermes interfaces may change; validation and regression tests are needed after upgrades.
+  - Tested on local Windows Hermes v0.22.5; other operating systems and newer builds are not certified.
+  - Pause stops future Goal turns, not an in-flight tool; resume does not reset budgets or revive terminal records.
+  - Updating or resuming a user-controlled goal requires the user's instruction; the handler is not an independent authorization sandbox.
+capabilities:
+  provides_tools:
+    - goal_manage
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

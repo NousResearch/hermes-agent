@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -156,13 +157,26 @@ def _snapshot(plugin_dir: Path, module_name: str) -> Path:
     private = Path(tempfile.mkdtemp(prefix=".copy-", dir=target.parent))
     try:
         shutil.copytree(plugin_dir, private / plugin_dir.name, ignore=_SNAPSHOT_IGNORE)
+        _make_dirs_owner_writable(private / plugin_dir.name)
         os.rename(private / plugin_dir.name, target)
     except OSError:
         if not target.is_dir():  # another scan publishing the same copy first is fine
             raise
     finally:
+        with contextlib.suppress(OSError):  # a copy that failed midway already holds read-only subdirectories
+            _make_dirs_owner_writable(private)
         shutil.rmtree(private, ignore_errors=True)
     return target
+
+
+def _make_dirs_owner_writable(tree: Path) -> None:
+    """copytree keeps the source's modes, so a read-only plugin dir (a Nix store path) is copied read-only. Linux
+    refuses to rename a directory it cannot write into another parent (its ``..`` entry changes), and rmtree cannot
+    empty it, so the copy would never be published nor removed."""
+    for dirpath, _dirnames, _filenames in os.walk(tree):
+        mode = os.stat(dirpath).st_mode
+        if not mode & stat.S_IWUSR:
+            os.chmod(dirpath, mode | stat.S_IWUSR)
 
 
 def tree_fingerprint(plugin_dir: Path) -> str:

@@ -20,7 +20,8 @@ from hermes_constants import get_hermes_home, hermes_home_key
 from tools.environments.base import BaseEnvironment, _update_json_store
 from tools.environments.base_output import _ThreadedProcessHandle
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command,
+    remote_parent_dir, unique_parent_dirs)
 from tools.environments.remote_common import bash_argv, ensure_lazy_dep
 from utils import read_json_or_empty
 
@@ -359,7 +360,8 @@ class ModalEnvironment(BaseEnvironment):
 
     def _modal_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via base64 piped through stdin."""
-        cmd = f"mkdir -p {shlex.quote(str(Path(remote_path).parent))} && base64 -d > {shlex.quote(remote_path)}"
+        parent = shlex.quote(remote_parent_dir(remote_path))
+        cmd = f"mkdir -p {parent} && base64 -d > {shlex.quote(remote_path)}"
         self._exec(cmd, stdin=base64.b64encode(Path(host_path).read_bytes()).decode("ascii"), timeout=30)
 
     def _modal_bulk_upload(self, files: list[tuple[str, str]]) -> None:

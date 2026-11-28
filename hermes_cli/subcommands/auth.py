@@ -61,6 +61,10 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         help="Credential index, entry id, or exact label (required when the pool holds more than one)")
     auth_status = auth_subparsers.add_parser("status", help="Show auth status for a provider")
     auth_status.add_argument("provider", help="Provider id")
+    auth_status.add_argument(
+        "--json", action="store_true",
+        help="Print a machine-readable status object and exit 1 when the provider cannot serve "
+             "requests (not logged in)")
     auth_logout = auth_subparsers.add_parser(
         "logout", help="Log out a provider and clear stored auth state")
     auth_logout.add_argument("provider", help="Provider id")

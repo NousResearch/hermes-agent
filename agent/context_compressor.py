@@ -56,6 +56,7 @@ from session_rules import turns as _turns
 from session_rules.turns import drop_stale_api_content
 from persistence.core.errors import PersistenceError
 from tools.todo_tool import TODO_INJECTION_HEADER
+from agent.compaction_removal_notice import with_removal_notice
 from tools.tool_result_storage import strip_archive_list
 from session_rules.turns import _content_text_for_contains, is_compaction_summary_message, user_originated_turn_view
 from session_rules.turns import (
@@ -68,6 +69,7 @@ from session_rules.turns import (
     _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
 )
+
 
 logger = logging.getLogger(__name__)
 
@@ -905,9 +907,7 @@ def _build_verbatim_user_section(turns: list[dict[str, Any]]) -> str:
 
 
 def _build_recovery_footer(session_id: str, region_len: int) -> str:
-    """Deterministic pointer to the compacted region in session history.
-    state.db keeps every pre-compaction message; naming the session_search re-access path lets the model
-    treat compaction as deferred retrieval, not loss."""
+    """Point to preserved session history so compaction defers retrieval rather than inviting guesses."""
     if not session_id:
         return ""
     return (
@@ -3431,7 +3431,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         summary = elide(summary, _FALLBACK_SUMMARY_MAX_CHARS)
         # Re-inject AFTER the size cap: markers live at the end, where truncation cuts.
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
-        return self._augment_summary_lean(summary, turns_to_summarize)
+        return with_removal_notice(self._augment_summary_lean(summary, turns_to_summarize), turns_to_summarize, self)
 
     def _demote_stale_tail_tools(self, messages: list[dict[str, Any]], tail_start: int) -> list[dict[str, Any]]:
         """Lean mode: demote stale tail tool results to recovery stubs (``demote_stale_tail_tools``)."""
@@ -3641,7 +3641,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             # See #32106.
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
-            summary = self._augment_summary_lean(summary, turns_to_summarize)
+            summary = with_removal_notice(self._augment_summary_lean(summary, turns_to_summarize), turns_to_summarize, self)
             self._validate_summary_user_provenance(summary, has_user_turn)
             # A detached stale attempt must not publish its late summary onto shared compressor state:
             # the fallback already advanced _previous_summary and owns the cooldown/error fields. The

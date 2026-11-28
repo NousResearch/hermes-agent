@@ -64,21 +64,30 @@ def _slowed(real):
     return call
 
 
+def _first_room_secret(home):
+    mint = hosted_room_peer._gateway_room_grant_secret_for_home.__wrapped__
+    return mint(str(home)), home / hosted_room_peer._ROOM_GRANT_SECRET_FILE
+
+
+def _first_salt(home):
+    return _read_or_create_log_hash_salt(home), home / "log_hash_salt"
+
+
 @pytest.mark.platforms("any")  # Windows publishes with a no-clobber rename, POSIX under a flock
-def test_concurrent_first_use_without_os_link_agrees_on_one_secret(tmp_path, monkeypatch):
-    """Racing first users never read a partial secret and all sign with the same key."""
+@pytest.mark.parametrize("first_use_of", [_first_room_secret, _first_salt])
+def test_concurrent_first_use_without_os_link_agrees_on_one_secret(first_use_of, tmp_path, monkeypatch):
+    """Racing first users never read a partial secret or salt and all end up with the same one."""
     monkeypatch.delattr(os, "link", raising=False)
     for name in ("fdopen", "replace", "rename"):
         monkeypatch.setattr(os, name, _slowed(getattr(os, name)))
-    mint = hosted_room_peer._gateway_room_grant_secret_for_home.__wrapped__
     barrier = threading.Barrier(16)
     results, errors = [], []
 
     def first_use():
         barrier.wait()
         try:
-            results.append(mint(str(tmp_path)))
-        except Exception as exc:  # a partial read surfaces as HostedRoomGrantError
+            results.append(first_use_of(tmp_path)[0])
+        except Exception as exc:  # a partial read: HostedRoomGrantError, or ValueError for the salt
             errors.append(exc)
 
     threads = [threading.Thread(target=first_use) for _ in range(16)]
@@ -89,4 +98,4 @@ def test_concurrent_first_use_without_os_link_agrees_on_one_secret(tmp_path, mon
 
     assert errors == []
     assert len(set(results)) == 1
-    assert len((tmp_path / hosted_room_peer._ROOM_GRANT_SECRET_FILE).read_bytes()) == 32
+    assert len(first_use_of(tmp_path)[1].read_bytes()) == 32

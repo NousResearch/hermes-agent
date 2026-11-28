@@ -1,0 +1,27 @@
+{
+  "description": "Synthetic CLI-shaped records, not captured user mail. Empty category vectors are omitted by io-msgraph 0.3.0 serialization.",
+  "messages": [
+    {
+      "id": "synthetic-uncategorized+/=",
+      "parentFolderId": "synthetic-inbox",
+      "receivedDateTime": "2026-02-01T12:00:00Z",
+      "subject": "Synthetic wishlist sale",
+      "internetMessageId": "<sale@example.invalid>",
+      "isRead": true,
+      "isDraft": false,
+      "importance": "normal",
+      "flag": {"flagStatus": "notFlagged"}
+    },
+    {
+      "id": "synthetic-categorized+/=",
+      "parentFolderId": "synthetic-inbox",
+      "receivedDateTime": "2026-02-01T12:01:00Z",
+      "subject": "Synthetic categorized sale",
+      "isRead": false,
+      "isDraft": false,
+      "importance": "normal",
+      "flag": {"flagStatus": "notFlagged"},
+      "categories": ["Personal"]
+    }
+  ]
+}

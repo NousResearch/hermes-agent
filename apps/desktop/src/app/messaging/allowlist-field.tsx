@@ -7,6 +7,7 @@ import { Tip } from '@/components/ui/tooltip'
 import type { MessagingEnvVarInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Plus, X } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 
@@ -104,7 +105,7 @@ export function AllowlistField({ field, fieldId, label, pending, onEdit, tools }
             id={index === 0 ? fieldId : undefined}
             onChange={event => change(row.id, event.target.value)}
             onKeyDown={event => {
-              if (event.key === 'Enter' && row.value.trim()) {
+              if (isSubmitEnter(event) && row.value.trim()) {
                 event.preventDefault()
                 add()
               }

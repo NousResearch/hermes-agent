@@ -10,6 +10,7 @@ import { Loader } from '@/components/ui/loader'
 import { getGlobalModelOptions, profileScopeKey } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { ExternalLink, Loader2 } from '@/lib/icons'
+import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
 import {
   cancelOnboardingFlow,
@@ -103,7 +104,7 @@ export function FlowPanel({
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submitOnboardingCode(ctx)}
+          onKeyDown={e => isSubmitEnter(e) && void submitOnboardingCode(ctx)}
           placeholder={t.onboarding.pasteAuthCode}
           value={flow.code}
         />

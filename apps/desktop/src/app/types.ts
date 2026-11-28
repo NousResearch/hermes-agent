@@ -22,6 +22,9 @@ export interface ImageAttachResponse {
   width?: number
   height?: number
   token_estimate?: number
+  // Canonical staging lane only: the staged file's media type, and the client's cue that
+  // prompt.submit must declare the image (see submit.ts's imageAttachments filter).
+  mime?: string
 }
 
 export interface ImageDetachResponse {

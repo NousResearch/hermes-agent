@@ -51,6 +51,15 @@ _AUDIO_MIME_EXTENSIONS: dict[str, str] = {
 
 _MAX_TRANSCRIPTION_UPLOAD_BYTES = 25 * 1024 * 1024
 
+# Speak-stream binary frames are capped at 512 KiB: Conduit's speech socket
+# keeps URLSessionWebSocketTask's 1 MiB default maximumMessageSize (the chat
+# transport raises it, the speech one doesn't), and an oversized frame throws
+# in the client's receive() so hard that its terminal-failure path drops the
+# ENTIRE buffered utterance — 24 kHz mono int16 PCM dies audibly at ~21.8 s
+# per sentence. Half the cap leaves headroom; the size is even, so slicing
+# keeps int16 samples aligned.
+_MAX_WS_PCM_FRAME_BYTES = 512 * 1024
+
 _SPEAK_MIME_BY_EXT = {
     ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav",
     ".flac": "audio/flac",
@@ -772,7 +781,11 @@ async def speak_stream_ws(ws: WebSocket) -> None:
             if chunk is None:
                 break
             await _send_start()
-            await ws.send_bytes(chunk)
+            # Slice by offset, never by re-slicing the tail: `chunk = chunk[N:]`
+            # would copy the whole remaining tail per frame, quadratic for long
+            # sentences. Empty chunks send no frame.
+            for offset in range(0, len(chunk), _MAX_WS_PCM_FRAME_BYTES):
+                await ws.send_bytes(chunk[offset:offset + _MAX_WS_PCM_FRAME_BYTES])
         if not stop.is_set():
             # Fallback is the last resort: sentence synthesis was asked for and
             # produced nothing. A normal edge reply has already streamed PCM.

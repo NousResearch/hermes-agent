@@ -11,6 +11,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import type { ErrorCardCopy } from '@/i18n/types'
+import { preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { $displayTimestamps } from '@/store/display-timestamps'
 import { $activeSessionId } from '@/store/session'
@@ -193,6 +195,7 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
+  messages,
   onBranchInNewChat,
   onCancel,
   onDismissError,
@@ -202,6 +205,7 @@ function Harness({
   isDisabled = false
 }: {
   assistant?: ThreadMessage
+  messages?: ThreadMessage[]
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => void
   onDismissError?: (messageId: string) => void
@@ -211,7 +215,7 @@ function Harness({
   isDisabled?: boolean
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: messages ?? [userMessage(), assistant],
     isRunning,
     isDisabled,
     onNew: async () => {},
@@ -632,6 +636,227 @@ describe('scheduled retry at the usage-limit reset (#98852)', () => {
 
     await act(async () => vi.advanceTimersByTime(3_600_000))
     expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it('checks the wall clock when the app wakes after the reset, then fires only once', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+    // Sleep/clock corrections can advance wall time without consuming the
+    // original timeout's monotonic delay. A wake event must recheck the reset.
+    vi.setSystemTime(resetsAt * 1000 + 30_000)
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    expect(onReload).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      window.document.dispatchEvent(new Event('visibilitychange'))
+      vi.advanceTimersByTime(3_600_000)
+    })
+    expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it('cancels an armed retry if the provider moves the reset to a different time', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const view = render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+    await act(async () => view.rerender(<Harness assistant={rateLimited(resetsAt + 600)} onReload={onReload} />))
+
+    expect(screen.queryByTestId('error-retry-scheduled')).toBeNull()
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).not.toHaveBeenCalled()
+  })
+
+  it('does not retry before reset if the system clock moves backwards', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+
+    render(<Harness assistant={rateLimited(resetsAt)} onReload={onReload} />)
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+    vi.setSystemTime(Date.now() - 3_600_000)
+    await act(async () => vi.advanceTimersByTime(600_000))
+    expect(onReload).not.toHaveBeenCalled()
+
+    vi.setSystemTime(resetsAt * 1000)
+    await act(async () => window.document.dispatchEvent(new Event('visibilitychange')))
+    expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['running', 'disabled'] as const)('cancels a pending retry when the thread becomes %s', async state => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const assistant = rateLimited(resetsAt)
+    const view = render(<Harness assistant={assistant} onReload={onReload} />)
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+    await act(async () =>
+      view.rerender(
+        <Harness
+          assistant={assistant}
+          isDisabled={state === 'disabled'}
+          isRunning={state === 'running'}
+          onReload={onReload}
+        />
+      )
+    )
+    vi.setSystemTime(resetsAt * 1000)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      vi.advanceTimersByTime(3_600_000)
+    })
+    expect(onReload).not.toHaveBeenCalled()
+  })
+
+  const storedRetry = (resetsAt: number) =>
+    toChatMessages([
+      { id: 42, role: 'user', content: 'read it', timestamp: 1 },
+      { id: 43, role: 'assistant', content: 'Partial work.', timestamp: 2 },
+      {
+        id: 44,
+        role: 'assistant',
+        content: 'Your request was not processed.',
+        timestamp: 3,
+        display_kind: 'failed_turn',
+        display_metadata: {
+          error: 'rate limited',
+          error_surface: {
+            code: 'rate_limit',
+            layer: 'provider',
+            provider: 'openai-codex',
+            retryable: true,
+            resets_at: resetsAt
+          }
+        }
+      }
+    ])
+
+  it('keeps the armed card mounted when its admitted user hydrates under a different renderer id', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const stored = storedRetry(resetsAt).filter(message => message.rowId !== 43)
+
+    let current = [
+      { ...stored[0], id: 'user-live' },
+      { ...stored[1], id: 'error-live' }
+    ]
+
+    const view = render(<Harness messages={current.map(toRuntimeMessage)} onReload={onReload} />)
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+
+    for (let page = 0; page < 3; page += 1) {
+      const next = [{ ...stored[0], id: `hydrated-user-${page}` }, stored[1]]
+      current = preserveLocalAssistantErrors(next, current)
+      await act(async () => view.rerender(<Harness messages={current.map(toRuntimeMessage)} onReload={onReload} />))
+      expect(screen.getAllByTestId('error-retry-scheduled')).toHaveLength(1)
+    }
+
+    await act(async () => vi.advanceTimersByTime(resetsAt * 1000 - Date.now()))
+    expect(onReload).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['same renderer id', 'same durable row'])(
+    'keeps one armed retry through deduplication and repeated refresh (%s)',
+    async address => {
+      const onReload = vi.fn(async () => {})
+      const resetsAt = Math.floor(Date.now() / 1000) + 600
+      const stored = storedRetry(resetsAt)
+
+      const local = {
+        ...stored[1],
+        id: address === 'same renderer id' ? stored[1].id : 'live-partial',
+        error: stored[2].error,
+        errorSurface: stored[2].errorSurface
+      }
+
+      let current = [stored[0], local]
+      const view = render(<Harness messages={current.map(toRuntimeMessage)} onReload={onReload} />)
+      const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+      vi.useFakeTimers()
+      fireEvent.click(arm)
+
+      for (let refresh = 0; refresh < 3; refresh += 1) {
+        current = preserveLocalAssistantErrors(storedRetry(resetsAt), current)
+        await act(async () => view.rerender(<Harness messages={current.map(toRuntimeMessage)} onReload={onReload} />))
+        expect(screen.getAllByTestId('error-retry-scheduled')).toHaveLength(1)
+        expect(screen.getByText('Partial work.')).toBeTruthy()
+      }
+
+      await act(async () => vi.advanceTimersByTime(resetsAt * 1000 - Date.now()))
+      expect(onReload).toHaveBeenCalledTimes(1)
+      await act(async () => vi.advanceTimersByTime(60_000))
+      expect(onReload).toHaveBeenCalledTimes(1)
+    }
+  )
+
+  it('cancels the old deadline when a reconciled refresh updates the provider reset', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const stored = storedRetry(resetsAt).filter(message => message.rowId !== 43)
+    const current = [stored[0], { ...stored[1], id: 'live-error' }]
+    const view = render(<Harness messages={current.map(toRuntimeMessage)} onReload={onReload} />)
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+
+    const updated = preserveLocalAssistantErrors(
+      storedRetry(resetsAt + 600).filter(message => message.rowId !== 43),
+      current
+    )
+
+    expect(updated.at(-1)?.errorSurface?.resetsAt).toBe(resetsAt + 600)
+    await act(async () => view.rerender(<Harness messages={updated.map(toRuntimeMessage)} onReload={onReload} />))
+    expect(screen.queryByTestId('error-retry-scheduled')).toBeNull()
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).not.toHaveBeenCalled()
+  })
+
+  it('never transfers an armed hidden continuation retry to an earlier turn on refresh', async () => {
+    const onReload = vi.fn(async () => {})
+    const resetsAt = Math.floor(Date.now() / 1000) + 600
+    const stored = storedRetry(resetsAt)
+
+    const current = [
+      ...stored,
+      { id: 'hidden-user', role: 'user' as const, parts: [], hidden: true, rowId: 45 },
+      { ...stored[2], id: 'new-live-error', rowId: undefined }
+    ]
+
+    const view = render(
+      <Harness messages={current.filter(message => !message.hidden).map(toRuntimeMessage)} onReload={onReload} />
+    )
+
+    const arm = await screen.findByRole('button', { name: /^Retry at / })
+
+    vi.useFakeTimers()
+    fireEvent.click(arm)
+    const updated = preserveLocalAssistantErrors(stored, current)
+    expect(updated.find(message => message.rowId === 44)?.id).toBe(stored[2].id)
+    await act(async () =>
+      view.rerender(
+        <Harness messages={updated.filter(message => !message.hidden).map(toRuntimeMessage)} onReload={onReload} />
+      )
+    )
+    expect(screen.queryByTestId('error-retry-scheduled')).toBeNull()
+    await act(async () => vi.advanceTimersByTime(3_600_000))
+    expect(onReload).not.toHaveBeenCalled()
   })
 
   it('never fires after Cancel or unmount, and hides the button once the reset has passed', async () => {

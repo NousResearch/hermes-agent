@@ -606,13 +606,13 @@ describe('toChatMessages', () => {
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system'])
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant'])
     expect(messages[1]).toMatchObject({
       error: 'Connection error.',
       errorSurface: { code: 'timeout', layer: 'provider', provider: 'opencode-go' },
-      serverRowSpan: 0
+      parts: []
     })
-    expect(chatMessageText(messages[2])).toBe('Your request was not processed.')
+    expect(chatMessageText(messages[1])).toBe('')
   })
 
   it('shows only the notice for a boundary row without a usable error surface', () => {

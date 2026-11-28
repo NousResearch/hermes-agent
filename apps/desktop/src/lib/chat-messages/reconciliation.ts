@@ -327,6 +327,47 @@ interface PreservedRun {
   rows: ChatMessage[]
 }
 
+/** The stored failure boundary already owns the error of this exact assistant
+ *  row. A live bubble can address the partial output before that boundary;
+ *  copying its error back onto the output would draw the same failure twice.
+ *  Never cross a user row (including hidden directives) or pair by prose. */
+function storedFailureCardIndex(stored: ChatMessage[], local: ChatMessage): number {
+  const assistantIndex = stored.findIndex(
+    message =>
+      message.role === 'assistant' &&
+      (local.rowId !== undefined ? message.rowId === local.rowId : message.id === local.id)
+  )
+
+  if (assistantIndex === -1) {
+    return -1
+  }
+
+  for (let index = assistantIndex; index < stored.length; index += 1) {
+    const candidate = stored[index]
+
+    if (candidate.role === 'user') {
+      break
+    }
+
+    if (
+      candidate.role === 'assistant' &&
+      !candidate.hidden &&
+      candidate.rowId !== undefined &&
+      !candidate.parts.length &&
+      candidate.error &&
+      local.errorSurface &&
+      candidate.errorSurface?.code === local.errorSurface.code &&
+      candidate.errorSurface?.layer === local.errorSurface.layer &&
+      candidate.errorSurface?.provider === local.errorSurface.provider &&
+      candidate.errorSurface?.resetsAt === local.errorSurface.resetsAt
+    ) {
+      return index
+    }
+  }
+
+  return -1
+}
+
 function mergeStoredAssistantErrors(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
   // Nothing to merge on a healthy live flush or an ordinary refresh: skip the
   // map allocation and the per-message walk entirely.
@@ -343,7 +384,13 @@ function mergeStoredAssistantErrors(nextMessages: ChatMessage[], currentMessages
 
     const local = localById.get(message.id)
 
-    if (!local || local.role !== 'assistant' || !local.error || local.hidden) {
+    if (
+      !local ||
+      local.role !== 'assistant' ||
+      !local.error ||
+      local.hidden ||
+      storedFailureCardIndex(nextMessages, local) !== -1
+    ) {
       return message
     }
 
@@ -446,6 +493,80 @@ function toolCallTwinIndex(
   return twin === -1 ? -1 : turnStart + twin
 }
 
+// A failed turn arrives live before its boundary row is hydrated. When both
+// snapshots agree on the admitted user row, reuse the live card's identity so
+// React keeps a scheduled retry armed. Never transfer it by prompt text alone.
+// Repeats on every later refresh: the card it adopts then carries the rowId, and
+// the twin below matches it by address, so the same identity must survive there.
+const lastVisibleIndex = (messages: ChatMessage[]): number => messages.findLastIndex(message => !message.hidden)
+
+function retainScheduledRetryIdentity(
+  stored: ChatMessage[],
+  current: ChatMessage[],
+  localIndex: number,
+  storedIndex: number
+): void {
+  const local = current[localIndex]
+
+  if (current.findLast(message => !message.hidden) !== local || lastVisibleIndex(stored) !== storedIndex) {
+    return
+  }
+
+  const user = (message: ChatMessage) => message.role === 'user'
+  const localUser = current.slice(0, localIndex).findLast(user)
+  const storedUserIndex = stored.slice(0, storedIndex).findLastIndex(user)
+
+  if (
+    localUser?.rowId === undefined ||
+    stored[storedUserIndex]?.rowId !== localUser.rowId ||
+    current.slice(localIndex + 1).some(user) ||
+    stored.slice(storedIndex + 1).some(user)
+  ) {
+    return
+  }
+
+  const card = stored[storedIndex]
+  const reset = local.errorSurface?.resetsAt
+
+  if (
+    card?.role !== 'assistant' ||
+    card.rowId === undefined ||
+    card.parts.length ||
+    !card.error ||
+    reset === undefined ||
+    card.errorSurface?.resetsAt !== reset ||
+    card.errorSurface?.code !== local.errorSurface?.code ||
+    card.errorSurface?.layer !== local.errorSurface?.layer ||
+    card.errorSurface?.provider !== local.errorSurface?.provider ||
+    (local.parts.length > 0 && storedFailureCardIndex(stored, local) !== storedIndex)
+  ) {
+    return
+  }
+
+  // The live error can be attached to partial output. Move its renderer identity
+  // to the boundary so React keeps the armed action; leave the output intact
+  // under a distinct, deterministic identity (also on subsequent refreshes).
+  const occupied = stored.findIndex((message, index) => index !== storedIndex && message.id === local.id)
+
+  if (occupied !== -1) {
+    const output = stored[occupied]
+
+    if (occupied <= storedUserIndex || occupied >= storedIndex || output.role !== 'assistant' || output.error) {
+      return
+    }
+
+    let id = `stored-output-${output.rowId ?? output.id}`
+
+    while (stored.some(message => message.id === id) || id === local.id) {
+      id = `stored-output-${id}`
+    }
+
+    stored[occupied] = { ...output, id }
+  }
+
+  stored[storedIndex] = { ...card, id: local.id }
+}
+
 // The refresh already carries this tail turn's error card, rebuilt from its
 // failed-turn boundary row (see hydration `failedTurnError`).
 function persistedTailErrorMatches(
@@ -484,6 +605,10 @@ function storedFailedTurnIndex(
   index: number,
   hydratedId: string | undefined
 ): number | 'represented' {
+  if (storedFailureCardIndex(mergedNextMessages, currentMessages[index]) !== -1) {
+    return 'represented'
+  }
+
   const hydratedIndex =
     hydratedId === undefined
       ? tailTurnAssistantMatchIndex(mergedNextMessages, currentMessages, index)
@@ -565,7 +690,19 @@ function localAssistantErrorIdsToPreserve(
   for (let index = 0; index < currentMessages.length; index += 1) {
     const message = currentMessages[index]
 
-    if (message.role !== 'assistant' || !message.error || message.hidden || existingIds.has(message.id)) {
+    if (message.role !== 'assistant' || !message.error || message.hidden) {
+      continue
+    }
+
+    const boundaryIndex = storedFailureCardIndex(mergedNextMessages, message)
+
+    if (boundaryIndex !== -1) {
+      retainScheduledRetryIdentity(mergedNextMessages, currentMessages, index, boundaryIndex)
+
+      continue
+    }
+
+    if (existingIds.has(message.id)) {
       continue
     }
 
@@ -574,16 +711,23 @@ function localAssistantErrorIdsToPreserve(
     const twinIndex = storedFailedTurnIndex(mergedNextMessages, currentMessages, index, hydratedId)
 
     if (twinIndex === 'represented') {
+      retainScheduledRetryIdentity(mergedNextMessages, currentMessages, index, lastVisibleIndex(mergedNextMessages))
+
       continue
     }
 
     if (twinIndex !== -1) {
+      const twin = mergedNextMessages[twinIndex]
+      const surface = twin.errorSurface ?? message.errorSurface
+
       mergedNextMessages[twinIndex] = {
-        ...mergedNextMessages[twinIndex],
-        error: message.error,
-        ...(message.errorSurface ? { errorSurface: message.errorSurface } : {}),
+        ...twin,
+        error: twin.error ?? message.error,
+        ...(surface ? { errorSurface: surface } : {}),
         pending: false
       }
+
+      retainScheduledRetryIdentity(mergedNextMessages, currentMessages, index, twinIndex)
 
       continue
     }

@@ -20,6 +20,163 @@ const row = (id: string, role: 'user' | 'assistant', text: string, extra: Partia
   ...extra
 })
 
+/** A stored page whose last turn failed with a rate limit that names its reset. */
+const failedTurnPage = (): Parameters<typeof toChatMessages>[0] => [
+  { id: 42, role: 'user', content: 'read it', timestamp: 1 },
+  {
+    id: 43,
+    role: 'assistant',
+    content: 'Your request was not processed.',
+    timestamp: 2,
+    display_kind: 'failed_turn',
+    display_metadata: {
+      error: 'rate limited',
+      error_surface: {
+        code: 'rate_limit',
+        layer: 'provider',
+        provider: 'openai-codex',
+        retryable: true,
+        resets_at: 1_900_000_000
+      }
+    }
+  }
+]
+
+it('keeps the live recovery card mounted when the same admitted turn is refreshed', () => {
+  const stored = toChatMessages(failedTurnPage())
+  const failure = { ...stored[1], id: 'assistant-stream', rowId: undefined }
+
+  const refresh = (rowId: number) =>
+    preserveLocalAssistantErrors(stored, [row('user-live', 'user', 'read it', { rowId }), failure])
+
+  expect(refresh(42).at(-1)).toMatchObject({ id: failure.id, rowId: 43, errorSurface: failure.errorSurface })
+  expect(refresh(41).find(message => message.rowId === 43)?.id).toBe(stored[1].id)
+})
+
+it('keeps that identity through the refreshes that follow the first one', () => {
+  const stored = toChatMessages(failedTurnPage())
+  const failure = { ...stored[1], id: 'assistant-stream', rowId: undefined }
+  const armed = preserveLocalAssistantErrors(stored, [row('user-live', 'user', 'read it', { rowId: 42 }), failure])
+
+  const second = preserveLocalAssistantErrors(toChatMessages(failedTurnPage()), armed)
+  const third = preserveLocalAssistantErrors(toChatMessages(failedTurnPage()), second)
+
+  expect(second.at(-1)).toMatchObject({ id: failure.id, rowId: 43 })
+  expect(third.at(-1)).toMatchObject({ id: failure.id, rowId: 43 })
+})
+
+it.each(['same renderer id', 'same durable row'])(
+  'does not graft a second error onto partial output when its failed-turn card is stored (%s)',
+  address => {
+    const page = failedTurnPage()
+    page.splice(1, 0, { id: 43, role: 'assistant', content: 'Partial work.', timestamp: 1.5 })
+    page[2] = { ...page[2], id: 44 }
+    const stored = toChatMessages(page)
+
+    const partial = stored[1]
+    const failure = stored[2]
+
+    const current = [
+      { ...stored[0], id: 'user-live' },
+      {
+        ...partial,
+        id: address === 'same renderer id' ? partial.id : 'assistant-stream',
+        error: failure.error,
+        errorSurface: failure.errorSurface
+      }
+    ]
+
+    const merged = preserveLocalAssistantErrors(stored, current)
+    const refreshed = preserveLocalAssistantErrors(toChatMessages(page), merged)
+
+    for (const messages of [merged, refreshed]) {
+      expect(messages.filter(message => message.error)).toHaveLength(1)
+      expect(messages[1]).toMatchObject({ rowId: partial.rowId, parts: partial.parts })
+      expect(messages[1].error).toBeUndefined()
+      expect(messages.at(-1)).toMatchObject({ rowId: failure.rowId, errorSurface: failure.errorSurface })
+    }
+  }
+)
+
+it.each(['visible user', 'hidden user', 'different provider', 'different reset', 'conflicting row id'])(
+  'keeps the local error when the later stored card is not its failure (%s)',
+  boundary => {
+    const stored = toChatMessages(failedTurnPage())
+    const failure = stored[1]
+    const partial = row('partial', 'assistant', 'Partial work.', { rowId: 43 })
+    const card = { ...failure, rowId: 45 }
+    const next = [stored[0], partial, card]
+
+    if (boundary === 'visible user' || boundary === 'hidden user') {
+      next.splice(2, 0, row('next-user', 'user', 'read it', { rowId: 44, hidden: boundary === 'hidden user' }))
+    } else if (boundary === 'different provider') {
+      card.errorSurface = { ...card.errorSurface!, provider: 'another-provider' }
+    } else if (boundary === 'different reset') {
+      card.errorSurface = { ...card.errorSurface!, resetsAt: failure.errorSurface!.resetsAt! + 60 }
+    } else {
+      next[1] = { ...partial, rowId: 99 }
+    }
+
+    const merged = preserveLocalAssistantErrors(next, [
+      stored[0],
+      { ...partial, error: failure.error, errorSurface: failure.errorSurface }
+    ])
+
+    expect(merged.filter(message => message.error)).toHaveLength(2)
+  }
+)
+
+it.each(['same renderer id', 'same durable row'])(
+  'moves the partial output identity onto its sole recovery card (%s)',
+  address => {
+    const page = failedTurnPage()
+    page.splice(1, 0, { id: 43, role: 'assistant', content: 'Partial work.', timestamp: 1.5 })
+    page[2] = { ...page[2], id: 44 }
+    const stored = toChatMessages(page)
+
+    const local = {
+      ...stored[1],
+      id: address === 'same renderer id' ? stored[1].id : 'live-partial',
+      error: stored[2].error,
+      errorSurface: stored[2].errorSurface
+    }
+
+    const merged = preserveLocalAssistantErrors(stored, [stored[0], local])
+    const refreshed = preserveLocalAssistantErrors(toChatMessages(page), merged)
+
+    for (const messages of [merged, refreshed]) {
+      expect(messages.at(-1)).toMatchObject({ id: local.id, rowId: 44, error: local.error })
+      expect(messages[1]).toMatchObject({ rowId: 43, parts: local.parts })
+      expect(messages[1].id).not.toBe(local.id)
+      expect(new Set(messages.map(message => message.id)).size).toBe(messages.length)
+    }
+  }
+)
+
+it('does not transfer a later hidden user turn identity onto an older error card', () => {
+  const stored = toChatMessages(failedTurnPage())
+  const local = { ...stored[1], id: 'new-live-error', rowId: undefined }
+  const current = [stored[0], stored[1], row('hidden-user', 'user', 'Continue.', { rowId: 44, hidden: true }), local]
+  const merged = preserveLocalAssistantErrors(stored, current)
+
+  expect(merged.find(message => message.rowId === 43)?.id).toBe(stored[1].id)
+})
+
+it('keeps a refreshed structured reset authoritative instead of overwriting it with the armed local reset', () => {
+  const stored = toChatMessages(failedTurnPage())
+  const local = { ...stored[1], id: 'live-error' }
+
+  const updated = {
+    ...stored[1],
+    errorSurface: { ...stored[1].errorSurface!, resetsAt: stored[1].errorSurface!.resetsAt! + 600 }
+  }
+
+  const merged = preserveLocalAssistantErrors([stored[0], updated], [stored[0], local])
+
+  expect(merged.at(-1)?.errorSurface).toEqual(updated.errorSurface)
+  expect(merged.at(-1)?.id).toBe(updated.id)
+})
+
 it('reconciles only the represented failed tail, retaining its structured error and omitted segments', () => {
   const hydrated = toChatMessages([
     { role: 'user', content: 'read it', timestamp: 1 },

@@ -848,31 +848,56 @@ const ScheduledRetryAction: FC<{ className: string; resetsAt: number }> = ({ cla
   const stale = useAuiState(s => s.thread.isRunning || s.thread.isDisabled || !s.message.isLast)
 
   useEffect(() => {
-    if (fireAt === null || stale) {
+    if (fireAt === null || stale || fireAt !== resetsAt * 1000) {
       return
     }
 
-    const timer = window.setTimeout(
-      () => {
-        setFireAt(null)
-        aui.message().reload()
-      },
-      Math.max(0, fireAt - Date.now())
-    )
+    let fired = false
+    let timer: number
 
-    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    const checkReset = () => {
+      const clock = Date.now()
+
+      setNow(clock)
+
+      if (fired) {
+        return
+      }
+
+      if (clock < fireAt) {
+        window.clearTimeout(timer)
+        timer = window.setTimeout(checkReset, Math.min(fireAt - clock, 60_000))
+
+        return
+      }
+
+      // Focus, visibility and a delayed timeout may arrive together after sleep.
+      // Claim the one attempt synchronously before asking React to update.
+      fired = true
+      setFireAt(null)
+      aui.message().reload()
+    }
+
+    timer = window.setTimeout(checkReset, Math.min(Math.max(0, fireAt - Date.now()), 60_000))
+    const tick = window.setInterval(checkReset, 1000)
+
+    window.addEventListener('focus', checkReset)
+    document.addEventListener('visibilitychange', checkReset)
 
     return () => {
+      fired = true
       window.clearTimeout(timer)
       window.clearInterval(tick)
+      window.removeEventListener('focus', checkReset)
+      document.removeEventListener('visibilitychange', checkReset)
     }
-  }, [aui, fireAt, stale])
+  }, [aui, fireAt, resetsAt, stale])
 
   useEffect(() => {
-    if (stale) {
+    if (stale || (fireAt !== null && fireAt !== resetsAt * 1000)) {
       setFireAt(null)
     }
-  }, [stale])
+  }, [fireAt, resetsAt, stale])
 
   const delay = scheduledRetryDelayMs(resetsAt, now)
 

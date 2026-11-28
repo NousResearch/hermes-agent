@@ -23,6 +23,8 @@ from __future__ import annotations
 import subprocess
 import time
 
+import pytest
+
 from tests.docker.conftest import (
     docker_exec_sh,
     start_container,
@@ -87,8 +89,11 @@ def _wait_for_gateway_or_exit(
     return status
 
 
+# "" = `docker run -d <image>` with no command and no TTY: the entrypoint turns it into `gateway run`
+# before /init, instead of an interactive CLI that quits and restart-loops the container (#159590).
+@pytest.mark.parametrize("cmd", ["gateway run", ""], ids=["gateway_run", "no_command_detached"])
 def test_gateway_run_redirects_to_supervised(
-    built_image: str, container_name: str,
+    built_image: str, container_name: str, cmd: str,
 ) -> None:
     """``docker run <image> gateway run`` (the historical invocation)
     should now register and start the ``gateway-default`` s6 slot.
@@ -105,7 +110,7 @@ def test_gateway_run_redirects_to_supervised(
     # exit immediately (which is what would happen pre-this-PR on the
     # s6 image — the foreground gateway would crash without config,
     # the CMD would exit, /init would shut down).
-    start_container(built_image, container_name, cmd="gateway run")
+    start_container(built_image, container_name, cmd=cmd)
 
     # Wait for the redirect breadcrumb to appear in docker logs.
     # Under heavy parallel load (32-way docker test fan-out), the CMD

@@ -73,7 +73,9 @@ done
 # No program left (entrypoint was just `tini -g --`) → same as the
 # image's default ENTRYPOINT + empty CMD.
 if [ "$#" -eq 0 ]; then
-    exec "$INIT_TARGET" "$WRAPPER"
+    # Same no-command default as entrypoint-dispatch.sh (#159590): no terminal → the gateway.
+    [ -t 0 ] && exec "$INIT_TARGET" "$WRAPPER"
+    exec "$INIT_TARGET" "$WRAPPER" /opt/hermes/bin/hermes gateway run
 fi
 
 # Caller already supplied the wrapper or /init — don't double-wrap.

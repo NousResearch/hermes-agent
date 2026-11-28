@@ -14,6 +14,16 @@
 
 set -e
 
+# No command and no terminal (`docker run -d <image>`): the interactive CLI would quit at once on
+# a non-TTY stdin and take the container down in a --restart loop (#159590). Run the documented
+# headless mode instead. Chosen HERE, before /init, so the boot reconciler reads the same
+# `gateway run` argv the main program runs (one gateway, a saved `gateway stop` respected, the
+# HERMES_GATEWAY_NO_SUPERVISE opt-out handled exactly as an explicit `gateway run`).
+if [ $# -eq 0 ] && ! [ -t 0 ]; then
+    echo "[hermes] no command and no terminal: running 'hermes gateway run' (use 'docker run -it' for the interactive CLI)" >&2
+    set -- /opt/hermes/bin/hermes gateway run
+fi
+
 if [ "$$" -eq 1 ]; then
     # The interactive CMD owns the terminal. Supervised gateways and dashboard
     # output must go to s6's logger instead of overwriting the TUI or shell.

@@ -148,12 +148,12 @@ def test_unpublished_completion_survives_registry_pruning(server, registry, deta
 
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
-    proc.started_at = time.time() - FINISHED_TTL_SECONDS - 1
     proc.mark_exited(0)
     publish = registry._publish_finished
     seen = []
 
     def prune_mid_publish(s, was_running):
+        s.exited_at = time.time() - FINISHED_TTL_SECONDS - 1
         with registry._lock:
             registry._prune_if_needed()
         seen.append((s.id in registry._finished, server._session_is_reapable(sid, session)))
@@ -209,15 +209,15 @@ def test_stop_releases_session_even_with_a_running_watch(server, registry, detac
 
 
 def test_queued_notice_survives_registry_pruning(server, registry, detached):
-    """Retained history is pruned by start time and a process cap, on every spawn: a long job's queued completion
+    """Retained history is pruned by age since exit and a process cap, on every spawn: a job's queued completion
     must keep protecting its owner after its finished entry is gone."""
     from tools.process_registry import FINISHED_TTL_SECONDS
 
     sid, session, _ = detached
     proc = _spawn(registry, session["session_key"], notify_on_complete=True)
-    proc.started_at = time.time() - FINISHED_TTL_SECONDS - 1
     proc.mark_exited(0)
     registry._move_to_finished(proc)
+    proc.exited_at = time.time() - FINISHED_TTL_SECONDS - 1
     with registry._lock:
         registry._prune_if_needed()
 

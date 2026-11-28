@@ -403,8 +403,8 @@ def test_bulk_cleanup_does_not_count_a_failed_scope_stop_and_retries_it(monkeypa
 def _failed_scope_stop(registry, monkeypatch, stops) -> ProcessSession:
     """A long-running session whose root just exited and whose scope stop then failed."""
     session = _scoped_session(registry, monkeypatch, "proc_pending_scope", stops)
-    session.started_at -= module.FINISHED_TTL_SECONDS + 1
     registry._finish_exited(session, 0)
+    session.exited_at -= module.FINISHED_TTL_SECONDS + 1
     assert "scope_stop_failed" in registry.kill_process(session.id)
     return session
 
@@ -435,3 +435,40 @@ def test_capacity_pruning_keeps_a_session_whose_scope_stop_is_pending(monkeypatc
 
     assert session.id in registry._finished
     assert "proc_newer_0" not in registry._finished  # the oldest prunable one goes instead
+
+
+def test_a_spawn_does_not_prune_a_long_running_session_that_just_exited(monkeypatch):
+    """The TTL counts from the exit: one that ran past it must survive until its watcher has read the result."""
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    session = _session("proc_long_runner", notify_on_complete=True)
+    session.started_at -= module.FINISHED_TTL_SECONDS + 1
+    registry._running[session.id] = session
+    registry._finish_exited(session, 0)
+    assert registry.completion_queue.qsize() == 1
+
+    registry._track_started(_session("proc_next_spawn"), lambda _session: None, "test-reader")
+
+    assert registry._finished.get(session.id) is session, "the next spawn evicted a process that had just exited"
+    session.exited_at -= module.FINISHED_TTL_SECONDS + 1
+    with registry._lock:
+        registry._prune_if_needed()
+    assert session.id not in registry._finished, "a session is still pruned once it has been finished for the TTL"
+
+
+@pytest.mark.parametrize("read", [False, True])
+def test_an_evicted_session_remembers_whether_its_result_was_read(monkeypatch, read):
+    """Pruning drops the registry's per-id consumed mark, so the evicted session (still held by the gateway watcher) carries it."""
+    registry = ProcessRegistry()
+    monkeypatch.setattr(registry, "_write_checkpoint", lambda *_a, **_k: None)
+    session = _session("proc_evicted", notify_on_complete=True)
+    registry._running[session.id] = session
+    registry._finish_exited(session, 0)
+    if read:
+        assert registry.read_log(session.id)["status"] == "exited"
+    session.exited_at -= module.FINISHED_TTL_SECONDS + 1
+    with registry._lock:
+        registry._prune_if_needed()
+
+    assert session.id not in registry._finished and not registry.is_completion_consumed(session.id)
+    assert session._consumed_at_eviction is read

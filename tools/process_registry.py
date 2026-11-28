@@ -604,6 +604,7 @@ class ProcessSession:
     # The last stop of ``systemd_unit`` failed, so its descendants may still be alive; bulk
     # cleanup retries the stop even after the session finished.
     _scope_stop_pending: bool = field(default=False, repr=False)
+    _consumed_at_eviction: bool = field(default=False, repr=False)  # result was read (wait/log) before the registry evicted it
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _reader_finish_requested: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -2532,12 +2533,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     # ----- Cleanup / Pruning -----
 
     def _prune_if_needed(self):
-        """Drop expired, then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
+        """Drop expired (aged from the exit, not the spawn), then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
         from tools.process_registry_awaiting import retained_for_delivery
         now = time.time()
         prunable = {sid: s for sid, s in self._finished.items()
                     if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
-        expired = [sid for sid, s in prunable.items() if (now - s.started_at) > FINISHED_TTL_SECONDS]
+        expired = [sid for sid, s in prunable.items() if (now - (getattr(s, "exited_at", 0.0) or s.started_at)) > FINISHED_TTL_SECONDS]
         over_cap = len(self._running) + len(self._finished) - len(expired) >= MAX_PROCESSES
         if over_cap and (survivors := [sid for sid in prunable if sid not in expired]):
             expired.append(min(survivors, key=lambda sid: self._finished[sid].started_at))
@@ -2548,15 +2549,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # directly (defensive paths, historical checkpoints) would
             # otherwise carry its OS handles to the grave unreleased. The
             # release is idempotent, so double-closing is safe.
-            self._release_finished_handles(self._finished[sid])
-            del self._finished[sid]
+            evicted = self._finished.pop(sid)
+            evicted._consumed_at_eviction = sid in self._completion_consumed  # the mark is dropped below; a watcher may hold the session
+            self._release_finished_handles(evicted)
         # Belt-and-suspenders against module-lifetime growth: forget consumed /
         # poll-observed marks for any session no longer tracked at all.
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
-
-
 
 
 process_registry = ProcessRegistry()

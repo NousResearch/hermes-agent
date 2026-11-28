@@ -41,6 +41,32 @@ test('the client adopts the generation its own mutation receipt reports', () => 
   expect(second).toMatchObject({ expected_revision: 1, expected_generation: 1 })
 })
 
+test('a receipt that arrives after newer edits never moves the adopted generation back', () => {
+  const protocol = new CanonicalDesktopProtocol()
+
+  protocol.result(
+    'session.resume',
+    { session_id: 's' },
+    { session_id: 's', revision: 0, execution_generation: 0, running: false, messages: [], prompts: [] }
+  )
+
+  const first = protocol.prepare('config.set', { key: 'reasoning', session_id: 's', value: 'high' })
+
+  // Two later edits from another viewer are broadcast before this client reads its own receipt.
+  protocol.event({ type: 'session.updated', session_id: 's', execution_generation: 3, payload: { revision: 3 } })
+  protocol.result('config.set', first, {
+    session_id: 's',
+    revision: 1,
+    execution_generation: 1,
+    operation: 'reasoning',
+    effort: 'high'
+  })
+
+  const next = protocol.prepare('config.set', { key: 'reasoning', session_id: 's', value: 'low' })
+
+  expect(next).toMatchObject({ expected_generation: 3 })
+})
+
 test('a lost session.updated broadcast leaves the next option edit acceptable to the owner', async () => {
   const wsPackage = 'ws'
   const { WebSocketServer } = await import(wsPackage)

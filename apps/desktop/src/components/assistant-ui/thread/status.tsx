@@ -273,6 +273,37 @@ export const ResponseLoadingIndicator: FC = () => {
   )
 }
 
+/** Manual compression runs outside a model turn, so assistant-ui does not
+ * create the running assistant placeholder that normally owns this status.
+ * Keep the same in-thread treatment without making the idle session look like
+ * a model response is streaming. */
+export const ManualCompactionIndicator: FC = () => {
+  const { busy, compacting } = useThreadSessionStatus()
+
+  const assistantRunning = useAuiState(
+    s => s.thread.isRunning || s.thread.messages.some(message => message.status?.type === 'running')
+  )
+
+  const active = compacting && !busy && !assistantRunning
+  const elapsed = useElapsedSeconds(active)
+
+  if (!active) {
+    return null
+  }
+
+  return (
+    <StatusRow data-slot="aui_manual-compaction" label={COMPACTION_LABEL}>
+      <StatusPulse
+        aria-hidden="true"
+        className="dither inline-block size-3 rounded-[2px] text-midground/80"
+        kind="opacity"
+      />
+      <WaitHint hint={COMPACTION_LABEL} />
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
+
 // The parent is idle while its delegated children work. Name that wait rather
 // than echoing the child's CLI thinking spinner as if this thread were running.
 export const BackgroundResumeNotice: FC = () => {
@@ -417,8 +448,16 @@ export const TurnActivityIndicator: FC<{ thinking?: boolean }> = ({ thinking = f
   // question the user is answering, and a tool call carrying its own timer.
   // A live local-model load is a named wait too — it must not wait out the
   // quiet window (the load IS the story from second one).
+  // Compression is authoritative phase state, not an inference from the tail.
+  // Its start can overtake the preceding tool.complete frame in the renderer,
+  // leaving the old tool row apparently in flight, and stale prompt chrome can
+  // briefly keep awaitingInput true. Neither generic suppression may hide the
+  // explicit compacting lifecycle.
   const active =
-    working && !awaitingInput && !toolNarrating && (Boolean(hint) || localLoad !== null || quietSince !== undefined)
+    working &&
+    (!awaitingInput || compacting) &&
+    (!toolNarrating || compacting) &&
+    (Boolean(hint) || localLoad !== null || quietSince !== undefined)
 
   // Compaction owns the whole turn, so it keeps counting from the turn's start;
   // anything else counts from the moment the turn last produced something — the

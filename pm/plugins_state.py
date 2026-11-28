@@ -105,8 +105,8 @@ def _enabled_from_config(config: dict[str, Any], plugins_dir: Optional[Path] = N
     if not isinstance(plugins_cfg, dict):
         return []
     enabled = plugins_cfg.get("enabled")
-    if not isinstance(enabled, list):
-        return []
+    if not isinstance(enabled, list) or not any(isinstance(n, str) and n.strip() for n in enabled):
+        return []  # nothing selected: no folder needs reading
     disabled = plugins_cfg.get("disabled", [])
     trees = installed_trees(plugins_dir) if plugins_dir is not None else {}
     if installing is not None and plugins_dir is not None and installing.parent.resolve() == plugins_dir.resolve() \

@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import HomeChannel, Platform, PlatformConfig
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 _ntfy = load_plugin_adapter("ntfy")
@@ -412,6 +412,167 @@ class TestStandaloneSend:
 
         headers = mock_client.post.call_args[1]["headers"]
         assert headers.get("X-Tags") == _ntfy._ECHO_TAG
+
+
+# ---------------------------------------------------------------------------
+# 10b. X-Title — a named channel titles its notifications
+# ---------------------------------------------------------------------------
+
+
+def _post_mock():
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"id": "id-1"}
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=resp)
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+    return client
+
+
+def _gateway_headers(extra=None, metadata=None, home_channel=None):
+    adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "hermes-in", **(extra or {})}, home_channel=home_channel))
+    adapter._http_client = _post_mock()
+    result = _run(adapter.send("hermes-in", "hi", metadata=metadata))
+    return result, adapter._http_client.post.call_args[1]["headers"]
+
+
+def _standalone_headers(extra=None, home_channel=None):
+    pconfig = MagicMock()
+    pconfig.extra = {"topic": "hermes-in", **(extra or {})}
+    pconfig.home_channel = home_channel
+    client = _post_mock()
+    with patch.object(_ntfy, "httpx") as mock_httpx:
+        mock_httpx.AsyncClient.return_value = client
+        _run(_standalone_send(pconfig, "hermes-in", "hi"))
+    return client.post.call_args[1]["headers"]
+
+
+class TestTitleHeader:
+
+    @pytest.fixture(autouse=True)
+    def _no_name(self, monkeypatch):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        monkeypatch.delenv("NTFY_HOME_CHANNEL_NAME", raising=False)
+
+    def test_configured_name_titles_both_paths(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alfred")
+        assert _gateway_headers()[1]["X-Title"] == "Alfred"
+        assert _standalone_headers()["X-Title"] == "Alfred"
+
+    def test_unnamed_install_sends_no_title(self):
+        assert "X-Title" not in _gateway_headers()[1]
+        assert "X-Title" not in _standalone_headers()
+
+    def test_title_source_order(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alfred")
+        assert _gateway_headers({"title": "Extra"})[1]["X-Title"] == "Extra"
+        assert _gateway_headers({"title": "Extra"}, {"title": "Restart"})[1]["X-Title"] == "Restart"
+        assert _standalone_headers({"title": "Extra"})["X-Title"] == "Extra"
+
+    def test_empty_source_falls_through_to_the_next(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alfred")
+        assert _gateway_headers({"title": "  "}, {"title": ""})[1]["X-Title"] == "Alfred"
+
+    def test_seeded_home_channel_name_is_not_a_title(self, monkeypatch):
+        """``_env_enablement`` seeds the home channel's name as "Home" when only the
+        topic is set; that placeholder must not title every notification."""
+        monkeypatch.delenv("NTFY_HOME_CHANNEL", raising=False)
+        seeded = _env_enablement()
+        assert seeded["home_channel"]["name"] == "Home"
+        assert "X-Title" not in _gateway_headers(seeded)[1]
+
+    def test_saved_home_channel_name_titles_both_paths(self):
+        """A name written under ``home_channel:`` loads as ``PlatformConfig.home_channel``, not ``extra`` or
+        the environment."""
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name="Clippy")
+        assert _gateway_headers(home_channel=home)[1]["X-Title"] == "Clippy"
+        assert _standalone_headers(home_channel=home)["X-Title"] == "Clippy"
+
+    def test_saved_home_channel_name_ranks_after_the_env_name(self, monkeypatch):
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name="Clippy")
+        assert _gateway_headers(home_channel=home)[1]["X-Title"] == "Clippy"
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alfred")
+        assert _gateway_headers(home_channel=home)[1]["X-Title"] == "Alfred"
+        assert _gateway_headers({"title": "Extra"}, home_channel=home)[1]["X-Title"] == "Extra"
+        assert _standalone_headers(home_channel=home)["X-Title"] == "Alfred"
+
+    def test_saved_home_placeholder_is_not_a_title(self):
+        """A saved ``name: Home`` is the placeholder the core writes for an unnamed home channel."""
+        home = HomeChannel.from_dict({"platform": "ntfy", "chat_id": "hermes-in"})
+        assert home.name == "Home"
+        assert "X-Title" not in _gateway_headers(home_channel=home)[1]
+        assert "X-Title" not in _standalone_headers(home_channel=home)
+
+    @pytest.mark.parametrize("name", ["Home ", "home", "HOME", "Hermes-In", " hermes-in", "hermes-in"])
+    def test_placeholder_and_topic_match_ignores_case_and_space(self, name):
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name=name)
+        assert "X-Title" not in _gateway_headers(home_channel=home)[1]
+        assert "X-Title" not in _standalone_headers(home_channel=home)
+
+    @pytest.mark.parametrize("name", [2026, True, None, ["Clippy"]])
+    def test_saved_name_that_is_not_text_gets_no_title(self, name):
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name=name)
+        result, headers = _gateway_headers(home_channel=home)
+        assert result.success is True and "X-Title" not in headers
+
+    def test_saved_name_equal_to_the_topic_is_not_a_title(self):
+        """``/sethome`` run from ntfy saves the topic as the name (``chat_name`` is the topic): ntfy already
+        shows the topic, so that is no label."""
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name="hermes-in")
+        assert "X-Title" not in _gateway_headers(home_channel=home)[1]
+        assert "X-Title" not in _standalone_headers(home_channel=home)
+
+    def test_saved_home_channel_name_is_cleaned_like_any_title(self):
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name="Caf\u00e9 \u4e2d")
+        result, headers = _gateway_headers(home_channel=home)
+        assert result.success is True and "X-Title" not in headers
+        home = HomeChannel(platform=Platform("ntfy"), chat_id="hermes-in", name="Caf\u00e9")
+        assert _gateway_headers(home_channel=home)[1]["X-Title"] == "Cafe"
+
+    @pytest.mark.parametrize("hostile", [
+        "Café", "Alfred 中", "Łukasz", "line\r\nInjected: yes", "bell\x07 ring", "tab\t\tgap", "中文", "\x00", 12345,
+    ])
+    def test_hostile_title_never_blocks_the_publish(self, monkeypatch, hostile):
+        """The value reaches an HTTP header: whatever it holds, the request must build
+        and the notice must be sent, and the header must be one clean ASCII line."""
+        import httpx
+        result, headers = _gateway_headers(metadata={"title": hostile})
+        assert result.success is True
+        httpx.Request("POST", "http://ntfy.invalid/t", headers=headers)  # raises on a bad header value
+        title = headers.get("X-Title", "")
+        assert title.isascii() and title == " ".join(title.split()) and title.isprintable()
+
+    def test_accented_name_is_folded_to_ascii(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Café")
+        assert _gateway_headers()[1]["X-Title"] == "Cafe"
+        assert _standalone_headers()["X-Title"] == "Cafe"
+
+    @pytest.mark.parametrize("name", ["Łukasz", "Straße", "Alfred 中", "中文", "\U0001F3E0"])
+    def test_name_that_ascii_cannot_hold_gets_no_title_not_a_fragment(self, monkeypatch, name):
+        """Dropping the letters ASCII lacks would send "ukasz" or "Strae" as the heading."""
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", name)
+        result, headers = _gateway_headers()
+        assert result.success is True and "X-Title" not in headers
+        assert "X-Title" not in _standalone_headers()
+
+    def test_unusable_source_falls_through_to_the_next(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alfred")
+        assert _gateway_headers(metadata={"title": "中文"})[1]["X-Title"] == "Alfred"
+
+    def test_very_long_name_is_capped_and_still_sends(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "A" * 70000)
+        result, headers = _gateway_headers()
+        assert result.success is True
+        assert headers["X-Title"] == "A" * _ntfy._MAX_TITLE_LENGTH
+
+    def test_other_headers_unchanged_by_a_title(self, monkeypatch):
+        monkeypatch.setenv("NTFY_HOME_CHANNEL_NAME", "Alfred")
+        _, headers = _gateway_headers({"markdown": True, "token": "tk"})
+        assert headers["X-Tags"] == _ntfy._ECHO_TAG
+        assert headers["X-Markdown"] == "true"
+        assert headers["Authorization"] == "Bearer tk"
+        assert headers["Content-Type"] == "text/plain; charset=utf-8"
 
 
 # ---------------------------------------------------------------------------

@@ -264,12 +264,16 @@ hermes chat --provider alibaba --model qwen3.5-plus
 hermes chat --provider xiaomi --model mimo-v2-pro
 # Requires: XIAOMI_API_KEY in ~/.hermes/.env
 
-# Tencent TokenHub (Hy4 preview)
+# Tencent TokenHub (Hy4 preview, stable Hy4, or Hy4 Flash — fast tier with image input)
 hermes chat --provider tencent-tokenhub --model hy4-preview
+hermes chat --provider tencent-tokenhub --model hy4
+hermes chat --provider tencent-tokenhub --model hy4-flash
 # Requires: TOKENHUB_API_KEY in ~/.hermes/.env
 
-# Tencent TokenPlan (Hy4 preview via Anthropic Messages endpoint)
+# Tencent TokenPlan (Hy4 preview, stable Hy4, or Hy4 Flash via Anthropic Messages endpoint)
 hermes chat --provider tencent-tokenplan --model hy4-preview
+hermes chat --provider tencent-tokenplan --model hy4
+hermes chat --provider tencent-tokenplan --model hy4-flash
 # Requires: TOKENPLAN_API_KEY in ~/.hermes/.env
 
 # Arcee AI (Trinity models)
@@ -1614,7 +1618,7 @@ model:
 | **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
 | **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
 | **Enterprise / Azure** | Azure OpenAI with custom endpoint |
-| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot (`kimi-coding` or `kimi-coding-cn`), MiniMax, Xiaomi MiMo, or Tencent TokenHub (first-class providers) |
+| **Chinese AI models** | z.ai (GLM), Kimi/Moonshot (`kimi-coding` or `kimi-coding-cn`), MiniMax, Xiaomi MiMo, Tencent TokenHub, or Tencent TokenPlan (first-class providers) |
 
 :::tip
 You can switch between providers at any time with `hermes model` — no restart required. Your conversation history, memory, and skills carry over regardless of which provider you use.

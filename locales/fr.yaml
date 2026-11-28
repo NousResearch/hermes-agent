@@ -621,6 +621,7 @@ gateway:
     finished: "✅ Mise à jour d'Hermes terminée."
     timed_out: "❌ La mise à jour d'Hermes a expiré après 30 minutes."
     finished_success: "✅ Mise à jour d'Hermes terminée avec succès."
+    local_changes_parked: "⚠️ La dernière mise à jour d'Hermes a laissé des modifications locales du code source dans un git stash. Vérifiez ce que contient déjà le checkout avant de les réappliquer.\n\n{notice}"
     last_lines: |-
       {msg}
 

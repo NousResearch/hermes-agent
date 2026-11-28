@@ -542,6 +542,7 @@ gateway:
     finished: "✅ Hermes 업데이트가 끝났어요."
     timed_out: "❌ Hermes 업데이트가 30분이 지나 시간 초과됐어요."
     finished_success: "✅ Hermes 업데이트가 성공적으로 끝났어요."
+    local_changes_parked: "⚠️ 마지막 Hermes 업데이트가 로컬 소스 변경 사항을 git stash에 남겼어요. 다시 적용하기 전에 체크아웃에 이미 무엇이 있는지 확인하세요.\n\n{notice}"
     last_lines: "{msg}\n\n마지막 줄:\n```\n{tail}\n```"
     managed_action: "Hermes Agent 업데이트"
     not_applicable: "✗ `hermes update`는 이 설치 방식({method})에는 적용되지 않아요.\n업데이트 방법: {command}"

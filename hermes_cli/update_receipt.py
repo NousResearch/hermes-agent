@@ -279,6 +279,22 @@ def read_run_record(update_id: str) -> Optional[tuple[Path, dict[str, Any]]]:
     return None
 
 
+def read_latest_run_record() -> Optional[dict[str, Any]]:
+    """The newest update run's own record in the root store, running or closed, or None.
+
+    Never ``latest.json``: every package-manager sync replaces that pointer too (#157231). Only
+    the newest archive (by its begin-time name) is read, so an unreadable newest run reads as None,
+    never as an older run. Never raises.
+    """
+    with suppress(OSError):
+        runs = sorted(_receipt_dir().glob("update_*.json"), key=lambda path: path.name)
+        if runs:
+            with suppress(OSError, ValueError):
+                record = json.loads(runs[-1].read_text(encoding="utf-8-sig"))
+                return record if isinstance(record, dict) else None
+    return None
+
+
 def _persist_running(data: dict[str, Any]) -> None:
     """Write the open run to disk: a killed update still leaves its own record. Never raises."""
     with suppress(Exception):
@@ -433,14 +449,19 @@ def record_followup(step: str, reason: str, *, retry: str = "the next launch or 
         _persist_running(current.data)
 
 
-def record_user_action(step: str, reason: str) -> None:
+def record_user_action(step: str, reason: str, *, checkout: str = "") -> None:
     """The code committed, but something only the user can do is still owed. Never raises.
 
     Unlike a follow-up nothing retries it (a stash whose restore conflicted stays parked until the
     user re-applies it), so the run can never be a plain success: it finalizes ``partial`` and
-    ``hermes update`` exits 1, as #122557 established for an unrestored autostash.
+    ``hermes update`` exits 1, as #122557 established for an unrestored autostash. ``checkout``
+    names the source tree the action is owed in: the store is root-wide, and a gateway serving
+    another checkout must not take it as its own.
     """
-    _record("fact", f"update user action {step}", "user_action", {"step": step, "reason": " ".join(str(reason).split())[:500]})
+    action = {"step": step, "reason": " ".join(str(reason).split())[:500]}
+    if checkout:
+        action["checkout"] = checkout
+    _record("fact", f"update user action {step}", "user_action", action)
     persist_running_receipt()
 
 

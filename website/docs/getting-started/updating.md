@@ -410,6 +410,8 @@ updates:
 - `stash` (default) — auto-stash, pull, then auto-restore your changes on top of the updated code. Nothing is lost; if a restore hits conflicts they're preserved in a git stash for manual recovery.
 - `discard` — auto-stash and drop the stash after the pull, so the update always lands on a clean tree. Use this only on machines where you never intend to keep local edits to the Hermes source. It stash-drops (not `git reset --hard` + `git clean -fd`), so ignored paths like `node_modules`, `venv`, and build outputs are never touched.
 
+When an update could not restore your changes and left them in the stash, it ends `partial` (exit 1), and the gateway's next start posts one notice with the recorded stash ref to the launch profile's home channels (`display.suppress_warning_notifications` mutes it). A `--keep-stash` park is your choice, so it is not announced.
+
 In the desktop app this is **Settings → Advanced → In-App Update Local Changes**.
 
 **Desktop updates never auto-restore.** The desktop updater invokes `hermes update --keep-stash`: local source edits are still stashed so the update can proceed, but they are **not** re-applied afterward — they stay parked in `git stash` and the update log prints the exact `git stash apply <ref>` command to bring them back. This prevents local edits from silently riding along across desktop updates and breaking the freshly updated install. (`non_interactive_local_changes: discard` still wins if you've opted into discarding.) To restore parked changes manually:

@@ -1026,6 +1026,99 @@ class TestExternalSkillMutations:
             tmp_path / "manual-skill" / "SKILL.md"
         ).read_text(encoding="utf-8")
 
+
+class TestSymlinkedSkillScan:
+    """skill_manage scans with the same walk ``skills_list`` uses.
+
+    A skill mounted as a directory symlink is therefore writable, a
+    self-referential link cannot multiply it once per loop level, and two
+    entries onto one real directory count once. Delete keeps refusing
+    symlinked dirs (see ``TestDeleteSkillRmtreeGuard``).
+    """
+
+    @pytest.mark.require_symlinks
+    def test_patch_through_symlinked_skill_dir(self, tmp_path):
+        """A skill skills_list shows must not fail with 'not found in active profile'."""
+        target = _write_external_skill(tmp_path / "skill-central", "linked-skill")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        link = skills / "linked-skill"
+        link.symlink_to(target, target_is_directory=True)
+
+        with _skill_dir(skills):
+            result = _patch_skill("linked-skill", "OLD_MARKER", "NEW_MARKER")
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (target / "SKILL.md").read_text(encoding="utf-8")
+        assert link.is_symlink()  # written through the link; no real copy materialised
+
+    @pytest.mark.require_symlinks
+    def test_iter_skill_dirs_self_link_yields_once(self, tmp_path):
+        """``skills/self -> skills`` is one skill, not one per loop level."""
+        from tools.skill_manager_tool import _iter_skill_dirs
+
+        skills = tmp_path / "skills"
+        real = skills / "real-skill"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        (skills / "self").symlink_to(skills, target_is_directory=True)
+
+        assert list(_iter_skill_dirs(skills)) == [real]
+
+    @pytest.mark.require_symlinks
+    def test_iter_skill_dirs_dedupes_entries_to_one_real_dir(self, tmp_path):
+        """Two links onto one checkout are one skill directory."""
+        from tools.skill_manager_tool import _iter_skill_dirs
+
+        shared = tmp_path / "skill-central" / "pkg"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        skills = tmp_path / "skills"
+        skills.mkdir()
+        (skills / "alias-a").symlink_to(shared, target_is_directory=True)
+        (skills / "alias-b").symlink_to(shared, target_is_directory=True)
+
+        found = list(_iter_skill_dirs(skills))
+
+        assert len(found) == 1
+        assert os.path.realpath(found[0]) == os.path.realpath(shared)
+
+    @pytest.mark.require_symlinks
+    def test_find_skill_tolerates_dangling_skill_link(self, tmp_path):
+        """A link whose target is gone is skipped, never raised over."""
+        skills = tmp_path / "skills"
+        real = skills / "real-skill"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        (skills / "gone").symlink_to(tmp_path / "missing-target", target_is_directory=True)
+
+        with _skill_dir(skills):
+            assert _find_skill("real-skill") == {"path": real}
+            assert _find_skill("gone") is None
+
+    @pytest.mark.require_symlinks
+    def test_every_listed_skill_is_findable_for_writes(self, tmp_path):
+        """Plain, category-nested and symlinked skills all resolve for skill_manage."""
+        from agent.skill_utils import iter_skill_index_files
+
+        skills = tmp_path / "skills"
+        plain = skills / "plain-skill"
+        plain.mkdir(parents=True)
+        (plain / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        nested = skills / "mlops" / "nested-skill"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
+        external = _write_external_skill(tmp_path / "skill-central", "linked-skill")
+        (skills / "linked-skill").symlink_to(external, target_is_directory=True)
+
+        listed = list(iter_skill_index_files(skills, "SKILL.md"))
+        assert len(listed) == 3
+
+        with _skill_dir(skills):
+            for skill_md in listed:
+                assert _find_skill(skill_md.parent.name) is not None, skill_md.parent.name
+
+
 class TestBackgroundOwnershipPolicyConsistency:
     """The autonomous delete policy must not depend on its own side effects.
 

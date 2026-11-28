@@ -527,7 +527,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent._gateway_turn_request_overrides = turn_overrides
 
     def _wire_turn_agent_callbacks(self, agent, turn_route, reasoning_config,
-                                   stream_delta_cb, interim_assistant_cb, want_interim_messages):
+                                   stream_delta_cb, interim_assistant_cb, want_interim_messages,
+                                   platform_key=None):
         """Per-message state (callbacks, reasoning, voice route) — never baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
@@ -581,13 +582,15 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 pdc = getattr(ctx._status_adapter, "_post_delivery_callbacks", None)
                 if pdc is not None:
                     pdc[ctx.session_key] = bg_release
-        # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose.
-        # `display:` present-but-null yields None, not the {} default (same `or {}` guard as
-        # display_config.py / runtime_footer.py).
-        mem_notif = (ctx.user_config.get("display") or {}).get("memory_notifications")
-        if isinstance(mem_notif, bool):
-            mem_notif = "on" if mem_notif else "off"
-        agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
+        # display.memory_notifications: off | on (generic "💾 Memory updated", default) | verbose,
+        # resolved per platform (display.platforms.<platform>.memory_notifications wins, #149680).
+        # The resolver tolerates `display:` present-but-null and normalises YAML bools.
+        from gateway.display_config import resolve_display_setting
+        if platform_key is None:
+            plat = getattr(ctx.source, "platform", None)
+            platform_key = "cli" if plat == Platform.LOCAL else str(getattr(plat, "value", plat) or "")
+        agent.memory_notifications = resolve_display_setting(
+            ctx.user_config or {}, platform_key, "memory_notifications", "on")
         agent.clarify_callback = self._clarify_callback_sync
         from gateway.run_turn_runner_clarify_delivery import clarify_context_sink
         agent.clarify_context_callback = None if want_interim_messages else clarify_context_sink(self)
@@ -1465,7 +1468,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Set every turn (None clears it): a cached agent must not keep a login failure that resolved.
         from agent.primary_auth_fallback import attach_primary_auth_failure
         attach_primary_auth_failure(agent, pending_primary_auth)
-        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
+        self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim,
+                                        platform_key=platform_key)
         from gateway.run_turn_progress import local_viewer_turn
         local_sinks = None
         if local_viewer_turn(self) and not ctx.mute_notification_reply:

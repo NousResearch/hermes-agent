@@ -67,16 +67,13 @@ from hermes_cli.plugins_state import (
 )
 # PluginContext lives in plugins_context.py; this facade stays its public import path.
 from hermes_cli.plugins_context import PluginContext, _UNSET, _ignore_after_abandoned_load
-from hermes_cli._startup_fast import project_root_str
 
 
 def get_bundled_plugins_dir() -> Path:
     """Bundled ``plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs, read-only
     store paths) first, else the in-repo path."""
-    env_override = os.getenv("HERMES_BUNDLED_PLUGINS")
-    if env_override:
-        return Path(env_override)
-    return Path(project_root_str()) / "plugins"
+    from hermes_cli.plugin_identity import bundled_plugins_dir
+    return bundled_plugins_dir()
 
 
 class PluginToolOverrideError(PermissionError):

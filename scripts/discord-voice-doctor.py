@@ -130,7 +130,24 @@ def check_system_tools():
             opus_loaded = discord.opus.is_loaded()
             if not opus_loaded:
                 import ctypes.util
+                opus_candidates = []
+                # discord.py ships a Windows libopus next to discord/opus.py;
+                # find_library() cannot see it (no system lib, no ldconfig),
+                # so probe the bundled DLL before declaring the codec missing.
+                if sys.platform == "win32":
+                    _opus_module_file = getattr(discord.opus, "__file__", None)
+                    if _opus_module_file:
+                        import struct
+                        _target = "x64" if struct.calcsize("P") * 8 > 32 else "x86"
+                        _bundled = os.path.join(
+                            os.path.dirname(os.path.abspath(_opus_module_file)),
+                            "bin", f"libopus-0.{_target}.dll",
+                        )
+                        if os.path.isfile(_bundled):
+                            opus_candidates.append(_bundled)
                 opus_path = ctypes.util.find_library("opus")
+                if opus_path:
+                    opus_candidates.append(opus_path)
                 if not opus_path:
                     # Platform-specific fallback paths
                     candidates = [
@@ -143,11 +160,18 @@ def check_system_tools():
                     ]
                     for p in candidates:
                         if os.path.isfile(p):
-                            opus_path = p
+                            opus_candidates.append(p)
+                for candidate in opus_candidates:
+                    try:
+                        discord.opus.load_opus(candidate)
+                        if discord.opus.is_loaded():
                             break
-                if opus_path:
-                    discord.opus.load_opus(opus_path)
-                    opus_loaded = discord.opus.is_loaded()
+                    except Exception:
+                        continue
+                # Re-read AFTER probing: is_loaded() was sampled before any
+                # load attempt, so a successful probe would otherwise still be
+                # reported as a missing codec.
+                opus_loaded = discord.opus.is_loaded()
             if opus_loaded:
                 check("Opus codec", True)
             else:

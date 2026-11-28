@@ -16,6 +16,7 @@ export interface ProcessEntry {
   exited_at?: number | null
   completion_reason?: string | null
   output_preview?: string
+  ports?: number[] | null
 }
 
 export interface ProcessRow {
@@ -24,6 +25,8 @@ export interface ProcessRow {
   detail: string
   elapsedSeconds: number
   id: string
+  /** TCP ports the running process tree listens on (`:5173`), so the dev server's URL is on the row. */
+  ports: number[]
   /** Seconds since exit; 0 while running. */
   sinceExitSeconds: number
   status: 'done' | 'failed' | 'killed' | 'lost' | 'running'
@@ -67,7 +70,10 @@ const lastOutputLine = (preview: string | undefined): string => {
 
 export const processVerdict = (row: ProcessRow, exitCode: number | null | undefined): string => {
   if (row.status === 'running') {
-    return row.detail ? `last: ${row.detail}` : 'starting'
+    const ports = row.ports.map(port => `:${port}`).join(' ')
+    const activity = row.detail ? `last: ${row.detail}` : 'starting'
+
+    return ports ? `${ports} · ${activity}` : activity
   }
 
   const verdict = row.status === 'killed' || row.status === 'lost' ? row.status : `exit ${exitCode ?? '?'}`
@@ -95,6 +101,7 @@ export const buildProcessRows = (processes: readonly ProcessEntry[], nowMs: numb
       detail: lastOutputLine(entry.output_preview),
       elapsedSeconds: Math.max(0, entry.uptime_seconds ?? 0) - sinceExitSeconds,
       id: entry.session_id,
+      ports: status === 'running' ? (entry.ports ?? []) : [],
       sinceExitSeconds,
       status
     }

@@ -4045,6 +4045,8 @@ export const deOverrides = {
     stop: 'Stopp',
     dismiss: 'Verwerfen',
     exit: code => `exit ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `${url} öffnen`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `Runde ${turn}/${maxTurns}`,
       goalDoneTurns: turns => `${turns} Runde${turns === 1 ? '' : 'n'}`,

@@ -235,6 +235,8 @@ export const zhHantChat = {
     stop: '停止',
     dismiss: '關閉',
     exit: code => `結束碼 ${code}`,
+    port: port => `:${port}`,
+    openPort: url => `開啟 ${url}`,
     control: {
       goalActiveTurns: (turn, maxTurns) => `第 ${turn}/${maxTurns} 輪`,
       goalDoneTurns: turns => `共 ${turns} 輪`,

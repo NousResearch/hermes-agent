@@ -67,6 +67,7 @@ def process_rows(now: float | None = None) -> list:
             "elapsed": max(0, int(end - proc.started_at)),
             "since_exit": max(0, int(now - exited_at)) if exited_at else 0,
             "detail": _last_output_line(proc.output_buffer),
+            "ports": entry.get("ports") or [],
         })
     rows.sort(key=lambda r: (r["status"] != "running", -r["elapsed"] if r["status"] == "running" else r["since_exit"]))
     return rows
@@ -82,7 +83,8 @@ def process_activity(row: dict) -> str:
     """The trailing ``· …`` part of a dock line: elapsed + latest output while running, the exit
     verdict + age once finished."""
     if row["status"] == "running":
-        return f"{row['elapsed']}s · " + (
+        ports = "".join(f":{port} · " for port in row.get("ports") or ())
+        return f"{row['elapsed']}s · {ports}" + (
             t("cli.dock.last_output", detail=row["detail"]) if row["detail"] else t("cli.dock.starting"))
     verdict = _VERDICT_KEYS[row["status"]]
     verdict = t(verdict, code=row["exit_code"])

@@ -1,15 +1,20 @@
-import { Fragment, memo, type ReactNode } from 'react'
+import { Fragment, memo, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 
 import { openAgentTerminal } from '@/app/right-sidebar/terminal/terminals'
 import { StatusPendingIcon } from '@/components/chat/status-pending-icon'
 import { StatusRow } from '@/components/chat/status-row'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { localPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
 import { capitalize } from '@/lib/text'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
+import { notifyError } from '@/store/notifications'
+import { openPreview } from '@/store/preview'
 
 const toolLabel = (name: string) => name.split('_').filter(Boolean).map(capitalize).join(' ') || name
 
@@ -67,6 +72,77 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack'], 
       aria-hidden
       className={cn('size-1.5 rounded-full', item.state === 'failed' ? 'bg-destructive/80' : 'bg-emerald-500/70')}
     />
+  )
+}
+
+const PORT_CHIP_CLASS = 'shrink-0 rounded bg-muted/70 px-1 text-[0.6rem] leading-4 text-muted-foreground tabular-nums'
+
+/** A port the background process listens on. Locally it opens http://localhost:<port>
+ *  (⌘/Ctrl-click: the in-app preview pane, like a detected preview link). A remote
+ *  gateway's localhost is not this machine, so there the port is only shown. */
+function PortChip({ port, s }: { port: number; s: Translations['statusStack'] }) {
+  const { t } = useI18n()
+
+  if (isDesktopFsRemoteMode()) {
+    return <span className={PORT_CHIP_CLASS}>{s.port(port)}</span>
+  }
+
+  const url = `http://localhost:${port}`
+
+  const open = (event: ReactMouseEvent) => {
+    event.stopPropagation()
+    const target = localPreviewTarget(url)
+
+    if (!target) {
+      return
+    }
+
+    if (event.metaKey || event.ctrlKey) {
+      openPreview(target)
+
+      return
+    }
+
+    openPreviewTargetInBrowser(target).catch(error => notifyError(error, t.preview.unavailable))
+  }
+
+  return (
+    <Tip label={s.openPort(url)}>
+      <button
+        aria-label={s.openPort(url)}
+        className={cn(PORT_CHIP_CLASS, 'cursor-pointer hover:bg-muted hover:text-foreground')}
+        onClick={open}
+        onKeyDown={event => event.stopPropagation()}
+        type="button"
+      >
+        {s.port(port)}
+      </button>
+    </Tip>
+  )
+}
+
+/** Right-hand badges: the subagent's / goal's current tool, a background process's
+ *  listening ports, a failed exit code. */
+function RowBadges({ item, s }: { item: ComposerStatusItem; s: Translations['statusStack'] }) {
+  const tool =
+    item.currentTool &&
+    (item.type === 'subagent' ? toolLabel(item.currentTool) : item.type === 'goal' ? item.currentTool : '')
+
+  const failedExit = item.state === 'failed' && typeof item.exitCode === 'number' && item.exitCode !== 0
+  const ports = item.type === 'background' && item.state === 'running' ? (item.ports ?? []) : []
+
+  return (
+    <>
+      {tool && <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">{tool}</span>}
+      {ports.map(port => (
+        <PortChip key={port} port={port} s={s} />
+      ))}
+      {failedExit && (
+        <span className="shrink-0 rounded bg-destructive/15 px-1 text-[0.58rem] font-semibold text-destructive tabular-nums">
+          {s.exit(item.exitCode!)}
+        </span>
+      )}
+    </>
   )
 }
 
@@ -138,21 +214,7 @@ export const StatusItemRow = memo(function StatusItemRow({
         >
           {item.title}
         </span>
-        {item.type === 'subagent' && item.currentTool && (
-          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
-            {toolLabel(item.currentTool)}
-          </span>
-        )}
-        {item.type === 'goal' && item.currentTool && (
-          <span className="shrink-0 truncate text-[0.62rem] leading-4 text-muted-foreground/70">
-            {item.currentTool}
-          </span>
-        )}
-        {failed && typeof item.exitCode === 'number' && item.exitCode !== 0 && (
-          <span className="shrink-0 rounded bg-destructive/15 px-1 text-[0.58rem] font-semibold text-destructive tabular-nums">
-            {s.exit(item.exitCode)}
-          </span>
-        )}
+        <RowBadges item={item} s={s} />
       </StatusRow>
     </Fragment>
   )

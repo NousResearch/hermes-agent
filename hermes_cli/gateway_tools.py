@@ -40,6 +40,7 @@ class _Proc:
         self.output_buffer = row.get("output_tail") or ""
         self.completion_reason = row.get("completion_reason") or "exited"
         self.exited = row.get("status") == "exited"
+        self.ports = list(row.get("ports") or ())
 
 
 class GatewayProcessView:
@@ -92,7 +93,8 @@ class GatewayProcessView:
         return [{"session_id": p.id, "command": p.command[:200],
                  "status": "exited" if p.exited else "running", "exit_code": p.exit_code,
                  "completion_reason": p.completion_reason if p.exited else None,
-                 "uptime_seconds": int(now - p.started_at) if p.started_at else 0} for p in self.rows]
+                 "uptime_seconds": int(now - p.started_at) if p.started_at else 0,
+                 **({"ports": p.ports} if p.ports else {})} for p in self.rows]
 
     def get(self, process_id):
         return next((p for p in self.rows if p.id == process_id), None)

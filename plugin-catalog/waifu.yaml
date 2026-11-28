@@ -1,0 +1,31 @@
+name: waifu
+repo: https://github.com/waifuai/hermes-waifu
+sha: 173bd90f15f0de9ddf5cb172f6df5939b34b5ad5
+description: Live2D dashboard companion with 56 CDN models, a thumbnail gallery, native activity hooks, and a draggable overlay.
+maintainer: thewaifuai
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "1.0.0"
+known_issues:
+  - Rights clearance for 52 Eikanya-derived models and their thumbnails is not established; upstream restricts commercial use.
+  - Twenty-eight upstream models lack optional physics files; those references are explicitly omitted.
+  - Automatic following requires an existing authorized live runtime session; saved history alone is insufficient.
+# Rule 13: no telemetry, no API keys, no outbound application/user data.
+# Browser GETs to cdn.jsdelivr.net still expose ordinary request metadata.
+# All scripts/models/thumbnails are version/SHA-pinned; scripts have SRI.
+# Full URL inventory: docs/CDN_URLS.md at the pinned source commit.
+# License/provenance details: docs/THIRD_PARTY.md; data/process boundary: README.md.
+# Native stdlib-only hooks use ctx.state and a read-only /waifu-status command.
+# No shell, wrapper, extra server, updater, model inference, or bundled binaries.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+    - pre_llm_call
+    - post_llm_call
+    - on_session_start
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

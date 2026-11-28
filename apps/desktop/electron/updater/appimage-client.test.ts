@@ -59,7 +59,6 @@ function packagedResources(feedUrl: string | null): void {
 function deps(feedBaseUrl = '', channel: 'stable' | 'canary' = 'stable'): Parameters<typeof createAppImageStrategy>[0] {
   return {
     channel,
-    light: false,
     feedBaseUrl,
     appVersion: '0.99.0',
     log: vi.fn(),

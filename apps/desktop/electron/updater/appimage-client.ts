@@ -13,12 +13,20 @@ import { restoreLaunchTmpdir } from '../linux-sandbox-relaunch'
 import { canRelaunch, mountFreeEnv, spawnRelaunch } from '../relaunch-target'
 import { collectRelaunchArgs } from '../updater-process'
 
-import { AppImageStrategy } from './appimage'
+import { AppImageStrategy, type AppImageStrategyDeps } from './appimage'
 import { channelPublicBase } from './channel-protocol'
 import { ExternalStrategy } from './external'
-import type { MacClientDeps } from './mac-client'
 
 import type { UpdaterStrategy } from './index'
+
+/** What the caller gives the AppImage client; it builds the updater and finds the feed itself. */
+export interface AppImageClientDeps extends Omit<
+  AppImageStrategyDeps,
+  'updater' | 'appImage' | 'feedUrl' | 'canReplace'
+> {
+  feedBaseUrl: string
+  log: (message: string) => void
+}
 
 export interface RelaunchHost {
   argv: string[]
@@ -144,7 +152,7 @@ function bakedFeedUrl(resourcesPath: string): string | null {
 }
 
 export function createAppImageStrategy(
-  deps: MacClientDeps,
+  deps: AppImageClientDeps,
   appImage: string,
   arch: string = process.arch,
   updater: InstanceType<typeof electronUpdater.AppImageUpdater> = new RelaunchingAppImageUpdater(

@@ -17,6 +17,7 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from agent.delegation_context import worker_plain_shell_vars
 from hermes_constants import get_process_hermes_home
 from tools.environments.base import BaseEnvironment, _SHELL_ENV_NAME_RE
 from tools.environments.base_output import _pipe_stdin
@@ -1174,6 +1175,13 @@ class LocalEnvironment(BaseEnvironment):
         from hermes_cli.plugins_session_env import session_env_names
         declared = (n for n in _home_declared_key_env() if _SHELL_ENV_NAME_RE.fullmatch(n))
         return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names(), *declared}))
+
+    def _plain_shell_vars(self) -> dict[str, str]:
+        """The dispatcher-owned worker's own session expands ``$HERMES_KANBAN_TASK`` — the worker
+        protocol documents the var to shells (done-when receipts, evidence naming; #160138) — as a
+        plain shell variable, so nothing the command starts (a ``hermes`` child first of all)
+        inherits worker identity and the descendant scrub's contract stays intact (#90782)."""
+        return worker_plain_shell_vars()
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):
         super().__init__(cwd=_resolve_local_initial_cwd(cwd), timeout=timeout, env=env, persist_env=persistent)

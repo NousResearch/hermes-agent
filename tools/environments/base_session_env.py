@@ -7,7 +7,7 @@ No module state lives here; ``BaseEnvironment`` supplies quoting hooks.
 
 import re
 import shlex
-from typing import Iterable
+from typing import Iterable, Mapping
 
 # Bridged per-session vars (gateway.session_context._VAR_MAP) are injected fresh onto every
 # command's process env and must NEVER persist in the shared bash snapshot: one long-lived
@@ -292,7 +292,8 @@ def _wrap_command_script(
     passthrough_names: Iterable[str], snapshot_ready: bool, cwd_marker: str,
     pipe_marker: str = "", persist_env: bool = True, seed_snaps: Iterable[str] = (),
     cwd_fallback_marker: str = "", secret_fd: str = "", secret_names: Iterable[str] = (),
-    secret_gen: str = "", secret_src: str = "", secret_restore: str = "") -> str:
+    secret_gen: str = "", secret_src: str = "", secret_restore: str = "",
+    plain_vars: Mapping[str, str] | None = None) -> str:
     """Per-command bash script: source snapshot, cd, run, re-dump env, emit CWD marker.
     ``persist_env=False`` skips the re-dump, so every command starts from the login-time
     snapshot and exports from one command never reach the next (the CWD marker still runs).
@@ -309,6 +310,9 @@ def _wrap_command_script(
     closed for the user's command, so nothing it starts (``server &``) holds the channel open.
     With *secret_src* the backend already opened the snapshot to source (its own, else the first
     ancestor's) and the script reads that open file, never a newer one published meanwhile.
+    *plain_vars* are set as plain (non-exported) shell variables right before the command: the
+    command and its subshells expand them, child processes inherit nothing (the dispatcher-owned
+    worker's terminal sees ``$HERMES_KANBAN_TASK`` this way — #160138).
     """
     escaped = command.replace("'", "'\\''")
     capture = bool(pipe_marker) and _can_capture_pipestatus(command)
@@ -324,6 +328,20 @@ def _wrap_command_script(
     elif snapshot_ready:
         parts.append(f"source {quoted_snap} >/dev/null 2>&1 || true")
     parts += restore
+    # Plain (non-exported) assignments, e.g. the dispatcher-owned worker's own task id (#160138):
+    # the command and its subshells expand the variable, child processes inherit nothing.
+    # The trailing ``builtin export -n`` is load-bearing: a bare assignment KEEPS the export
+    # attribute when the name was already exported (a sourced snapshot that once carried an
+    # in-command ``export``) or under ``set -a`` (an rc file that left allexport on), and an
+    # exported value here would hand worker identity to every hermes process the shell
+    # starts — exactly what the descendant scrub (agent.delegation_context) prevents.
+    for name, value in sorted((plain_vars or {}).items()):
+        if not isinstance(name, str) or not _SHELL_ENV_NAME_RE.fullmatch(name):
+            raise ValueError(f"plain shell var name is not a shell identifier: {name!r}")
+        # Two lines, not one: an assignment that fails outright (a hostile `readonly` made the
+        # name readonly before this command) must not take the export -n down with it.
+        parts.append(f"{name}={shlex.quote(value)}")
+        parts.append(f"builtin export -n {name} 2>/dev/null")
     run = _eval_capturing_pipestatus(escaped) if capture else f"eval '{escaped}'"
     parts += [
         'export AI_AGENT="${AI_AGENT:-hermes-agent}" HERMES_AGENT="${HERMES_AGENT:-true}"',
@@ -335,8 +353,12 @@ def _wrap_command_script(
         "__hermes_ec=$?",
         "umask 077"]
     if snapshot_ready and persist_env:
+        # The plain vars are excluded from the re-dump too: a command that ran
+        # ``export <name>`` mid-flight must not persist the attribute into the snapshot,
+        # where every later command (and its children) would re-export the identity.
         dump = _export_dump_excluding_session_vars(
-            _SNAP_TMP, passthrough_names, secret_fd=secret_fd, secret_names=secret_names, secret_gen=secret_gen)
+            _SNAP_TMP, [*passthrough_names, *plain_vars.keys()] if plain_vars else passthrough_names,
+            secret_fd=secret_fd, secret_names=secret_names, secret_gen=secret_gen)
         parts.append(
             f"__hermes_snap_tmp=$(mktemp {snap_tmp_template}) && "
             f"{{ {dump} "

@@ -8,6 +8,7 @@ closed for them without mutating the process-global environment.
 from __future__ import annotations
 
 import os
+import shlex
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import Iterator, Mapping, MutableMapping, overload
@@ -139,6 +140,39 @@ def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[
     inherited = str(env.get(DELEGATED_CHILD_ENV_MARKER) or "")
     cleaned[DELEGATED_CHILD_ENV_MARKER] = inherited if inherited and inherited != "1" else _fenced_kanban_root()
     return cleaned
+
+
+def worker_plain_shell_vars() -> dict[str, str]:
+    """Plain (non-exported) shell variables for the dispatcher-owned worker's own terminal.
+
+    The worker protocol documents ``$HERMES_KANBAN_TASK`` to shells — done-when receipts and
+    evidence names expand it — but :func:`scrub_kanban_env` deliberately keeps worker identity
+    away from every child PROCESS so a ``hermes`` run started by the worker can never promote
+    itself to the owner (#90782, #112817). Exporting the var in the worker's terminal env would
+    undo exactly that. A plain shell variable threads the needle: the command and its subshells
+    expand it, child processes inherit nothing. Consumed by ``LocalEnvironment`` and the local
+    background/PTY spawner.
+    """
+    task = owned_kanban_task()
+    return {"HERMES_KANBAN_TASK": task} if task else {}
+
+
+def worker_plain_shell_command_prefix() -> str:
+    """Command-string form of :func:`worker_plain_shell_vars` for spawn paths that prefix the
+    user's command (background/PTY login shells in ``tools.process_registry``) instead of
+    sourcing a wrapper script. POSIX-only, shell-agnostic (``sh``/``bash``/``zsh``): ``unset``
+    first, because the spawn env is scrubbed but a login/interactive rc file could still have
+    exported the name and a plain re-assignment would keep its export attribute; then the
+    ``set -a`` guard, because ``-lic`` shells source rc files where a lingering
+    ``set -a; . ~/.env`` turns every assignment into an export — the wrapper path closes that
+    with bash-only ``export -n``, this form closes it everywhere."""
+    vars_ = worker_plain_shell_vars()
+    if not vars_:
+        return ""
+    return "".join(
+        f"unset {name} 2>/dev/null; "
+        f"case $- in *a*) set +a; {name}={shlex.quote(value)}; set -a;; *) {name}={shlex.quote(value)};; esac; "
+        for name, value in sorted(vars_.items()))
 
 
 def kanban_path_is_fenced(path: os.PathLike[str] | str) -> bool:

@@ -521,6 +521,12 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
         chain = [self._task_snapshot_path(t) for t in _shell_state_chain.get()]
         return [*chain, self._snapshot_path] if chain else [self._snapshot_path]
 
+    def _plain_shell_vars(self) -> dict[str, str]:
+        """Plain (non-exported) shell variables the per-command wrapper sets before the user's
+        command: the command and its subshells expand them, child processes inherit nothing.
+        Empty by default; the dispatcher-owned worker's own terminal session overrides."""
+        return {}
+
     def _wrap_command(self, command: str, cwd: str, *, cwd_fallback: bool = False) -> str:
         """Full bash script: source snapshot, cd, run, re-dump env, emit CWD markers.
         ``cwd_fallback`` lets the ``cd`` walk up from a missing *cwd* (see ``execute``)."""
@@ -533,6 +539,7 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
             persist_env=self._persist_env,
             pipe_marker=self._pipe_marker,
             seed_snaps=seeds,
+            plain_vars=self._plain_shell_vars(),
             cwd_fallback_marker=self._cwd_fallback_marker if cwd_fallback else "",
             **self._secret_dump_args(),
             **self._snapshot_script_kwargs(cwd, own))

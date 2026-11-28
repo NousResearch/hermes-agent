@@ -46,6 +46,8 @@ For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <ass
 
 For non-Hermes lanes (registered via a plugin), the plugin supplies its own `spawn_fn` callable that gets `task`, `workspace`, and `board` and returns an optional pid for crash detection.
 
+In the worker's **own terminal session**, `HERMES_KANBAN_TASK` is a plain (non-exported) shell variable: receipt and evidence commands expand it (subshells included), but `env` and the programs a command executes do not see it — the descendant fence below stays intact. (Background and PTY commands of the same session get the same plain variable by design.) Don't `export` it; the session wrapper deliberately keeps the export attribute off the name.
+
 ### Descendant process scope
 
 A task assignment belongs to the dispatcher worker, not to every program it starts.

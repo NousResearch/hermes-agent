@@ -1,0 +1,27 @@
+name: aicheckerhumanizer
+title: AI Checker Humanizer
+repo: https://github.com/supertj/aicheckerhumanizer-mcp
+sha: 89e704d2e13bfc0e102b78926bc7e5edaafd3a15
+subdir: hermes
+description: >-
+  Check text for AI writing, rewrite a draft, fetch a rewrite by task ID, and check remaining
+  API credits. Checks cost credits only when they return a verdict, and you pay only for
+  the chunks the API rewrites.
+  Disclosure — all requests go to aicheckerhumanizer.com over HTTPS and include your API
+  key. Checks and rewrites send your text; result lookups send the task ID. The plugin
+  writes no local files and sends no telemetry.
+maintainer: AI Checker Humanizer
+tier: community
+category: tools
+requires_hermes: ">=0.17.0"
+docs_url: https://aicheckerhumanizer.com/docs/api
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - detect_ai_text
+    - humanize_text
+    - get_humanize_result
+    - get_balance
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [AICHECKERHUMANIZER_API_KEY]

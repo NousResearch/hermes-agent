@@ -1,0 +1,47 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: mesy
+description: 'CRM: records, pipeline, email, chats and calendar; drafted changes wait for approval in Mesy.'
+source: https://mesy.ai/docs/ai/connect-mesy-to-claude/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint, PKCE S256; no CIMD); Hermes's MCP client +
+# mcp_oauth_manager handle discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://app.mesy.ai/mcp
+
+auth:
+  type: oauth
+
+# Excluded (100-tool surface): reads are readOnlyHint, and the propose_*
+# tools write nothing until a person approves the card in Mesy. The decision
+# tools act without that review: approve_* and send_proposed_* run or send
+# the assistant's own waiting card (server-side they also need the person to
+# switch on "Can approve" for the connection in Mesy, off by default), and
+# reject_proposal discards one. All three are off by default here. Re-enable
+# with `hermes mcp configure mesy`.
+tools:
+  default_excluded:
+    - approve_*
+    - send_proposed_*
+    - reject_proposal
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - mesy
+  hosts:
+    - mesy.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Mesy (or run `hermes mcp login mesy`). Sign in to Mesy as usual
+  (password, Google, Microsoft or a passkey), choose what Hermes
+  may read and propose, click Allow, then restart the session so
+  tools load.

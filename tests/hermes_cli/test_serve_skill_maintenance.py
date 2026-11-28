@@ -13,6 +13,7 @@ async def test_removed_sessions_keep_profile_idle_watermark(tmp_path, monkeypatc
     from pathlib import Path
 
     import tui_gateway.server as gateway
+    from tui_gateway import session_lifecycle
     from agent.curator import load_state, save_state
     from hermes_cli.web_server_sessions import _auto_archive_ticker_loop, _skill_maintenance_idle_for
 
@@ -33,7 +34,7 @@ async def test_removed_sessions_keep_profile_idle_watermark(tmp_path, monkeypatc
                 gateway._sessions["watermark"] = {
                     "last_active": recent, "running": False, "profile_home": str(tmp_path)}
             assert gateway._close_session_by_id("watermark", end_reason=reason)
-            assert _skill_maintenance_idle_for(recent - 3600) < 2
+            assert session_lifecycle._closed_session_activity[str(tmp_path)] == recent
         # An active sibling profile must not hold this profile's idle clock.
         with gateway._sessions_lock:
             gateway._sessions["other-profile"] = {

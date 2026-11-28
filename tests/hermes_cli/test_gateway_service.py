@@ -2918,10 +2918,10 @@ class TestUnitAnchoredServiceIdentity:
         monkeypatch.setattr(gateway_cli, "_SYSTEM_UNIT_DIR", unit_dir)
         monkeypatch.setattr(os, "geteuid", lambda: 0)
         monkeypatch.setattr(hermes_constants, "_get_platform_default_hermes_home", lambda: root_home)
+        monkeypatch.setattr(hermes_constants, "account_default_hermes_home", lambda: root_home)
         monkeypatch.delenv("HERMES_HOME", raising=False)
 
         pre_sync_name = gateway_cli.get_service_name()
         gateway_cli._sync_hermes_home_from_systemd_unit(system=True)
 
-        assert os.environ["HERMES_HOME"] == str(alice_home)  # the sync really ran
-        assert gateway_cli.get_service_name() == pre_sync_name
+        assert (os.environ["HERMES_HOME"], gateway_cli.get_service_name()) == (str(alice_home), pre_sync_name)

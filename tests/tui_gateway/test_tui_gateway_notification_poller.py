@@ -3,6 +3,8 @@
 import threading
 import types
 
+from tools import async_delegation, process_registry_awaiting
+from tools.process_registry import process_registry
 from tui_gateway import server
 
 
@@ -19,7 +21,37 @@ def test_session_rebuild_stops_previous_notification_poller(monkeypatch):
     Otherwise the orphaned poller keeps draining the process-global completion queue for the
     session (two live loops per rebuild) until the session itself is finalized — close can only
     signal the newest event."""
+    # Keep this lifecycle test independent of startup/periodic I/O unrelated to poller ownership.
+    # The real thread loop and queue wait still run; only completion restore/sweep and the three
+    # periodic dispatch hooks are stubbed so stop is synchronized after a real queue poll.
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(process_registry, "restore_completions", lambda: None)
+    monkeypatch.setattr(async_delegation, "maybe_sweep_orphaned_completions", lambda *_: None)
+    # Split-module poller functions are rebound to server.__dict__ by bind_module.
+    monkeypatch.setattr(server, "_maybe_fire_tui_loop_tick", lambda *_: None)
+    monkeypatch.setattr(server, "_maybe_fire_tui_heartbeat_tick", lambda *_: None)
+    monkeypatch.setattr(server, "_notif_poll_kanban", lambda *_: None)
+
+    ready_by_thread = {}
+    ready_lock = threading.Lock()
+    take_ready = process_registry_awaiting.take_ready
+
+    def _track_take_ready(queue, timeout):
+        result = take_ready(queue, timeout)
+        with ready_lock:
+            ready = ready_by_thread.get(threading.get_ident())
+        if ready is not None:
+            ready.set()
+        return result
+
+    def _wait_for_queue_poll(thread):
+        assert thread.ident is not None
+        ready = threading.Event()
+        with ready_lock:
+            ready_by_thread[thread.ident] = ready
+        assert ready.wait(timeout=3.0), f"{thread.name} never completed a notification queue poll"
+
+    monkeypatch.setattr(process_registry_awaiting, "take_ready", _track_take_ready)
     sess = _session()
     server._sessions["sid_rebuild"] = sess
     try:
@@ -29,6 +61,7 @@ def test_session_rebuild_stops_previous_notification_poller(monkeypatch):
         # Identify the first poller by its stop event now: once it exits, the rebuild may prune it
         # and only the replacement would carry the shared thread name.
         first_thread = next(thread for stop, thread in list(server._notification_pollers) if stop is first_stop)
+        _wait_for_queue_poll(first_thread)
 
         # Agent rebuild for the SAME session (in-session /model switch, resume, late MCP refresh).
         server._start_session_services("sid_rebuild", "session-key", sess)
@@ -45,11 +78,13 @@ def test_session_rebuild_stops_previous_notification_poller(monkeypatch):
             if thread.name == "tui-notif-poller-sid_rebuild" and thread.is_alive()
         ]
         assert len(live) == 1, f"expected exactly one live poller, got {len(live)}"
+        second_thread = live[0]
+        _wait_for_queue_poll(second_thread)
 
         # Session close can only signal the newest stop event — which now stops the only live poller.
         second_stop.set()
-        live[0].join(timeout=3.0)
-        assert not live[0].is_alive()
+        second_thread.join(timeout=3.0)
+        assert not second_thread.is_alive()
     finally:
         server._sessions.pop("sid_rebuild", None)
         for stop, thread in list(server._notification_pollers):

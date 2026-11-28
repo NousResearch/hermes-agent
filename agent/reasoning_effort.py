@@ -79,6 +79,54 @@ GLM52_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 GLM53_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 GLM53_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 
+#: Domains where Z.AI serves GLM-5.3 itself, and therefore where its own effort vocabulary
+#: (not the transport's OpenAI-compatible one) decides what a wire will accept.
+ZAI_FIRST_PARTY_DOMAINS: tuple[str, ...] = ("z.ai", "bigmodel.cn")
+
+
+def is_zai_first_party_host(base_url: Optional[str]) -> bool:
+    """True when the base URL's *hostname* is Z.AI's own API, not a URL that merely mentions it.
+
+    A substring test is not enough for a decision that changes what goes on the wire:
+    ``api.z.ai.attacker.example``, ``attacker.example/?next=api.z.ai``, ``attacker.example/api.z.ai``
+    and ``api.z.ai@attacker.example`` all contain the marker with a foreign host. The shared
+    primitive parses the hostname, strips a trailing dot, lowercases, and accepts a bare host.
+    """
+    from utils.urls import base_url_host_matches  # local: this module is imported very early
+
+    return any(base_url_host_matches(base_url or "", domain) for domain in ZAI_FIRST_PARTY_DOMAINS)
+
+
+def clamp_glm53_effort(
+    model: Optional[str], reasoning_config: Optional[dict], base_url: Optional[str] = None
+) -> Optional[dict]:
+    """Rewrite a GLM-5.3 ``medium`` request to ``high`` on Z.AI's own hosts, and leave it alone elsewhere.
+
+    ``medium`` is refused on ``api.z.ai`` with HTTP 400 code 1210 ("This model always engages in
+    thinking and cannot be disabled; please use low, high, or max") — measured 2026-11-20 against
+    ``glm-5.3``, ``glm-5.3-flash`` and ``glm-5.3-flashx`` on both ``/api/paas/v4`` and
+    ``/api/coding/paas/v4``. This supersedes the 2026-08-21 measurement recorded above for
+    ``GLM53_EFFORTS``: that vocabulary was observed then and is refused now, so the table stays as
+    the *vocabulary* (a level a model may accept is not a level this host currently accepts) whilst
+    this clamp keeps the doomed level off the wire. Every such turn otherwise spends one request
+    that cannot be retried, then drops to the next fallback hop.
+
+    A reseller is not obliged to share Z.AI's vocabulary: ``z-ai/glm-5.3-prime`` through Nous
+    Portal accepted ``medium`` (HTTP 200, 63 reasoning tokens) on 2026-10-03, so the clamp keys on
+    the host rather than the model name — clamping a route that works would silently buy more
+    thinking tokens than the caller asked for. ``medium`` maps to ``high`` rather than letting the
+    nearest-weaker rule take it to ``low``, the effort measured to misfire on multi-step arithmetic.
+    """
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    if not is_zai_first_party_host(base_url):
+        return reasoning_config
+    if "glm-5.3" not in str(model or "").lower():
+        return reasoning_config
+    if str(reasoning_config.get("effort") or "").lower() == "medium":
+        return {**reasoning_config, "effort": "high"}
+    return reasoning_config
+
 #: DeepSeek V4 OpenAI-compat endpoint; ``xhigh`` requests the top tier.
 DEEPSEEK_V4_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "max")
 DEEPSEEK_V4_OVERRIDES: dict[str, str] = {"xhigh": "max"}

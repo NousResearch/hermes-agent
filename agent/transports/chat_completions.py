@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, chat_endpoint_efforts, clamp_effort,
-    clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
+    clamp_glm53_effort, clamp_reasoning_config, kimi_supported_efforts, requested_effort, tokenhub_effort,
 )
 from agent.message_metadata import DATA_USE, MESSAGE_UID, data_use_requirement
 from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
@@ -155,6 +155,10 @@ def is_router_timeout_shim(response: Any) -> bool:
     return not _has_positive_completion_tokens(getattr(response, "usage", None))
 
 
+# GLM-5.3 on Z.AI's own hosts refuses ``medium``; the rule and its measurements live with the
+# effort vocabulary (agent/reasoning_effort.py) so the auxiliary and MoA clients apply the same one.
+
+
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_url: str | None = None) -> dict | None:
     """Clamp Hermes' extended effort set (``ultra``) to the OpenAI-compat wire vocabulary.
 
@@ -165,7 +169,11 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None, base_
     narrower sets clamp again downstream. A model on the managed local server is clamped onto the levels
     its chat template accepts: the template raises on any other level and llama-server answers HTTP 500.
     """
-    return clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url))
+    return clamp_glm53_effort(
+        model,
+        clamp_reasoning_config(reasoning_config, chat_endpoint_efforts(model, base_url)),
+        base_url,
+    )
 
 
 from agent.gemini_model_family import (

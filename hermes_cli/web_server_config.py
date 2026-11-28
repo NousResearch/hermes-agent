@@ -122,6 +122,16 @@ _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
         "Wake engine. Auto selects a platform-supported engine; Porcupine requires PORCUPINE_ACCESS_KEY.",
         "auto", *_PROVIDER_PREFERENCE,
     ),
+    "proxy.ssh_tunnel": {
+        "type": "boolean",
+        "description": "Route SSH sandboxes through iron-proxy over an SSH reverse forward (proxy tokens instead of real keys)",
+        "category": "security",
+    },
+    "proxy.cloud_relay": {
+        "type": "boolean",
+        "description": "Route Modal and Daytona sandboxes through iron-proxy over the provider's exec stream (proxy tokens instead of real keys)",
+        "category": "security",
+    },
     "tts.provider": _select(
         "Text-to-speech provider",
         "edge", "elevenlabs", "openai", "xai", "minimax", "mistral", "gemini", "neutts", "kittentts", "piper",

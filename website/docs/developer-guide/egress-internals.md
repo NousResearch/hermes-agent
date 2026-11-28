@@ -38,10 +38,44 @@ hermes_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
                                        proxy_cli.cmd_setup, and document it
                                        in the user-guide page.
 
-tools/environments/docker.py
+tools/environments/egress_common.py
+  ready_egress()                       Backend-neutral readiness verdict
+                                       (enabled → configured → running → CA
+                                       present → tokens minted); the caller's
+                                       `degraded(msg)` decides raise vs. warn.
+  egress_env_overrides()               Proxy-control vars + tokens under the
+                                       real provider names, parametrised by
+                                       proxy host and in-sandbox CA path.
+
+tools/environments/docker_egress.py
   _egress_proxy_args_for_docker()     Builds the volume_args / env_overrides /
                                        host_args triple that the Docker backend
                                        injects when `proxy.enabled: true`.
+
+tools/environments/ssh_egress.py
+  ssh_egress_for_env()                 Opt-in (`proxy.ssh_tunnel`) SSH posture:
+                                       `-R` reverse-forward flags, CA + 0600
+                                       env-file upload outside `~/.hermes`, a
+                                       per-command `source` prefix, and a
+                                       passthrough-collision guard. Always
+                                       fails closed.
+
+tools/environments/egress_relay.py
+  AGENT_SOURCE / RelayHub              Line-framed TCP relay for sandboxes with
+                                       no route to the host: a stdlib agent in
+                                       the sandbox listens where the SSH forward
+                                       would bind; RelayHub dials iron-proxy on
+                                       the host. Frames: `R|O|D|C <id> <b64>`.
+
+tools/environments/cloud_egress.py
+  cloud_egress_for_env()               Opt-in (`proxy.cloud_relay`) posture for
+                                       Modal (direct) and Daytona; uploads CA,
+                                       0600 env file and agent outside
+                                       `~/.hermes`. Always fails closed.
+  start_modal_relay()                  Relay over a `Sandbox.exec` stdin/stdout.
+  start_daytona_relay()                Relay over a raw, no-echo PTY session.
+  refuse_unrelayable()                 Managed Modal (request/poll HTTP, no
+                                       stream) refuses while the relay is on.
 
   DockerEnvironment.__init__          Docker-side merge logic: collision
                                        detection against critical egress vars,
@@ -290,7 +324,7 @@ _NON_BEARER_PROVIDERS: Tuple[str, ...] = (
 5. Distributes the CA cert into the sandbox at a path the runtime will trust (typically `/etc/ssl/certs/hermes-egress-ca.crt`).
 6. Implements collision detection against the user's backend-specific env config.
 
-The Docker implementation is ~150 lines; expect similar volume for Modal / Daytona / SSH.
+The Docker implementation is ~150 lines. SSH (`ssh_egress.py`) and the cloud relay (`cloud_egress.py`) reuse `egress_common` and only add the transport.
 
 ### Subscribing to per-request audit events
 

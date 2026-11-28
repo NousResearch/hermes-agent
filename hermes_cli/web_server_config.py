@@ -443,8 +443,20 @@ def _normalize_config_for_web(config: dict[str, Any]) -> dict[str, Any]:
 # in hermes_cli/config.py — listed here for deterministic ordering in the UI.
 _AUX_TASK_SLOTS: tuple[str, ...] = (
     "vision", "compression", "approval", "mcp", "title_generation", "review", "voice_chat",
-    "triage_specifier", "kanban_decomposer", "profile_describer", "curator",
+    "memory_query_rewrite", "tts_audio_tags", "triage_specifier", "kanban_decomposer",
+    "profile_describer", "curator", "group_router", "goal_judge", "background_review",
+    "monitor", "moa_reference", "moa_aggregator",
 )
+
+# Slots that must stay assignable one-by-one but are NEVER swept by the bulk paths
+# (``task="__reset__"`` and ``task=""`` assign-all). The MoA slots' provider/model pins
+# belong to the MoA topology: reference/aggregator models deliberately differ from the
+# main one, and ``auxiliary.moa_reference.base_url``/``api_key`` are adopted by
+# ``_resolve_task_provider_model`` when a preset slot's provider matches
+# (agent/auxiliary_client.py) — bulk-resetting them collapses MoA back into N copies of
+# the main model and reroutes local-endpoint pins (``_stale_aux_pins``: "a pin on a
+# private/LAN endpoint never bills a provider") to whatever main is set to next.
+_BULK_EXCLUDED_AUX_SLOTS: frozenset = frozenset({"moa_reference", "moa_aggregator"})
 
 
 def _plugin_aux_tasks() -> list[dict[str, Any]]:
@@ -784,7 +796,10 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
 
     if task == "__reset__":
         # Reset every slot to provider="auto", model="", no effort override — keeps other fields intact.
+        # MoA slots are excluded (_BULK_EXCLUDED_AUX_SLOTS): their pins are topology, not task routing.
         for slot in slots:
+            if slot in _BULK_EXCLUDED_AUX_SLOTS:
+                continue
             slot_cfg = _slot(slot)
             slot_cfg["provider"] = "auto"
             slot_cfg["model"] = ""
@@ -799,7 +814,9 @@ def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, 
     if not provider:
         raise HTTPException(status_code=400, detail="provider required for auxiliary")
 
-    targets = [task] if task else list(slots)
+    # Bulk "assign all" (task="") sweeps the same non-excluded range as __reset__ — a MoA
+    # pin must survive a bulk action exactly as it survives the reset.
+    targets = [task] if task else [s for s in slots if s not in _BULK_EXCLUDED_AUX_SLOTS]
     new_provider = provider.strip().lower()
     if base_url and api_key:
         _refuse_unwritable_aux_keys([slot for slot in targets if slot in slots], api_key)

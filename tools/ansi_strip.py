@@ -4,17 +4,25 @@ ECMA-48: CSI, OSC (BEL/ST), DCS/SOS/PM/APC, nF, Fp/Fe/Fs and 8-bit C1 controls."
 
 import re
 
+# A new control-string introducer starts a fresh match after truncated output.
+_STRING_BODY = r"(?:(?!\x1b[\]PX^_]|[\x90\x98\x9d\x9e\x9f]).)*?"
+# SOS character strings allow other command introducers in their payload.
+_SOS_BODY = r"(?:(?!\x1bX|\x98).)*?"
+
 _ANSI_ESCAPE_RE = re.compile(
     r"\x1b"
     r"(?:"
         r"\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"     # CSI sequence
-        r"|\][\s\S]*?(?:\x07|\x1b\\)"                  # OSC (BEL or ST terminator)
-        r"|[PX^_][\s\S]*?(?:\x1b\\)"                   # DCS/SOS/PM/APC strings
+        rf"|\]{_STRING_BODY}(?:\x07|\x1b\\|\x9c)"             # OSC (BEL or either ST encoding)
+        rf"|[P^_]{_STRING_BODY}(?:\x1b\\|\x9c)"               # DCS/PM/APC
+        rf"|X{_SOS_BODY}(?:\x1b\\|\x9c)"                       # SOS
         r"|[\x20-\x2f]+[\x30-\x7e]"                    # nF escape sequences
         r"|[\x30-\x7e]"                                 # Fp/Fe/Fs single-byte
     r")"
     r"|\x9b[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"       # 8-bit CSI
-    r"|\x9d[\s\S]*?(?:\x07|\x9c)"                       # 8-bit OSC
+    rf"|\x9d{_STRING_BODY}(?:\x07|\x1b\\|\x9c)"                # 8-bit OSC
+    rf"|[\x90\x9e\x9f]{_STRING_BODY}(?:\x1b\\|\x9c)"           # 8-bit DCS/PM/APC
+    rf"|\x98{_SOS_BODY}(?:\x1b\\|\x9c)"                        # 8-bit SOS
     r"|[\x80-\x9f]",                                    # Other 8-bit C1 controls
     re.DOTALL,
 )

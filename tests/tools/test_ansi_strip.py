@@ -5,7 +5,48 @@ ANSI codes leaking into the model's context via terminal/execute_code output.
 It must strip ALL terminal escape sequences while preserving legitimate text.
 """
 
+import pytest
+
 from tools.ansi_strip import sanitize_display_text, strip_ansi
+
+
+@pytest.mark.parametrize("clean", [strip_ansi, sanitize_display_text])
+@pytest.mark.parametrize("introducer", ["\x1bP", "\x90", "\x1bX", "\x98", "\x1b^", "\x9e", "\x1b_", "\x9f"])
+@pytest.mark.parametrize("terminator", ["\x1b\\", "\x9c"])
+def test_control_strings_remove_payload_with_either_st_encoding(clean, introducer, terminator):
+    assert clean(f"before{introducer}control payload\nmore payload{terminator}after") == "beforeafter"
+
+
+@pytest.mark.parametrize("clean", [strip_ansi, sanitize_display_text])
+@pytest.mark.parametrize("introducer", ["\x1b]", "\x9d"])
+@pytest.mark.parametrize("terminator", ["\x07", "\x1b\\", "\x9c"])
+def test_osc_preserves_visible_text_with_either_control_encoding(clean, introducer, terminator):
+    assert clean(f"before{introducer}0;window title{terminator}after") == "beforeafter"
+
+
+@pytest.mark.parametrize("clean", [strip_ansi, sanitize_display_text])
+@pytest.mark.parametrize(
+    ("truncated_start", "next_start"),
+    [
+        ("\x90", "\x1bP"),
+        ("\x1bP", "\x90"),
+        ("\x9d", "\x1b]"),
+        ("\x1b]", "\x9d"),
+        ("\x90", "\x9d"),
+        ("\x1b]", "\x1bP"),
+        ("\x98", "\x1bX"),
+        ("\x1bX", "\x98"),
+    ],
+)
+def test_truncated_string_stops_before_next_control_string(clean, truncated_start, next_start):
+    raw = f"before{truncated_start}unfinished\nvisible{next_start}data\x9cafter"
+    assert clean(raw) == "beforeunfinished\nvisibleafter"
+
+
+@pytest.mark.parametrize("clean", [strip_ansi, sanitize_display_text])
+@pytest.mark.parametrize("start", ["\x1bX", "\x98"])
+def test_sos_consumes_embedded_command_introducers(clean, start):
+    assert clean(f"before{start}data\x1bPmore data\x9cafter") == "beforeafter"
 
 
 class TestStripAnsiBasicSGR:

@@ -24,6 +24,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -138,22 +139,29 @@ def _headers_dict(msg: dict) -> dict[str, str]:
     }
 
 
+def _visible_text_length(markup: str) -> int:
+    """Length of *markup* once tags and whitespace runs are removed."""
+    return len(" ".join(re.sub(r"<[^>]+>", " ", markup).split()))
+
+
 def _extract_message_body(msg: dict) -> str:
-    body = ""
     payload = msg.get("payload", {})
     if payload.get("body", {}).get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    elif payload.get("parts"):
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                break
-        if not body:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-    return body
+        return base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
+    plain = html = ""
+    for part in payload.get("parts") or []:
+        data = part.get("body", {}).get("data")
+        if not data:
+            continue
+        if part.get("mimeType") == "text/plain" and not plain:
+            plain = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+        elif part.get("mimeType") == "text/html" and not html:
+            html = base64.urlsafe_b64decode(data).decode("utf-8", errors="replace")
+    # Many senders ship a one-line plain-text stub beside the real HTML body,
+    # so prefer plain text only when it carries comparable content.
+    if html and _visible_text_length(html) > 2 * len(" ".join(plain.split())):
+        return html
+    return plain or html
 
 
 def _extract_body_text(body: dict) -> str:

@@ -678,6 +678,28 @@ def _resolve_anthropic_pool_token(*, skip_borrowed: bool = False) -> Optional[st
     return None
 
 
+def refresh_anthropic_token_for_failed_key(failed_api_key: str) -> Optional[str]:
+    """Force-refresh the credential that issued *failed_api_key* after a 401; the new access token or ``None``.
+
+    Shared by the main agent's 401 recovery and the auxiliary client. ``resolve_anthropic_token`` reads the pool
+    without refreshing, so an agent with no bound pool would otherwise get its expired token back (#149065). A pool
+    entry refreshes through the pool (cross-process lock, write-back to auth.json); a Claude Code file login only
+    when its own token is the one that failed."""
+    token = (failed_api_key or "").strip()
+    if not token:
+        return None
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+    if pool.entry_id_for_api_key(token):
+        refreshed = pool.try_refresh_matching(api_key_hint=token)
+        return ((refreshed.access_token or "").strip() or None) if refreshed else None
+    creds = read_claude_code_credentials()
+    # Never spend an ambient login's refresh rotation for another request's key.
+    if isinstance(creds, dict) and creds.get("accessToken") == token and creds.get("refreshToken"):
+        return _refresh_oauth_token(creds)
+    return None
+
+
 def _available_anthropic_token(token: Optional[str], model: Optional[str]) -> Optional[str]:
     """Return *token* unless the pool holds an active cooldown for it on *model*.
 

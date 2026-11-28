@@ -295,6 +295,8 @@ class AuthorityConnection:
         handlers['complete.path'] = partial(complete_path, self)
         from gateway.session_prune import prune
         handlers['session.prune'] = partial(prune, self)
+        from gateway.session_bulk_delete import bulk_delete
+        handlers['session.bulk_delete'] = partial(bulk_delete, self)
         from gateway.session_usage import account_usage, stats
         handlers['session.stats'] = partial(stats, self)
         handlers['session.account_usage'] = partial(account_usage, self)

@@ -132,6 +132,24 @@ canonical_method("session.prune", params=SessionPruneParams, result=SessionPrune
                      "selected, skipping busy sessions and retained reset owners.")
 
 
+class SessionBulkDeleteParams(Params):
+    """A hand-picked ``ids`` selection, or ``empty_sweep`` to delete every ended, unarchived row with
+    no messages. The two are mutually exclusive: an empty sweep carries no ids."""
+
+    ids: list[str] | None = None
+    empty_sweep: bool = False
+
+
+class SessionBulkDeleteResult(Result):
+    deleted: int
+    skipped_active: list[str] | None = None
+
+
+canonical_method("session.bulk_delete", params=SessionBulkDeleteParams, result=SessionBulkDeleteResult,
+                 doc="Local operator only: the owner runs a dashboard bulk delete or 'Delete empty' sweep "
+                     "through the same store path as the offline route, skipping live-lease rows.")
+
+
 class CommandObserveParams(Params):
     session_id: str
     name: str

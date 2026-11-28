@@ -32,7 +32,9 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin, summary_view
-from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub
+from agent.context_compressor_prune import (
+    ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub, tool_output_text,
+)
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
@@ -763,6 +765,20 @@ def _is_summary_stub(content: str) -> bool:
     return (s := without_skill_safety_rule(content)).startswith("[") and (" chars)" in s or " chars result)" in s) and len(s) < 400 or is_demoted_stub(s)
 
 
+def _is_demotable_text(content: Any, min_prune_chars: int) -> bool:
+    """A string tool body the prune may still shorten: not empty, not already a placeholder or stub."""
+    return (
+        isinstance(content, str) and len(content) > min_prune_chars and content != _PRUNED_TOOL_PLACEHOLDER
+        and not content.startswith(("[Duplicate tool output", "[screenshot removed")) and not _is_summary_stub(content)
+    )
+
+
+def _is_protected_skill_row(tool_name: str, tool_args: str, protected_skills: Optional[set[str]]) -> bool:
+    """A skill_view result whose skill (lower-cased) is in ``protected_skills``; None protects nothing."""
+    skill = _json_dict(tool_args).get("name", "") if protected_skills and tool_name == "skill_view" else ""
+    return isinstance(skill, str) and bool(skill) and skill.lower() in protected_skills
+
+
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
@@ -1258,11 +1274,15 @@ def _last_assistant_index(messages: list[dict[str, Any]]) -> int:
 
 def _pending_tool_round(messages: list[dict[str, Any]]) -> range:
     """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
-    the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
-    after the newest tool result before the next API call, and two can land in one iteration (one when the tool
-    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
+    the round already has an assistant answer.
+
+    The model answers a tool result by emitting the NEXT assistant message, so rows that landed after the round
+    without being one do not settle it: a /steer (delivered after the newest tool result, and two can land in one
+    iteration), a background-process notice delivered as a user row, a prompt queued behind the turn. Those rows
+    are walked over, and the round is reported pending while no assistant row follows it (#137105)."""
     end = len(messages)
-    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+    # Walk back over the rows appended after the round that are not the model's answer to it.
+    while end and messages[end - 1].get("role") not in ("assistant", "tool"):
         end -= 1
     start = end
     while start > 0 and messages[start - 1].get("role") == "tool":
@@ -1912,7 +1932,8 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
     if (refused := _summarize_refused_tool_result(tool_name, args, content)) is not None:
         return refused
     content_len = len(content)
-    line_count = content.count("\n") + 1 if content.strip() else 0
+    output_text = tool_output_text(tool_name, content)
+    line_count = output_text.count("\n") + 1 if output_text.strip() else 0
     summarizer = _TOOL_RESULT_SUMMARIZERS.get(tool_name)
     if summarizer is not None:
         return summarizer(tool_name, args, content, content_len, line_count)
@@ -3050,17 +3071,11 @@ class ContextCompressor(
             if new_msg is not None:
                 result[idx] = new_msg
             return new_msg is not None
-        if (
-            not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
-            or content.startswith(("[Duplicate tool output", "[screenshot removed"))
-            or _is_summary_stub(content) or len(content) <= min_prune_chars
-        ):
+        if not _is_demotable_text(content, min_prune_chars):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
-        if protected_skills and tool_name == "skill_view":
-            _skill = _json_dict(tool_args).get("name", "")
-            if isinstance(_skill, str) and _skill.lower() in protected_skills:
-                return False
+        if _is_protected_skill_row(tool_name, tool_args, protected_skills):
+            return False
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
         return True
 
@@ -3073,67 +3088,6 @@ class ContextCompressor(
         if ctx > 0:
             ceiling = min(ceiling, int(ctx * TAIL_MAX_CONTEXT_FRACTION))
         return max(ceiling, token_budget)
-
-    def _pressure_demote_tail(
-        self, result: list[dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
-        call_id_to_tool: dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
-    ) -> int:
-        """Pass 4: demote tool-result bodies inside the protected tail when it alone exceeds the soft
-        budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides
-        the skill guard (else the dead-end recurs). Tool-call arguments stay byte-exact. Returns the number of
-        tool results demoted."""
-        soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
-        demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
-        start = max(0, prune_boundary)
-
-        def _protected_region_tokens() -> int:
-            return sum(_estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
-
-        demoted = 0
-
-        def _shrink_at(i: int) -> None:
-            nonlocal demoted
-            if i in spared:
-                return
-            if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
-                demoted += 1
-
-        if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
-            return 0
-        for i in range(start, demote_end):
-            _shrink_at(i)
-            if _protected_region_tokens() <= soft_ceiling:
-                break
-        # If the recent floor is still dominated by huge tool bodies, demote all but the newest.
-        if _protected_region_tokens() > soft_ceiling:
-            last_tool_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "tool"), None)
-            for i in (i for i in range(start, len(result)) if i != last_tool_idx):
-                _shrink_at(i)
-            # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
-            # alone (one 200KB read); summarize it.
-            if (
-                last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
-                and _protected_region_tokens() > soft_ceiling
-            ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
-                demoted += 1
-        if demoted and not self.quiet_mode:
-            logger.info(
-                "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "
-                "protected region now ~%s tokens, soft ceiling %s)",
-                demoted, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
-            )
-        return demoted
-
-    def _spared_pending_tool_round(self, messages: list[dict[str, Any]]) -> range:
-        """Return the pending round, owning assistant(tool_calls) row included, only when it fits the input window's
-        hard share. The call's args are part of the unread round: the model reads its result next to them."""
-        pending = _pending_tool_round(messages)
-        if pending and pending.start > 0 and messages[pending.start - 1].get("tool_calls"):
-            pending = range(pending.start - 1, pending.stop)
-        input_window = self._effective_input_window(
-            getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
-        hard_share = int(input_window * TAIL_MAX_CONTEXT_FRACTION)
-        return pending if sum(_estimate_msg_budget_tokens(messages[i]) for i in pending) <= hard_share else range(0)
 
     def _prune_old_tool_results(
         self, messages: list[dict[str, Any]], protect_tail_count: int,

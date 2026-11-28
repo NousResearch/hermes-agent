@@ -2,13 +2,15 @@
 
 Split out of :mod:`agent.context_compressor` (FILE_LINES ratchet): the prune is a self-contained
 reclamation feature. The origin module keeps the ``ContextCompressor`` class; this sibling owns
-``prune_tool_results_only`` and its in-place commit helper. Log name parity with the origin
+``prune_tool_results_only`` and its in-place commit helper, plus the pre-compression pressure pass over the
+protected tail and the head/tail excerpt it gives a tool round the model has not read yet (#137105). Log name parity with the origin
 module, and every origin-module symbol is read through ``_cc()`` at call time so tests that patch
 ``agent.context_compressor.X`` stay effective.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Optional
@@ -86,6 +88,55 @@ def _keep_running_turn(
         return None
     return [*pruned[:turn_start], *messages[turn_start:]], _changed_rows(messages[turn_start:], pruned[turn_start:])
 
+
+# Tools whose result is a JSON envelope ({"output": "...", "exit_code": N}) rather than bare text, so a
+# line count taken on the raw string counts escaped newlines and always reports one line (#137105).
+_JSON_ENVELOPE_TOOLS = frozenset({"terminal", "execute_code"})
+
+# Head and tail kept from an unread tool result that the pressure pass must still demote. Large enough to
+# carry the shape of the output (headers, the first rows, the final error), small enough to fit the tail share.
+_UNREAD_STUB_EXCERPT_CHARS = 600
+# Opens every excerpt: a later pass in the same prune must not excerpt (or one-line) an excerpt again.
+_UNREAD_EXCERPT_OPEN = "\n--- begin excerpt ---\n"
+
+
+def tool_output_text(tool_name: str, content: str) -> str:
+    """The text a tool result actually shows the model, for counting lines in it.
+
+    A terminal/execute_code result is a JSON envelope (``{"output": "...\\n...", "exit_code": 0}``) whose
+    newlines are escaped, so counting on the envelope reports 1 line for a 2,000-line output (#137105). Other
+    results carry their payload bare. Unparseable content is its own text.
+    """
+    if tool_name not in _JSON_ENVELOPE_TOOLS or not content.lstrip().startswith("{"):
+        return content
+    try:
+        parsed = json.loads(content)
+    except (ValueError, TypeError):
+        return content
+    if not isinstance(parsed, dict):
+        return content
+    parts = [parsed[key] for key in ("output", "stdout", "result", "text") if isinstance(parsed.get(key), str)]
+    return "\n".join(parts) if parts else content
+
+
+def unread_excerpt_stub(tool_name: str, tool_args: str, content: str) -> str:
+    """Stub for an unread tool result that must still give way (it alone exceeds the tail's hard share).
+
+    A one-line summary leaves the model unable to tell what it lost, so it re-runs the call — side effects
+    included — or answers blind. Keep the beginning and the end of the output and say how to page the rest,
+    the same way the compaction stub points at session history (#137105)."""
+    summary = _cc()._summarize_tool_result(tool_name, tool_args, content)
+    output_text = tool_output_text(tool_name, content)
+    if len(output_text) <= _UNREAD_STUB_EXCERPT_CHARS * 2:
+        return summary
+    head = output_text[:_UNREAD_STUB_EXCERPT_CHARS]
+    tail = output_text[-_UNREAD_STUB_EXCERPT_CHARS:]
+    return (
+        f"{summary} — the full output was demoted unread; its first {_UNREAD_STUB_EXCERPT_CHARS:,} and last "
+        f"{_UNREAD_STUB_EXCERPT_CHARS:,} chars follow. Re-read the rest from the source (or page it with a "
+        f"narrower command) rather than re-running this call."
+        f"{_UNREAD_EXCERPT_OPEN}{head}\n--- end of head / start of tail ---\n{tail}\n--- end excerpt ---"
+    )
 
 class ProactivePruneMixin:
     """``ContextCompressor`` mixin: the deterministic, no-LLM tool-result prune and its commit."""
@@ -314,3 +365,96 @@ class ProactivePruneMixin:
             if snapshot is not None:
                 replacement["_db_row_snapshot"] = snapshot
         return result.rewritten
+
+    @classmethod
+    def _demote_unread_at(
+        cls, result: list[dict[str, Any]], idx: int, call_id_to_tool: dict[str, tuple[str, str]],
+        min_prune_chars: int, protected_skills: Optional[set[str]] = None,
+    ) -> bool:
+        """Like ``_demote_tool_result_at`` but keeps a head/tail excerpt: the row is output the model has
+        not read yet, so a one-line stub makes it answer blind or re-run the call (#137105). A row the
+        excerpt cannot shrink (an image payload, a body barely past the excerpt size) takes the ordinary
+        demotion instead: an unread round over the hard share must still give way."""
+        cc = _cc()
+        msg = result[idx]
+        content = msg.get("content", "")
+        if isinstance(content, str) and _UNREAD_EXCERPT_OPEN in content:
+            return False
+        tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
+        if (
+            msg.get("role") == "tool" and cc._is_demotable_text(content, min_prune_chars)
+            and not cc._is_protected_skill_row(tool_name, tool_args, protected_skills)
+            and len(excerpt := unread_excerpt_stub(tool_name, tool_args, content)) < len(content)
+        ):
+            result[idx] = {**msg, "content": excerpt}
+            return True
+        return cls._demote_tool_result_at(result, idx, call_id_to_tool, min_prune_chars, protected_skills)
+
+    def _pressure_demote_tail(
+        self, result: list[dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
+        call_id_to_tool: dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
+    ) -> int:
+        """Pass 4: demote tool-result bodies inside the protected tail when it alone exceeds the soft
+        budget (#61932). Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides
+        the skill guard (else the dead-end recurs). Tool-call arguments stay byte-exact. Returns the number of
+        tool results demoted."""
+        cc = _cc()
+        soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
+        demote_end = len(result) - min(cc._PRESSURE_KEEP_RECENT_MESSAGES, len(result))
+        start = max(0, prune_boundary)
+        # Every row of the round the model has not read yet, hard-share or not: when the round is too big to
+        # spare, each of its results still gets an excerpt rather than a one-line stub (kvnloo on #156097).
+        pending_round = cc._pending_tool_round(result)
+
+        def _protected_region_tokens() -> int:
+            return sum(cc._estimate_msg_budget_tokens(result[i]) for i in range(start, len(result)))
+
+        demoted = 0
+
+        def _shrink_at(i: int) -> None:
+            nonlocal demoted
+            if i in spared:
+                return
+            # An unread row keeps a head/tail excerpt: a one-line stub for output the model never saw
+            # invites the same blind answer or re-run this PR exists to stop (#137105, kvnloo on #156097).
+            demote = self._demote_unread_at if i in pending_round else self._demote_tool_result_at
+            demoted += demote(result, i, call_id_to_tool, min_prune_chars)
+
+        if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
+            return 0
+        for i in range(start, demote_end):
+            _shrink_at(i)
+            if _protected_region_tokens() <= soft_ceiling:
+                break
+        # If the recent floor is still dominated by huge tool bodies, demote all but the newest.
+        if _protected_region_tokens() > soft_ceiling:
+            last_tool_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "tool"), None)
+            for i in (i for i in range(start, len(result)) if i != last_tool_idx):
+                _shrink_at(i)
+            # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
+            # alone (one 200KB read) and must still give way. An unread row keeps a head/tail excerpt so the
+            # model can page it; any other row takes the plain one-line stub (#137105).
+            if (
+                last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
+                and _protected_region_tokens() > soft_ceiling
+            ):
+                _shrink_at(last_tool_idx)
+        if demoted and not self.quiet_mode:
+            logger.info(
+                "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "
+                "protected region now ~%s tokens, soft ceiling %s)",
+                demoted, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
+            )
+        return demoted
+
+    def _spared_pending_tool_round(self, messages: list[dict[str, Any]]) -> range:
+        """Return the pending round, owning assistant(tool_calls) row included, only when it fits the input window's
+        hard share. The call's args are part of the unread round: the model reads its result next to them."""
+        cc = _cc()
+        pending = cc._pending_tool_round(messages)
+        if pending and pending.start > 0 and messages[pending.start - 1].get("tool_calls"):
+            pending = range(pending.start - 1, pending.stop)
+        input_window = self._effective_input_window(
+            getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
+        hard_share = int(input_window * cc.TAIL_MAX_CONTEXT_FRACTION)
+        return pending if sum(cc._estimate_msg_budget_tokens(messages[i]) for i in pending) <= hard_share else range(0)

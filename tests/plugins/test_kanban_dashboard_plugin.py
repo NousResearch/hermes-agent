@@ -468,6 +468,60 @@ def test_add_comment(client):
     assert comments[0]["body"] == "how's progress?"
     assert comments[0]["author"] == "teknium"
 
+
+def test_human_comment_moves_task_per_board_setting(client):
+    """Off by default; once set, a dashboard comment moves the card through the drag path
+    from any state, while a worker/CLI comment (kanban_db.add_comment) never moves it.
+    Leaving ``review`` reopens it first: implementer restored, ``review_reopened`` recorded."""
+    api = "/api/plugins/kanban"
+
+    def new_task(status):
+        tid = client.post(f"{api}/tasks", json={"title": status}).json()["task"]["id"]
+        r = client.patch(f"{api}/tasks/{tid}", json={"status": status, "summary": "handoff"})
+        assert r.status_code == 200, r.text
+        return tid
+
+    def comment(tid):
+        r = client.post(f"{api}/tasks/{tid}/comments", json={"body": "one more thing"})
+        assert r.status_code == 200, r.text
+        return client.get(f"{api}/tasks/{tid}").json()["task"]["status"]
+
+    done = new_task("done")
+    review = client.post(f"{api}/tasks", json={"title": "review", "assignee": "builder"}).json()["task"]["id"]
+    r = client.patch(f"{api}/tasks/{review}", json={"status": "review", "assignee": "reviewer", "summary": "handoff"})
+    assert r.status_code == 200, r.text
+    assert comment(done) == "done"
+
+    r = client.patch(f"{api}/boards/default", json={"comment_moves_to": "triage"})
+    assert r.status_code == 200, r.text
+    assert r.json()["board"]["comment_moves_to"] == "triage"
+
+    conn = kbc.connect()
+    try:
+        kb.add_comment(conn, done, author="worker", body="agent note")
+        assert kb.get_task(conn, done).status == "done"
+    finally:
+        conn.close()
+    assert comment(done) == "triage"
+    assert comment(review) == "triage"
+    conn = kbc.connect()
+    try:
+        assert kb.get_task(conn, review).assignee == "builder"
+        assert any(e.kind == "review_reopened" for e in kb.list_events(conn, review))
+    finally:
+        conn.close()
+
+    client.patch(f"{api}/boards/default", json={"comment_moves_to": ""})
+    assert kb.read_board_metadata("default")["comment_moves_to"] is None
+
+
+@pytest.mark.parametrize("value", ["running", "done", "bogus"])
+def test_comment_moves_to_rejects_non_drag_targets(client, value):
+    r = client.patch("/api/plugins/kanban/boards/default", json={"comment_moves_to": value})
+    assert r.status_code == 400, r.text
+    assert kb.read_board_metadata("default")["comment_moves_to"] is None
+
+
 # ---------------------------------------------------------------------------
 # Dispatch nudge
 # ---------------------------------------------------------------------------

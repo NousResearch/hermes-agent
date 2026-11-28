@@ -335,12 +335,14 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         return interrupted
 
     # Scale-to-zero idle detection / dormant-quiesce
-    def _scale_to_zero_has_live_background_work(self) -> bool:
+    def _scale_to_zero_has_live_background_work(self, process_idle_seconds: Optional[float] = None) -> bool:
         """Live background work (delegations, processes, pending watchers) that must block a suspend.
 
         PERMANENT supervised watchers (_hermes_supervised_watcher, incl. the scale-to-zero watcher
         itself) are excluded, else this would be True forever and the gateway could never go dormant.
+        ``process_idle_seconds``: a process idle that long stops counting (None: every process counts).
         """
+        from gateway.scale_to_zero import has_live_background_processes
         if any(
             not t.done() and not getattr(t, "_hermes_supervised_watcher", False)
             for t in self._background_tasks
@@ -350,11 +352,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             from tools.async_delegation import active_count
             return active_count() > 0
 
-        def _processes_active() -> bool:
-            from tools.process_registry import process_registry
-            return bool(process_registry.has_any_active() or process_registry.pending_watchers)
-
-        for label, probe in (("async-delegation", _delegations_active), ("bg-work", _processes_active)):
+        for label, probe in (("async-delegation", _delegations_active), ("bg-work", lambda: has_live_background_processes(
+                process_idle_seconds, delivering=tuple(getattr(self, "_live_process_watchers", ()))))):
             with _log_suppressed(logging.DEBUG, f"scale-to-zero {label} check failed", exc_info=True):
                 if probe():
                     return True
@@ -473,7 +472,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             logger.debug("scale-to-zero: not-armed reason logging failed", exc_info=True)
 
     def _scale_to_zero_is_idle(self) -> bool:
-        from gateway.scale_to_zero import is_idle
+        from gateway.scale_to_zero import is_idle, parse_background_idle_seconds
         # FULL work aggregate with fail-AWAKE reads: the drain counters swallow errors to 0, which a
         # suspend predicate would read as idle, so an unreadable source counts as work here.
 
@@ -497,7 +496,8 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
             active_work_count=self._running_agent_count() + cron_count + api_count,
             seconds_since_last_inbound=time.time() - last_inbound,
             idle_timeout_seconds=self._scale_to_zero_idle_timeout_seconds(),
-            has_live_background_work=self._scale_to_zero_has_live_background_work(),
+            has_live_background_work=self._scale_to_zero_has_live_background_work(parse_background_idle_seconds(
+                (self._gateway_cfg_section("scale_to_zero") or {}).get("background_idle_minutes"))),
         )
 
     def _scale_to_zero_note_real_inbound(self) -> None:

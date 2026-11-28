@@ -587,6 +587,7 @@ class ProcessSession:
     watch_patterns: list[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
     total_output_chars: int = 0                 # Chars ever ingested (the buffer is a rolling tail)
+    last_touched_at: float = field(default_factory=lambda: time.time(), repr=False)  # launch or agent action
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
     _heartbeat_seq: int = field(default=0, repr=False)
@@ -1445,16 +1446,14 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                     with session._lock:
                         if session.exited:
                             return
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        session._append_locked(delta)
                     self._check_watch_patterns(session, delta)
                     self._emit_output(session, delta)
 
                 # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
                 exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
-                if exit_code is not None:
-                    self._finish_exited(session, exit_code)
+                if exit_code is not None:  # -1: no exit file, the job died with its stopped sandbox
+                    self._finish_exited(session, exit_code, *(("lost", "sandbox_stopped") if exit_code == -1 else ()))
                     return
             except Exception:
                 # Environment might be gone (sandbox reaped, etc.). A kill that already
@@ -2475,10 +2474,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             lambda s: s.session_key == session_key
             and (max_active_age is None or (now - s.started_at) < max_active_age))
 
-    def has_any_active(self) -> bool:
-        """Whether ANY background process is running — scale-to-zero must not
-        suspend a gateway with live background work or the process is lost."""
-        return self._any_running(lambda s: True)
+    def has_any_active(self, predicate=lambda s: True) -> bool:
+        """Whether ANY background process (matching ``predicate``) is running — scale-to-zero
+        must not suspend a gateway with live background work or the process is lost."""
+        return self._any_running(predicate)
 
     def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
         """Running IDs owned by ``task_id`` — a turn-boundary marker: on timeout

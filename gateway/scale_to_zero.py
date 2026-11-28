@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import time
@@ -35,6 +36,11 @@ _malformed_sleep_url_logged = False
 
 # Short is safe: real work always blocks the suspend, resume is sub-second; longer bills idle RAM.
 DEFAULT_IDLE_TIMEOUT_MINUTES = 2
+# A background process the agent has not touched (launch or process_manage action) for this long stops
+# holding the box awake. Output does not count: a server logging health checks would pin it forever.
+DEFAULT_BACKGROUND_IDLE_MINUTES = 30
+# An exited process whose completion a watcher still owes blocks for at most this long after its exit.
+COMPLETION_DELIVERY_GRACE_SECONDS = 10 * 60
 _TRUTHY = {"1", "true", "yes", "on"}
 # Dashboard-client liveness marker, touched by every /api/ws client socket on each
 # connect and inbound frame. Folded into the inbound clock so an open client holds the box awake —
@@ -61,6 +67,66 @@ def parse_idle_timeout_seconds(cfg_value: Any,
     except (TypeError, ValueError):
         minutes = 0.0
     return (float(default_minutes) if minutes <= 0 else minutes) * 60.0
+
+
+def parse_background_idle_seconds(cfg_value: Any) -> Optional[float]:
+    """Coerce ``scale_to_zero.background_idle_minutes`` to seconds. ``0`` turns the rule off (None:
+    every running process blocks a suspend, as before); junk, negative or overflowing -> the default."""
+    try:
+        seconds = float(cfg_value) * 60.0
+    except (TypeError, ValueError, OverflowError):
+        seconds = -1.0
+    if seconds == 0:
+        return None
+    return seconds if 0 < seconds < math.inf else DEFAULT_BACKGROUND_IDLE_MINUTES * 60.0
+
+
+_idle_logged: dict[str, float] = {}  # session id -> the last_touched_at already logged as untouched
+_future_stamp_seen: dict[tuple, float] = {}  # (session id, field, stamp) -> now when that stamp was first in the future
+
+
+def _age(session_id: str, field: str, stamp: float, now: float) -> float:
+    """Seconds since ``stamp`` (wall time, so suspended time counts; a forward clock step just ages it).
+    A stamp in the future (clock stepped back) ages from when it was first seen, so the step protects for
+    one more window at most. Never writes the session: a concurrent fresh touch is a new stamp, a new key."""
+    seen = _future_stamp_seen.get((session_id, field, stamp))
+    if seen is None and stamp > now:
+        seen = _future_stamp_seen[(session_id, field, stamp)] = now
+    return now - (stamp if seen is None else seen)
+
+
+def has_live_background_processes(idle_seconds: Optional[float], now: Optional[float] = None,
+                                  delivering: Iterable[str] = ()) -> bool:
+    """Whether a background process (or a completion a watcher still owes) must block a suspend.
+
+    A running process counts only while the agent touched it (launch, ``process_manage`` action, handoff)
+    within ``idle_seconds``; its output never extends that, so nothing it does on its own pins the host.
+    It is NOT killed: a suspend freezes it in RAM (on a backend whose sandbox stops when idle, the job
+    then dies). ``None`` keeps the old rule (any running process blocks). A watcher (pending, or armed:
+    ``delivering`` session ids) extends nothing for a running process; once the process exited it blocks
+    until the completion is consumed or the watcher ends, at most COMPLETION_DELIVERY_GRACE_SECONDS."""
+    from tools.process_registry import process_registry
+    if idle_seconds is None:
+        return bool(process_registry.has_any_active() or process_registry.pending_watchers)
+    now = time.time() if now is None else now
+
+    def idle(session) -> bool:
+        stamp = session.last_touched_at  # read once: a touch may land concurrently
+        quiet = _age(session.id, "touched", stamp, now)
+        if quiet < idle_seconds:
+            return False
+        if _idle_logged.get(session.id) != stamp:
+            _idle_logged[session.id] = stamp
+            logger.info("scale-to-zero: background process %s untouched for %.0f min; no longer blocks suspend",
+                        session.id, quiet / 60.0)
+        return True
+    if process_registry.has_any_active(lambda s: not idle(s)):
+        return True
+    owed = {w.get("session_id") for w in list(process_registry.pending_watchers)} | set(delivering)
+    return any(s is not None and s.exited_at  # 0 while running
+               and _age(s.id, "exited", s.exited_at, now) < COMPLETION_DELIVERY_GRACE_SECONDS
+               and not process_registry.is_completion_consumed(s.id)
+               for s in (process_registry.get(sid) for sid in owed if sid))
 
 
 def messaging_is_relay_only_or_absent(platforms: Iterable[Any]) -> bool:

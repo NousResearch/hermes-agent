@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 _MAX_HANDOFFS_PER_CHILD = 3
@@ -40,6 +41,7 @@ def handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dict
     if session is None:
         return {"error": f"cannot hand off {session_id}: not a running process you own (already exited? read its result "
                          "with poll/log and report it instead)."}
+    session.last_touched_at = time.time()  # the new owner gets a fresh scale-to-zero window
     handed.append({"session_id": session.id, "command": session.command, "note": note})
     return {"status": "handed_off", "session_id": session.id, "command": session.command,
             "note": "Your parent now owns this process and will receive its completion; you will not. Mention the handoff "

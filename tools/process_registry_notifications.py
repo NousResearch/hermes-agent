@@ -11,6 +11,8 @@ from tools import delegate_tool_config
 
 _DONE = ("completed", "success")
 _REASON_STATUS = {"lost": "marked lost because the process backend disappeared"}
+_SOURCE_STATUS = {"sandbox_stopped": "marked lost: it vanished with no exit code, most likely because its sandbox stopped "
+                                     "while the host was asleep (scale-to-zero)"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -542,7 +544,7 @@ def _completion_status(evt: dict) -> str:
     reason = evt.get("completion_reason") or "exited"
     if reason == "killed":
         return f"terminated by {evt.get('termination_source') or 'Hermes'}"
-    return _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
+    return _SOURCE_STATUS.get(evt.get("termination_source")) or _REASON_STATUS.get(reason) or ("completed normally" if evt.get("exit_code", "?") == 0 else "exited")
 
 
 def format_process_notification(evt: dict) -> str | None:

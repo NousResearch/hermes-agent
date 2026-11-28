@@ -248,8 +248,14 @@ class TestKillStaleDashboardPosix:
                 return MagicMock(returncode=0, stdout="", stderr="")
             raise AssertionError(f"unexpected subprocess.run call: {args}")
 
+        # H-7 gate: this is a user-scope test, not an ownership test — pin the unit's home to
+        # the updating home (always in scope) so the owned unit proceeds to the restart.
+        from hermes_constants import get_hermes_home
+        own_home = str(get_hermes_home())
         with patch("subprocess.run", side_effect=fake_run), \
              patch("hermes_cli.main_dashboard._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.update_fleet_scope.systemd_unit_hermes_home",
+                   lambda scope_cmd, svc: own_home), \
              patch("os.kill") as kill:
             _kill_stale_dashboard_processes(restart_managed=True)
 
@@ -311,6 +317,84 @@ class TestDashboardUpdateCleanup:
         assert "stopped during update" not in capsys.readouterr().out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX managed systemd step")
+class TestManagedDashboardStepIsHomeScoped:
+    """H-7: the legacy managed-dashboard step must only restart the dashboard of the home
+    being updated, never another install's.
+
+    The bare ``hermes-dashboard.service`` name is account-global: on a multi-install host two
+    installs under one login user install the SAME unit name, so "exists under this name" restarts
+    whichever install owns it. The gate aligns this step with the fleet loop's "left alone"
+    behaviour. Sandbox doubles only — fake home paths and a stubbed systemctl; no live installs.
+    """
+
+    UNIT = "hermes-dashboard.service"
+    PROD_PID = 9000
+
+    def _fake_run(self, calls):
+        """systemctl stub for a host where the account-global unit is installed + active.
+
+        The gate resolves the unit's owning home from its live MainPID (a read-only property,
+        no restart), so this stub answers that probe; everything else the managed step does is
+        the normal list/active/enabled/restart sequence.
+        """
+
+        def _side_effect(args, *a, **kw):
+            cmd = list(args)
+            calls.append(cmd)
+            if cmd[-2:] == ["--property=MainPID", "--value"] and self.UNIT in cmd:
+                return MagicMock(returncode=0, stdout=f"{self.PROD_PID}\n", stderr="")
+            if "restart" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "list-unit-files" in cmd:
+                return MagicMock(returncode=0, stdout=f"{self.UNIT} enabled enabled\n", stderr="")
+            if "is-active" in cmd:
+                return MagicMock(returncode=0, stdout="active\n", stderr="")
+            if "is-enabled" in cmd:
+                return MagicMock(returncode=0, stdout="enabled\n", stderr="")
+            raise AssertionError(f"unexpected subprocess.run call: {cmd}")
+
+        return _side_effect
+
+    def _own_home(self, tmp_path):
+        own = tmp_path / "install-a" / ".hermes"
+        own.mkdir(parents=True)
+        return own
+
+    def test_foreign_home_unit_is_left_alone(self, tmp_path, monkeypatch, capsys):
+        """The card's acceptance: running the managed step for home A must NOT restart the
+        account-global unit owned by home B."""
+        own_home = self._own_home(tmp_path)
+        foreign_home = (tmp_path / "prod" / ".hermes").resolve()
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
+        # The unit's MainPID runs on home B (proven foreign to this update).
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.systemd_unit_hermes_home",
+                            lambda scope_cmd, svc: str(foreign_home))
+        calls: list[list[str]] = []
+        with patch("subprocess.run", side_effect=self._fake_run(calls)):
+            handled = main_dashboard._restart_managed_dashboard_service("post-update")
+
+        assert handled is False  # not ours → not handled → no raw-kill, no restart
+        assert not [c for c in calls if "restart" in c], \
+            f"restarted a foreign install's dashboard: {calls}"
+        out = capsys.readouterr().out
+        assert "left alone" in out
+        assert str(foreign_home) in out
+
+    def test_own_home_unit_is_restarted(self, tmp_path, monkeypatch, capsys):
+        """Regression guard: the single-install case still works — a unit whose home IS the
+        updating home is restarted (the gate must not silently disable the managed restart)."""
+        own_home = self._own_home(tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
+        # The unit's MainPID runs on the updating home (owned).
+        monkeypatch.setattr("hermes_cli.update_fleet_scope.systemd_unit_hermes_home",
+                            lambda scope_cmd, svc: str(own_home.resolve()))
+        calls: list[list[str]] = []
+        with patch("subprocess.run", side_effect=self._fake_run(calls)):
+            handled = main_dashboard._restart_managed_dashboard_service("post-update")
+
+        assert handled is True
+        assert ["systemctl", "--user", "restart", self.UNIT] in calls
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill + systemd restart")

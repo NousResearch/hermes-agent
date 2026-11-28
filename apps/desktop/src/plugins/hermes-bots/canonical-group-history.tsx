@@ -174,7 +174,13 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
 
 export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, downloads = true, onReply, pause }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
-  const roster = new Map(members.map(member => [member.member_id, member]))
+
+  const historical = events.flatMap(event => event.kind === 'room.members_changed' && Array.isArray(event.payload.previous_members)
+    ? event.payload.previous_members as CanonicalRoomMember[] : [])
+
+  const roster = new Map([...historical, ...members].map(member => [member.member_id, member]))
+  const attributedMembers = [...roster.values()]
+
   const maxContinues = pause?.maxContinues
   const pauses = useMemo(() => typeof maxContinues === 'number' ? pausedDiscussions(events, maxContinues) : undefined, [events, maxContinues])
 
@@ -206,8 +212,8 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
   ])
 
   return <>{events.map(event => <Fragment key={event.seq}>
-    {event.kind === ASSIGNMENT_EVENT_KIND ? <CanonicalGroupAssignmentRow event={event} members={members} />
-      : event.kind === ROUTED_EVENT_KIND ? <CanonicalGroupRoutedRow event={event} members={members} />
+    {event.kind === ASSIGNMENT_EVENT_KIND ? <CanonicalGroupAssignmentRow event={event} members={attributedMembers} />
+      : event.kind === ROUTED_EVENT_KIND ? <CanonicalGroupRoutedRow event={event} members={attributedMembers} />
         : event.kind === CONTINUED_EVENT_KIND ? <CanonicalGroupContinuedRow />
           : pause && pauses && isBoundedActivity(event)
             ? <CanonicalGroupPausedRow busy={pause.busy} event={event} onContinue={pause.onContinue} onStop={pause.onStop} paused={pauses.get(event.seq) ?? { count: 0, actionable: false }} stopping={pause.stopping} />
@@ -226,6 +232,26 @@ interface HistoryRowProps extends Pick<CanonicalGroupHistoryProps, 'avatarFor' |
 
 function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, roster }: HistoryRowProps) {
   const labels = useCanonicalGroupLabels()
+
+  if (event.kind === 'room.members_changed') {
+    const { previous_members: previous, members: next } = event.payload
+
+    if (!Array.isArray(previous) || !Array.isArray(next)) {return null}
+    const before = new Map((previous as CanonicalRoomMember[]).map(member => [member.member_id, member]))
+    const after = new Map((next as CanonicalRoomMember[]).map(member => [member.member_id, member]))
+    const removed = [...before.values()].filter(member => !after.has(member.member_id))
+    const added = [...after.values()].filter(member => !before.has(member.member_id))
+
+    return <>
+      {removed.map(member => <RoomActivityRow icon="sign-out" key={member.member_id}>
+        {fill(labels.memberRemoved, { name: member.display_name || member.handle || member.member_id })}
+      </RoomActivityRow>)}
+      {added.map(member => <RoomActivityRow icon="person-add" key={member.member_id}>
+        {fill(labels.memberAdded, { name: member.display_name || member.handle || member.member_id })}
+      </RoomActivityRow>)}
+    </>
+  }
+
   const notice = event.kind === 'room.activity' && event.payload.status === 'bounded' ? labels.workLimitReached : notices.get(event.kind)
   const isMessage = MESSAGE_KINDS.has(event.kind)
 

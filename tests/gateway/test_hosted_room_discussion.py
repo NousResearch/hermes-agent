@@ -738,8 +738,8 @@ def test_incomplete_attachment_metadata_is_rejected():
 @pytest.mark.parametrize(
     ("members", "match"),
     [
-        (MEMBERS[:1], "between 2 and 6"),
-        (MEMBERS + MEMBERS + MEMBERS[:1], "between 2 and 6"),
+        (MEMBERS[:1], "between 2 and 24"),
+        ((MEMBERS * 9)[: discussion.MAX_DISCUSSION_MEMBERS + 1], "between 2 and 24"),
         (
             [MEMBERS[0], {**MEMBERS[1], "profile": "research"}],
             "profiles must be unique",
@@ -757,6 +757,13 @@ def test_incomplete_attachment_metadata_is_rejected():
 def test_malformed_or_remote_roster_is_rejected(members: list[dict], match: str):
     with pytest.raises(discussion.DiscussionValidationError, match=match):
         discussion.validate_roster(members, local_profiles=LOCAL_PROFILES)
+
+
+def test_roster_size_uses_the_caller_limit_below_the_hard_ceiling():
+    # A create or membership edit passes hosted_rooms.max_members; stored rooms use the ceiling.
+    assert len(discussion.validate_roster(MEMBERS[:3], local_profiles=LOCAL_PROFILES, max_members=3)) == 3
+    with pytest.raises(discussion.DiscussionValidationError, match="between 2 and 2 entries"):
+        discussion.validate_roster(MEMBERS[:3], local_profiles=LOCAL_PROFILES, max_members=2)
 
 
 @pytest.mark.parametrize(

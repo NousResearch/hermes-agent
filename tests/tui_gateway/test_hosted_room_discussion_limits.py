@@ -202,3 +202,56 @@ def test_an_invalid_config_section_keeps_the_defaults(tmp_path, caplog, section,
 
 def yaml_value(text):
     return {"0": 0, "-1": -1, "true": True, "1.5": 1.5, "'6'": "6", "null": None, "[]": [], "{}": {}}[text]
+
+
+# ── hosted_rooms.max_members ──────────────────────────────────────────────────
+
+BIG = tuple(f"bot{i}" for i in range(1, 11))
+
+
+def _roster(profiles):
+    return [{"member_id": p, "profile": p, "handle": p} for p in profiles]
+
+
+def _big_service(store) -> HostedRoomService:
+    service = _service(store)
+    service.local_profiles = lambda: BIG
+    return service
+
+
+def test_member_limit_defaults_to_six(tmp_path, store):
+    service = _big_service(store)
+    assert service.discussion_limits.max_members == discussion.DEFAULT_MAX_MEMBERS == 6
+    with pytest.raises(discussion.DiscussionValidationError, match=r"between 2 and 6 entries \(raise hosted_rooms"):
+        service.create_room(room_id="big", name="Big", members=_roster(BIG[:7]))
+
+
+def test_configured_member_limit_seats_more_on_create_and_edit(tmp_path, store):
+    (tmp_path / "config.yaml").write_text("hosted_rooms:\n  max_members: 8\n")
+    service = _big_service(store)
+    created = service.create_room(room_id="big", name="Big", members=_roster(BIG[:7]))
+    assert len(created["members"]) == 7
+    updated = service.replace_members(room_id="big", event_id="eighth", expected_revision=created["revision"],
+                                      members=_roster(BIG[:8]))
+    assert [m["member_id"] for m in updated["members"]] == list(BIG[:8])
+    with pytest.raises(discussion.DiscussionValidationError, match="between 2 and 8"):
+        service.replace_members(room_id="big", event_id="ninth", expected_revision=updated["revision"],
+                                members=_roster(BIG[:9]))
+    assert service.status("big")["max_members"] == 8
+
+
+def test_lowered_member_limit_keeps_a_larger_room_working(tmp_path, store):
+    config = tmp_path / "config.yaml"
+    config.write_text("hosted_rooms:\n  max_members: 8\n")
+    _big_service(store).create_room(room_id="big", name="Big", members=_roster(BIG[:8]))
+    config.write_text("hosted_rooms:\n  max_members: 3\n")
+    service = _big_service(store)
+    # The stored eight-member room still reconstructs and accepts new work.
+    service.send(room_id="big", event_id="kickoff", payload={"text": "Hello all.", "thread_id": "t"})
+    assert driver.list_tasks(service.store, placement=service.placement, room_id="big", status="queued")
+
+
+@pytest.mark.parametrize("value", ["1", "25", "0", "seven", "true", "null"])
+def test_invalid_member_limit_falls_back_to_the_default(tmp_path, store, value):
+    (tmp_path / "config.yaml").write_text(f"hosted_rooms:\n  max_members: {value}\n")
+    assert _big_service(store).discussion_limits.max_members == discussion.DEFAULT_MAX_MEMBERS

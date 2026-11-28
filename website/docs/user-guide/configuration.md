@@ -2931,6 +2931,23 @@ Rooms set to pick who answers automatically (Room settings, `routing: auto`) mak
 one short JSON model call per unaddressed message through `auxiliary.group_router`
 (provider/model/timeout like every other auxiliary task; default timeout 20 s).
 
+### Room size
+
+```yaml
+hosted_rooms:
+  max_members: 6       # Most Bots a hosted room may seat (2-24)
+```
+
+`max_members` caps how many Bots `groups.create` and a membership edit
+(**Manage members**) may seat in a native hosted room. It defaults to 6 and accepts
+2 to 24. An invalid value is logged and ignored like the discussion keys (all
+`hosted_rooms` limits then use their defaults). Lowering it never takes an existing
+larger room offline: the room keeps its members and keeps working, but a membership
+edit is refused while the new roster would still exceed the limit. `groups.state`
+reports the value as `driver_status.max_members` so clients can size their member
+pickers; Desktop's own pickers still stop at six Bots. Restart every process sharing
+the room store after changing it.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

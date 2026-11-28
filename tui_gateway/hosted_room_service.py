@@ -115,10 +115,19 @@ def _discussion_limits(root: Path) -> discussion.DiscussionLimits:
             raise discussion.DiscussionValidationError("hosted_rooms.discussion must be a mapping")
         return discussion.DiscussionLimits(
             max_rounds=settings.get("max_rounds", discussion.MAX_DISCUSSION_ROUNDS),
-            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES))
+            max_messages=settings.get("max_messages", discussion.MAX_DISCUSSION_MESSAGES),
+            max_members=rooms.get("max_members", discussion.DEFAULT_MAX_MEMBERS))
     except discussion.DiscussionValidationError as exc:
         logger.warning("ignoring hosted_rooms.discussion in %s/config.yaml: %s", root, exc)
         return discussion.DiscussionLimits()
+
+
+def room_member_limit(root: Path | None = None) -> int:
+    """How many Bots a new room or a membership edit may seat, from the room owner's ``hosted_rooms.max_members``."""
+    if root is None:
+        from hermes_constants import get_default_hermes_root
+        root = Path(get_default_hermes_root())
+    return _discussion_limits(Path(root)).max_members
 
 
 def _hosted_room_turn_timeout_seconds() -> float:
@@ -208,7 +217,8 @@ class HostedRoomService:
         self._state_lock = threading.Lock()
         self.policy_checkpoint = HostedRoomPolicyCheckpoint(
             self.store, placement=self.placement,
-            # Every Continue grants one more budget, so one discussion's projection holds up to that many.
+            # Every Continue grants one more budget, so one discussion's projection holds up to that many. Sized by
+            # the hard ceiling, not hosted_rooms.max_members: a room seated before that setting was lowered still fits.
             max_active_events=(1 + 2 * discussion.MAX_DISCUSSION_MEMBERS * self.discussion_limits.max_rounds + 2)
             * (router.MAX_DISCUSSION_CONTINUES + 1))
         self.rpc = self._make_rpc(server)
@@ -929,7 +939,8 @@ class HostedRoomService:
         self.runtime.wakeup()
 
     def create_room(self, *, room_id: str, name: str, members: Any) -> dict[str, Any]:
-        normalized = discussion.validate_roster(members, local_profiles=self.local_profiles())
+        normalized = discussion.validate_roster(
+            members, local_profiles=self.local_profiles(), max_members=self.discussion_limits.max_members)
         room = hosted_rooms.create_room(
             self.store, placement=self.placement, room_id=room_id, name=name,
             members=[
@@ -941,6 +952,55 @@ class HostedRoomService:
             authority_gateway_id=hosted_rooms.local_authority_gateway_id())
         self.runtime.wakeup()
         return room
+
+    def replace_members(self, *, room_id: str, event_id: str, expected_revision: int, members: Any,
+                        eligible_profiles=None, refused_profiles=None) -> dict[str, Any]:
+        from gateway.session_hosted_members import refuse_unseatable
+        from session_rules.hosted_rooms import _event_id
+        room_id = hosted_rooms._room_id(room_id)
+        event_id = f"members:{_event_id(event_id)}"
+        # Check the wrapped id too: the membership operation owns its event namespace.
+        _event_id(event_id)
+        expected_revision = hosted_rooms._non_negative(expected_revision, "expected_revision")
+        with self._policy_lock:
+            room = self._room(room_id)
+            gateway_id, epoch = _authority(room)
+            if gateway_id != hosted_rooms.local_authority_gateway_id():
+                raise AuthorityConflictError("This Group Chat is managed by another gateway.")
+            previous_edit = self.store.hosted_rooms.event_by_id(
+                placement=self.placement, room_id=room_id, event_id=event_id)
+            recorded_members = (previous_edit["payload"]["members"]
+                                if previous_edit is not None and previous_edit["kind"] == "room.members_changed" else [])
+            known_local_profiles = {member["profile"] for member in (*room["members"], *recorded_members)
+                                    if (member.get("target") or {}).get("kind") != "peer"}
+            # The authenticated caller's roster applies to new seats. Existing seats can be kept
+            # when their profile is offline. An exact replay can also name a since-retired Bot.
+            eligible = set(self.local_profiles() if eligible_profiles is None else eligible_profiles)
+            normalized = discussion.validate_roster(
+                members, local_profiles=eligible | known_local_profiles,
+                max_members=self.discussion_limits.max_members)
+            roster = [{"member_id": m.member_id, "profile": m.profile, "handle": m.handle, "target": dict(m.target),
+                       **({"display_name": m.display_name} if m.display_name else {})} for m in normalized]
+            ready = False
+            if previous_edit is None:
+                old_ids = {member["member_id"] for member in room["members"]}
+                additions = [member for member in roster
+                             if member["target"]["kind"] == "local" and member["member_id"] not in old_ids]
+                refuse_unseatable(additions, refused_profiles or {})
+                if any(member["profile"] not in eligible for member in additions):
+                    raise discussion.DiscussionValidationError("A new Bot must be eligible on this gateway.")
+                ready = not self._policy_snapshot(room).events and self._room_outcomes_published(room_id)
+            return self.store.hosted_rooms.replace_members(
+                placement=self.placement, room_id=room_id, event_id=event_id, members=roster,
+                expected_revision=expected_revision, expected_latest_seq=int(room["latest_seq"]),
+                authority_gateway_id=gateway_id, authority_epoch=epoch, ready=ready)
+
+    def _room_outcomes_published(self, room_id: str) -> bool:
+        # A terminal task's reply may still be waiting to publish. Treat that interval as busy.
+        tasks = driver.list_tasks(self.store, placement=self.placement, room_id=room_id)
+        return all(task["status"] in {"settled", "failed", "cancelled"} and self.policy_checkpoint.publication_exists(
+            room_id=room_id, task_id=task["identity"].task_id, status=task["status"],
+            execution_generation=task["execution_generation"]) for task in tasks)
 
     def send(self, *, room_id: str, event_id: str, payload: Any) -> dict[str, Any]:
         from gateway.session_hosted_attachments import append_user_event
@@ -1244,6 +1304,7 @@ class HostedRoomService:
             "member_activity": member_activity,
             "last_error": self._prepare_stalls.last_error(room_id),
             "max_rounds": self.discussion_limits.max_rounds,
+            "max_members": self.discussion_limits.max_members,
             "max_continues": router.MAX_DISCUSSION_CONTINUES,
             "routing_modes": list(ROUTING_MODES),
             "peer_routes": routes}

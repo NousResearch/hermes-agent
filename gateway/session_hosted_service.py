@@ -174,7 +174,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
 
     def create_room(self, *, room_id, name, members, owner=None):
         from gateway.hosted_room_discussion import validate_roster
-        normalized = validate_roster(members, local_profiles=self.local_profiles())
+        from tui_gateway.hosted_room_service import room_member_limit
+        normalized = validate_roster(members, local_profiles=self.local_profiles(), max_members=room_member_limit())
         room = self.insert_room(room_id=room_id, name=name, owner=owner, members=[
             {'member_id': member.member_id, 'profile': member.profile, 'handle': member.handle,
              'target': dict(member.target or {}),

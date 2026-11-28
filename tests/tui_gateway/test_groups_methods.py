@@ -62,6 +62,20 @@ def _create_room():
 
 
 
+def test_standalone_service_edits_members_in_existing_room(home):
+    room = _create_room()
+    reviewer = home / "profiles" / "reviewer"
+    reviewer.mkdir()
+    (reviewer / "config.yaml").write_text("{}\n")
+    response = _result(srv._methods["groups.members.update"](1, {
+        "room_id": room["room_id"], "event_id": "replace-ops", "expected_revision": room["revision"],
+        "members": [room["members"][0], {"member_id": "reviewer", "profile": "reviewer", "handle": "reviewer"}],
+    }))
+    assert response["room"]["room_id"] == room["room_id"]
+    assert [member["member_id"] for member in response["room"]["members"]] == ["default", "reviewer"]
+    assert "groups.members.update" in _result(srv._methods["groups.capabilities"](1, {}))["methods"]
+
+
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
     monkeypatch.setenv("API_SERVER_KEY", "gateway-api-key-1234567890")
     monkeypatch.setenv("HERMES_PROFILE", "reviewer")

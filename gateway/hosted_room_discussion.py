@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Any, Literal
 
@@ -27,7 +27,11 @@ from gateway.hosted_rooms_common import compact_json
 from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
-MAX_DISCUSSION_MEMBERS = 6
+# The most Bots a hosted room can ever hold: stored rooms and replays validate against this, so lowering
+# ``hosted_rooms.max_members`` never takes an existing room offline.
+MAX_DISCUSSION_MEMBERS = 24
+# How many Bots a new room or a membership edit may seat unless ``hosted_rooms.max_members`` says otherwise.
+DEFAULT_MAX_MEMBERS = 6
 MIN_DISCUSSION_MEMBERS = 2
 MAX_DISCUSSION_ROUNDS = 3
 MAX_DISCUSSION_MESSAGES = 10
@@ -104,10 +108,16 @@ class DiscussionLimits:
 
     max_rounds: int = MAX_DISCUSSION_ROUNDS
     max_messages: int = MAX_DISCUSSION_MESSAGES
+    # Seats a create or membership edit may fill (``hosted_rooms.max_members``); never above the hard ceiling.
+    max_members: int = DEFAULT_MAX_MEMBERS
 
     def __post_init__(self) -> None:
         _positive_int(self.max_rounds, label="hosted_rooms.discussion.max_rounds")
         _positive_int(self.max_messages, label="hosted_rooms.discussion.max_messages")
+        _positive_int(self.max_members, label="hosted_rooms.max_members")
+        if not MIN_DISCUSSION_MEMBERS <= self.max_members <= MAX_DISCUSSION_MEMBERS:
+            raise DiscussionValidationError(
+                f"hosted_rooms.max_members must be between {MIN_DISCUSSION_MEMBERS} and {MAX_DISCUSSION_MEMBERS}")
 
 
 @dataclass(frozen=True)
@@ -186,6 +196,7 @@ class _ValidatedEvent:
     kind: str
     actor: Payload
     payload: Payload
+    member_handle: str | None = None
 
 
 _identifier = partial(common.identifier, error=DiscussionValidationError, max_chars=driver.MAX_IDENTIFIER_CHARS)
@@ -295,13 +306,17 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     return DiscussionMember(member_id, profile, handle, display_name, target)
 
 
-def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[DiscussionMember, ...]:
-    """Validate a frozen 2-6 member roster of profiles on this gateway."""
+def validate_roster(
+    value: Any, *, local_profiles: Iterable[str], max_members: int = MAX_DISCUSSION_MEMBERS
+) -> tuple[DiscussionMember, ...]:
+    """Validate a roster of profiles on this gateway. A stored room checks against the hard ceiling; a create or
+    membership edit passes the configured ``hosted_rooms.max_members``."""
     if not isinstance(value, list):
         raise DiscussionValidationError("members must be a list")
-    if not MIN_DISCUSSION_MEMBERS <= len(value) <= MAX_DISCUSSION_MEMBERS:
+    if not MIN_DISCUSSION_MEMBERS <= len(value) <= max_members:
+        hint = "" if max_members >= MAX_DISCUSSION_MEMBERS else " (raise hosted_rooms.max_members in config.yaml for more)"
         raise DiscussionValidationError(
-            f"members must contain between {MIN_DISCUSSION_MEMBERS} and {MAX_DISCUSSION_MEMBERS} entries")
+            f"members must contain between {MIN_DISCUSSION_MEMBERS} and {max_members} entries{hint}")
     known_profiles = {_identifier(profile, label="local profile") for profile in local_profiles}
     members: list[DiscussionMember] = []
     targets: set[str] = set()
@@ -498,9 +513,14 @@ def _validate_event(raw: Any, *, room: DiscussionRoom, previous_seq: int) -> _Va
             raise DiscussionValidationError(message)
     if kind in _EPOCH_STAMPED_KINDS and raw.get("authority_epoch") != room.authority_epoch:
         raise DiscussionValidationError(f"{kind} authority epoch does not match the room")
+    if (historical := raw.get("_historical_members")) is not None:
+        # History may name a profile that has since been removed from the room and deleted.
+        room = replace(room, members=validate_roster(historical, local_profiles={m["profile"] for m in historical}))
     if (validator := _EVENT_VALIDATORS.get(kind)) is not None:
         payload = validator(kind, payload, actor, room)
-    return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload)
+    handle = _member_by_id(room, payload["member_id"]).handle if kind == "message.member" else None
+    return _ValidatedEvent(raw=raw, seq=seq, event_id=event_id, kind=kind, actor=actor, payload=payload,
+                           member_handle=handle)
 
 
 def _validated_events(events: Sequence[Mapping[str, Any]], *, room: DiscussionRoom) -> tuple[_ValidatedEvent, ...]:
@@ -572,7 +592,7 @@ def _scheduled_job(event: _ValidatedEvent | None) -> str | None:
     return str(event.actor.get("display_name") or event.actor.get("id"))
 
 
-def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
+def _format_message(event: _ValidatedEvent) -> str:
     if event.kind == "message.user" and (job := _scheduled_job(event)) is None:
         return f"User (user): {event.payload['text']}"
     # Scheduled output is agent-written too (often a summary of fetched content), so it gets the same
@@ -580,7 +600,7 @@ def _format_message(event: _ValidatedEvent, room: DiscussionRoom) -> str:
     text = _MEMBER_CONTROL_FRAME_RE.sub(_MEMBER_CONTROL_FRAME_RELABEL, event.payload["text"])
     if event.kind == "message.user":
         return f'Scheduled job "{job}" (automated post, not the user): {text}'
-    return f"@{_member_by_id(room, event.payload['member_id']).handle}: {text}"
+    return f"@{event.member_handle}: {text}"
 
 
 def _truncate_utf8_text(value: Any, *, max_bytes: int, suffix: str = "") -> str:
@@ -631,7 +651,7 @@ def _build_prompt(
     available = max(0, driver.MAX_PROMPT_BYTES - fixed_bytes - 1)
     selected: list[str] = []
     for event in reversed(delta):
-        line = f"  {_format_message(event, room)}"
+        line = f"  {_format_message(event)}"
         if (line_bytes := len(line.encode("utf-8")) + 1) > available:
             if not selected and available > 32:
                 selected.append(_truncate_utf8_text(line, max_bytes=available))

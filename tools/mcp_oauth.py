@@ -6,7 +6,9 @@ refresh; this module supplies ``HermesTokenStorage`` (on-disk persistence) and t
 listener. client_id is Hermes' Client ID Metadata
 Document URL (CIMD) when the server supports it, else RFC 7591 DCR. ``mcp_servers.<name>.oauth`` keys
 (all optional): client_id, client_secret, scope, redirect_port, redirect_uri (proxy callback),
-redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
+redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout, auth_server_url
+(alias: issuer — pin the authorization server to discover against, e.g. a Microsoft Entra
+tenant-specific authority instead of the tenant-agnostic ``common`` one a resource advertises)."""
 
 import asyncio
 import contextlib
@@ -1142,6 +1144,21 @@ def _resolve_redirect_uri(cfg: dict, port: int) -> str:
     derivation so client metadata and pre-registered info stay identical. ``redirect_host`` only changes
     the hostname (some WAFs reject a literal ``127.0.0.1``); the listener still binds ``127.0.0.1``."""
     return cfg.get("redirect_uri") or f"http://{cfg.get('redirect_host') or '127.0.0.1'}:{port}/callback"
+
+
+def configured_auth_server_override(cfg: dict | None) -> str | None:
+    """``oauth.auth_server_url`` (alias ``oauth.issuer``): the authorization server to use instead of
+    the one the resource's protected-resource metadata advertises; None when unset.
+
+    Microsoft Entra is why it exists: Business Central (and other Entra-fronted MCP servers) advertise
+    the tenant-agnostic ``https://login.microsoftonline.com/common/v2.0``, whose metadata names the
+    TEMPLATED issuer ``https://login.microsoftonline.com/{tenantid}/v2.0``, so the RFC 8414 §3.3 issuer
+    check rejects every login. The tenant-specific authority returns a concrete issuer equal to itself,
+    so pinning it satisfies the check unchanged — no validation is relaxed. Provider-agnostic."""
+    cfg = cfg or {}
+    val = cfg.get("auth_server_url") or cfg.get("issuer")
+    val = str(val).strip() if val else ""
+    return val or None
 
 
 # Figma's remote MCP allowlists DCR by client_name ("Claude Code"/"Codex" register, others 403);

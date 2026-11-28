@@ -19,6 +19,7 @@ from persistence.sqlite._schema_ddl import (
 from persistence.sqlite.conversation._store.sql_common import _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _in_one_read, _placeholders
 from functools import partial
 from persistence.sqlite.conversation._store.compaction_display import later_tool_copy_ids, not_a_later_tool_copy_sql
+from persistence.conversation.durable_redaction import redact_message_content, redact_message_text
 from persistence.sqlite.conversation._store.core import REACTIONS_METADATA_KEY, _CONTENT_JSON_PREFIX, _CONVERSATION_ROW_COLUMNS
 from persistence.sqlite.conversation._store.identity import (
     _absorbed_uids_json, _restore_identity_columns, _stable_tool_key, _tool_call_uid_map, _tool_call_uid_or_none,
@@ -190,8 +191,11 @@ def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: di
     *keep_reasoning* False NULLs every reasoning column). ``platform_message_id`` falls back to
     ``message_id`` (yuanbao's message-dict convention)."""
     _str_or_none = lambda v: _scrub_surrogates(v) if isinstance(v, str) else None
+    api_content = msg.get("api_content")
+    if isinstance(api_content, str):
+        api_content = redact_message_text(api_content)
     _reasoning = lambda key: msg.get(key) if keep_reasoning else None
-    encoded_content = _encode_content(msg.get("content"))
+    encoded_content = _encode_content(redact_message_content(msg.get("content")))
     encoded_tool_calls = json.dumps(tool_calls) if tool_calls else None
     encoded_tool_name = _scrub_surrogates(msg.get("tool_name"))
     display_metadata = msg.get("display_metadata")
@@ -213,7 +217,7 @@ def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: di
           for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
         msg.get("platform_message_id") or msg.get("message_id"),
         1 if msg.get("observed") else 0, 1 if msg.get("_compressed_summary") else 0, 1,
-        _str_or_none(msg.get("api_content")), _str_or_none(msg.get("display_kind")),
+        _str_or_none(api_content), _str_or_none(msg.get("display_kind")),
         display_metadata, _display_identity(_display_dedupe_key(holder, identity_row)),
         message_uid_or_none(msg), _absorbed_uids_json(msg),
         _tool_call_uids_json(msg), _tool_call_uid_or_none(msg))
@@ -998,11 +1002,12 @@ def set_user_message_content(holder: StoreHolder, session_id: str, row_id: int, 
     if display_metadata is None:
         return holder._write_rowcount(
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-            (_encode_content(content), row_id, session_id))
+            (_encode_content(redact_message_content(content)), row_id, session_id))
     return holder._write_rowcount(
         f"UPDATE messages SET content = ?, api_content = NULL, display_metadata = {_MERGE_DISPLAY_META} "
         "WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
-        (_encode_content(content), _encode_display_metadata(display_metadata), row_id, session_id))
+        (_encode_content(redact_message_content(content)), _encode_display_metadata(display_metadata),
+         row_id, session_id))
 
 
 def deactivate_message(holder: StoreHolder, session_id: str, row_id: int) -> int:

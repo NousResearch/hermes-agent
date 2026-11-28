@@ -640,12 +640,15 @@ class _FakeWinCall:
         return self.answer(*args) if callable(self.answer) else self.answer
 
 
-def _run_join_launcher(monkeypatch, *, stray_polls: int, escaped: bool = False, rebind: int = 1):
-    """Execute the real ``_JOIN_JOB`` launcher source against a recording kernel32/ntdll and a
-    fake leader process. The command's job reports ``stray_polls`` live processes (a build
-    grandchild still writing) before its tree is empty. ``escaped``: the suspended command
-    starts outside the update job (Store Python's breakaway), and assigning it there answers
-    ``rebind``. Returns the ordered events."""
+def _run_join_launcher(monkeypatch, *, stray_polls: int, job_list_ok: int = 1, create_ok: int = 1):
+    """Execute the real ``_JOIN_JOB`` launcher source against a recording kernel32 and a fake
+    command. The launcher now creates the command with ``PROC_THREAD_ATTRIBUTE_JOB_LIST``
+    carrying BOTH jobs — the update job (11) and the command's own tree (22) — so the command is
+    born inside both and no post-creation Assign happens (2026-10-28: the Assign step was the
+    one that failed in the field). ``job_list_ok=0``: arming the list fails, the command must
+    never be created. ``create_ok=0``: CreateProcess fails. The command's job reports
+    ``stray_polls`` live processes before its tree is empty. Returns the ordered events.
+    """
     import ctypes
     import types
 
@@ -653,47 +656,79 @@ def _run_join_launcher(monkeypatch, *, stray_polls: int, escaped: bool = False, 
 
     events = []
     live = {"left": stray_polls}
+    recorded = {}
 
     def query(job, info_class, usage, size, _ret):
+        # BUSY until the command's tree is empty; the launcher must poll, not assume.
         usage._obj.active = 1 if live["left"] > 0 else 0
         live["left"] -= 1
         return 1
 
-    placed = {"update job": not escaped}
-
-    def assign(job, proc):
-        if tuple(getattr(a, "value", a) for a in (job, proc)) != (11, 33):
-            return 1
-        placed["update job"] = bool(rebind)
-        return rebind
-
-    def in_job(proc, job, inside):
-        inside._obj.value = int(placed["update job"])
+    def init_attrs(attrs, count, flags, size):
+        if not attrs:
+            size._obj.value = 48      # first call: report the required buffer size
         return 1
 
-    kernel32 = {"AssignProcessToJobObject": assign, "GetCurrentProcess": 7, "CloseHandle": 1, "CreateJobObjectW": 22,
-                "SetInformationJobObject": 1, "TerminateJobObject": 1, "QueryInformationJobObject": query,
-                "IsProcessInJob": in_job}
+    def update_attr(attrs, flags, name, values, size, prev, ret):
+        if not job_list_ok:
+            return 0
+        n = size // ctypes.sizeof(ctypes.c_void_p)
+        vals = tuple(values[i].value if hasattr(values[i], "value") else values[i] for i in range(n))
+        recorded["job_list"] = vals
+        events.append(("UpdateProcThreadAttribute", vals))
+        return 1
+
+    def create_process(app, cmdline, pa, ta, inherit, flags, env, cwd, si, pi):
+        if not create_ok:
+            return 0
+        events.append(("CreateProcessW", tuple(recorded.get("job_list", ()))))
+        pi._obj.hProcess = 33
+        pi._obj.hThread = 34
+        return 1
+
+    def resume(thread):
+        events.append(("ResumeThread", thread))
+        return 1
+
+    def wait(proc, ms):
+        events.append(("leader exited",))
+        return 0
+
+    def exit_code(proc, code):
+        code._obj.value = 3
+        return 1
+
+    def in_job(proc, job, inside):
+        inside._obj.value = 1          # created inside both jobs (job_list)
+        return 1
+
+    def close(handle):
+        events.append(("CloseHandle", handle))
+        return 1
+
+    kernel32 = {
+        "AssignProcessToJobObject": lambda job, proc: 1,   # launcher joins the update job itself
+        "GetCurrentProcess": 7,
+        "CloseHandle": close,
+        "CreateJobObjectW": 22,
+        "SetInformationJobObject": 1,
+        "TerminateJobObject": 1,
+        "QueryInformationJobObject": query,
+        "InitializeProcThreadAttributeList": init_attrs,
+        "UpdateProcThreadAttribute": update_attr,
+        "CreateProcessW": create_process,
+        "GetStdHandle": 55,
+        "ResumeThread": resume,
+        "WaitForSingleObject": wait,
+        "GetExitCodeProcess": exit_code,
+        "IsProcessInJob": in_job,
+        "TerminateProcess": lambda proc, code: 1,
+    }
     dlls = {"kernel32": types.SimpleNamespace(**{n: _FakeWinCall(n, events, a) for n, a in kernel32.items()}),
             "ntdll": types.SimpleNamespace(NtResumeProcess=_FakeWinCall("NtResumeProcess", events, 0))}
-    # The real ctypes (its Structure, byref, c_* types), with Windows' DLL loader recorded.
     monkeypatch.setattr(ctypes, "WinDLL", lambda name, **_kw: dlls[name], raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 0, raising=False)
-
-    class _Leader:
-        _handle = 33
-
-        def __init__(self, argv, **kwargs):
-            events.append(("Popen", tuple(argv), kwargs.get("creationflags")))
-
-        def wait(self):
-            events.append(("leader exited",))
-            return 3
-
-        def kill(self):
-            events.append(("kill",))
-
-    monkeypatch.setattr(subprocess, "Popen", _Leader)
+    monkeypatch.setattr(subprocess, "list2cmdline", lambda argv: " ".join(argv), raising=False)
     monkeypatch.setattr(sys, "argv", ["launcher", "11", "report.txt", "npm", "run", "build"])
     with pytest.raises(SystemExit) as exited:
         exec(compile(_JOIN_JOB, "<join-job>", "exec"), {"__name__": "__main__"})
@@ -712,8 +747,10 @@ def test_the_windows_build_launcher_reaps_the_command_tree_before_it_returns(mon
     children) and return only once no process of it is left, with the leader's exit status."""
     events = _run_join_launcher(monkeypatch, stray_polls=2)
     tree = 22
-    assert _index(events, "AssignProcessToJobObject", tree, 33) < _index(events, "NtResumeProcess"), \
-        "the command ran before it was held in its own job"
+    assert _index(events, "UpdateProcThreadAttribute") < _index(events, "ResumeThread"), \
+        "the command ran before the job list was armed"
+    assert any(e[0] == "UpdateProcThreadAttribute" and e[1] == (11, tree) for e in events), \
+        "the command must be born inside both the update job and its own tree"
     assert _index(events, "leader exited") < _index(events, "TerminateJobObject", tree), events
     assert not any(e[0] == "TerminateJobObject" and e[1] != tree for e in events), "terminated the update job"
     polls = [i for i, e in enumerate(events) if e[0] == "QueryInformationJobObject"]
@@ -722,25 +759,24 @@ def test_the_windows_build_launcher_reaps_the_command_tree_before_it_returns(mon
     assert events[-1] == ("exit", 3), events
 
 
-def test_a_build_command_that_starts_outside_the_update_job_is_put_in_it_before_it_runs(monkeypatch, tmp_path):
-    """F80: under Store Python the suspended node starts outside the update job (desktop-app
-    breakaway through a job that permits breakaway); refusing it made every Node build of the
-    update fail. It is assigned to the update job while suspended and runs once it is in."""
-    monkeypatch.chdir(tmp_path)  # a refusal writes its report file (argv[2]) relative to here
-    events = _run_join_launcher(monkeypatch, stray_polls=0, escaped=True)
-    assert _index(events, "AssignProcessToJobObject", 11, 33) < _index(events, "NtResumeProcess"), \
-        "the command ran before it was in the update job"
+def test_the_command_is_born_inside_both_the_update_job_and_its_own_tree(monkeypatch):
+    """F80/F54 kept, stronger: the command is created with PROC_THREAD_ATTRIBUTE_JOB_LIST
+    carrying the update job and its own tree, so it belongs to both from its first instruction —
+    no post-creation Assign, which is the step that failed in the field (2026-10-28)."""
+    events = _run_join_launcher(monkeypatch, stray_polls=0)
+    assert any(e[0] == "UpdateProcThreadAttribute" and e[1] == (11, 22) for e in events), events
+    assert _index(events, "CreateProcessW") > _index(events, "UpdateProcThreadAttribute"), \
+        "the command was created before its jobs were armed"
     assert events[-1] == ("exit", 3), events
 
 
-def test_a_build_command_the_update_job_will_not_take_never_runs(monkeypatch, tmp_path):
-    """F54 kept: a suspended command outside the job that Windows also refuses to assign to it
-    is killed before its first instruction and the launcher refuses."""
+def test_a_command_windows_will_not_put_in_the_jobs_never_runs(monkeypatch, tmp_path):
+    """F54 kept: if the job list cannot be armed, the command is never created."""
     from hermes_cli.update_custody import _REFUSED_EXIT
 
     monkeypatch.chdir(tmp_path)
-    events = _run_join_launcher(monkeypatch, stray_polls=0, escaped=True, rebind=0)
-    assert not any(e[0] == "NtResumeProcess" for e in events) and ("kill",) in events, events
+    events = _run_join_launcher(monkeypatch, stray_polls=0, job_list_ok=0)
+    assert not any(e[0] == "CreateProcessW" for e in events), events
     assert events[-1] == ("exit", _REFUSED_EXIT), events
 
 

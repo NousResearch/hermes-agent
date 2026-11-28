@@ -18,7 +18,8 @@ from persistence.conversation.sessions import CANONICAL_BOT_CHAT_TITLE
 from persistence.core.errors import ExportTooLarge
 from persistence.core.identity import SessionId
 from persistence.housekeeping.maintenance import (
-    SESSION_PROJECTION_FIELDS, PruneCandidate, PruneCriteria, PruneReclaimEstimate, PruneResult, TreeServeFacts,
+    SESSION_PROJECTION_FIELDS, TOOL_PAYLOAD_TOMBSTONE, PruneCandidate, PruneCriteria, PruneReclaimEstimate, PruneResult,
+    TreeServeFacts,
 )
 
 from .._backend import SQLiteStore, register_repository, translated
@@ -41,6 +42,8 @@ _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
 # Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
 # < 3.32, 32766 after), and a bulk prune of a cron-heavy store binds tens of thousands of ids.
 _SQL_IN_CHUNK = 900
+# Sessions per tool-payload elision write: each write holds the writer lock only for that batch's rows.
+_ELIDE_SESSIONS_PER_WRITE = 50
 
 
 def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
@@ -267,6 +270,31 @@ class SQLiteSessionMaintenance(SessionPortability):
             holder = self._store.holder()
             count = holder._execute_write(_do)
         return PruneResult(count=count, deleted_ids=tuple(SessionId(sid) for sid in removed_ids))
+
+    def elide_tool_payloads(self, *, cutoff: float) -> int:
+        # Session-first: the eligible set is a sessions read; each batch is then the
+        # idx_messages_session range of its sessions, so no statement scans all of messages.
+        with translated():
+            holder = self._store.holder()
+            eligible = [row[0] for row in holder._read_all(
+                f"SELECT s.id FROM sessions s WHERE s.ended_at IS NOT NULL AND s.ended_at < ?"
+                f" AND {_not_pinned_sql()} AND {_LAST_ACTIVE_SQL} < ? ORDER BY s.started_at",
+                (cutoff, cutoff))]
+            total = 0
+            for chunk in _id_chunks(eligible, _ELIDE_SESSIONS_PER_WRITE):
+                def _do(conn, chunk=chunk):
+                    # Guards and the ended/pinned predicates are re-read under the write lock.
+                    sids = [sid for sid in chunk if sid not in _guarded_ids(holder, conn, chunk)]
+                    if not sids:
+                        return 0
+                    return conn.execute(
+                        f"UPDATE messages SET content = ?, api_content = NULL WHERE session_id IN ({_placeholders(sids)})"
+                        " AND role = 'tool' AND timestamp < ? AND length(CAST(content AS BLOB)) > ?"
+                        " AND session_id IN (SELECT s.id FROM sessions s WHERE s.ended_at IS NOT NULL"
+                        f" AND {_not_pinned_sql()})",
+                        (TOOL_PAYLOAD_TOMBSTONE, *sids, cutoff, len(TOOL_PAYLOAD_TOMBSTONE.encode()))).rowcount
+                total += holder._execute_write(_do) or 0
+        return total
 
     def prune_empty_ghost_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
         cutoff = time.time() - 86400

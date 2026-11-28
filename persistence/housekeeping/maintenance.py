@@ -26,6 +26,7 @@ __all__ = [
     "ORPHAN_REAP_END_REASON",
     "PRUNE_FILTER_NAMES",
     "SESSION_PROJECTION_FIELDS",
+    "TOOL_PAYLOAD_TOMBSTONE",
     "ExportedMessage",
     "ForeignImportResult",
     "ForeignOrigin",
@@ -53,6 +54,9 @@ GHOST_SESSION_MIN_AGE = timedelta(hours=24)
 
 #: Sources whose stale open rows the automatic prune reaps.
 AUTO_PRUNE_STALE_OPEN_SOURCES: tuple[str, ...] = ("cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered")
+
+#: What ``elide_tool_payloads`` leaves in an aged tool row's ``content`` (``sessions.tool_payload_retention_days``).
+TOOL_PAYLOAD_TOMBSTONE = "[tool output removed after the sessions.tool_payload_retention_days window]"
 
 #: Keyword names the prune filters accept.
 PRUNE_FILTER_NAMES = frozenset({
@@ -309,6 +313,10 @@ class SessionMaintenance(Protocol):
 
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: Optional[str] = None, *, criteria: PruneCriteria = PruneCriteria(), exclude_active_write_guards: bool = False, media_root: str) -> PruneResult:
         """Delete the ended rows the whole-lineage selection matches, in one write: a compression ancestor is kept while any continuation after it is not selected; with ``exclude_active_write_guards`` a row under a live turn lease or compression lock is skipped (expired guards are reclaimed); a row whose ledger holds work is skipped; deleted ids are retired. Children of deleted rows are detached, never cascaded. ``criteria.include_open`` raises ``ValueError``. ``media_root`` as for ``SessionRepository.delete``."""
+        ...
+
+    def elide_tool_payloads(self, *, cutoff: float) -> int:
+        """Replace the ``content`` of every ``role='tool'`` row stamped before ``cutoff`` with :data:`TOOL_PAYLOAD_TOMBSTONE` (clearing its ``api_content`` sidecar so a replay never resends the old bytes), in each session that is ended, not pinned (nor a pinned segment's continuation), not under a live write guard, and whose recency and ``ended_at`` are both before ``cutoff``. Returns the rows changed. Every other column and every non-tool row stays as stored; content no longer than the tombstone (in bytes, so NUL-prefixed multimodal content counts in full) is left alone, so a row never grows and a rerun changes nothing. Eligibility is re-read on every pass (no resume cursor), so a session that was pinned, guarded or open on one pass is reached on a later one. One short write per batch of sessions."""
         ...
 
     def prune_empty_ghost_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:

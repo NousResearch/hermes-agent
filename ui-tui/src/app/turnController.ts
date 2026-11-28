@@ -441,7 +441,7 @@ class TurnController {
     if (partial || tools.length) {
       const text = interruptedText(partial)
 
-      appendMessage({ role: 'assistant', text, ...(tools.length && { tools }) })
+      appendMessage({ role: 'assistant', text, ...(tools.length && { tools }), ...(!partial && { noAnswer: true }) })
       this.sealedInterrupt = { partial, text }
     } else {
       sys(t('session.turn.interrupted'))

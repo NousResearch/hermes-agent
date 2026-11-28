@@ -11,6 +11,7 @@ import {
   describeTurnFailure,
   isVersionSkewError,
   lastStderrLine,
+  markFailureNoAnswer,
   promptTimeoutNotice,
   setRpcErrorLogSink,
   shouldFallbackToDispatch,
@@ -21,6 +22,19 @@ import { applyLocale, resetLocale } from '../i18n/runtime.js'
 
 // Behaviour contracts for the user-facing wording, not snapshots: each test
 // asserts the message names what happened and cites the real next step.
+
+describe('markFailureNoAnswer', () => {
+  const answer = { role: 'assistant' as const, text: 'Let me look that up first.' }
+  const failure = { role: 'assistant' as const, text: 'Provider error' }
+
+  it('tags only the trailing failure copy so /copy skips it, never a partial reply', () => {
+    const out = markFailureNoAnswer([answer, failure], { status: 'error' })
+
+    expect(out.map(m => m.noAnswer)).toEqual([undefined, true])
+    expect(markFailureNoAnswer([answer], { partial: true, status: 'error' })[0]!.noAnswer).toBeUndefined()
+    expect(markFailureNoAnswer([answer], { status: 'complete' })[0]!.noAnswer).toBeUndefined()
+  })
+})
 
 describe('describeTurnFailure', () => {
   it('turns an auth error_surface into a plain title, a Details line and the /model + /retry hint', () => {

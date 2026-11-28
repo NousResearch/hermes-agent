@@ -278,6 +278,27 @@ describe('createSlashHandler', () => {
     expect(writeClipboardText).not.toHaveBeenCalled()
   })
 
+  it('bare /copy skips interrupt markers and failure cards for the last real answer', async () => {
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'assistant', text: 'the real answer' },
+          { noAnswer: true, role: 'assistant', text: '*[interrupted]*' },
+          { noAnswer: true, role: 'assistant', text: 'Provider error: 503' }
+        ])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeClipboardText).toHaveBeenCalledWith('the real answer')
+    })
+  })
+
   it('keeps native-first copy in local tmux sessions', async () => {
     const tmuxBackup = process.env.TMUX
     process.env.TMUX = '/tmp/tmux-123/default,1,0'

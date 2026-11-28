@@ -656,10 +656,9 @@ template:
 [Specific values, error messages, configuration details]
 ```
 
-Summary budget scales with the amount of content being compressed:
-- Formula: `content_tokens × 0.20` (the `_SUMMARY_RATIO` constant)
-- Minimum: 2,000 tokens
-- Maximum: `min(context_length × 0.05, 12,000)` tokens
+The compressor estimates the tokens in the messages being summarized and uses 20% of that estimate as the base target, with a 2,000-token floor and a ceiling of `min(context_length × 0.05, 10,000)`. Here, `context_length` is the main model's context window. In `lean` mode, the prompt adds about 4,000 tokens to the target for the detailed session log.
+
+This is a **length target in the prompt**, not an API output limit. Hermes does not pass the budget as `max_tokens` or cut a completed summary down to that length. If the provider reports `finish_reason=length`, Hermes treats the truncated summary as a failed attempt rather than using it to replace history.
 
 ### Phase 4: Assemble Compressed Messages
 

@@ -120,6 +120,10 @@ def _live_system_guard(request, monkeypatch):
             for parent in walker.parents():
                 if parent.pid == test_pid:
                     return True
+        except _psutil.NoSuchProcess:
+            # Reaped between the lookup and the walk (a killed descendant's zombie collected by
+            # init): gone, like the stale PID above.
+            return True
         except Exception:
             return False
         return False
@@ -132,6 +136,8 @@ def _live_system_guard(request, monkeypatch):
             return False
         try:
             return _psutil.Process(pid).status() == _psutil.STATUS_ZOMBIE
+        except _psutil.NoSuchProcess:
+            return True  # reaped since the subtree walk: no process left to harm
         except Exception:
             return False
 

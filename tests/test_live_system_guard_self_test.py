@@ -399,6 +399,27 @@ def test_subprocess_run_gateway_status_passes_through():
     assert result.returncode == 0
 
 
+def test_kill_of_a_child_reaped_mid_check_passes():
+    """A killed descendant reparented to init can be reaped between the guard's subtree walk and
+    its zombie check (CI flake, test_cancelled_start_hard_kills_sigterm_ignoring_descendant). The
+    walk sees a foreign parent chain and the zombie probe then finds no process: that is a gone
+    PID, which a signal cannot harm, so the kill must pass rather than raise."""
+    import psutil
+
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    def reaped(self):
+        raise psutil.NoSuchProcess(self.pid)
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(psutil.Process, "parents", lambda self: [])  # reparented to init
+            mp.setattr(psutil.Process, "status", reaped)
+            os.kill(child.pid, signal.SIGKILL)
+    finally:
+        child.kill()
+        child.wait()
+
+
 # ──────────────────── bypass marker ─────────────────────────────
 
 

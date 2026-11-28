@@ -357,6 +357,28 @@ class TestDispatchIntegration(unittest.TestCase):
         self.assertIn("per-call ran", result["output"])
 
 
+    def test_an_environment_without_session_kernel_support_uses_per_call(self):
+        """A backend that declares supports_session_kernel = False is never given a kernel."""
+        from tools.code_execution_tool import _execute_remote
+        from unittest.mock import MagicMock
+
+        env = ScriptedEnv([
+            ("command -v python3", lambda c: {"output": "OK\n", "returncode": 0}),
+            ("python3 script.py", lambda c: {"output": "per-call ran\n", "returncode": 0}),
+        ])
+        env.supports_session_kernel = False
+        kernel = MagicMock(return_value={"status": "success", "stdout": "kernel ran\n"})
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
+             patch("tools.code_kernel_remote.execute_in_remote_kernel", kernel), \
+             patch("tools.code_execution_tool._remote_write"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=MagicMock()):
+            result = json.loads(_execute_remote("print()", "t", ["read_file"]))
+        kernel.assert_not_called()
+        self.assertIn("per-call ran", result["output"])
+
+
 class TestSharedHostLockdown(RemoteKernelBase):
     """Shared-host hardening: the kernel dir lives under a shared temp dir, so
     every dir must be owner-only, every remote write owner-only, and the RPC

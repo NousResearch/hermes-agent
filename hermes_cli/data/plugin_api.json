@@ -143,6 +143,7 @@
         "agent.usage_pricing:CostResult",
         "hermes_cli.auth_constants:AuthError",
         "tools.environments.base:BaseEnvironment",
+        "tools.environments.local:LocalEnvironment",
         "tools.environments:BaseEnvironment",
         "utils:atomic_json_write",
         "utils:read_json_or_empty"
@@ -202,6 +203,23 @@
       ]
     },
     {
+      "source": "plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent",
+      "entries": [
+        "agent.redact_vault_values:register_plugin_redaction_value",
+        "agent.vault_keychain:os_keyring",
+        "agent.vault_store:configured_key_storage",
+        "gateway.media_fetch:remote_path_is_denied",
+        "hermes_cli:__version__",
+        "plugins.computer_use:configured_backend_name",
+        "plugins.computer_use:get_active_provider",
+        "tools.image_source:MAX_INGEST_BYTES",
+        "tools.interrupt:is_interrupted",
+        "tools.patch_parser:parse_v4a_patch",
+        "tools.patch_parser:patch_file_paths",
+        "tools.skill_provenance:is_background_review"
+      ]
+    },
+    {
       "source": "plugins/index.md § platform plugins: read session identity through the task-local context",
       "entries": [
         "gateway.session_context:get_session_env"
@@ -236,6 +254,13 @@
       ]
     },
     {
+      "source": "user-guide/features/plugins.md § Plugin code inside the gateway: the running turn's policy and event",
+      "entries": [
+        "hermes_cli.plugin_session:session_policy",
+        "hermes_cli.plugin_session:turn_event"
+      ]
+    },
+    {
       "source": "plugins/index.md § Check file paths and read YAML with Hermes's own helpers",
       "entries": [
         "agent.file_safety:get_read_block_error",
@@ -244,6 +269,15 @@
         "agent.file_safety:get_write_denied_error",
         "hermes_yaml:safe_load",
         "hermes_yaml:safe_dump"
+      ]
+    },
+    {
+      "source": "plugins/index.md § Judge a command with Hermes's own approval rules",
+      "entries": [
+        "tools.approval_judge:CommandJudgement",
+        "tools.approval_judge:judge_command",
+        "tools.approval_detection:detect_dangerous_command",
+        "tools.approval_detection:detect_hardline_command"
       ]
     },
     {
@@ -308,6 +342,13 @@
         "hermes_cli.auth:resolve_nous_access_token",
         "hermes_cli.config_providers:get_custom_provider_tls_settings",
         "tools.schema_sanitizer:normalize_type_array"
+      ]
+    },
+    {
+      "source": "plugins/index.md § Run tool calls the plugin owns",
+      "entries": [
+        "tools.interrupt:InterruptScope",
+        "tools.approval:check_dangerous_command"
       ]
     }
   ]

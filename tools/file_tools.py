@@ -27,6 +27,8 @@ from tools.file_operations import (
 from tools.file_operations_common import (
     DEFAULT_READ_LIMIT, cell_read_fields, count_conflict_blocks, directory_listing, settle_tail, tail_offset,
     tail_request, tail_start)
+from tools.patch_parser import (
+    _V4A_MOVE_HEADER_RE, _V4A_SINGLE_HEADER_RE, v4a_header_paths)
 from tools import file_state
 from hermes_platform.host import facts
 from agent.redact import _is_secret_file_arg, redact_sensitive_text
@@ -130,13 +132,6 @@ def _file_ops_uses_host_paths(file_ops) -> bool:
     from tools.environments.base import env_uses_host_filesystem
 
     return env_uses_host_filesystem(env)
-
-
-# V4A file headers: group 1 = header prefix, 2 = op, 3 = path. ``\s*`` after
-# ``***`` mirrors patch_parser's leniency (``***Update File:`` applies, so it
-# must be checked).
-_V4A_SINGLE_HEADER_RE = re.compile(r'^(\*\*\*\s*(Update|Add|Delete)\s+File:\s*)(.+)$', re.MULTILINE)
-_V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
 def _rewrite_v4a_patch_paths_for_host(patch: str, path_to_resolved: dict, path_to_entry: dict,
@@ -982,35 +977,6 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         return tool_error(str(e))
 
 
-def _collect_v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
-    """Extract every path named in V4A headers, rejecting ``..`` traversal.
-
-    Returns ``(all_paths, content_write_paths, entry_paths)`` or a tool_error
-    string. Header paths come from patch CONTENT (more attacker-influenceable
-    than ``path=``, which keeps its legitimate ``..`` use). Move headers check
-    BOTH endpoints; only Update/Add write text and feed the binary-document
-    guard; Delete and Move act on the directory entry (``entry_paths``).
-    """
-    from tools.path_security import has_traversal_component
-
-    headers = [(m.group(3), m.group(2) in ("Update", "Add")) for m in _V4A_SINGLE_HEADER_RE.finditer(patch)]
-    headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
-    paths: list[str] = []
-    content_paths: list[str] = []
-    entry_paths: list[str] = []
-    for raw, writes_text in headers:
-        v4a_path = raw.strip()
-        if has_traversal_component(v4a_path):
-            return tool_error(
-                f"V4A patch header contains '..' traversal: {v4a_path!r}. "
-                "Use the agent's cwd-relative path (no '..') or an absolute "
-                "path in '*** Update File:' / '*** Add File:' / "
-                "'*** Delete File:' / '*** Move File:' headers.")
-        paths.append(v4a_path)
-        (content_paths if writes_text else entry_paths).append(v4a_path)
-    return paths, content_paths, entry_paths
-
-
 def patch_tool(mode: str = "replace", path: str | None = None, old_string: str | None = None,
                new_string: str | None = None, replace_all: bool = False, patch: str | None = None,
                task_id: str = "default", cross_profile: bool = False,
@@ -1024,9 +990,9 @@ def patch_tool(mode: str = "replace", path: str | None = None, old_string: str |
     _content_write_paths = list(_paths_to_check)
     _entry_paths: list[str] = []
     if mode == "patch" and patch:
-        collected = _collect_v4a_header_paths(patch)
+        collected = v4a_header_paths(patch)
         if isinstance(collected, str):
-            return collected
+            return tool_error(collected)
         _paths_to_check += collected[0]
         _content_write_paths += collected[1]
         _entry_paths = collected[2]

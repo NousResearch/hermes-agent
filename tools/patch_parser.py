@@ -1,7 +1,8 @@
 """V4A patch parser/applier (codex, cline). ``*** Begin Patch``/``*** End Patch`` wrap ops:
 ``*** Update File: p`` + hunks (``@@ hint @@``, `` ctx``, ``-old``, ``+new``); ``*** Add File: n``
 + ``+`` lines; ``*** Delete File: o``; ``*** Move File: a -> b``. Entry points:
-``parse_v4a_patch(text) -> (ops, error)`` and ``apply_v4a_operations(ops, file_ops)``."""
+``parse_v4a_patch(text) -> (ops, error)``, ``patch_file_paths(text) -> (paths | None)`` and
+``apply_v4a_operations(ops, file_ops)``."""
 
 import contextlib
 import difflib
@@ -56,6 +57,13 @@ _OP_MARKERS: list[tuple[OperationType, re.Pattern]] = [
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+
+# V4A file headers, as the patch tool reads them: group 1 = header prefix, 2 = op, 3 = path.
+# ``\s*`` after ``***`` mirrors the parser's leniency (``***Update File:`` applies, so it must be
+# checked). The parser matches the ops line by line; these read the whole patch at once, because
+# a header may name a file the parser never sees (an op the parser rejects).
+_V4A_SINGLE_HEADER_RE = re.compile(r'^(\*\*\*\s*(Update|Add|Delete)\s+File:\s*)(.+)$', re.MULTILINE)
+_V4A_MOVE_HEADER_RE = re.compile(r'^(\*\*\*\s*Move\s+File:\s*)(.+?)\s*->\s*(.+)$', re.MULTILINE)
 
 
 def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[str]]:
@@ -121,6 +129,53 @@ def parse_v4a_patch(patch_content: str) -> tuple[list[PatchOperation], Optional[
             parse_errors.append(
                 f"MOVE {op.file_path!r}: missing destination path (expected 'src -> dst')")
     return ([], "Parse error: " + "; ".join(parse_errors)) if parse_errors else (operations, None)
+
+
+def v4a_header_paths(patch: str) -> tuple[list[str], list[str], list[str]] | str:
+    """Every path a V4A patch names, split into ``(all_paths, content_write_paths, entry_paths)``.
+
+    Returns the refusal message (a plain string) when a header path escapes the workspace
+    (``..``); the caller turns it into a tool error. Header paths come from patch CONTENT (more
+    attacker-influenceable than ``path=``, which keeps its legitimate ``..`` use). Move headers
+    check BOTH endpoints; only Update/Add write text and feed the binary-document guard; Delete
+    and Move act on the directory entry (``entry_paths``).
+    """
+    from tools.path_security import has_traversal_component
+
+    headers = [(m.group(3), m.group(2) in ("Update", "Add")) for m in _V4A_SINGLE_HEADER_RE.finditer(patch)]
+    headers += [(g, False) for m in _V4A_MOVE_HEADER_RE.finditer(patch) for g in (m.group(2), m.group(3))]
+    paths: list[str] = []
+    content_paths: list[str] = []
+    entry_paths: list[str] = []
+    for raw, writes_text in headers:
+        v4a_path = raw.strip()
+        if has_traversal_component(v4a_path):
+            return (
+                f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                "Use the agent's cwd-relative path (no '..') or an absolute "
+                "path in '*** Update File:' / '*** Add File:' / "
+                "'*** Delete File:' / '*** Move File:' headers.")
+        paths.append(v4a_path)
+        (content_paths if writes_text else entry_paths).append(v4a_path)
+    return paths, content_paths, entry_paths
+
+
+def patch_file_paths(patch_text: str) -> list[str] | None:
+    """The files a V4A patch names; ``None`` when that list is unknown.
+
+    A patch names a file in its ``*** Update/Add/Delete File:`` and ``*** Move File:`` headers (a
+    move names both endpoints). The paths are the raw header text, trimmed: not expanded (``~``) or
+    resolved against any directory. Update/Add/Delete headers come first in patch order, then the
+    Move endpoints. ``None`` says the list cannot be read: the patch names no file at all, or a
+    header path escapes the workspace (``..``) and Hermes refuses the patch itself, so a caller must
+    treat ``None`` as a refusal, never as "no files".
+    """
+    if not isinstance(patch_text, str) or not patch_text:
+        return None
+    collected = v4a_header_paths(patch_text)
+    if isinstance(collected, str):
+        return None
+    return collected[0] or None
 
 
 def _count_occurrences(text: str, pattern: str) -> int:

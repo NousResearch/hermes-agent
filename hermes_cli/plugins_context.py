@@ -539,6 +539,30 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
                 kwargs["parent_agent"] = agent
         return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
 
+    def _tool_task_id(self, task_key: str) -> str:
+        """``plugin:<plugin id>:<task_key>``: the task id of a plugin-owned tool call, never another session's."""
+        if not isinstance(task_key, str) or not task_key or ":" in task_key:
+            raise ValueError("task_key must be a non-empty string without ':'")
+        return f"plugin:{self.plugin_id}:{task_key}"
+
+    def run_tool_call(self, tool_name: str, args: dict, *, task_key: str) -> str:
+        """Run one tool call the way Hermes runs a call outside its agent loop
+        (``model_tools.handle_function_call``): tool_request middleware, pre_tool_call hooks (block,
+        approve, modify), ACP edit approval, tool_execution middleware, the tool, then post_tool_call
+        and transform_tool_result. Unlike ``dispatch_tool`` (the bare registry call), every check a
+        model's call gets applies. Its terminal and file state live under this plugin's own task id
+        (``plugin:<plugin id>:<task_key>``), which no session uses; returns the JSON string result."""
+        from model_tools import handle_function_call
+        task_id = self._tool_task_id(task_key)
+        return handle_function_call(tool_name, args, task_id=task_id, session_id=task_id)
+
+    def release_tool_task(self, task_key: str) -> None:
+        """Release what Hermes keeps for one of this plugin's ``run_tool_call`` tasks (its cached
+        environment and file state), as a session teardown does: shared containers are not stopped.
+        Reaches only this plugin's own task ids."""
+        from tools.terminal_tool_lifecycle import cleanup_vm
+        cleanup_vm(self._tool_task_id(task_key))
+
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:
         """Register the (single) ``agent.context_engine.ContextEngine`` replacing the built-in

@@ -315,6 +315,11 @@ class BaseEnvironment(LongLivedProcessMixin, ABC):
     # collecting the real result. Plugin contract: website/docs/developer-guide/terminal-environment-plugin.md.
     cleanup_stops_processes: bool = True
 
+    # Whether execute_code may keep a persistent session kernel (a detached runner it probes and
+    # stops later) on this backend. A backend whose commands may land on different machines over
+    # time sets False: execute_code then ships each script as one command (the per-call path).
+    supports_session_kernel: bool = True
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False

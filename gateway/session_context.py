@@ -217,6 +217,17 @@ def reset_session_vars() -> None:
     _runtime_cwd("clear_session_cwd")
 
 
+def current_turn_event() -> Any:
+    """The ``MessageEvent`` of the gateway turn running in THIS context, ``None`` outside one.
+
+    The live, mutable event with the platform's raw object inside: INTERNAL, not published. Plugins
+    read ``hermes_cli.plugin_session.turn_event()``, a frozen snapshot of it. A
+    delegated child runs in its parent turn's context and reads the parent's event. A context that
+    bound no turn (the classic CLI, a plugin's own process) answers ``None``.
+    """
+    return _SESSION_TURN_EVENT.get()
+
+
 def _bound_session_value(name: str) -> Any:
     """The value of *name*'s ContextVar as this turn sees it, ``_UNSET`` if never bound here. The one
     reader for in-process lookups and child-process env alike, so a script and an approval agree on

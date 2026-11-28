@@ -1434,6 +1434,41 @@ validate` accepts those spellings and reports a bare `import agent.file_safety` 
 To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
 parsing `config.yaml` yourself.
 
+### Use Hermes's own helpers for the work a plugin shares with the agent
+
+A plugin that does the same work as a Hermes tool — the interrupt flag the agent's tools honour,
+the V4A patch format, the computer-use backend, the place a vault key lives — reads Hermes's own
+helper instead of copying it or importing a private name. These names are public and covered by the
+compatibility contract:
+
+| Import | What it gives you |
+|---|---|
+| `tools.interrupt.is_interrupted()` | Whether the interrupt flag is set for the calling thread: a read, so a plugin tool can stop early when the user sends `/stop`. Hermes publishes no way to set or clear the flag from a plugin: it is keyed by thread, so a setter could reach another session. |
+| `plugins.computer_use.configured_backend_name()` | The computer-use backend the active profile's config selects (`cua` when unset). |
+| `plugins.computer_use.get_active_provider()` | That backend's provider (`create_backend()`, `is_available()`); it raises `LookupError` naming the available ones when it cannot be loaded. **Computer use is its own risk:** a backend obtained this way drives the screen directly, without the `computer_use` tool's key and text blocklists, its approval gate or its permission-mode mapping (`tools/computer_use/tool.py`). The plugin owns those checks. |
+| `agent.redact_vault_values.register_plugin_redaction_value(value)` | Register an exact secret value your plugin holds, so Hermes scrubs it from everything it hands to the model, for the calling profile only. A value shorter than 8 characters raises `ValueError`. Plugin values sit in their own bucket with their own cap (64 per profile, oldest dropped first), so they never evict a value the vault fill registered. |
+| `agent.vault_keychain.os_keyring()` | The OS credential store keyring Hermes's vault key lives in; it raises `KeychainUnavailable` when this machine has none. |
+| `agent.vault_store.configured_key_storage()` | Where a new vault's key goes: `vault.key_storage` (`file` by default, or `keychain`). |
+| `tools.patch_parser.parse_v4a_patch(text)` | The V4A patch parser: `(operations, error)`. |
+| `tools.patch_parser.patch_file_paths(patch_text)` | The files a V4A patch names, as the raw header text (trimmed, not expanded or resolved): the Update/Add/Delete headers first, then the endpoints of each Move. **`None` is a refusal, not "no files":** it means the patch names none, or a header path escapes the workspace (`..`) and Hermes refuses that patch. |
+| `tools.skill_provenance.is_background_review()` | Whether the running turn is Hermes's own background review (the self-improvement pass), so a plugin can stay quiet during it. |
+| `tools.image_source.MAX_INGEST_BYTES` | The byte budget Hermes's media resolver ingests (50 MiB): the cap your own media reads should honour. |
+| `gateway.media_fetch.remote_path_is_denied(path, remote_home)` | Whether Hermes refuses to fetch that path on a remote host (its credential-path denylist). |
+| `hermes_cli.__version__` | The version of the Hermes the plugin runs in (the build stamp's version; a source checkout reports `0.0.0`). |
+
+```python
+from tools.patch_parser import parse_v4a_patch, patch_file_paths
+
+def files_a_patch_touches(patch_text):
+    operations, error = parse_v4a_patch(patch_text)
+    if error:
+        return error
+    paths = patch_file_paths(patch_text)
+    if paths is None:  # unreadable or refused ('..'): fail closed, never treat it as "touches nothing"
+        return "refused: the patch names no readable file list"
+    return paths
+```
+
 ### Send a credentialed HTTP request without leaking it on redirect
 
 Plain `urllib.request.urlopen` follows a redirect to another host with your `Authorization` header
@@ -1469,6 +1504,46 @@ def wait_before_retry(response, fallback=5.0):
     seconds = parse_retry_after_seconds(response.headers)
     time.sleep(fallback if seconds is None else seconds)
 ```
+
+### Judge a command with Hermes's own approval rules
+
+A plugin that runs a host's commands on that host — a device-side runner such as Hermes
+Tether — must judge each one with THAT machine's Hermes rules before running it, not with
+its own opinion of what is dangerous. `tools.approval_judge.judge_command(command)` answers
+with the same verdict Hermes's own command gate reaches, without prompting anyone: the
+unconditional floors first (a hardline command is final — nobody can approve it), then the
+caller's own gate approval, the approval mode and permanent allowlist, and the
+dangerous-command findings that still need a human yes. If a rule check cannot run, the
+command is refused (`"block"`), never waved through. It is at least as strict as the gate:
+it does not apply session grants, YOLO or smart-mode approvals, so it may ask where the gate
+would run. `approved_keys` must be the human's per-command answer on your channel (Hermes's
+own "approve once"), and `gate_approved=True` only when your own Hermes gate approved exactly
+this command: with the terminal command context, a stamp whose kind is `user`, `smart`,
+`pre_approved`, `batch` or `no_findings` for this exact command, never `bypass`,
+`unattended`, `forced` or `gate_skipped`. The rules are those of the Hermes profile whose context you call it in: from a
+worker thread, run it in a copied context (`contextvars.copy_context().run(...)`).
+
+| Import | What it gives you |
+|---|---|
+| `tools.approval_judge.judge_command(command, *, approved_keys=(), gate_approved=False)` | A frozen `CommandJudgement` with `verdict` `"block"` (a floor hit; `reason` carries its message), `"ask"` (the findings in `pattern_keys` / `description` still need a human yes from your channel — resend with those keys once the human answers) or `"run"`. |
+| `tools.approval_judge.CommandJudgement` | The frozen verdict record (`verdict`, `reason`, `pattern_keys`, `description`). |
+| `tools.approval_detection.detect_dangerous_command(command)` / `detect_hardline_command(command)` | The plain pattern detectors, when your plugin wants the pattern layer alone. |
+
+```python
+from tools.approval_judge import CommandJudgement, judge_command
+
+def run_on_host(command, approved_keys=()):
+    judged = judge_command(command, approved_keys=approved_keys)
+    if judged.verdict == "block":
+        return f"refused: {judged.reason}"
+    if judged.verdict == "ask":
+        return f"needs approval for: {judged.description}"
+    return execute(command)
+```
+
+Import the names themselves (`from tools.approval_judge import judge_command`), as above:
+`hermes plugins validate` accepts those spellings. The checks behind `judge_command`
+compose Hermes's private approval internals; a plugin imports only this module.
 
 ### Send the Hermes User-Agent header
 
@@ -2216,6 +2291,40 @@ def register(ctx):
 - **Explicit override:** If the caller passes `parent_agent=` explicitly, it is respected and not overwritten.
 
 This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
+
+### Run tool calls the plugin owns
+
+`ctx.dispatch_tool()` is the bare registry call: no hooks, no middleware, no approvals. A plugin that
+runs tool calls on someone's behalf (a call another machine sent it, a queued job) uses
+`ctx.run_tool_call()` instead, which takes the same path as a call Hermes runs outside its agent loop:
+
+```python
+def register(ctx):
+    def run_lent_call(name, args, session):
+        return ctx.run_tool_call(name, args, task_key=session)   # JSON string, like any tool result
+
+    def session_closed(session):
+        ctx.release_tool_task(session)
+```
+
+- **`ctx.run_tool_call(name, args, *, task_key) -> str`** runs tool_request middleware, `pre_tool_call`
+  hooks (block, approve, modify), ACP edit approval, `tool_execution` middleware, the tool, then
+  `post_tool_call` and `transform_tool_result`. Its terminal and file state live under the task id
+  `plugin:<plugin id>:<task_key>`, which no session uses, so the call never lands in a user's session.
+  `task_key` is a non-empty string without `:`.
+- **`ctx.release_tool_task(task_key)`** releases what Hermes keeps for that task (its cached
+  environment and file state), as a session teardown does; shared containers are not stopped. It
+  reaches only this plugin's own task ids.
+- **`tools.interrupt.InterruptScope`** stops work the plugin runs on a thread of its own: enter
+  `with scope:` on the worker and call `scope.interrupt()` from anywhere else; the worker's terminal
+  wait then kills its command as on `/stop`. It reaches only the thread that entered it, only while
+  the scope is open, and on exit clears only the interrupt it set. `tools.interrupt.is_interrupted()`
+  tells the worker a stop has landed.
+- **`tools.approval.check_dangerous_command(command, env_type)`** puts a command through Hermes's
+  dangerous-command gate for the calling session: its floors and deny rules, the session and permanent
+  allowlists, and the approval prompt (CLI card or gateway approval), with the same unattended rules as
+  a terminal call. Returns `{"approved": bool, "message": str | None, ...}`. Use it when a command you
+  run somewhere else was flagged there and needs the person here to decide.
 
 ### Act from inside a hook (profile + tools)
 

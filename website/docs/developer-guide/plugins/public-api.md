@@ -136,6 +136,7 @@ with a name allows that one name only.
 | `agent.usage_pricing` | `CostResult` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `hermes_cli.auth_constants` | `AuthError` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments.base` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
+| `tools.environments.local` | `LocalEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `utils` | `atomic_json_write` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `utils` | `read_json_or_empty` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
@@ -177,6 +178,18 @@ with a name allows that one name only.
 | `tools.skills_tool` | `skill_lookup_path_error` | plugins/index.md § Read the skill catalog |
 | `tools.skills_sync` | `dir_hash` | plugins/index.md § Read the skill catalog |
 | `tools.skill_usage` | `read_skill_name` | plugins/index.md § Read the skill catalog |
+| `agent.redact_vault_values` | `register_plugin_redaction_value` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `agent.vault_keychain` | `os_keyring` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `agent.vault_store` | `configured_key_storage` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `gateway.media_fetch` | `remote_path_is_denied` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `hermes_cli` | `__version__` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `plugins.computer_use` | `configured_backend_name` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `plugins.computer_use` | `get_active_provider` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `tools.image_source` | `MAX_INGEST_BYTES` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `tools.interrupt` | `is_interrupted` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `tools.patch_parser` | `parse_v4a_patch` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `tools.patch_parser` | `patch_file_paths` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
+| `tools.skill_provenance` | `is_background_review` | plugins/index.md § Use Hermes's own helpers for the work a plugin shares with the agent |
 | `gateway.session_context` | `get_session_env` | plugins/index.md § platform plugins: read session identity through the task-local context |
 | `agent.redact` | `redact_sensitive_text` | plugin-llm-access.md § From the plugin's frontend: a plugin RPC method (`force=True` where secrets must never leave) |
 | `hermes_cli.plugin_session` | `session_client` | user-guide/features/plugins.md § Plugin code inside the gateway: which client created the session |
@@ -186,12 +199,18 @@ with a name allows that one name only.
 | `hermes_cli.plugin_session` | `session_source` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
 | `hermes_cli.plugin_session` | `in_delegated_child` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
 | `hermes_cli.plugin_session` | `fork_origin` | user-guide/features/plugins.md § Plugin code inside the gateway: how the session was created, delegated children and forks |
+| `hermes_cli.plugin_session` | `session_policy` | user-guide/features/plugins.md § Plugin code inside the gateway: the running turn's policy and event |
+| `hermes_cli.plugin_session` | `turn_event` | user-guide/features/plugins.md § Plugin code inside the gateway: the running turn's policy and event |
 | `agent.file_safety` | `get_read_block_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `raise_if_read_blocked` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `is_write_denied` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `agent.file_safety` | `get_write_denied_error` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_load` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
 | `hermes_yaml` | `safe_dump` | plugins/index.md § Check file paths and read YAML with Hermes's own helpers |
+| `tools.approval_judge` | `CommandJudgement` | plugins/index.md § Judge a command with Hermes's own approval rules |
+| `tools.approval_judge` | `judge_command` | plugins/index.md § Judge a command with Hermes's own approval rules |
+| `tools.approval_detection` | `detect_dangerous_command` | plugins/index.md § Judge a command with Hermes's own approval rules |
+| `tools.approval_detection` | `detect_hardline_command` | plugins/index.md § Judge a command with Hermes's own approval rules |
 | `hermes_cli.urllib_security` | `open_credentialed_url` | plugins/index.md § Send a credentialed HTTP request without leaking it on redirect |
 | `agent.retry_utils` | `parse_retry_after_seconds` | plugins/index.md § Read a Retry-After header the way Hermes does |
 | `hermes_cli.version_info` | `hermes_user_agent` | plugins/index.md § Send the Hermes User-Agent header |
@@ -221,3 +240,5 @@ with a name allows that one name only.
 | `hermes_cli.auth` | `resolve_nous_access_token` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
 | `hermes_cli.config_providers` | `get_custom_provider_tls_settings` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
 | `tools.schema_sanitizer` | `normalize_type_array` | model-provider-plugin.md § Public helpers for native Gemini reasoning |
+| `tools.interrupt` | `InterruptScope` | plugins/index.md § Run tool calls the plugin owns |
+| `tools.approval` | `check_dangerous_command` | plugins/index.md § Run tool calls the plugin owns |

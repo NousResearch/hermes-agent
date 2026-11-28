@@ -695,6 +695,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                 # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
                 # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
                 # runner + file cell protocol).
+                # A backend that declares supports_session_kernel = False is never given one.
                 from tools.code_kernel_remote import execute_in_remote_kernel
                 kernel_result = execute_in_remote_kernel(
                     code, env=env, env_type=env_type, task_env_id=effective_task_id,
@@ -702,7 +703,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                     max_tool_calls=max_tool_calls, reset=bool(reset),
                     idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
                     session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
-                )
+                ) if getattr(env, "supports_session_kernel", True) is not False else None
             except Exception:
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
                 kernel_result = None

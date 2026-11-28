@@ -5,7 +5,5 @@
     "unlisted import not named here and on any entry here that the docs no longer show, so this list only",
     "shrinks: when a seam lands, rewrite the block onto it and delete the entry."
   ],
-  "sites": [
-    "website/docs/developer-guide/terminal-environment-plugin.md tools.environments.local.LocalEnvironment"
-  ]
+  "sites": []
 }

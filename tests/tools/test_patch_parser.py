@@ -6,6 +6,7 @@ from tools.patch_parser import (
     OperationType,
     apply_v4a_operations,
     parse_v4a_patch,
+    patch_file_paths,
 )
 
 
@@ -986,3 +987,38 @@ class TestV4ABomRoundTrip:
             self.BOM.encode("utf-8")
         ), "BOM was injected on a plain file"
         assert b"print('world')" in raw
+
+
+class TestPatchFilePaths:
+    """``patch_file_paths`` is the public answer to "which files does this patch name?"."""
+
+    def test_names_every_file_the_headers_list(self):
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ def main():
+-    pass
++    return 1
+*** Add File: docs/notes.md
++hello
+*** Delete File: old.txt
+*** Move File: a.txt -> b.txt
+*** End Patch"""
+
+        assert patch_file_paths(patch) == ["src/app.py", "docs/notes.md", "old.txt", "a.txt", "b.txt"]
+
+    def test_a_patch_that_names_no_file_has_no_paths(self):
+        assert patch_file_paths("") is None
+        assert patch_file_paths("not a patch at all") is None
+
+    def test_a_header_that_escapes_the_workspace_names_no_paths(self):
+        """A ``..`` header is refused by the patch tool, so the file list is unknown, not a guess."""
+        assert patch_file_paths("*** Begin Patch\n*** Update File: ../escape.py\n@@\n-a\n+b\n*** End Patch") is None
+
+    def test_paths_are_the_raw_header_text_with_single_headers_before_moves(self):
+        """Not expanded or resolved: ``~`` and relative parts stay as written; a Move's endpoints
+        follow every Update/Add/Delete header, whatever the order in the patch."""
+        patch = ("*** Begin Patch\n*** Move File: a.txt -> ~/b.txt\n"
+                 "*** Update File:  ./src//app.py \n@@\n-a\n+b\n*** End Patch")
+
+        assert patch_file_paths(patch) == ["./src//app.py", "a.txt", "~/b.txt"]

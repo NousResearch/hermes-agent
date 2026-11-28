@@ -72,6 +72,16 @@ class TestDataUrl:
         with pytest.raises(isrc.NotAnImage):
             await isrc.resolve_image_source(str(img), isrc.ResolveContext())
 
+    @pytest.mark.asyncio
+    async def test_the_public_ingest_budget_is_the_cap_the_data_url_path_enforces(self, tmp_path, monkeypatch):
+        """``MAX_INGEST_BYTES`` is the budget a plugin reads off the public API, and it is the very cap
+        the resolver enforces (one number, not a second one that drifts)."""
+        isrc = _reload(monkeypatch, tmp_path / "hermes")
+        monkeypatch.setattr(isrc, "MAX_INGEST_BYTES", 16)
+        with pytest.raises(isrc.SourceTooLarge):
+            await isrc.resolve_image_source(
+                "data:image/png;base64," + "A" * 64, isrc.ResolveContext())
+
 
 class TestLocalBackend:
     @pytest.mark.asyncio
@@ -197,7 +207,7 @@ class TestBoundedHostRead:
         clip.parent.mkdir(parents=True)
         with clip.open("wb") as fh:  # sparse: stat says 50 MiB + 1
             fh.write(b"\0\0\0\x18ftypmp42")
-            fh.truncate(isrc._MAX_INGEST_BYTES + 1)
+            fh.truncate(isrc.MAX_INGEST_BYTES + 1)
         with pytest.raises(isrc.SourceTooLarge):
             await isrc.resolve_image_source(str(clip), isrc.ResolveContext(), permitted=("video",))
 
@@ -328,7 +338,7 @@ class TestExecReadSafety:
                    return_value=SimpleNamespace(execute=fake_execute)):
             await isrc.resolve_image_source(
                 "/workspace/-i-etc-shadow.png", isrc.ResolveContext(task_id="t1"))
-        assert f"head -c {isrc._MAX_INGEST_BYTES + 1} < " in captured["cmd"]
+        assert f"head -c {isrc.MAX_INGEST_BYTES + 1} < " in captured["cmd"]
         assert "'-i-etc-shadow.png'" in captured["cmd"] or "-i-etc-shadow.png" in captured["cmd"]
 
     @pytest.mark.asyncio

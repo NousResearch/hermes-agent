@@ -1,0 +1,65 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: fly
+description: >-
+  Fly.io apps, Machines, volumes, secrets, Managed Postgres, and Sprites.
+source: https://mcp.fly.io
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry), listed in the MCP Registry as io.fly/fly-mcp.
+# Native OAuth 2.1 + Dynamic Client Registration (verified live: RFC 9728
+# protected-resource metadata -> AS https://fly.io/mcp/oauth with
+# registration_endpoint, PKCE S256, public client; DCR accepts client_name
+# "Hermes Agent"). The consent screen picks the organization, the existing
+# apps, and which scopes (including every *:delete and machines:exec) the
+# connection gets; tools outside the grant fail server-side.
+transport:
+  type: http
+  url: https://mcp.fly.io
+
+auth:
+  type: oauth
+
+# Fly documents ~92 tools at https://mcp.fly.io. Excluded by default:
+# - open_sprite_inspector / search_sprite_mentions: client-UI helpers (an
+#   inspector panel and composer @-mentions), not agent operations.
+# - policy_network_update: changes what a Sprite can reach on the network.
+# - get/create/release_machine_lease: lease nonces are concurrency
+#   credentials for low-level Machine orchestration.
+# - get_machine_memory / set_machine_memory_limit / reclaim_machine_memory:
+#   live memory tuning of running Machines.
+# Deletes, exec and secret writes stay enabled, as on railway: they are the
+# point of the server and each needs its own scope granted on the consent
+# screen.
+tools:
+  default_excluded:
+    - open_sprite_inspector
+    - search_sprite_mentions
+    - policy_network_update
+    - get_machine_lease
+    - create_machine_lease
+    - release_machine_lease
+    - get_machine_memory
+    - set_machine_memory_limit
+    - reclaim_machine_memory
+
+# Composer-suggestion triggers (desktop brand pills). Multi-word keywords on
+# purpose: bare "fly" is an ordinary English word.
+suggest:
+  keywords:
+    - fly.io
+    - flyctl
+    - fly machines
+    - fly sprites
+  hosts:
+    - fly.io
+    - fly.dev
+    - sprites.dev
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Fly.io (or run `hermes mcp login fly`). Pick the organization,
+  apps and permissions to grant, then restart the session so
+  tools load.

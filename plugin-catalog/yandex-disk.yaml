@@ -1,6 +1,6 @@
 name: yandex-disk
 repo: https://github.com/akinfold/hermes-yandex-disk
-sha: a7dbdac5ffdf0602de4e0f16ec73a918f61cced9
+sha: becf841391a3e3d8bb7540b12ec985965b7ba5a3
 subdir: hermes_yandex_disk
 title: "Yandex Disk"
 image: https://raw.githubusercontent.com/akinfold/hermes-yandex-disk/354629c7f334ab66fd315fc0166938e3cb1a2fba/docs/banner.jpg

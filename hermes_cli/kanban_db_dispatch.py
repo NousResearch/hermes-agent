@@ -2179,15 +2179,10 @@ def _dispatch_lane_task(
 
 
 def _run_reclaim_phase(
-    conn: sqlite3.Connection,
-    result: DispatchResult,
-    *,
-    stale_timeout_seconds: int,
-    failure_limit: int,
-    reconcile_orphans: bool,
-    board: Optional[str] = None,
+    conn: sqlite3.Connection, result: DispatchResult, *, stale_timeout_seconds: int,
+    failure_limit: int, reconcile_orphans: bool, board: Optional[str] = None,
 ) -> None:
-    """Reclaim stale/orphaned/crashed/timed-out running tasks, then promote."""
+    """Reclaim stale/orphaned/crashed/timed-out running tasks, wake finished waits, then promote."""
     reap_worker_zombies()
     result.reaped_terminal_workers = reap_terminal_workers(conn)
     result.reclaimed = _kb.release_stale_claims(conn, failure_limit=failure_limit)
@@ -2200,6 +2195,8 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
+    from hermes_cli.kanban_db_wake import wake_scheduled_waits
+    wake_scheduled_waits(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 

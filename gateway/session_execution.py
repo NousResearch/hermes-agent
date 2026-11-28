@@ -148,7 +148,14 @@ class GatewaySessionAgentMixin:
         return out
 
     def _release_evicted_agent(self, agent) -> None:
-        """Off-lock soft release on a daemon thread so teardown never blocks the gateway loop."""
+        """Off-lock soft release on a daemon thread so teardown never blocks the gateway loop. An agent
+        still mid-turn is retired instead: its turn releases it at the boundary, never mid-stream."""
+        for key, running in self._runner._running_agent_items():
+            if running is agent:
+                state = self._runner._peek_session_state(key)
+                if state is not None:
+                    state.turn.retired_agents.append(agent)
+                    return
         self._runner._spawn_release_thread(
             self._runner._release_evicted_agent_soft, (agent,), f"agent-xproc-evict-{str(self._ctx.session_key)[:24]}",
             inline_fallback=True, session_key=self._ctx.session_key,

@@ -37,6 +37,14 @@ export const deFirstRun: FirstRunCopy = {
     setUp: 'Einrichten',
     notNow: 'Nicht jetzt'
   },
+  nextMoves: {
+    title: 'Deine nächsten 3 Schritte',
+    subtitle: 'Wähle einen — jeder öffnet sich direkt hier.',
+    palette: 'Befehlspalette aufrufen',
+    bots: 'Lerne deine Bots kennen',
+    plugins: 'Plugins durchsuchen (Kanban ist hier)',
+    done: 'Fertig'
+  },
   intro: {
     greeting: 'Hallo, ich bin Hermes.',
     plan: 'Richten wir alles für Sie ein. Danach machen wir etwas Cooles.'

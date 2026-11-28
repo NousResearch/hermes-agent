@@ -1,0 +1,46 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: kernelcad
+description: >-
+  Text-to-CAD and code-CAD for real manufacturing. Generate parts and
+  assemblies from natural language, review mechanisms, export STEP/STL/3MF.
+source: https://kernelcad.com
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Verified live: initialize succeeds and returns
+# serverInfo {"name":"kernelcad","version":"1.0.0"}. RFC 9728 protected-resource
+# metadata is served at /.well-known/oauth-protected-resource; anonymous calls
+# work for slug-addressed reads (the slug is the capability), while saving to a
+# signed-in account uses OAuth (scopes: openid, offline_access).
+transport:
+  type: http
+  url: https://mcp.kernelcad.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - kernelcad
+    - cad
+    - step
+    - stl
+    - 3d model
+  hosts:
+    - kernelcad.com
+
+post_install: |-
+  On first connection Hermes opens a browser to authorize with kernelCAD
+  (or run `hermes mcp login kernelcad`). Approve access, then restart the
+  session so tools load.
+
+  Reading models works without signing in when you pass a project slug
+  (the slug is the capability). Exporting and saving to your account need
+  the OAuth session.
+
+  Prompt examples:
+    a 60 mm flanged bearing housing, 2 bolt holes, STEP export
+    review this mechanism for interference: https://app.kernelcad.com/p/<slug>

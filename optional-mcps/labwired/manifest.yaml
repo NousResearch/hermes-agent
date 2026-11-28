@@ -1,0 +1,45 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: labwired
+description: >-
+  Run firmware on modeled hardware. Build boards, run and debug firmware
+  on register-accurate circuit twins, and gate CI on the result.
+source: https://labwired.com
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Verified live: an unauthenticated initialize returns
+# 401 with
+#   WWW-Authenticate: Bearer realm="LabWired MCP",
+#     resource_metadata="https://api.labwired.com/.well-known/oauth-protected-resource/mcp"
+# which resolves to AS metadata advertising authorization/token/registration
+# endpoints, PKCE S256 only, and public-client auth (token_endpoint_auth_methods
+# = ["none"]). Hermes's MCP client + mcp_oauth_manager handle discovery, DCR,
+# PKCE, token exchange, and refresh.
+transport:
+  type: http
+  url: https://api.labwired.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - labwired
+    - firmware
+    - microcontroller
+    - circuit
+    - embedded
+  hosts:
+    - labwired.com
+
+post_install: |-
+  On first connection Hermes opens a browser to authorize with LabWired
+  (or run `hermes mcp login labwired`). Approve access, then restart the
+  session so tools load.
+
+  Prompt examples:
+    run this firmware on an STM32 board and show me the register state
+    build a circuit twin for an RP2040 and gate my CI on it

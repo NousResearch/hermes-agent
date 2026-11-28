@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "لوحة تعاون متعددة الملفات التعريفية (مهام، روابط، تعليقات)"
   reload:
-    description: "إعادة تحميل متغيرات .env في الجلسة الجارية"
+    description: "يعيد تحميل .env والإضافات وخوادم MCP والمهارات في هذه المحادثة (/reload env: ملف .env فقط)"
   reload-mcp:
     description: "إعادة تحميل خوادم MCP من الإعدادات"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "لم تُجب البوابة بشأن عنصر الطابور {index} ({error})؛ راجع /queue list قبل المحاولة مجددًا."
   reload:
     env_reloaded: "أُعيد تحميل .env (تم تحديث {count} متغيّر)"
+  reload_all:
+    title: "⚠️  /reload — تحذير: إبطال ذاكرة التخزين المؤقت للموجّه"
+    detail: "يعيد تحميل .env والإضافات وخوادم MCP والمهارات في هذه المحادثة\nويعيد بناء أدواتها، مما يُبطل ذاكرة التخزين المؤقت لموجّه المزوّد\n(الرسالة التالية تعيد إرسال كل رموز الإدخال).\nتخطَّ هذا السؤال باستخدام /reload now (مرة واحدة) أو /reload always."
+    confirm_required: "⚠️  يعيد /reload بناء أدوات هذه المحادثة ويُبطل ذاكرة التخزين المؤقت للموجّه (الرسالة التالية تعيد إرسال كل رموز الإدخال). أجب بـ `/reload now` للمتابعة، أو `/reload always` للمتابعة وعدم السؤال مجددًا. `/reload env` يعيد تحميل .env فقط."
+    cancel_hint: "لا تُعِد تحميل أي شيء"
+    unchanged: "لم تتم إعادة تحميل أي شيء."
+    always_msg: "🔒 ستعمل استدعاءات /reload و /reload-mcp القادمة دون تأكيد."
+    reloading: "🔄 جارٍ إعادة تحميل .env والإضافات وخوادم MCP والمهارات..."
+    busy: "⏳ ‏/reload غير متاح أثناء عمل الوكيل. انتظر حتى ينتهي الدور؛ لم تتم إعادة تحميل أي شيء."
+    usage: "الاستخدام: /reload [env|now|always]"
+    env: ".env: تم تحديث {count} متغيّر"
+    plugins: "الإضافات: تم تحميل {count}، وأُعيد استيراد الشيفرة"
+    mcp: "خوادم MCP: {count} متصل"
+    skills: "المهارات: {count} متاحة"
+    tools: "هذه المحادثة: {count} أداة"
+    added: "أُضيف: {names}"
+    removed: "أُزيل: {names}"
+    changed: "تغيّر: {names}"
+    reconnected: "أُعيد الاتصال: {names}"
+    failed: "فشل: {names}"
+    restart: "يلزم إعادة التشغيل (تبعيات مفقودة): {names}"
+    prompt_next_session: "أقسام موجّه النظام تُطبَّق من الجلسة التالية: {names}"
+    step_failed: "فشلت إعادة تحميل {step}: {error}"
   steer:
     usage: "الاستخدام: /steer <prompt>"
     failed: "فشل التوجيه: {error}"

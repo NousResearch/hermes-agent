@@ -1722,7 +1722,7 @@ slash:
   kanban:
     description: "Többprofilos együttműködési tábla (feladatok, hivatkozások, hozzászólások)"
   reload:
-    description: "A .env változók újratöltése a futó munkamenetbe"
+    description: "Újratölti a .env-et, a bővítményeket, az MCP-szervereket és a skilleket ebben a csevegésben (/reload env: csak .env)"
   reload-mcp:
     description: "MCP szerverek újratöltése a konfigurációból"
   reload-skills:
@@ -2502,6 +2502,29 @@ cli:
     change_unknown: "Az átjáró nem válaszolt a(z) {index}. sorelemről ({error}); nézd meg a /queue list kimenetét, mielőtt újra próbálod."
   reload:
     env_reloaded: ".env újratöltve ({count} változó frissült)"
+  reload_all:
+    title: "⚠️  /reload — Figyelmeztetés: a prompt-gyorsítótár érvénytelenné válik"
+    detail: "Újratölti a .env-et, a bővítményeket, az MCP-szervereket és a skilleket ebben a csevegésben,\nés újraépíti az eszközeit, ami érvényteleníti a szolgáltató prompt-gyorsítótárát\n(a következő üzenet újra elküldi az összes bemeneti tokent).\nEz a kérdés kihagyható: /reload now (egyszer) vagy /reload always."
+    confirm_required: "⚠️  A /reload újraépíti ennek a csevegésnek az eszközeit, és érvényteleníti a prompt-gyorsítótárat (a következő üzenet újra elküldi az összes bemeneti tokent). Válaszolj `/reload now`-val a folytatáshoz, vagy `/reload always`-szel a folytatáshoz és a kérdés végleges kikapcsolásához. A `/reload env` csak a .env-et tölti újra."
+    cancel_hint: "semmit ne töltsön újra"
+    unchanged: "Semmi sem lett újratöltve."
+    always_msg: "🔒 A jövőbeli /reload és /reload-mcp hívások megerősítés nélkül futnak."
+    reloading: "🔄 A .env, a bővítmények, az MCP-szerverek és a skillek újratöltése..."
+    busy: "⏳ A /reload nem érhető el, amíg az ügynök fut. Várd meg a kör végét; semmi sem lett újratöltve."
+    usage: "Használat: /reload [env|now|always]"
+    env: ".env: {count} változó frissült"
+    plugins: "Bővítmények: {count} betöltve, kód újraimportálva"
+    mcp: "MCP-szerverek: {count} csatlakozva"
+    skills: "Skillek: {count} elérhető"
+    tools: "Ez a csevegés: {count} eszköz"
+    added: "hozzáadva: {names}"
+    removed: "eltávolítva: {names}"
+    changed: "módosítva: {names}"
+    reconnected: "újracsatlakozva: {names}"
+    failed: "sikertelen: {names}"
+    restart: "újraindítás szükséges (hiányzó függőségek): {names}"
+    prompt_next_session: "a rendszerprompt-szakaszok a következő munkamenettől érvényesek: {names}"
+    step_failed: "{step} újratöltése sikertelen: {error}"
   steer:
     usage: "Használat: /steer <prompt>"
     failed: "Az irányítás nem sikerült: {error}"

@@ -37,13 +37,13 @@ _SESSION_FALLBACK_ALLOWED = frozenset({
 # Sidecar verbs whose handler acts on PROCESS-global state. In a TUI's own sidecar that state was
 # that TUI's alone; on the shared owner it is every chat's, Desktop window's and served profile's:
 # ``process.stop`` = ``kill_all`` over the whole registry (persisted jobs included),
-# ``delegation.pause`` = the global spawn gate, ``reload.mcp`` = tear down and rediscover every MCP
-# server, ``reload.env`` = rewrite ``os.environ`` from the launch profile's ``.env``, ``agents.list``
+# ``delegation.pause`` = the global spawn gate, ``reload.mcp`` / ``reload.all`` = tear down and rediscover
+# every MCP server (``reload.all`` every plugin too), ``reload.env`` = rewrite ``os.environ`` from the launch profile's ``.env``, ``agents.list``
 # = every chat's process commands. The owner serves the session-scoped ``process.stop`` itself
 # (``gateway/session_ancillary.py``), and ``reload.env`` / ``delegation.pause`` with owner-side rules
 # (``gateway/session_tui_ops.py``); listing them here keeps the sidecar handler unreachable.
 # ``process.kill`` stays: its handler is already session-scoped.
-_PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.env", "agents.list"})
+_PROCESS_GLOBAL = frozenset({"process.stop", "delegation.pause", "reload.mcp", "reload.all", "reload.env", "agents.list"})
 # ``browser.manage`` is NOT here: connect/disconnect run in the requesting profile's scope (the
 # ticket's home, or the session's ``profile_home`` via ``_profile_scoped``) and the live endpoint, the
 # reap and the CDP supervisors are keyed by that profile home (CLI-9, #134889), so a multiplexed

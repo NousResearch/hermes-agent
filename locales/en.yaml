@@ -1777,7 +1777,7 @@ slash:
   kanban:
     description: "Multi-profile collaboration board (tasks, links, comments)"
   reload:
-    description: "Reload .env variables into the running session"
+    description: "Reload .env, plugins, MCP servers and skills into this chat (/reload env: .env only)"
   reload-mcp:
     description: "Reload MCP servers from config"
   reload-skills:
@@ -2586,6 +2586,29 @@ cli:
     change_unknown: "The gateway did not answer about queue item {index} ({error}); check /queue list before trying again."
   reload:
     env_reloaded: "Reloaded .env ({count} var(s) updated)"
+  reload_all:
+    title: "⚠️  /reload — Prompt cache invalidation warning"
+    detail: "Reloads .env, plugins, MCP servers and skills into this chat and\nrebuilds its tool set, which invalidates the provider prompt cache\n(the next message re-sends full input tokens).\nSkip this question with /reload now (once) or /reload always."
+    confirm_required: "⚠️  /reload rebuilds this chat's tools and invalidates the prompt cache (the next message re-sends full input tokens). Reply `/reload now` to proceed, or `/reload always` to proceed and silence this prompt permanently. `/reload env` reloads only .env."
+    cancel_hint: "reload nothing"
+    unchanged: "Nothing was reloaded."
+    always_msg: "🔒 Future /reload and /reload-mcp calls will run without confirmation."
+    reloading: "🔄 Reloading .env, plugins, MCP servers and skills..."
+    busy: "⏳ /reload is unavailable while the agent is running. Wait for the turn to finish; nothing was reloaded."
+    usage: "Usage: /reload [env|now|always]"
+    env: ".env: {count} var(s) updated"
+    plugins: "Plugins: {count} loaded, code re-imported"
+    mcp: "MCP servers: {count} connected"
+    skills: "Skills: {count} available"
+    tools: "This chat: {count} tool(s)"
+    added: "added: {names}"
+    removed: "removed: {names}"
+    changed: "changed: {names}"
+    reconnected: "reconnected: {names}"
+    failed: "failed: {names}"
+    restart: "restart needed (missing dependencies): {names}"
+    prompt_next_session: "system-prompt sections apply from the next session: {names}"
+    step_failed: "{step} reload failed: {error}"
   steer:
     usage: "Usage: /steer <prompt>"
     failed: "Steer failed: {error}"

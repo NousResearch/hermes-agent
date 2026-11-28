@@ -429,7 +429,7 @@ def test_commands_refused_during_a_turn_fire_nothing(tmp_path):
 
 def test_commands_the_cli_does_not_run_on_the_gateway_fire_nothing(monkeypatch, capsys):
     """A registry command with no classic CLI handler runs nothing in the CLI, so no
-    ``command.observe`` goes out; a command the CLI runs (``/reload``, ``/handoff`` through the
+    ``command.observe`` goes out; a command the CLI runs (``/reload env``, ``/handoff`` through the
     owner's handoff verbs, #143608) is reported before it runs."""
     from cli import HermesCLI
     from hermes_cli.commands import COMMAND_REGISTRY
@@ -452,7 +452,7 @@ def test_commands_the_cli_does_not_run_on_the_gateway_fire_nothing(monkeypatch, 
     c.config, c.session_id, c._agent_running = {}, 's1', False
     c.process_command('/' + unhandled)
     assert [call for call in connection.calls if call[0] == 'command.observe'] == []
-    c.process_command('/reload')
+    c.process_command('/reload env')
     assert ('command.observe', 'reload') in connection.calls
     c.process_command('/handoff telegram')
     assert ('command.observe', 'handoff') in connection.calls

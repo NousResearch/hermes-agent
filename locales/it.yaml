@@ -1705,7 +1705,7 @@ slash:
   kanban:
     description: "Bacheca di collaborazione multi-profilo (attività, collegamenti, commenti)"
   reload:
-    description: "Ricarica le variabili .env nella sessione in esecuzione"
+    description: "Ricarica .env, plugin, server MCP e skill in questa chat (/reload env: solo .env)"
   reload-mcp:
     description: "Ricarica i server MCP dalla configurazione"
   reload-skills:
@@ -2485,6 +2485,29 @@ cli:
     change_unknown: "Il gateway non ha risposto sull'elemento {index} della coda ({error}); controlla /queue list prima di riprovare."
   reload:
     env_reloaded: "Ricaricato .env (variabili aggiornate: {count})"
+  reload_all:
+    title: "⚠️  /reload — Avviso di invalidazione della cache del prompt"
+    detail: "Ricarica .env, plugin, server MCP e skill in questa chat e\nricostruisce i suoi strumenti, invalidando la cache del prompt del provider\n(il messaggio successivo reinvia tutti i token di input).\nSalta questa domanda con /reload now (una volta) o /reload always."
+    confirm_required: "⚠️  /reload ricostruisce gli strumenti di questa chat e invalida la cache del prompt (il messaggio successivo reinvia tutti i token di input). Rispondi `/reload now` per procedere, oppure `/reload always` per procedere e non chiedere più. `/reload env` ricarica solo .env."
+    cancel_hint: "non ricaricare nulla"
+    unchanged: "Non è stato ricaricato nulla."
+    always_msg: "🔒 Le prossime chiamate a /reload e /reload-mcp verranno eseguite senza conferma."
+    reloading: "🔄 Ricarico .env, plugin, server MCP e skill..."
+    busy: "⏳ /reload non è disponibile mentre l'agente è in esecuzione. Attendi la fine del turno; non è stato ricaricato nulla."
+    usage: "Uso: /reload [env|now|always]"
+    env: ".env: variabili aggiornate: {count}"
+    plugins: "Plugin: {count} caricati, codice reimportato"
+    mcp: "Server MCP: {count} connessi"
+    skills: "Skill: {count} disponibili"
+    tools: "Questa chat: {count} strumenti"
+    added: "aggiunti: {names}"
+    removed: "rimossi: {names}"
+    changed: "modificati: {names}"
+    reconnected: "riconnessi: {names}"
+    failed: "non riusciti: {names}"
+    restart: "riavvio necessario (dipendenze mancanti): {names}"
+    prompt_next_session: "le sezioni del prompt di sistema valgono dalla prossima sessione: {names}"
+    step_failed: "ricaricamento di {step} non riuscito: {error}"
   steer:
     usage: "Uso: /steer <prompt>"
     failed: "Indirizzamento non riuscito: {error}"

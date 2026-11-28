@@ -7,7 +7,8 @@ thing:
 - ``/diff session``: the checkpoint baseline is the gateway tools'. ``rollback.session_diff`` reads it
   under the session's frozen checkpoint policy (``--checkpoints`` included) and returns it as data
   for main's terminal renderer. Working-tree modes stay main's local git read of the same checkout.
-- ``/reload``: ``reload.env`` re-reads ``.env`` where turns and tools run (this process re-reads too).
+- ``/reload env``: ``reload.env`` re-reads ``.env`` where turns and tools run (this process re-reads too).
+  Bare ``/reload`` asks its consent here first, then runs ``reload.all`` (``HermesCLI._reload_chat``).
 - ``/handoff``: the pending row is written in the owner's store (``handoff.request``), where the
   gateway's handoff watcher claims it; this process's own store write would never be seen.
 """
@@ -31,6 +32,8 @@ def _diff(cli, connection, cmd):
 
 
 def _reload(cli, connection, cmd):
+    if cmd.partition(" ")[2].strip().lower() != "env":
+        return False
     from hermes_cli.config import reload_env
     reload_env()
     updated = (connection.call("reload.env", session_id=cli.session_id) or {}).get("updated", 0)

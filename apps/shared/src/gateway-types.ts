@@ -561,6 +561,13 @@ export interface ReloadEnvResponse {
   updated?: number
 }
 
+/** `reload.all` (`/reload`): `output` is the rendered summary; `message` the consent question, a refusal or a note. */
+export interface ReloadAllResponse {
+  status?: string
+  message?: string
+  output?: string
+}
+
 export interface ProcessStopResponse {
   killed?: number
 }

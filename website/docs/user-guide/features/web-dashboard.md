@@ -732,14 +732,14 @@ The address stays the same, and so do the sign-in providers, but clients notice 
 
 ## `/reload` Slash Command
 
-The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:
+After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload env` in an active CLI session to pick up the changes without restarting:
 
 ```
-You → /reload
+You → /reload env
   Reloaded .env (3 var(s) updated)
 ```
 
-This re-reads `~/.hermes/.env` into the running process's environment. Useful when you've added a new provider key via the dashboard and want to use it immediately.
+This re-reads `~/.hermes/.env` into the running process's environment. Useful when you've added a new provider key via the dashboard and want to use it immediately. Bare `/reload` also reloads plugins, MCP servers and skills into the current chat (it asks first, because rebuilding the chat's tool list invalidates the prompt cache); see [Slash Commands](../../reference/slash-commands.md#tools--skills).
 
 ## REST API
 

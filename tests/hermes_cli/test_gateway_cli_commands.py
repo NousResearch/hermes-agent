@@ -89,12 +89,33 @@ def test_diff_of_the_working_tree_stays_a_local_git_read(gateway_cli, monkeypatc
     assert seen == ["staged"] and conn.calls == [_observed("diff", "staged")]
 
 
-def test_reload_rereads_env_in_the_gateway_and_reports_its_count(gateway_cli, monkeypatch, capsys):
+def test_reload_env_rereads_env_in_the_gateway_and_reports_its_count(gateway_cli, monkeypatch, capsys):
     cli, conn = gateway_cli(**{"reload.env": {"updated": 3}})
     monkeypatch.setattr("hermes_cli.config.reload_env", lambda: 0)
-    assert cli.process_command("/reload") is True
-    assert conn.calls == [_observed("reload", ""), ("reload.env", {"session_id": "local-s"})]
+    assert cli.process_command("/reload env") is True
+    assert conn.calls == [_observed("reload", "env"), ("reload.env", {"session_id": "local-s"})]
     assert "3" in capsys.readouterr().out
+
+
+def test_reload_runs_the_owners_reload_all_for_this_session(gateway_cli, monkeypatch, capsys):
+    """#159205: bare ``/reload`` (consented here) is the owner's ``reload.all`` for the session it runs,
+    which reloads .env, plugins, MCP servers and skills and rebuilds that chat's tools; the owner
+    queues the model's note, so this process queues none of its own."""
+    report = {"env_updated": 1, "plugins": {"loaded": ["probe"], "changed": ["probe"]},
+              "mcp": {"connected": ["docs"], "added": ["docs"]}, "skills": {"total": 4},
+              "tools_added": ["probe_tool"], "tool_count": 30}
+    cli, conn = gateway_cli(**{"reload.all": {"status": "reloaded", "report": report}, "session.resume": {}})
+    adopted = []
+    conn.state = lambda sid: SimpleNamespace(adopt_snapshot=adopted.append)
+    cli._command_running = False
+    monkeypatch.setattr("hermes_cli.config.reload_env", lambda: 0)
+    monkeypatch.setattr("hermes_cli.cli_modal_mixin._approval_gate_on", lambda key: False)
+    assert cli.process_command("/reload") is True
+    assert conn.calls[1:] == [("reload.all", {"session_id": "local-s", "confirm": True}),
+                              ("session.resume", {"session_id": "local-s"})]
+    out = capsys.readouterr().out
+    assert "changed: probe" in out and "added: docs" in out and "This chat: 30 tool(s) — added: probe_tool" in out
+    assert adopted == [{}] and getattr(cli, "_pending_skills_reload_note", None) is None
 
 
 class _HandoffConn(_Conn):

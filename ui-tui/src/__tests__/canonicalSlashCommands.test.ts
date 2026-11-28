@@ -21,6 +21,11 @@ function harness(rewindRefusal?: Error) {
       'config.get:full': () => ({ config: { display: { skin: 'ares', streaming: true }, voice: { record_key: 'ctrl+b' } } }),
       'config.get:voice': () => ({ value: voiceMode }),
       'process.stop': () => ({ killed: 0 }),
+      'reload.all': () =>
+        params.confirm
+          ? { output: '  .env: 0 var(s) updated\n  This chat: 3 tool(s) — added: plug_tool', status: 'reloaded' }
+          : { message: 'Reply `/reload now` to proceed, or `/reload always`', status: 'confirm_required' },
+      'reload.env': () => ({ updated: 2 }),
       'reload.mcp': () =>
         params.confirm
           ? { message: 'MCP servers reconciled (no server changes)', status: 'reloaded' }
@@ -338,6 +343,26 @@ it('/stop is session-scoped; /reload-mcp runs the owner\'s session-scoped reload
   expect(notices.some(line => /not available/.test(line))).toBe(false)
   expect(notices).toContain('Reloading MCP refreshes every chat of this profile.')
   expect(notices).toContain('MCP servers reconciled (no server changes)')
+})
+
+it('/reload runs the owner\'s reload.all for this session; /reload env stays the .env-only reload.env', async () => {
+  const { request, slash, sys } = harness()
+
+  for (const cmd of ['/reload', '/reload now', '/reload always', '/reload env']) {
+    slash(cmd)
+    await flush()
+  }
+
+  expect(request).toHaveBeenCalledWith('reload.all', { session_id: 'owner' })
+  expect(request).toHaveBeenCalledWith('reload.all', { confirm: true, session_id: 'owner' })
+  expect(request).toHaveBeenCalledWith('reload.all', { always: true, confirm: true, session_id: 'owner' })
+  expect(request).toHaveBeenCalledWith('reload.env', { session_id: 'owner' })
+  expect(request.mock.calls.filter(([m]) => m === 'reload.mcp')).toHaveLength(0)
+
+  const notices = sys.mock.calls.map(([text]) => String(text))
+
+  expect(notices).toContain('Reply `/reload now` to proceed, or `/reload always`')
+  expect(notices.some(line => line.includes('added: plug_tool'))).toBe(true)
 })
 
 it('/reasoning --global is the owner\'s /reasoning handler behind config.set; /skin reads still work', async () => {

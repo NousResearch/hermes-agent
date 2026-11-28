@@ -275,6 +275,9 @@ class CLILoopsMixin:
         _print_version_info(check_updates=True)
 
     def _cmd_reload(self, cmd_original: str):
+        from hermes_cli.cli_commands_session_tools import _command_arg
+        if _command_arg(cmd_original, lower=True) != "env":
+            return self._confirm_and_reload_chat(cmd_original)
         from hermes_cli.config import reload_env
         count = reload_env()
         print(f"  {t('cli.reload.env_reloaded', count=count)}")

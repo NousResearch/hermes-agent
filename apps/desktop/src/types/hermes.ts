@@ -1066,9 +1066,12 @@ export interface AnalyticsTotals {
 export interface CronJob {
   /** Missed-run policy: true runs one catch-up, false skips; null/absent follows the default. */
   catch_up?: boolean | null
+  /** Authoritative run-start from the execution ledger; present only while the job is running. */
+  active_run_started_at?: null | string
   deliver?: null | string
   enabled: boolean
   id: string
+  is_running?: boolean
   last_error?: null | string
   last_run_at?: null | string
   /** The job's newest ledger attempt (``cron.jobs.list_jobs``); claimed/running = a run in flight. */

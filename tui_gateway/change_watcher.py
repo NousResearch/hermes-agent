@@ -462,9 +462,42 @@ def _skills_sig():
 # keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
 # moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
 # persists platform connect/disconnect/health (the Messaging page's status signal).
+def _cron_sig():
+    """Signature for the desktop cron watcher.
+
+    Combines the profile's cron/jobs.json mtime — moves on create/edit/pause/remove AND on
+    scheduler tick bookkeeping (last_run/next_run) — with the authoritative in-flight running
+    set. The running set is why we also snapshot it here: run-start/finish happen in
+    executions.db, never jobs.json, so without it the desktop would never learn a job went live
+    and the sidebar's running dot would stay stale (it has no other trigger). Reading it is
+    cheap and one-way — cron.scheduler never imports tui_gateway, so there is no cycle.
+    """
+    jobs_mtime = _home_mtime_ns("cron", "jobs.json")
+
+    running = set()
+    try:
+        from cron.scheduler import get_running_job_ids
+        running |= set(get_running_job_ids())
+    except Exception:
+        pass
+    # A sibling process (messaging gateway, another dashboard) may be the one holding the run:
+    # only the ledger sees that, so union it in.
+    try:
+        from cron.executions import list_executions
+        running |= {
+            str(row.get("job_id"))
+            for row in list_executions(limit=50)
+            if row.get("status") in ("claimed", "running") and row.get("job_id")
+        }
+    except Exception:
+        pass
+
+    return (jobs_mtime, tuple(sorted(running)))
+
+
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any] | tuple[float, Any, Any, Any]] = {
     "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), dict),
+    "cron.changed": (1.0, _cron_sig, dict),
     "sessions.changed": (0.5, _sessions_sig, dict),
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects

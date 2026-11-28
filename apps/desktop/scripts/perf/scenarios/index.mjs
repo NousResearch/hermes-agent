@@ -3,6 +3,7 @@
 
 import coldStart from './cold-start.mjs'
 import firstToken from './first-token.mjs'
+import idleBurn from './idle-burn.mjs'
 import idleCost from './idle-cost.mjs'
 import keystroke from './keystroke.mjs'
 import liveWindow from './live-window.mjs'
@@ -27,6 +28,7 @@ export const SCENARIOS = {
   [renderChurn.name]: renderChurn,
   [rightPane.name]: rightPane,
   [idleCost.name]: idleCost,
+  [idleBurn.name]: idleBurn,
   [coldStart.name]: coldStart,
   [firstToken.name]: firstToken,
   [submit.name]: submit,

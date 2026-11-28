@@ -5,8 +5,59 @@ interface WindowStatePayload {
 
 export const RENDERER_ANIMATIONS_PAUSED_ATTRIBUTE = 'data-renderer-animations-paused'
 
+// Minimized/hidden is tracked once per window, not per controller. The bridge
+// only reports changes, so a controller that kept its own flag started as
+// "shown" whenever it was created while the window was already hidden (a
+// StatusPulse remounting in a hidden window played at once) and stayed wrong
+// until the next hide or show. One subscription serves every live controller;
+// in the main window installRendererAnimationPauseState holds one for the
+// window's lifetime, so the state survives any other controller coming and
+// going.
+type WindowStateSubscribe = (callback: (payload: WindowStatePayload) => void) => (() => void) | undefined
+
+let windowHidden = false
+let subscribedBridge: WindowStateSubscribe | undefined
+let offBridge: (() => void) | undefined
+const windowStateListeners = new Set<() => void>()
+
+function subscribeWindowHidden(listener: () => void): () => void {
+  const bridge = window.hermesDesktop?.onWindowStateChanged as WindowStateSubscribe | undefined
+
+  // A different bridge (a test's stub) starts over from "shown".
+  if (bridge !== subscribedBridge) {
+    offBridge?.()
+    subscribedBridge = bridge
+    windowHidden = false
+    offBridge = bridge?.(payload => {
+      const next = payload?.isMinimized === true || payload?.isVisible === false
+
+      if (windowHidden === next) {
+        return
+      }
+
+      windowHidden = next
+
+      for (const notify of [...windowStateListeners]) {
+        notify()
+      }
+    })
+  }
+
+  windowStateListeners.add(listener)
+
+  return () => {
+    windowStateListeners.delete(listener)
+
+    if (windowStateListeners.size === 0) {
+      offBridge?.()
+      offBridge = undefined
+      subscribedBridge = undefined
+      windowHidden = false
+    }
+  }
+}
+
 export function createRendererLoopPauseController(onChange: () => void, { pauseWhenUnfocused = false } = {}) {
-  let windowPaused = false
   let windowFocused = document.hasFocus()
 
   const onVisibilityChange = () => onChange()
@@ -25,16 +76,7 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
     }
   }
 
-  const offWindowState = window.hermesDesktop?.onWindowStateChanged?.((payload: WindowStatePayload) => {
-    const next = payload?.isMinimized === true || payload?.isVisible === false
-
-    if (windowPaused === next) {
-      return
-    }
-
-    windowPaused = next
-    onChange()
-  })
+  const offWindowState = subscribeWindowHidden(onChange)
 
   document.addEventListener('visibilitychange', onVisibilityChange)
 
@@ -48,9 +90,9 @@ export function createRendererLoopPauseController(onChange: () => void, { pauseW
       document.removeEventListener('visibilitychange', onVisibilityChange)
       window.removeEventListener('blur', onBlur)
       window.removeEventListener('focus', onFocus)
-      offWindowState?.()
+      offWindowState()
     },
-    isPaused: () => document.visibilityState === 'hidden' || (pauseWhenUnfocused && !windowFocused) || windowPaused
+    isPaused: () => document.visibilityState === 'hidden' || (pauseWhenUnfocused && !windowFocused) || windowHidden
   }
 }
 

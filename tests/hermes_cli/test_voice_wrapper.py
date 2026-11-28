@@ -11,6 +11,7 @@ stack.
 
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -148,6 +149,44 @@ class TestStopWithoutStart:
         monkeypatch.setattr(voice, "_recorder", None)
 
         assert voice.stop_and_transcribe() is None
+
+
+class TestRecorderRelease:
+    """The TUI wrapper drops the recorder after every push-to-talk take.
+
+    ``AudioRecorder`` keeps its stream open for its whole lifetime, so dropping
+    the recorder without closing it frees the stream's cffi callback while
+    PortAudio's callback thread is still inside it (SIGILL/SIGSEGV in
+    ``PaUtil_EndBufferProcessing``). Both drop sites now release it explicitly.
+    """
+
+    def test_stop_and_transcribe_releases_the_recorder(self, monkeypatch):
+        from hermes_cli import voice
+
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/take.wav"
+        monkeypatch.setattr(voice, "_recorder", recorder)
+        monkeypatch.setattr(voice, "_transcribe_wav", lambda _path, _err: "hello")
+
+        assert voice.stop_and_transcribe() == "hello"
+        recorder.stop.assert_called_once_with()
+        recorder.shutdown.assert_called_once_with()
+        assert voice._recorder is None
+
+    def test_start_recording_releases_the_recorder_it_replaces(self, monkeypatch):
+        from hermes_cli import voice
+
+        idle_recorder = MagicMock()
+        idle_recorder.is_recording = False
+        fresh_recorder = MagicMock()
+        monkeypatch.setattr(voice, "_recorder", idle_recorder)
+        monkeypatch.setattr(voice, "create_audio_recorder", lambda: fresh_recorder)
+
+        voice.start_recording()
+
+        idle_recorder.shutdown.assert_called_once_with()
+        fresh_recorder.start.assert_called_once_with()
+        assert voice._recorder is fresh_recorder
 
 
 @pytest.mark.real_audio_playback

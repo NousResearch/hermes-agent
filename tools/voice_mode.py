@@ -5,6 +5,7 @@ playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``
 extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
 
+import atexit
 import logging
 import math
 import os
@@ -58,6 +59,7 @@ def _import_audio():
             raise ImportError(str(exc)) from exc
     import sounddevice as sd
     import numpy as np
+    _register_exit_guard()
     return sd, np
 
 
@@ -367,14 +369,55 @@ def _get_beep_volume() -> float:
     return volume
 
 
-def _sd_play_blocking(sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0) -> None:
-    """``sd.play`` then poll until idle or *timeout* (``sd.wait()`` has no timeout and
-    hangs forever if the device stalls)."""
-    sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
-    from agent.deadline import poll_until
+# sounddevice's play()/stop() drive ONE process-global stream slot (``_last_callback``) and
+# are not thread-safe: the record-start beep, the record-stop beep, TTS and the thinking sound
+# all play from different threads, and two concurrent callers close the same PortAudio stream
+# twice — a double free in ALSA (SIGABRT inside snd_pcm_close) or a callback thread resuming in
+# freed libffi closure memory (SIGSEGV/SIGILL). Every playback in this module is serialized
+# here, and interruption is cooperative: only the thread that started a stream stops it.
+_PLAYBACK_LOCK = threading.Lock()
+# Bumped by stop_playback(). A playback snapshots it before waiting for the lock and gives up
+# if it changed: an Event would be cleared by the next playback and throw away a cancel that
+# was issued while that playback sat in the queue.
+_PLAYBACK_CANCEL_GEN = 0
 
-    poll_until(lambda: not (sd.get_stream() and sd.get_stream().active), timeout, 0.01)
-    sd.stop()
+
+def _sd_play_blocking(
+    sd, audio, sample_rate: int, *, timeout: float, blocksize: int = 0, mark_output: bool = False
+) -> None:
+    """Play *audio*; block until it finishes, is cancelled, or *timeout* elapses.
+
+    The sounddevice playback entry point for beeps, the thinking sound and WAV playback, so one
+    lock covers every caller (``tools/tts_tool_speaker`` streams through its own OutputStream and
+    does not come here). ``sd.wait()`` has no timeout and hangs forever if the device stalls.
+
+    ``mark_output`` claims the speaker for speech (``is_audio_output_active``). Only speech sets
+    it: beeps and thinking blips must not, or the barge-in listener treats every blip as TTS —
+    phase "playback", a higher trigger threshold, and a capture that gets filtered as TTS echo.
+    """
+    cancel_gen = _PLAYBACK_CANCEL_GEN
+    with _PLAYBACK_LOCK:
+        if _PLAYBACK_CANCEL_GEN != cancel_gen:
+            return  # cancelled while queued: never start, and never stop another thread's stream
+        if mark_output:
+            mark_audio_output_active(True)  # marked here: nothing is audible before this point
+        stream = None
+        try:
+            sd.play(audio, samplerate=sample_rate, blocksize=blocksize)
+            with suppress(RuntimeError):  # nothing playing: no stream to poll
+                stream = sd.get_stream()
+            from agent.deadline import poll_until
+
+            poll_until(
+                lambda: _PLAYBACK_CANCEL_GEN != cancel_gen or stream is None or not stream.active,
+                timeout,
+                0.01,
+            )
+        finally:
+            with suppress(Exception):
+                sd.stop()  # this thread started it, so this thread closes it
+            if mark_output:
+                mark_audio_output_active(False)
 
 
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
@@ -482,9 +525,9 @@ def _thinking_sound_loop(stop: threading.Event, should_play) -> None:
             if should_play is None or should_play():
                 blip = blips[i % len(blips)]
                 i += 1
-                sd.play(blip, samplerate=SAMPLE_RATE)
-                stop.wait(len(blip) / SAMPLE_RATE + 0.02)
-                sd.stop()
+                # Serialized with the beeps and TTS: sounddevice playback is single-slot.
+                _sd_play_blocking(sd, blip, SAMPLE_RATE,
+                                  timeout=len(blip) / SAMPLE_RATE + 0.5)
         except Exception as e:
             logger.debug("Thinking sound blip failed: %s", e)
             return
@@ -554,6 +597,7 @@ class _RecorderBase:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._recording, self._start_time, self._current_rms = False, 0.0, 0
+        self._starting = False  # start() in flight: a second call must not open a second stream
         # Live STT (``stt.streaming``): hosts set ``on_live_partial`` to render partial text.
         self.on_live_partial: Optional[Callable[[str], None]] = None
         self._live: Any = None
@@ -661,6 +705,52 @@ class TermuxAudioRecorder(_RecorderBase):
         self.cancel()
 
 
+# ── Stream lifetime ──────────────────────────────────────────────────
+# sounddevice hands PortAudio a cffi closure that calls back into Python, and Stream has no
+# __del__: whoever drops the last Python reference to an OPEN stream frees that closure under
+# PortAudio's running callback thread, which resumes in freed memory and dies in
+# PaUtil_EndBufferProcessing (SIGILL/SIGSEGV). The fix is therefore to always close the stream
+# (AudioRecorder.__del__ / shutdown(), hermes_cli.voice) — not to keep dead ones alive. A close
+# is safe on its own: it runs on a thread whose frame holds the stream, so the closure outlives
+# the close, and sounddevice clears ``_callback`` once PortAudio finishes the stream.
+
+
+# ── Exit ordering ────────────────────────────────────────────────────
+# sounddevice's atexit handler calls Pa_Terminate, which destroys PortAudio's global mutex.
+# A close still inside Pa_StopStream at that moment holds it, and the destructor aborts the
+# process: PaUnixMutex_Terminate: Assertion '0 == paUtilErr_' failed.  Wait for the closes
+# here first, and when one is wedged in the driver, skip Pa_Terminate instead of aborting on
+# the way out.
+_CLOSE_THREADS: Any = deque(maxlen=32)
+_EXIT_GUARD_REGISTERED = False
+_EXITING = False
+
+
+def _shutdown_audio_at_exit() -> None:
+    """Wait for in-flight stream closes, then let sounddevice terminate PortAudio."""
+    global _EXITING
+    _EXITING = True  # __del__ must not start a close while atexit handlers run
+    for thread in list(_CLOSE_THREADS):
+        with suppress(Exception):
+            thread.join(timeout=2.0)
+    if not any(thread.is_alive() for thread in _CLOSE_THREADS):
+        return
+    try:
+        import sounddevice as sd
+        atexit.unregister(sd._exit_handler)
+        logger.warning("Audio stream close still running at exit; skipping PortAudio termination")
+    except Exception:
+        logger.debug("Could not skip PortAudio termination at exit", exc_info=True)
+
+
+def _register_exit_guard() -> None:
+    """Register the exit guard after sounddevice, so it runs before Pa_Terminate."""
+    global _EXIT_GUARD_REGISTERED
+    if not _EXIT_GUARD_REGISTERED:
+        _EXIT_GUARD_REGISTERED = True
+        atexit.register(_shutdown_audio_at_exit)
+
+
 class AudioRecorder(_RecorderBase):
     """Thread-safe sounddevice.InputStream recorder: ``start(on_silence_stop=cb)`` ...
     ``stop()`` -> WAV path or None; ``cancel()`` discards. With a callback the recording
@@ -671,6 +761,9 @@ class AudioRecorder(_RecorderBase):
     def __init__(self) -> None:
         super().__init__()
         self._stream: Any = None
+        # Serializes stream create/close: two overlapping start() calls (key repeat) would
+        # otherwise each build an InputStream and drop the loser under the callback thread.
+        self._stream_lock = threading.RLock()
         self._frames: list[Any] = []
         self._sample_rate: int = SAMPLE_RATE
         self._on_silence_stop = None
@@ -789,44 +882,48 @@ class AudioRecorder(_RecorderBase):
         can still deactivate the stream when another input stream opens; in
         that case the dead object must be closed and rebuilt before capture.
         """
-        if self._stream is not None:
-            try:
-                if self._stream.active:
-                    return
-            except Exception:
-                logger.debug("Audio input stream liveness probe failed", exc_info=True)
+        with self._stream_lock:
+            if self._stream is not None:
+                try:
+                    if self._stream.active:
+                        return
+                except Exception:
+                    logger.debug("Audio input stream liveness probe failed", exc_info=True)
 
-            logger.debug("Rebuilding inactive audio input stream")
-            self._close_stream_with_timeout()
-        sd, np = _import_audio()
+                logger.debug("Rebuilding inactive audio input stream")
+                self._close_stream_with_timeout()
+            sd, np = _import_audio()
 
-        def _callback(indata, frames, time_info, status):
-            if status:
-                logger.debug("sounddevice status: %s", status)
-            if self._recording:
-                self._on_audio_block(np, indata)
+            def _callback(indata, frames, time_info, status):
+                if status:
+                    logger.debug("sounddevice status: %s", status)
+                if self._recording:
+                    self._on_audio_block(np, indata)
 
-        stream = None
-        for attempt in range(2):
-            try:  # may block on CoreAudio (first call only)
-                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                        callback=_callback)
-                stream.start()
-                break
-            except Exception as e:
-                with suppress(Exception):
-                    stream.close()
-                stream = None
-                # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
-                # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
-                # failed open itself wakes the bridge, so one immediate retry succeeds
-                # where the user's second key press would have (#109303).
-                if attempt or "timed out" not in str(e).lower():
-                    raise RuntimeError(
-                        f"Failed to open audio input stream: {e}. "
-                        "Check that a microphone is connected and accessible.") from e
-                logger.info("Audio input stream start timed out; retrying once")
-        self._stream = stream
+            stream = None
+            for attempt in range(2):
+                try:  # may block on CoreAudio (first call only)
+                    stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                            callback=_callback)
+                    stream.start()
+                    break
+                except Exception as e:
+                    if stream is not None:
+                        with suppress(Exception):
+                            stream.close()
+                        # A start() that failed late already has a callback thread; closing it is what
+                        # keeps the closure alive for that thread (it holds no Python reference back).
+                    stream = None
+                    # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
+                    # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
+                    # failed open itself wakes the bridge, so one immediate retry succeeds
+                    # where the user's second key press would have (#109303).
+                    if attempt or "timed out" not in str(e).lower():
+                        raise RuntimeError(
+                            f"Failed to open audio input stream: {e}. "
+                            "Check that a microphone is connected and accessible.") from e
+                    logger.info("Audio input stream start timed out; retrying once")
+            self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:
         """Start capturing; *on_silence_stop* is invoked (daemon thread, no args) when
@@ -838,8 +935,9 @@ class AudioRecorder(_RecorderBase):
         except ImportError as e:
             raise RuntimeError(f"Voice mode requires sounddevice and numpy.\n{_voice_capture_install_hint(e)}") from e
         with self._lock:
-            if self._recording:
+            if self._recording or self._starting:
                 return
+            self._starting = True
             self._frames = []
             self._start_time = time.monotonic()
             self._reset_detection_state()
@@ -847,17 +945,24 @@ class AudioRecorder(_RecorderBase):
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
         self._sample_rate = _default_input_samplerate(sd)
-        self._ensure_stream()
-        self._open_live_session(self._sample_rate)
+        try:
+            self._ensure_stream()
+            self._open_live_session(self._sample_rate)
+        except BaseException:
+            with self._lock:
+                self._starting = False
+            raise
         with self._lock:
+            self._starting = False
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
         """Close the stream with a timeout to prevent CoreAudio hangs."""
-        if self._stream is None:
-            return
-        stream, self._stream = self._stream, None
+        with self._stream_lock:
+            if self._stream is None:
+                return
+            stream, self._stream = self._stream, None
 
         def _do_close():
             with suppress(Exception):
@@ -866,6 +971,7 @@ class AudioRecorder(_RecorderBase):
                 stream.close()
 
         t = threading.Thread(target=_do_close, daemon=True)
+        _CLOSE_THREADS.append(t)  # before start(): the exit guard must see a close that has begun
         t.start()
         clock = __import__("time")  # real clock even when tests patch this module's ``time``
         deadline = clock.monotonic() + timeout
@@ -922,6 +1028,23 @@ class AudioRecorder(_RecorderBase):
         self._discard()
         self._close_stream_with_timeout()  # outside the lock: avoids deadlock with the callback
         logger.info("AudioRecorder shut down")
+
+    def __del__(self) -> None:
+        """Close the stream if the recorder is dropped without an explicit close.
+
+        sounddevice's Stream has no ``__del__``, so a dropped OPEN stream is freed with its
+        cffi callback still installed and PortAudio's callback thread resumes in freed memory
+        (see the Stream lifetime note above). Closing here is the fallback; callers should
+        close explicitly, because this runs on whichever thread drops the last reference —
+        including PortAudio's callback thread, where the close would just wait for itself.
+
+        Not at interpreter exit: the close would race sounddevice's ``Pa_Terminate``,
+        which then aborts on a mutex the close still holds.
+        """
+        if _EXITING:
+            return
+        with suppress(Exception):
+            self.shutdown()
 
     @staticmethod
     def _write_wav(audio_data, *, sample_rate: int = SAMPLE_RATE) -> str:
@@ -998,9 +1121,12 @@ def stop_playback() -> None:
         with suppress(Exception):
             proc.terminate()
             logger.info("Audio playback interrupted")
-    with suppress(Exception):  # also stop sounddevice playback if active
-        sd, _ = _import_audio()
-        sd.stop()
+    # sounddevice playback belongs to the thread that started it: that thread holds
+    # _PLAYBACK_LOCK and closes its own stream. Raising the cancel flag cuts the sound within
+    # one poll tick; calling sd.stop() from here closed a stream another thread was inside
+    # (double free in ALSA, or its callback closure freed under PortAudio's callback thread).
+    global _PLAYBACK_CANCEL_GEN
+    _PLAYBACK_CANCEL_GEN += 1  # int bump under the GIL; queued playbacks compare their snapshot
 
 
 def _wsl_powershell_tts_available() -> bool:
@@ -1013,11 +1139,7 @@ def play_audio_file(file_path: str) -> bool:
     """Play an audio file; True on success. WAV via ``sounddevice.play()`` when allowed,
     else system players: afplay (macOS), WSL2 PowerShell bridge, ffplay, aplay (Linux).
     Interruptible via ``stop_playback()``."""
-    mark_audio_output_active(True)  # ref-count real speaker output for the whole call
-    try:
-        return _play_audio_file_impl(file_path)
-    finally:
-        mark_audio_output_active(False)
+    return _play_audio_file_impl(file_path)
 
 
 def _play_wav_via_sounddevice(file_path: str) -> bool:
@@ -1041,7 +1163,8 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
                 np.zeros(int(0.05 * sample_rate), dtype=np.int16)])
             blocksize = 4096
         _sd_play_blocking(sd, audio_data, sample_rate,
-                          timeout=len(audio_data) / sample_rate + 2.0, blocksize=blocksize)
+                          timeout=len(audio_data) / sample_rate + 2.0, blocksize=blocksize,
+                          mark_output=True)  # speech: the barge listener keys off this
         return True
     except (ImportError, OSError):
         return False
@@ -1098,6 +1221,7 @@ def _system_player_candidates(file_path: str) -> list[list[str]]:
 def _run_system_player(cmd: list[str]) -> bool:
     """Run one player to completion (interruptible via stop_playback)."""
     proc = None
+    mark_audio_output_active(True)  # subprocess players do not pass through _sd_play_blocking
     try:
         # Sibling of the TTS/STT credential scrub: players must not inherit tokens/keys.
         # See #56332, #70342.
@@ -1120,6 +1244,7 @@ def _run_system_player(cmd: list[str]) -> bool:
         logger.debug("System player %s failed: %s", cmd[0], e)
     finally:
         _set_active_playback(None)
+        mark_audio_output_active(False)
     return False
 
 

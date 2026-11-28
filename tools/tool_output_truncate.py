@@ -18,15 +18,18 @@ def truncation_notice(omitted: int, total: int, *, label: str = "OUTPUT", unit: 
 
 def head_tail_split(budget: int) -> tuple[int, int]:
     """``(head, tail)`` character budgets for ``budget`` total."""
-    head = int(budget * HEAD_RATIO)
-    return head, budget - head
+    clamped = max(0, budget)
+    head = int(clamped * HEAD_RATIO)
+    return head, clamped - head
 
 
 def truncate_head_tail(text: str, max_chars: int, *, label: str = "OUTPUT") -> str:
     """``text`` unchanged when it fits ``max_chars``; otherwise head + notice + tail (the kept
-    text is exactly ``max_chars`` long, the notice rides on top)."""
-    if len(text) <= max_chars:
+    text is ``max(0, max_chars)`` long, the notice rides on top)."""
+    budget = max(0, max_chars)
+    if len(text) <= budget:
         return text
-    head, tail = head_tail_split(max_chars)
+    head, tail = head_tail_split(budget)
     omitted = len(text) - head - tail
-    return text[:head] + truncation_notice(omitted, len(text), label=label) + text[-tail:]
+    tail_slice = text[-tail:] if tail else ""
+    return text[:head] + truncation_notice(omitted, len(text), label=label) + tail_slice

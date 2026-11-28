@@ -1,0 +1,378 @@
+openapi: 3.0.3
+info:
+  title: Hermes Agent API
+  version: 1.0.0
+  description: |
+    OpenAI-compatible API server for the Hermes personal AI agent.
+    Exposes chat completions, sessions, runs, skills, and toolsets so that
+    Custom GPTs and other OpenAI-compatible clients can call Hermes functions.
+  contact:
+    name: Hermes Agent
+servers:
+  - url: https://<your-hermes-host>:8642
+    description: Hermes API server (replace <your-hermes-host>)
+  - url: http://127.0.0.1:8642
+    description: Local development
+security:
+  - bearerAuth: []
+tags:
+  - name: sessions
+    description: Session lifecycle and transcripts
+  - name: runs
+    description: Long-running runs and approvals
+  - name: chat
+    description: OpenAI-compatible chat completions
+  - name: catalog
+    description: Models, skills, toolsets
+  - name: health
+    description: Health probes
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: hermes_health
+      tags: [health]
+      security: []
+      responses:
+        '200':
+          description: OK
+  /health/detailed:
+    get:
+      summary: Detailed health
+      operationId: hermes_health_detailed
+      tags: [health]
+      security: []
+      responses:
+        '200':
+          description: OK
+  /v1/models:
+    get:
+      summary: List available models
+      operationId: hermes_list_models
+      tags: [catalog]
+      responses:
+        '200':
+          description: Model list
+  /v1/chat/completions:
+    post:
+      summary: OpenAI-compatible chat completions
+      operationId: hermes_chat_completions
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - model
+                - messages
+              properties:
+                model:
+                  type: string
+                messages:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role:
+                        type: string
+                      content:
+                        type: string
+                stream:
+                  type: boolean
+                temperature:
+                  type: number
+                max_tokens:
+                  type: integer
+      responses:
+        '200':
+          description: Completion
+  /v1/responses:
+    post:
+      summary: Responses API
+      operationId: hermes_responses
+      tags: [chat]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Response
+  /v1/runs:
+    post:
+      summary: Create a run
+      operationId: hermes_create_run
+      tags: [runs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Run created
+  /v1/runs/{run_id}:
+    get:
+      summary: Get run status
+      operationId: hermes_get_run
+      tags: [runs]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Run status
+  /v1/runs/{run_id}/events:
+    get:
+      summary: Stream run events
+      operationId: hermes_run_events
+      tags: [runs]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Event stream
+  /v1/runs/{run_id}/approval:
+    post:
+      summary: Respond to an approval request
+      operationId: hermes_run_approval
+      tags: [runs]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Approval recorded
+  /v1/runs/{run_id}/steer:
+    post:
+      summary: Steer a run
+      operationId: hermes_run_steer
+      tags: [runs]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Steered
+  /v1/runs/{run_id}/stop:
+    post:
+      summary: Stop a run
+      operationId: hermes_stop_run
+      tags: [runs]
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stopped
+  /v1/skills:
+    get:
+      summary: List skills
+      operationId: hermes_list_skills
+      tags: [catalog]
+      responses:
+        '200':
+          description: Skills
+  /v1/toolsets:
+    get:
+      summary: List toolsets
+      operationId: hermes_list_toolsets
+      tags: [catalog]
+      responses:
+        '200':
+          description: Toolsets
+  /api/sessions:
+    get:
+      summary: List sessions
+      operationId: hermes_list_sessions
+      tags: [sessions]
+      responses:
+        '200':
+          description: Sessions
+    post:
+      summary: Create a session
+      operationId: hermes_create_session
+      tags: [sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Session created
+  /api/sessions/{session_id}:
+    get:
+      summary: Get a session
+      operationId: hermes_get_session
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Session
+    patch:
+      summary: Update a session
+      operationId: hermes_update_session
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+    delete:
+      summary: Delete a session
+      operationId: hermes_delete_session
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Deleted
+  /api/sessions/{session_id}/messages:
+    get:
+      summary: Get session messages (transcript)
+      operationId: hermes_get_session_messages
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Messages
+  /api/sessions/{session_id}/fork:
+    post:
+      summary: Fork a session
+      operationId: hermes_fork_session
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Forked
+  /api/sessions/{session_id}/chat:
+    post:
+      summary: Send a chat message into a session
+      operationId: hermes_session_chat
+      tags: [sessions, chat]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Chat response
+  /api/sessions/{session_id}/chat/stream:
+    post:
+      summary: Stream a chat message into a session
+      operationId: hermes_session_chat_stream
+      tags: [sessions, chat]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Stream
+  /api/sessions/{session_id}/model:
+    post:
+      summary: Lock the model for a session
+      operationId: hermes_lock_session_model
+      tags: [sessions]
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Model locked
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Hermes API_SERVER_KEY sent as a Bearer token

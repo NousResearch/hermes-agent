@@ -1,0 +1,146 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Hermes Agent Actions",
+    "version": "1.0.0",
+    "description": "OpenAI Custom GPT Actions manifest for the Hermes Agent API. Connect a Custom GPT to Hermes so it can call Hermes functions (chat, sessions, runs, skills, toolsets). Host hermes-api.yaml at a public HTTPS URL and paste that URL into the Actions builder, then add API_SERVER_KEY as the Bearer auth."
+  },
+  "servers": [
+    {
+      "url": "https://<your-hermes-host>:8642",
+      "description": "Hermes API server (replace <your-hermes-host>; must be public HTTPS for OpenAI Actions)"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/v1/chat/completions": {
+      "post": {
+        "operationId": "hermes_chat_completions",
+        "summary": "Chat completions",
+        "description": "Send a message to Hermes and get a completion back.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["model", "messages"],
+                "properties": {
+                  "model": { "type": "string", "description": "Model slug, e.g. hermes-agent" },
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "role": { "type": "string" },
+                        "content": { "type": "string" }
+                      }
+                    }
+                  },
+                  "stream": { "type": "boolean" },
+                  "temperature": { "type": "number" },
+                  "max_tokens": { "type": "integer" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Completion" }
+        }
+      }
+    },
+    "/api/sessions": {
+      "get": {
+        "operationId": "hermes_list_sessions",
+        "summary": "List sessions",
+        "description": "List all Hermes sessions.",
+        "responses": { "200": { "description": "Sessions" } }
+      },
+      "post": {
+        "operationId": "hermes_create_session",
+        "summary": "Create a session",
+        "description": "Create a new Hermes session.",
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": { "200": { "description": "Session created" } }
+      }
+    },
+    "/api/sessions/{session_id}/messages": {
+      "get": {
+        "operationId": "hermes_get_session_messages",
+        "summary": "Get session transcript",
+        "description": "Read the full message transcript of a Hermes session.",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "Messages" } }
+      }
+    },
+    "/api/sessions/{session_id}/chat": {
+      "post": {
+        "operationId": "hermes_session_chat",
+        "summary": "Send a message into a session",
+        "description": "Send a user message into an existing Hermes session.",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "type": "object" } } }
+        },
+        "responses": { "200": { "description": "Chat response" } }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "operationId": "hermes_list_models",
+        "summary": "List models",
+        "description": "List models advertised by Hermes.",
+        "responses": { "200": { "description": "Models" } }
+      }
+    },
+    "/v1/skills": {
+      "get": {
+        "operationId": "hermes_list_skills",
+        "summary": "List skills",
+        "description": "List Hermes skills.",
+        "responses": { "200": { "description": "Skills" } }
+      }
+    },
+    "/v1/toolsets": {
+      "get": {
+        "operationId": "hermes_list_toolsets",
+        "summary": "List toolsets",
+        "description": "List Hermes toolsets.",
+        "responses": { "200": { "description": "Toolsets" } }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "Hermes API_SERVER_KEY as a Bearer token"
+      }
+    }
+  }
+}

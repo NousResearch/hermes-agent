@@ -79,7 +79,9 @@ async def settle(predicate, timeout=5.0):
 
 
 @pytest.mark.asyncio
-async def test_waiting_context_reads_keep_reader_backpressure(rig):
+async def test_waiting_context_reads_keep_reader_backpressure(rig, monkeypatch):
+    monkeypatch.setattr(ws_mod, "_WS_CONCURRENT_READ_LIMIT", 2)
+    monkeypatch.setattr(ws_mod, "_WS_WAITING_READ_LIMIT", 8)
     sock, gates, log = rig
     gates["session.context_breakdown"] = release = asyncio.Event()
     task = asyncio.create_task(ws_mod.handle_ws(sock))
@@ -118,7 +120,9 @@ async def test_server_shutdown_does_not_wait_for_a_running_context_read(rig):
 
 
 @pytest.mark.asyncio
-async def test_hang_up_drops_reads_that_never_started(rig):
+async def test_hang_up_drops_reads_that_never_started(rig, monkeypatch):
+    monkeypatch.setattr(ws_mod, "_WS_CONCURRENT_READ_LIMIT", 2)
+    monkeypatch.setattr(ws_mod, "_WS_WAITING_READ_LIMIT", 8)
     sock, gates, log = rig
     gates["session.context_breakdown"] = release = asyncio.Event()
     task = asyncio.create_task(ws_mod.handle_ws(sock))
@@ -170,3 +174,121 @@ async def test_a_slow_stored_read_never_holds_an_interrupt(rig, method):
         release.set()
     sock.inbound.put_nowait(None)
     await asyncio.wait_for(task, 30)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    "subagent.list",
+    "process.list",
+    "session.control.read",
+    "session.info",
+    "session.list",
+    "profiles.list",
+])
+async def test_status_reads_leave_the_serial_lane(rig, method):
+    """A slow read-only status projection must not hold the serial control lane (#147666).
+
+    Before the fix this method ran through ``await _dispatch_one``; the gated handler blocked
+    the dispatcher and the interrupt behind it never started. On the read lane it is a task,
+    so the serial lane stays free. Deterministic ordering, no wall-clock timing.
+    """
+    sock, gates, log = rig
+    gates[method] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    sock.inbound.put_nowait(rpc(1, method))
+    assert await settle(lambda: "start:1" in log), log
+    sock.inbound.put_nowait(rpc(2, "session.interrupt"))
+    try:
+        assert await settle(lambda: "done:2" in log), log
+        assert "done:1" not in log
+    finally:
+        release.set()
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 30)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_read_cap_is_respected(rig, monkeypatch):
+    """The raised cap stays an actual bound: with a limit of 3, six gated reads start only 3."""
+    monkeypatch.setattr(ws_mod, "_WS_CONCURRENT_READ_LIMIT", 3)
+    monkeypatch.setattr(ws_mod, "_WS_WAITING_READ_LIMIT", 8)
+    sock, gates, log = rig
+    gates["session.info"] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    for n in range(6):
+        sock.inbound.put_nowait(rpc(n, "session.info"))
+    try:
+        assert await settle(lambda: sum(e.startswith("start:") for e in log) == 3), log
+        assert sum(e.startswith("start:") for e in log) == 3
+        assert sum(e.startswith("done:") for e in log) == 0
+    finally:
+        release.set()
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 30)
+    assert sum(e.startswith("done:") for e in log) == 6
+
+
+def test_env_overrides_are_bounded(monkeypatch):
+    """Bad or extreme env values cannot produce a negative/unbounded semaphore."""
+    name = "HERMES_WS_TEST_CAP"
+    assert ws_mod._bounded_env_int(name, 32) == 32
+    monkeypatch.setenv(name, "64")
+    assert ws_mod._bounded_env_int(name, 32) == 64
+    monkeypatch.setenv(name, "not-a-number")
+    assert ws_mod._bounded_env_int(name, 32) == 32
+    monkeypatch.setenv(name, "  -7  ")
+    assert ws_mod._bounded_env_int(name, 32) == 1
+    monkeypatch.setenv(name, "100000")
+    assert ws_mod._bounded_env_int(name, 32) == 256
+
+@pytest.mark.asyncio
+async def test_default_read_lane_backpressure_is_bounded(rig):
+    """The shipped 32/64 caps stay a real bound: a burst parks the reader at the admission limit.
+
+    Uses the module defaults (no monkeypatch) and counts started reads, never wall-clock time.
+    """
+    sock, gates, log = rig
+    method = "session.info"
+    gates[method] = release = asyncio.Event()
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    burst = ws_mod._WS_CONCURRENT_READ_LIMIT + ws_mod._WS_WAITING_READ_LIMIT + 12
+    for n in range(burst):
+        sock.inbound.put_nowait(rpc(n, method))
+    try:
+        assert await settle(lambda: sum(e.startswith("start:") for e in log) == ws_mod._WS_CONCURRENT_READ_LIMIT), log
+        bound = (ws_mod._WS_DISPATCH_QUEUE_MAX + ws_mod._WS_CONCURRENT_READ_LIMIT
+                 + ws_mod._WS_WAITING_READ_LIMIT + 2)
+        assert sock.received <= bound, (sock.received, bound)
+    finally:
+        release.set()
+    assert await settle(lambda: sock.inbound.empty())
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 60)
+    assert len(sock.sent) == burst + 1  # gateway.ready + one reply per read
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["process.list", "profiles.list", "session.list"])
+async def test_pool_backed_reads_do_not_hold_the_serial_lane(rig, monkeypatch, method):
+    """rpc_dispatch submits these long handlers to the RPC pool and returns None immediately;
+    the reply is written by the pool worker. On the WS read lane that path must still admit the
+    read without holding the dispatcher or the control lane behind it.
+    """
+    sock, _gates, log = rig
+
+    async def dispatch(authority, req, m, transport):
+        log.append(f"start:{req['id']}")
+        if m in {"process.list", "profiles.list", "session.list"}:
+            return None
+        log.append(f"done:{req['id']}")
+        return {"jsonrpc": "2.0", "id": req["id"], "result": {}}
+
+    monkeypatch.setattr(ws_mod, "_dispatch_request", dispatch)
+    task = asyncio.create_task(ws_mod.handle_ws(sock))
+    for n in range(4):
+        sock.inbound.put_nowait(rpc(n, method))
+    sock.inbound.put_nowait(rpc("ctl", "session.interrupt"))
+    assert await settle(lambda: "done:ctl" in log), log
+    assert sum(e.startswith("start:") and not e.startswith("start:ctl") for e in log) == 4
+    sock.inbound.put_nowait(None)
+    await asyncio.wait_for(task, 30)
+

@@ -27,6 +27,7 @@ provider_routing:
   order: []               # Explicit provider priority order
   require_parameters: false  # Only use providers that support all parameters
   data_collection: null   # Control data collection ("allow" or "deny")
+  zdr: null               # Require zero-data-retention endpoints (true/false)
 ```
 
 :::info
@@ -102,10 +103,35 @@ provider_routing:
   data_collection: "deny"
 ```
 
+### `zdr`
+
+Requires endpoints that hold **zero data retention**. When `true`, OpenRouter is told to consider
+only endpoints with a zero-retention policy, and a request that cannot be satisfied fails rather
+than silently falling back to a storing provider.
+
+```yaml
+provider_routing:
+  zdr: true
+```
+
+:::caution
+`zdr` is much stricter than `data_collection`. Many otherwise eligible endpoints do not offer it, so
+a model can become unreachable entirely — including auxiliary models. Enabling it **flat** can strand
+a task that pins another model (for example a guard or classifier), which then fails on every call.
+Prefer the per-model form below and enable it only for the models you have verified:
+
+```yaml
+provider_routing:
+  models:
+    "deepseek/deepseek-v4.1-flash-1017":
+      zdr: true
+```
+:::
+
 ### Per-model overrides (`models`)
 
 Pin a different provider set per model. Keys under `models` are model ids; each entry takes the same
-`sort` / `only` / `ignore` / `order` / `require_parameters` / `data_collection` keys and overrides the
+`sort` / `only` / `ignore` / `order` / `require_parameters` / `data_collection` / `zdr` keys and overrides the
 flat value for that model only. Anything you don't set per model falls through to the flat defaults.
 
 ```yaml

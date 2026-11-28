@@ -664,6 +664,7 @@ class VoiceReceiver:
     SAMPLE_RATE = 48000        # Discord native rate
     CHANNELS = 2               # Discord sends stereo
     REKEY_FAILURE_STREAK = 25  # consecutive NaCl failures → re-resolve creds
+    STREAK_STALE_S = 0.6       # packet gap that ends a barge-in speech streak
 
     def __init__(self, voice_client, allowed_user_ids: set | None = None):
         self._vc = voice_client
@@ -688,6 +689,8 @@ class VoiceReceiver:
         self._lock = threading.Lock()
         self._buffers: dict[int, bytearray] = defaultdict(bytearray)
         self._last_packet_time: dict[int, float] = {}
+        # SSRC -> [continuous speech-packet count, last packet monotonic] (barge-in telemetry)
+        self._speech_streaks: dict[int, list] = {}
         # Opus decoder per SSRC (each user needs own decoder state)
         self._decoders: dict[int, object] = {}
         # Pause flag: don't capture while bot is playing TTS
@@ -810,6 +813,7 @@ class VoiceReceiver:
         with self._lock:
             self._buffers.clear()
             self._last_packet_time.clear()
+            self._speech_streaks.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
         logger.info(
@@ -1051,6 +1055,17 @@ class VoiceReceiver:
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
+                # Barge-in telemetry: per-SSRC streak of continuous speech packets (one every
+                # ~20 ms while the user talks). The adapter's barge watcher reads this to tell
+                # "someone is talking over the bot" from a cough or a packet blip. Cheap counter
+                # bookkeeping under the lock we already hold; no extra decode.
+                now = self._last_packet_time[ssrc]
+                streak = self._speech_streaks.get(ssrc)
+                if streak is None or now - streak[1] > self.STREAK_STALE_S:
+                    self._speech_streaks[ssrc] = [1, now]
+                else:
+                    streak[0] += 1
+                    streak[1] = now
         except Exception as e:
             with self._lock:
                 self._decoders.pop(ssrc, None)
@@ -1125,6 +1140,7 @@ class VoiceReceiver:
                         completed.append((user_id, bytes(buf)))
                 self._buffers.pop(ssrc, None)
                 self._last_packet_time.pop(ssrc, None)
+                self._speech_streaks.pop(ssrc, None)
         return completed
 
     def discard_pending(self) -> None:
@@ -1132,6 +1148,7 @@ class VoiceReceiver:
         with self._lock:
             self._buffers.clear()
             self._last_packet_time.clear()
+            self._speech_streaks.clear()
 
     # --- PCM -> WAV conversion (for Whisper STT) ---
 
@@ -1244,6 +1261,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         self._voice_mode_getter: Optional[Callable] = None  # set by run.py
         # Continuous voice mixer per guild (ambient bed + ducked speech) so acks/TTS/thinking overlap.
         self._voice_mixers: dict[int, Any] = {}  # guild_id -> VoiceMixer
+        self._voice_barge_tasks: dict[int, asyncio.Task] = {}  # guild_id -> barge-in watcher
         self._ambient_pcm_cache: Optional[bytes] = None  # decoded ambient bed
         self._voice_fx_cfg: dict[str, Any] = self._load_voice_fx_config()
         # Threads the bot participated in (no @mention needed there); persisted across restarts.
@@ -3391,6 +3409,121 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             "voice_playback_timeout_seconds", self.PLAYBACK_TIMEOUT, minimum=1,
         )
 
+    # --- Barge-in (user speech interrupts bot speech) ---
+
+    def _load_voice_barge_in(self) -> dict:
+        """Read ``discord.voice_barge_in`` from config.yaml with safe defaults.
+
+        Barge-in lets a user cut the bot's in-flight voice speech simply by talking; the
+        utterance itself then flows to STT through the normal listen loop. The cut decision is
+        an ABSOLUTE RMS floor on the uplink buffer, not a margin over the bot's own output:
+        Discord AGC normalizes both close-talk speech and loudspeaker loopback of the TTS to
+        similar levels, so relative headroom cannot separate voice from echo — absolute level
+        plus a sustained-packet streak does (measured live: user speech lands around
+        -15..-6 dBFS after AGC, ambient noise stays under -55).
+
+            discord:
+              voice_barge_in:
+                enabled: true        # master switch (default on)
+                min_db: -45          # uplink RMS floor in dBFS that triggers the cut
+                min_frames: 25       # ~0.5 s of continuous packets (anti-cough/anti-blip)
+        """
+        defaults = {"enabled": True, "min_db": -45.0, "min_frames": 25}
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config() or {}
+            raw = (cfg.get("discord") or {}).get("voice_barge_in", True)
+            if isinstance(raw, dict):
+                if "enabled" in raw:
+                    defaults["enabled"] = bool(raw["enabled"])
+                for key in ("min_db", "min_frames"):
+                    if raw.get(key) is not None:
+                        defaults[key] = float(raw[key])
+            else:
+                defaults["enabled"] = bool(raw)
+        except Exception as e:
+            logger.debug("Could not load discord.voice_barge_in config: %s", e)
+        return defaults
+
+    @staticmethod
+    def _rms_dbfs(pcm: bytes) -> float:
+        """Overall RMS of int16 PCM in dBFS (0 = full scale). Channel-agnostic; cheap."""
+        n = len(pcm) // 2
+        if n < 480:
+            return -99.0
+        import array as _array
+        import math
+
+        samples = _array.array("h")
+        samples.frombytes(pcm[: n * 2])
+        energy = sum(s * s for s in samples) / n
+        if energy <= 0:
+            return -99.0
+        return 10.0 * math.log10(energy / (32767.0 * 32767.0))
+
+    def _start_barge_watcher(self, guild_id: int) -> None:
+        """Watch uplink speech for the duration of one mixer-speech episode; cut on barge-in."""
+        tasks = getattr(self, "_voice_barge_tasks", None)
+        if tasks is None:  # adapters built without __init__ (tests / partial construction)
+            tasks = self._voice_barge_tasks = {}
+        task = tasks.get(guild_id)
+        if task is not None and not task.done():
+            return  # one watcher per guild; it self-terminates when speech ends
+        task = asyncio.ensure_future(self._watch_barge_in(guild_id))
+        tasks[guild_id] = task
+        task.add_done_callback(lambda _t, gid=guild_id: getattr(
+            self, "_voice_barge_tasks", {}).pop(gid, None))
+
+    async def _watch_barge_in(self, guild_id: int) -> None:
+        """Poll while the mixer speaks; stop its speech when a user talks over it.
+
+        Conditions (all measured on data the receiver already keeps): a per-SSRC streak of
+        continuous uplink packets >= ``min_frames`` AND the RMS of that user's last ~1 s of
+        decoded buffer >= ``min_db`` dBFS. The cut is one mixer frame (~20 ms) after detection;
+        the interrupting utterance itself is NOT consumed here — it keeps buffering and reaches
+        STT normally, so the bot hears what the user said.
+        """
+        cfg = self._load_voice_barge_in()
+        if not cfg["enabled"]:
+            return
+        mixer = self._voice_mixers.get(guild_id)
+        receiver = self._voice_receivers.get(guild_id)
+        if mixer is None or receiver is None:
+            return
+        min_db, min_frames = float(cfg["min_db"]), int(cfg["min_frames"])
+        try:
+            first = True
+            while mixer.speech_active:
+                if not first:
+                    # First pass is immediate (the watcher starts right when speech starts);
+                    # after that, poll every 250 ms.
+                    await asyncio.sleep(0.25)
+                first = False
+                now = time.monotonic()
+                with receiver._lock:
+                    streaks = {ssrc: list(entry) for ssrc, entry in receiver._speech_streaks.items()
+                               if now - entry[1] <= receiver.STREAK_STALE_S and entry[0] >= min_frames}
+                    candidates = [(ssrc, bytes(receiver._buffers.get(ssrc, b"")[-192000:]))
+                                  for ssrc in streaks]
+                for ssrc, tail in candidates:
+                    if not tail:
+                        continue
+                    level = self._rms_dbfs(tail)
+                    if level < min_db:
+                        continue
+                    user_id = getattr(receiver, "_ssrc_to_user", {}).get(ssrc, 0)
+                    logger.info(
+                        "[%s] Barge-in: user %s interrupted bot speech in guild=%d "
+                        "(uplink %.1f dBFS >= %.1f, %d continuous packets)",
+                        self.name, user_id, guild_id, level, min_db, streaks[ssrc][0],
+                    )
+                    mixer.stop_speech()
+                    return
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug("[%s] barge-in watcher error (guild=%d): %s", self.name, guild_id, e)
+
     def _voice_timeout_limit(self) -> int:
         return int(getattr(self, "_voice_timeout_seconds", self.VOICE_TIMEOUT))
 
@@ -3521,6 +3654,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 self._lead_silence_bytes() + pcm,
                 gain=float(self._voice_fx_cfg.get("speech_gain", 1.0)),
             )
+            # Acks are speech too: barge-in covers them (user talks -> ack cut, nothing lost).
+            self._start_barge_watcher(guild_id)
             self._reset_voice_timeout(guild_id)
             return True
         except Exception as e:
@@ -3625,6 +3760,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
                 if pcm:
                     speech_gain = float(self._voice_fx_cfg.get("speech_gain", 1.0))
                     mixer.play_speech(self._lead_silence_bytes() + pcm, gain=speech_gain)
+                    # Barge-in: while this speech plays, a user talking over the bot cuts it
+                    # within one frame (see _watch_barge_in). The wait loop below then returns
+                    # immediately because speech_active went false.
+                    self._start_barge_watcher(guild_id)
                     # Block until speech drains so callers serialise replies; ambient keeps playing.
                     wait_start = time.monotonic()
                     while mixer.speech_active:

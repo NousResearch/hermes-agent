@@ -389,6 +389,10 @@ discord:
   channel_prompts: {}             # Per-channel ephemeral system prompts
   voice_channel_inactivity_timeout_seconds: 300  # Set 0 to stay in VC until explicit /voice leave
   voice_playback_timeout_seconds: 120             # Minimum playback watchdog; long clips get duration+padding
+  voice_barge_in:                                 # User speech cuts the bot's in-VC speech (barge-in)
+    enabled: true        # master switch (default on)
+    min_db: -45          # uplink RMS floor in dBFS that triggers the cut (raise to -35 in noisy rooms)
+    min_frames: 25       # ~0.5 s of continuous speech packets before cutting (anti-cough)
   allow_mentions:                 # What the bot is allowed to ping (safe defaults)
     everyone: false               # @everyone / @here pings (default: false)
     roles: false                  # @role pings (default: false)
@@ -866,6 +870,7 @@ discord:
 Notes:
 - Set `voice_channel_inactivity_timeout_seconds: 0` if you want the bot to remain in the voice channel until an explicit `/voice leave` or manual disconnect. The default preserves the historical 300-second idle auto-leave.
 - `voice_playback_timeout_seconds` is a floor, not a hard cap for long TTS. Hermes probes the generated audio duration and waits for `duration + 30s` when that is longer than the configured floor.
+- **Barge-in**: while the bot speaks in the voice channel, a user talking over it cuts the bot's speech within ~1 s; the interrupting utterance then flows to STT normally, so the bot hears what you said. The cut fires on an absolute uplink level (`min_db` dBFS RMS) sustained for `min_frames` continuous packets — Discord's AGC normalizes both real speech and speaker loopback of the TTS to similar levels, so a relative margin over the bot's own output cannot separate them. Raise `min_db` (e.g. `-35`) in noisy rooms if ambient sound triggers cuts; set `enabled: false` to disable.
 - The acknowledgement fires at most once per turn, only when the bot is in a voice channel and the mixer is active. It uses your configured TTS provider.
 - `ambient_path` accepts any file `ffmpeg` can decode; it's looped seamlessly. Leave it empty to use the built-in synthesised pad (no asset needed).
 - All settings live in `config.yaml` (not `.env`) — they're behavioral, not secrets.

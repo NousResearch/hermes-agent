@@ -1,0 +1,23 @@
+name: agy-acp
+repo: https://github.com/grewety/hermes-agy-acp
+sha: d9d000fa78aa67015ced440c50e143a0843af34e
+description: >-
+  Google Antigravity subscription as a Hermes model provider, driven by the
+  official agy CLI over ACP stdio. Hermes keeps its own tools and approvals.
+  Disclosure — spawns agy from PATH (`agy acp`, plus `agy acp --login` when
+  sign-in is needed) and sends prompts, projected tool history, and tool
+  schemas to Google through that CLI. The plugin does not read, copy, or
+  store agy credentials. Not derived from antigravity-acp-provider (Google's
+  ACP server binary) or antigravity-agy (agy custom agent plus MCP inventory).
+maintainer: grewety
+tier: community
+category: models
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/grewety/hermes-agy-acp#readme
+version: "0.1.5"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -489,8 +489,8 @@ class GatewayVoiceMixin:
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
                 return
-            # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
-            # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
+            # Voice-bubble platforms get an explicit path in the container they need
+            # (VOICE_CONTAINER_BY_PLATFORM); the TTS tool's container repair guarantees real bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)
             raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
                                           output_path=audio_path)

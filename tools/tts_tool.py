@@ -40,7 +40,7 @@ from tools.tts_command_provider import (
     _get_command_tts_output_format, _is_command_tts_voice_compatible, _resolve_command_provider_config)
 from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 from tools.tts_tool_delivery import (
-    _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _remove_quietly,
+    _resolve_max_text_length, _build_audio_delivery_files, _convert_to_opus, _convert_to_m4a, _remove_quietly,
     _repair_ogg_container, _resolve_audio_delivery_profile, _split_text_for_tts)
 from tools.tts_tool_providers import (
     _generate_edge_tts, _generate_elevenlabs, _generate_gemini_tts, _generate_minimax_tts,
@@ -139,8 +139,14 @@ def _get_provider(tts_config: dict[str, Any]) -> str:
     return "openai" if provider == NOUS_MANAGED_PROVIDER else provider
 
 
-# Platforms whose native voice-bubble delivery requires Ogg/Opus (MP3 renders broken there).
-OPUS_VOICE_PLATFORMS = frozenset({"telegram", "matrix", "feishu", "whatsapp", "signal"})
+# Platforms delivering native voice bubbles, and the container each needs (MP3 renders broken there).
+# iMessage is the one that isn't Opus: it wants AAC in MP4, and Opus arrives as a file card.
+VOICE_CONTAINER_BY_PLATFORM = {
+    "telegram": "ogg", "matrix": "ogg", "feishu": "ogg", "whatsapp": "ogg", "signal": "ogg",
+    "photon": "m4a",
+}
+OPUS_VOICE_PLATFORMS = frozenset(
+    platform for platform, container in VOICE_CONTAINER_BY_PLATFORM.items() if container == "ogg")
 
 # MEDIA:<path> is a line-level gateway protocol. A filename containing an anchored media
 # directive forges a second attachment whenever the path is echoed into the tool result
@@ -153,6 +159,7 @@ _MEDIA_DIRECTIVE_RE = re.compile(r"media:\s*[`'\"*_]*(?:[`'\"]|[a-z]:[/\\]|~?/)"
 # Built-ins that emit Opus natively when asked for .ogg; the rest need ffmpeg for voice bubbles.
 _NATIVE_OPUS_PROVIDERS = frozenset({"openai", "elevenlabs", "mistral", "gemini"})
 _FFMPEG_OPUS_PROVIDERS = frozenset({"edge", "neutts", "minimax", "xai", "kittentts", "piper"})
+_VOICE_BUILTIN_PROVIDERS = _NATIVE_OPUS_PROVIDERS | _FFMPEG_OPUS_PROVIDERS
 
 
 # --- Built-in provider dispatch ---
@@ -229,31 +236,29 @@ def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: dict[
 
 
 def _finalize_voice_delivery(
-    file_str: str, provider: str, command_provider_config: Optional[dict[str, Any]], want_opus: bool,
+    file_str: str, provider: str, command_provider_config: Optional[dict[str, Any]],
+    container: Optional[str],
 ) -> tuple:
-    """Voice-bubble eligibility (Opus-converting when needed) -> ``(path, voice_compatible)``.
+    """Voice-bubble eligibility, transcoding to the platform's container -> ``(path, voice_compatible)``.
 
-    Command/plugin providers are documents unless they opt in via ``voice_compatible``; native-Opus
-    built-ins qualify when the platform wants Opus and they wrote .ogg; MP3/WAV built-ins are
-    ffmpeg-converted only when the platform needs Opus."""
+    Command/plugin providers are documents unless they opt in via ``voice_compatible``, and an
+    opted-in one delivers voice even off a voice platform (Opus by default). Built-ins qualify only
+    where the platform renders voice bubbles, in whichever container it needs."""
     if command_provider_config is not None:
         opted_in = _is_command_tts_voice_compatible(command_provider_config)
+        container = container or "ogg"
     elif provider not in BUILTIN_TTS_PROVIDERS:
+        # Plugin-registered provider (issue #30398), opting in via ``TTSProvider.voice_compatible``.
         opted_in = _plugin_provider_is_voice_compatible(provider)
-    elif want_opus and provider in _FFMPEG_OPUS_PROVIDERS and not file_str.endswith(".ogg"):
-        opus_path = _convert_to_opus(file_str)
-        return (opus_path, True) if opus_path else (file_str, False)
+        container = container or "ogg"
     else:
-        native = provider in _NATIVE_OPUS_PROVIDERS
-        return file_str, native and want_opus and file_str.endswith(".ogg")
-    if not opted_in:
+        opted_in = container is not None and provider in _VOICE_BUILTIN_PROVIDERS
+    if not opted_in or container is None:
         return file_str, False
-    # Plugin-registered provider (issue #30398). Voice-bubble delivery opts in via
-    # ``TTSProvider.voice_compatible`` (mirrors the command-provider opt-in). Plugins that already write
-    # Opus skip the ffmpeg conversion.
-    if not file_str.endswith(".ogg"):
-        file_str = _convert_to_opus(file_str) or file_str
-    return file_str, file_str.endswith(".ogg")
+    if file_str.endswith(f".{container}"):
+        return file_str, True
+    converted = _convert_to_opus(file_str) if container == "ogg" else _convert_to_m4a(file_str)
+    return (converted, True) if converted else (file_str, False)
 
 
 # --- Main tool function ---
@@ -313,14 +318,15 @@ def _find_voices(find: Any) -> str:
 
 
 def _session_platform() -> tuple:
-    """``(platform, wants_opus)`` — platforms delivering voice bubbles only as Ogg/Opus want Opus."""
+    """``(platform, voice_container)`` — the container this platform's voice bubbles need, else None."""
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    return platform, platform in OPUS_VOICE_PLATFORMS
+    return platform, VOICE_CONTAINER_BY_PLATFORM.get(platform)
 
 
 def _resolve_output_base(
-    output_path: Optional[str], provider: str, command_provider_config: Optional[dict[str, Any]], want_opus: bool,
+    output_path: Optional[str], provider: str, command_provider_config: Optional[dict[str, Any]],
+    voice_container: Optional[str],
 ) -> tuple:
     """Pick the output file -> ``(Path, None)`` or ``(None, error_json)``.
 
@@ -354,7 +360,7 @@ def _resolve_output_base(
         if command_provider_config is not None:
             ext = _get_command_tts_output_format(command_provider_config)
         else:
-            ext = "ogg" if want_opus and provider in _NATIVE_OPUS_PROVIDERS else "mp3"
+            ext = "ogg" if voice_container == "ogg" and provider in _NATIVE_OPUS_PROVIDERS else "mp3"
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         file_path = Path(_default_output_dir()) / f"tts_{timestamp}.{ext}"
     file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -376,7 +382,8 @@ def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
 
 def _text_to_speech_single(
     text: str, file_str: str, *, provider: str, tts_config: dict[str, Any],
-    command_provider_config: Optional[dict[str, Any]], want_opus: bool, instructions: Optional[str],
+    command_provider_config: Optional[dict[str, Any]], voice_container: Optional[str],
+    instructions: Optional[str],
 ) -> str:
     """Synthesize one provider-safe chunk into *file_str*; returns the result envelope.
 
@@ -409,7 +416,7 @@ def _text_to_speech_single(
         # Sniff once for every provider: MP3/WAV bytes in a .ogg path render as 0-second bubbles.
         file_str = _repair_ogg_container(file_str)
         file_str, voice_compatible = _finalize_voice_delivery(
-            file_str, provider, command_provider_config, want_opus)
+            file_str, provider, command_provider_config, voice_container)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{os.path.getsize(file_str):,}", provider)
         return json.dumps({
             "success": True, "file_path": file_str, "media_tag": _media_tag([file_str], voice_compatible),
@@ -494,10 +501,10 @@ def text_to_speech_tool(
     if len(chunks) > 1:
         logger.info("TTS text for provider %s split into %d chunks (input=%d chars, cap=%d)",
                     provider, len(chunks), len(text), max_len)
-    platform, want_opus = _session_platform()
+    platform, voice_container = _session_platform()
     delivery_profile = _resolve_audio_delivery_profile(platform, tts_config)
     base_path, error = _resolve_output_base(
-        output_path, provider, command_provider_config, want_opus)
+        output_path, provider, command_provider_config, voice_container)
     if error:
         return error
     generated_artifacts: set[str] = set()
@@ -505,7 +512,7 @@ def text_to_speech_tool(
     try:
         encoded_paths, chunk_results = _synthesize_chunks(
             chunks, base_path, generated_artifacts, provider=provider, tts_config=tts_config,
-            command_provider_config=command_provider_config, want_opus=want_opus,
+            command_provider_config=command_provider_config, voice_container=voice_container,
             instructions=instructions)
         voice_compatible = bool(chunk_results) and all(bool(r.get("voice_compatible")) for r in chunk_results)
         delivery_base = base_path.with_suffix(Path(encoded_paths[0]).suffix)

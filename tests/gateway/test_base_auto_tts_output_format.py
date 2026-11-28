@@ -72,7 +72,7 @@ def _hold_typing():
 
 
 # ---------------------------------------------------------------------------
-# build_auto_tts_output_path: OPUS_VOICE_PLATFORMS is the single source of truth
+# build_auto_tts_output_path: VOICE_CONTAINER_BY_PLATFORM is the single source of truth
 # ---------------------------------------------------------------------------
 
 
@@ -82,6 +82,11 @@ def _hold_typing():
 def test_output_path_is_mp3_for_non_opus_platforms(platform):
     path = build_auto_tts_output_path(platform)
     assert path.endswith(".mp3"), path
+
+
+def test_output_path_is_m4a_for_photon():
+    """iMessage plays AAC/MP4 voice notes; an .mp3 arrives as an unplayable file card."""
+    assert build_auto_tts_output_path("photon").endswith(".m4a")
 
 
 # ---------------------------------------------------------------------------

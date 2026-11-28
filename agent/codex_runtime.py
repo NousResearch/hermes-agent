@@ -870,6 +870,21 @@ _CODEX_PROGRESS_DELTA_TYPES = frozenset({
     "response.audio.delta", "response.function_call_arguments.delta", "response.reasoning_text.delta",
     "response.refusal.delta",
 })
+# Progress that is the model thinking: a reasoning summary streams in bursts with pauses between.
+_CODEX_REASONING_DELTA_TYPES = frozenset({
+    "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+})
+
+
+def _next_reasoning_phase(current: bool, event_type: Any, item_type: Any, has_progress: bool) -> bool:
+    """Whether the model is in a reasoning pause after this event: a reasoning item is open, or
+    the latest progress was a reasoning delta. Any other progress or item boundary ends it;
+    lifecycle frames and empty deltas leave it as it was."""
+    if has_progress:
+        return event_type in _CODEX_REASONING_DELTA_TYPES
+    if event_type == "response.output_item.added":
+        return item_type == "reasoning"
+    return False if event_type == "response.output_item.done" else current
 
 
 def _codex_event_has_content(event: Any) -> bool:
@@ -1294,14 +1309,23 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if getattr(agent, "_last_api_first_chunk_at", None) is None:
             agent._last_api_first_chunk_at = now
         has_progress = _codex_event_has_content(event)
+        event_type = _event_field(event, "type")
+        item_type = _event_field(_event_field(event, "item"), "type")
         first_event = first_progress = False
         if watchdog_state is not None:
             with watchdog_state.lock:
-                first_event = watchdog_state.last_event_ts is None
+                reconnecting = not watchdog_state.phase_aware and watchdog_state.retry_started_ts is not None
+                first_event = watchdog_state.last_event_ts is None or reconnecting
                 watchdog_state.last_event_ts = now
+                if reconnecting:  # the new connection's first event re-arms the idle watchdog
+                    watchdog_state.retry_started_ts = None
+                watchdog_state.reasoning_phase = _next_reasoning_phase(
+                    watchdog_state.reasoning_phase, event_type, item_type, has_progress)
                 if has_progress:
                     first_progress = watchdog_state.last_progress_ts is None
                     watchdog_state.last_progress_ts = now
+                    # Request-wide (a physical retry never clears it): the stale clock's anchor.
+                    watchdog_state.request_progress_ts = now
                     if watchdog_state.phase_aware:
                         watchdog_state.retry_started_ts = None
         if first_event:
@@ -1439,13 +1463,19 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             raise TimeoutError("Codex Responses stream request retired before retry")
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
-        if attempt > 0 and watchdog_state is not None and watchdog_state.phase_aware:
-            # One origin for the whole physical attempt: lifecycle frames may change
-            # diagnostics, but cannot restart the first-progress budget.
+        if attempt > 0 and watchdog_state is not None:
             with watchdog_state.lock:
+                watchdog_state.reasoning_phase = False  # the new attempt has not reasoned yet
+                # Reconnect marker: the idle watchdog waits for the new connection's own first event
+                # (phase-aware: first progress) instead of counting the old one's silence, which
+                # after a reasoning pause could kill it on arrival. Until then the stale window,
+                # and on the phase-aware path the TTFB/first-progress budgets, bound the attempt.
                 watchdog_state.retry_started_ts = time.time()
-                watchdog_state.last_event_ts = None
-                watchdog_state.last_progress_ts = None
+                if watchdog_state.phase_aware:
+                    # One origin for the whole physical attempt: lifecycle frames may change
+                    # diagnostics, but cannot restart the first-progress budget.
+                    watchdog_state.last_event_ts = None
+                    watchdog_state.last_progress_ts = None
                 logger.info("Codex physical stream retry at %.3f (attempt=%s/%s, model=%s)",
                     watchdog_state.retry_started_ts, attempt + 1, max_stream_retries + 1, model)
         intercepted_events: list = []

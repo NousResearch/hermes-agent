@@ -383,7 +383,7 @@ def _update_existing_skill(st: _SyncState, skill_name: str, skill_src: Path, des
 
 def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]]) -> None:
     """Copy category DESCRIPTION.md files not already present; ``only_dirs`` restricts
-    seeding to the essential skills' categories on opted-out profiles."""
+    seeding to the given categories (empty on opted-out profiles, which seed nothing)."""
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         dest_desc = _skills_dir() / desc_md.relative_to(bundled_dir)
         if (only_dirs is not None and dest_desc.parent not in only_dirs) or dest_desc.exists():
@@ -397,19 +397,19 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]
 
 def sync_skills(quiet: bool = False) -> dict:
     """Sync bundled skills into ~/.hermes/skills/ using the manifest; returns the per-category
-    result dict. Opted-out profiles seed ONLY ESSENTIAL_SKILLS (the system prompt always
-    points at ``hermes-agent``)."""
-    essential_only = (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
-    if essential_only and not quiet:
-        print("  (profile opted out of bundled skills via .no-bundled-skills — seeding essential skills only)")
+    result dict. Opted-out (marker) profiles seed NOTHING (D2): a fresh profile is born
+    empty, and a later sync never re-seeds it."""
+    opted_out = (_hermes_home() / NO_BUNDLED_SKILLS_MARKER).exists()
+    if opted_out and not quiet:
+        print("  (profile opted out of bundled skills via .no-bundled-skills — seeding nothing)")
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
                 "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": []}
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
-    if essential_only:
-        bundled_skills = [(name, src) for name, src in bundled_skills if name in ESSENTIAL_SKILLS]
+    if opted_out:
+        bundled_skills = []
     suppressed = _read_suppressed_names()
     external_index = _build_external_skill_index()
     st = _SyncState(manifest=_read_manifest(), quiet=quiet)
@@ -436,8 +436,8 @@ def sync_skills(quiet: bool = False) -> dict:
     # Clean manifest entries for skills removed upstream once no copy is left. A dropped built-in still
     # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
     # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills
-    # is only the essential set there, so cleaning would drop tracking for everything else.
-    removed = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    # is empty there, so cleaning would drop tracking for everything else.
+    removed = [] if opted_out else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
     present = set()
     if removed:  # curator archive is flat: directory name == skill name
         archive = _skills_dir() / ".archive"
@@ -448,15 +448,19 @@ def sync_skills(quiet: bool = False) -> dict:
         del st.manifest[name]
     _seed_category_descriptions(
         bundled_dir,
-        {_compute_relative_dest(src, bundled_dir).parent for _, src in bundled_skills} if essential_only else None)
-    _write_manifest(st.manifest)
+        {_compute_relative_dest(src, bundled_dir).parent for _, src in bundled_skills} if opted_out else None)
+    # No manifest for a fresh empty profile: writing an (empty) one would leave a
+    # .bundled_manifest where the acceptance is "no manifest". An existing manifest
+    # (a legacy marker profile) is still rewritten so its entries survive.
+    if st.manifest or _manifest_file().exists():
+        _write_manifest(st.manifest)
     return {
         "copied": st.copied, "updated": st.updated, "skipped": st.skipped, "user_modified": st.user_modified,
         "cleaned": cleaned, "suppressed": st.suppressed, "relocated": st.relocated,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": _backfill_optional_provenance(quiet=quiet),
         "shadowed_by_external": st.shadowed_by_external,
-        "skipped_opt_out": essential_only}  # lets callers report "opted out", not a normal sync
+        "skipped_opt_out": opted_out}  # lets callers report "opted out", not a normal sync
 
 
 def _rmtree_writable(path: Path) -> None:

@@ -52,7 +52,12 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
              "The default profile's logins stay readable for any provider the new profile has not signed in to.")
     profile_create.add_argument(
         "--no-skills", action="store_true",
-        help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
+        help="Deprecated no-op: fresh profiles are born empty by default (no bundled skills, "
+             "opts out of `hermes update` skill sync). Kept so existing scripts keep working.",
+    )
+    profile_create.add_argument(
+        "--with-skills", action="store_true",
+        help="Seed the bundled skill set into the new profile instead of creating it empty.",
     )
     profile_create.add_argument(
         "--description", default=None,

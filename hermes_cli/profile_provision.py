@@ -58,7 +58,7 @@ class ProfileCreateRequest:
     clone_all: bool = False
     clone_config: bool = False
     clone_channels: bool = False
-    no_skills: bool = False
+    no_skills: bool = True
     sync_imports: bool = False
     description: Optional[str] = None
     soul: Optional[str] = None
@@ -75,7 +75,7 @@ class ProfileCreateRequest:
 
     @property
     def fresh(self) -> bool:
-        """No source profile: the new profile gets bundled skills instead of a copy of the source's."""
+        """No source profile: the new profile is born empty (no bundled skills) instead of a copy of the source's."""
         return not (self.clone_from or self.clone_all or self.clone_config)
 
 
@@ -113,7 +113,7 @@ class ProfileCreateReceipt:
     launch_label: str
     source_label: str
     skills_synced: Optional[int]  # bundled skills a fresh create copied; None: not seeded (clone, or it failed)
-    skills_opted_out: bool        # ``--no-skills``: only the essentials were seeded
+    skills_opted_out: bool        # marker profile: nothing was seeded
     alias_path: Optional[str]
     alias_collision: Optional[str]
     mirrored: dict[str, MirroredValue]  # a key a newer gateway adds is kept, never printed

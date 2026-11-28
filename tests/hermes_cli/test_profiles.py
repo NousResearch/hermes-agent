@@ -504,18 +504,30 @@ class TestCreateProfile:
 class TestNoSkillsOptOut:
     """Tests for `hermes profile create --no-skills` and the opt-out marker."""
 
-    def test_no_skills_writes_marker_and_skips_seeding(self, profile_env):
-        profile_dir = create_profile("orchestrator", no_alias=True, no_skills=True)
+    def test_create_profile_born_empty_default(self, profile_env):
+        """D2: a fresh create with no flags writes the marker (no_skills defaults True)."""
+        profile_dir = create_profile("fresh", no_alias=True)
 
-        # Marker file is present
         marker = profile_dir / NO_BUNDLED_SKILLS_MARKER
         assert marker.is_file(), "expected .no-bundled-skills marker in profile root"
-        assert "--no-skills" in marker.read_text(encoding="utf-8-sig")
-
-        # skills/ dir exists (profile bootstrapping still creates the dir) but
-        # contains nothing yet because create_profile itself doesn't seed.
         assert (profile_dir / "skills").is_dir()
         assert list((profile_dir / "skills").iterdir()) == []
+
+    def test_clone_gets_no_opt_out_marker(self, profile_env):
+        """D2: no_skills is fresh-only — a clone copies the source's skills, never the marker."""
+        create_profile("source", no_alias=True)
+        copy_dir = create_profile("copy", clone_from="source", clone_config=True, no_alias=True)
+
+        assert not (copy_dir / NO_BUNDLED_SKILLS_MARKER).exists()
+
+    def test_explicit_no_skills_with_clone_is_inert(self, profile_env):
+        """D2: the old core guard is gone — an explicit no_skills on a clone no longer
+        raises; the flag is simply ignored for clones."""
+        create_profile("source", no_alias=True)
+        copy_dir = create_profile("copy", clone_from="source", clone_config=True,
+                                  no_skills=True, no_alias=True)
+
+        assert not (copy_dir / NO_BUNDLED_SKILLS_MARKER).exists()
 
 
 

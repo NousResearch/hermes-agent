@@ -98,9 +98,10 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "cron", "webapp", "backend_migration", "backend_migration.json",  # webapp/: its sign-in; backend_migration*: its migration
 })
 
-# Marker written by `hermes profile create --no-skills`. When present at a profile root,
-# seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
-# dashboard) skip bundled-skill seeding. Delete the file to opt back in.
+# Marker written by `hermes profile create` (fresh profiles are born empty by
+# default, D2). When present at a profile root, seed_profile_skills() callers
+# (fresh-create, `hermes update` all-profile sync, the dashboard) skip
+# bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
@@ -1339,7 +1340,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
 
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
-    no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
+    no_alias: bool = False, no_skills: bool = True, description: Optional[str] = None,
     clone_channels: bool = False, sync_imports: bool = False, soul: Optional[str] = None, seed_model: bool = True,
 ) -> Path:
     """Create a new profile directory and return its path.
@@ -1351,19 +1352,19 @@ def create_profile(
     makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
     was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
-    re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
+    re-seeding its skills. It defaults to True (D2): a fresh profile is born empty.
+    The option is fresh-only — a clone ignores it and copies the source's skills instead.
     ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
     ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees.
     ``seed_model=False``: a fresh profile gets no launch model block (it may hold an inline api_key)."""
-    if no_skills and (clone_from is not None or clone_config or clone_all):
-        raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
-            "(cloning explicitly copies skills from the source profile)."
-        )
+    cloning = clone_from is not None or clone_all or clone_config
+    # no_skills is fresh-only: a clone copies the source's skills and never gets the
+    # marker, so the empty-by-default change can never refuse a clone. The explicit
+    # --no-skills + --clone refusal lives on the CLI/WS surfaces instead.
+    no_skills = no_skills and not cloning
     if sync_imports and not (clone_config or clone_all):
         raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
                          "manifest to carry over without a source profile).")
-    cloning = clone_from is not None or clone_all or clone_config
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
     canon = _canon_valid(name)
@@ -1456,8 +1457,8 @@ def _live_default_multiplexer() -> bool:
 
 def seed_profile_skills(profile_dir: Path, quiet: bool = False, problems: Optional[list] = None) -> Optional[dict]:
     """Seed bundled skills into a profile via subprocess (sync_skills() caches HERMES_HOME at
-    module level). Returns the sync result dict, or None on failure. ``--no-skills`` profiles
-    still run the sync: ``sync_skills()`` detects the marker and seeds only essentials.
+    module level). Returns the sync result dict, or None on failure. Marker profiles
+    still run the sync: ``sync_skills()`` detects the marker and seeds nothing.
     ``problems`` also collects the failure lines (a gateway's quiet create hands them to its client)."""
     def report(*lines: str) -> None:
         (problems if problems is not None else []).extend(lines)

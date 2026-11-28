@@ -206,6 +206,11 @@ def _refuse_create_args(args, clone_from: Optional[str], cloned: bool) -> None:
         # A clone copies the source's .env/config (and --clone-all its auth.json) by request.
         _die("Error: --no-credentials cannot be combined with --clone / --clone-from / --clone-all "
              "(a clone copies the source's keys); create without cloning instead.", err=True)
+    if cloned and getattr(args, "no_skills", False):
+        # no_skills is fresh-only now that empty is the default: a clone copies the
+        # source's skills, so an explicit --no-skills + clone is a contradiction.
+        _die("Error: --no-skills cannot be combined with --clone / --clone-from / --clone-all "
+             "(a clone copies the source's skills); create without cloning instead.", err=True)
 
 
 def _profile_create(args):
@@ -224,7 +229,7 @@ def _profile_create(args):
     _refuse_create_args(args, clone_from, cloned)
     request = ProfileCreateRequest(
         name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
-        no_skills=getattr(args, "no_skills", False), description=getattr(args, "description", None),
+        no_skills=not getattr(args, "with_skills", False), description=getattr(args, "description", None),
         clone_channels=clone_channels, sync_imports=sync_imports,
         alias=not no_alias, quiet=False,
         mirror_credentials=not getattr(args, "no_credentials", False),
@@ -253,7 +258,7 @@ def _profile_create(args):
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
         if made.skills_opted_out:
-            print("No bundled skills seeded (--no-skills). Delete .no-bundled-skills in the profile to opt back in.")
+            print("No bundled skills seeded (fresh profiles are born empty). Delete .no-bundled-skills in the profile to opt back in.")
         elif made.skills_synced is not None:
             print(f"{made.skills_synced} bundled skills synced.")
         else:

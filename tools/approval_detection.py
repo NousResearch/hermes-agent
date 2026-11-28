@@ -1184,9 +1184,11 @@ def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
     share its short-option bundle; the two startup-file long options own their next token.
     Parsing those first prevents both missed payloads and false ``-c`` hits."""
     index = 0
+    seen_c = False
     while index < len(args):
         token = args[index]
-        if token == "--" or not token.startswith(("-", "+")):
+        if token in ("--", "-") or not token.startswith(("-", "+")):
+            index += token in ("--", "-")
             break
         if token in _BASH_OPTIONS_WITH_ARG:
             index += 2
@@ -1197,12 +1199,10 @@ def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
         if token.startswith("--") or not set(chars) <= _BASH_SHORT_OPTION_LETTERS:
             index += 1
             continue
-        consumed_option_arg = int("O" in chars or "o" in chars)
-        if "c" in chars:
-            payload_index = index + 1 + consumed_option_arg
-            return True, (args[payload_index] if payload_index < len(args) else None)
-        index += 1 + consumed_option_arg
-    return False, None
+        # Options may follow -c (`bash -c -e -- 'rm -rf /'`): the script is the first operand.
+        seen_c = seen_c or "c" in chars
+        index += 1 + int("O" in chars or "o" in chars)
+    return (True, args[index] if index < len(args) else None) if seen_c else (False, None)
 
 
 def _read_tool_exec_flag(tool: str, args: list[str]) -> tuple[str, str] | None:

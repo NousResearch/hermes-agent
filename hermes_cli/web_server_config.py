@@ -400,6 +400,12 @@ def _schema_with_dynamic_provider_options() -> dict[str, dict[str, Any]]:
             plugin_names = sorted({row["name"] for row in _plugin_terminal_backend_rows()} - set(tb_options))
         except Exception:
             plugin_names = []
+        # A configured backend that is no longer discoverable (e.g. its plugin
+        # was removed from disk) stays selectable, like memory.provider above.
+        terminal = cfg.get("terminal")
+        current = str(terminal.get("backend") or "").strip().lower() if isinstance(terminal, dict) else ""
+        if current and current not in tb_options and current not in plugin_names:
+            plugin_names = [*plugin_names, current]
         if plugin_names:
             merge("terminal.backend", [*tb_options, *plugin_names])
 

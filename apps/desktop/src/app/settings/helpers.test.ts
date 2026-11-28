@@ -28,6 +28,17 @@ describe('settings helpers', () => {
     expect(enumOptionsFor('memory.provider', 'honcho', {})).toBeUndefined()
   })
 
+  it('does not shadow the backend schema options for terminal.backend', () => {
+    // terminal.backend options are discovery-driven too: the backend schema
+    // merges the installed plugin backends and the currently configured one
+    // (web_server._schema_with_dynamic_provider_options). A static list here
+    // hid plugin backends — and had already drifted (no vercel_sandbox,
+    // a hardcoded catalog-plugin singularity), the same trap as
+    // memory.provider (#49513).
+    expect(enumOptionsFor('terminal.backend', '', {})).toBeUndefined()
+    expect(enumOptionsFor('terminal.backend', 'apple_container', {})).toBeUndefined()
+  })
+
   describe('isExternalMemoryProvider', () => {
     it('treats only real plugin names as external providers', () => {
       expect(isExternalMemoryProvider('honcho')).toBe(true)

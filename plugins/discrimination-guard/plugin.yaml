@@ -1,0 +1,6 @@
+name: discrimination-guard
+version: "0.1.0"
+description: "Warn when a probe or test the agent is writing cannot produce the opposite result — no negative control, a tautological assertion, a subprocess result consumed without checking returncode, a 'no failures' conclusion with no proof anything ran, or text presence used as evidence a code path behaves. Structural checks only, so it catches shapes it has never seen. Non-blocking by default; DISCRIMINATION_GUARD_BLOCK=1 refuses the write."
+author: "NousResearch"
+hooks:
+  - pre_tool_call

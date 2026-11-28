@@ -38,6 +38,7 @@ def set_hermes_home_override(path: str | Path | None):
     (``agent.runtime_scope.bind_profile_scope``).
     """
     from hermes_scope import current_scope, push_state
+    path = _expand_hermes_home(str(path)) if path else path
     if current_scope() is not None:
         from agent.runtime_scope import legacy_switch
         switched = legacy_switch(path)
@@ -208,7 +209,7 @@ def get_hermes_home() -> Path:
     """Hermes home: context-local override → ``HERMES_HOME`` env var → platform default."""
     override = get_hermes_home_override()
     if override:
-        return _expand_hermes_home(override)
+        return Path(override)  # Bound profile directories are literal; expand at the input boundary.
     if not os.environ.get("HERMES_HOME", "").strip():
         _warn_profile_fallback_once()
     return get_process_hermes_home()

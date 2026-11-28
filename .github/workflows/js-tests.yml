@@ -12,14 +12,14 @@ on:
 jobs:
   check:
     name: JS & TS checks
-    # One 32-core job replaces a 14-leg matrix. The matrix spread about 612s
-    # of check payload over 4-core runners. It paid about 371s of repeated
-    # setup to do it: 14 checkouts, 14 node installs, 14 node_modules
-    # restores.
+    # One 16-core job replaces a 14-leg matrix (32 cores measured only 4%
+    # faster, 8 cores 64% slower). The matrix spread about 612s of check
+    # payload over 4-core runners. It paid about 371s of repeated setup to do
+    # it: 14 checkouts, 14 node installs, 14 node_modules restores.
     #
     # One larger runner installs one time. vitest, tsc and eslint each size
     # their own worker pool from the core count.
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: blacksmith-16vcpu-ubuntu-2404
     timeout-minutes: 30
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1

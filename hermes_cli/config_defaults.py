@@ -835,7 +835,7 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
-        "program_status": True,    # OSC 7501 idle/working/blocked/done/error for terminals that track it
+        "program_status": True, "program_resume": True,  # OSC 7501 status & OSC 7577 resume reports
         # Stream reasoning live before the response; otherwise thinking models show a bare spinner.
         "show_reasoning": True,
         # Post-response "Reasoning" recap collapses to 10 lines; true prints it all (live streaming
@@ -1286,7 +1286,7 @@ DEFAULT_CONFIG = {
         # setting declares one explicitly.
         "fallback_providers": None,
         "base_url": "",  # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",  # key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "api_key": "",  # key for delegation.base_url (empty = the parent's key, or the named provider's own)
         # Wire protocol for delegation.base_url: "chat_completions" | "codex_responses" |
         # "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix); set
         # explicitly for non-standard endpoints.
@@ -1328,7 +1328,7 @@ DEFAULT_CONFIG = {
         "gateway_mode": "auto",  # gateway: inline (join in the turn) | background | auto = inline where interim msgs are off
         # Orchestrator role controls. Depth floored at 1, no ceiling; each level multiplies cost.
         "max_spawn_depth": 1,  # 1 = flat, 2 = orchestrator→leaf, 3+ = deeper
-        "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        "orchestrator_enabled": True,  # false = every child is a leaf, whatever max_spawn_depth says
         # Total subagents a finite one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited.
         # Each child re-pays a cold system prompt and re-explores the repo, and one-shot spawns are mostly
         # "review my own work" rather than parallel work (agent/oneshot_footprint.py).

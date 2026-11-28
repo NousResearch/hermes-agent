@@ -798,4 +798,17 @@ export const ja: Translations = {
     logTruncated: "（最後の 100 KB を表示中 — 完全なログは ",
     logAt: "）",
   },
+  channelsCatalog: {
+    title: "インストール可能",
+    hint: "Hermes プラグインカタログのメッセージングプラットフォームです。インストールするとプラグインが追加・有効化され、設定画面が開きます。",
+    badgeOfficial: "公式",
+    badgeVerified: "検証済み",
+    disclosure: "開示:",
+    lazyInstallsOff: "プラグインの自動インストールはオフです（security.allow_lazy_installs）。",
+    run: "実行:",
+    install: "インストール",
+    installing: "インストール中…",
+    installed: (title: string) => `${title} をインストールしました。認証情報を入力して接続してください。`,
+    installFailed: (title: string) => `${title} をインストールできませんでした`,
+  },
 };

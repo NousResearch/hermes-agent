@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -162,6 +163,24 @@ async def test_settle_gateway_runtime_waits_for_bot_receipt_tasks():
 
 
 @pytest.mark.asyncio
+async def test_settle_gateway_runtime_survives_an_acp_sweep_that_cannot_import(monkeypatch):
+    """Ending idle ACP sessions is best-effort: its module failing to import (a tree replaced under the
+    running gateway) must not abort the stop before the teardown that follows it (#158360)."""
+    revoked = []
+    authority = SimpleNamespace(sessions={}, _bot_receipt_tasks=set())
+    runner = SimpleNamespace(
+        session_authority=authority,
+        session_ticket_store=SimpleNamespace(revoke=lambda: revoked.append(True)),
+    )
+    authority.runner = runner
+    monkeypatch.setitem(sys.modules, "gateway.session_acp_lifecycle", None)  # importing it raises
+
+    await asyncio.wait_for(run_runtime.settle_gateway_runtime(runner), 5)
+
+    assert revoked == [True]
+
+
+@pytest.mark.asyncio
 async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_adopting(monkeypatch, tmp_path):
     """A serve-time failure whose retirement misses its deadline keeps the reservation and the
     retiring authority, parks the profile without adapters, lets the rest of the batch serve, and
@@ -185,7 +204,11 @@ async def test_failed_hot_serve_with_a_live_writer_parks_without_aborting_or_re_
         _served_profile_homes={}, _served_profile_signatures={},
         _live_resource_claims=lambda active: {}, _record_served_profiles=lambda active, homes: None)
     runner.served_profile_names = lambda: sorted(runner._served_profile_homes)
-    runner._serve_profile_runtime = GatewayProfileReconcileMixin._serve_profile_runtime.__get__(runner)
+    for method in ("_serve_profile_runtime", "_apply_profile_diff", "_open_profile_receipts",
+                   "_close_profile_receipts", "_secondary_running_platforms", "_recorded"):
+        setattr(runner, method, getattr(GatewayProfileReconcileMixin, method).__get__(runner))
+    from gateway.run_platform_reconcile import PlatformChangeLedger
+    runner.platform_change_ledger, runner._profile_installs, runner._profile_adapters = PlatformChangeLedger(), {}, {}
 
     async def start_adapters(name, home, claimed):
         started.append(name)

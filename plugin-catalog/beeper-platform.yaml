@@ -1,16 +1,16 @@
 name: beeper-platform
 repo: https://github.com/clins1994/hermes-beeper
-sha: 747e88c858201439d4cbc182fd46ada950dbe074
+sha: 8a55f635ca763ae0158941b232001002c6a8cc19
 description: "Use Hermes inside your own chats on every network Beeper Desktop connects (WhatsApp, Signal, Telegram, LINE, iMessage, Messenger and more) through the local Beeper Desktop API. Disclosure — replies, and an optional processing reaction, are posted from your own account, only in the chats you list in config.yaml; messages are read only from those chats, over the Desktop API on your machine (127.0.0.1:23373 by default) with your BEEPER_ACCESS_TOKEN, and the plugin makes no other network calls; it keeps per-chat cursors and, in dry-run mode, the replies it would have sent in owner-only files under your Hermes home; replying or reacting can mark a chat as read on some networks; no telemetry."
 maintainer: clins1994
 tier: community
 category: platform
 requires_hermes: ">=0.23.3"
 docs_url: https://github.com/clins1994/hermes-beeper#readme
-version: "0.1.0"
+version: "0.1.1"
 title: Beeper
 screenshots:
-  - https://raw.githubusercontent.com/clins1994/hermes-beeper/747e88c858201439d4cbc182fd46ada950dbe074/docs/screenshot.jpg
+  - https://raw.githubusercontent.com/clins1994/hermes-beeper/8a55f635ca763ae0158941b232001002c6a8cc19/docs/screenshot.jpg
 capabilities:
   provides_tools: []
   provides_hooks: []

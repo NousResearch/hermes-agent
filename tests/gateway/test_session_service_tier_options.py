@@ -87,10 +87,10 @@ async def test_service_tier_config_publishes_route_gated_fast_on_session_info(tm
             if e.get('type') == 'session.info' and 'service_tier' in e.get('payload', {})
         ]
         assert ok_events[-2:] == [
-            {'service_tier': 'ultrafast', 'fast': True},
-            {'service_tier': '', 'fast': False},
+            {'service_tier': 'ultrafast', 'fast': True, 'execution_generation': 0, 'revision': 0},
+            {'service_tier': '', 'fast': False, 'execution_generation': 0, 'revision': 0},
         ]
-        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False}
+        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False, 'execution_generation': 0, 'revision': 0}
     finally:
         await owner.close()
         store.close_all_db_handles()
@@ -155,10 +155,54 @@ async def test_service_tier_config_publishes_route_gated_fast_for_cold_messaging
             if e.get('type') == 'session.info' and 'service_tier' in e.get('payload', {})
         ]
         assert ok_events[-2:] == [
-            {'service_tier': 'ultrafast', 'fast': True},
-            {'service_tier': '', 'fast': False},
+            {'service_tier': 'ultrafast', 'fast': True, 'execution_generation': 0, 'revision': 0},
+            {'service_tier': '', 'fast': False, 'execution_generation': 0, 'revision': 0},
         ]
-        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False}
+        assert no_events[-1] == {'service_tier': 'ultrafast', 'fast': False, 'execution_generation': 0, 'revision': 0}
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_idle_reasoning_edit_after_fast_reports_the_pinned_tier(tmp_path, monkeypatch):
+    """A session /fast pin is the tier the next turn runs. The session.info an idle reasoning edit
+    publishes (no agent: read from the policy) must report it, or Desktop repaints the speed pill
+    back to Normal while the session still runs fast."""
+    from types import MethodType
+
+    from gateway.run import GatewayRunner
+    from gateway.session_contract import SessionRef
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr('agent.codex_service_tiers.codex_account_offers_tier', lambda *a, **k: True)
+    store, runner, authority, owner = _owner(tmp_path / 'owner', monkeypatch, {'model': {'default': 'fixture'}})
+    for name in ('_sessions_map', '_session_state', '_peek_session_state', '_set_session_service_tier_override',
+                 '_set_session_reasoning_override'):
+        setattr(runner, name, MethodType(getattr(GatewayRunner, name), runner))
+    try:
+        created = await owner.dispatch({'id': 'c1', 'method': 'session.create', 'params': {
+            'request_id': 'c1', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
+            'model': 'gpt-6.1-sol', 'provider': 'openai', 'base_url': 'https://api.openai.com/v1',
+        }})
+        sid = created['result']['session_id']
+        pinned = await owner.dispatch({'id': 's1', 'method': 'config.set', 'params': {
+            'session_id': sid, 'key': 'fast', 'value': 'ultrafast',
+        }})
+        assert 'result' in pinned, pinned
+        handle = authority._handle(SessionRef(authority.profile_id, sid))
+        edited = await owner.dispatch({'id': 'r1', 'method': 'session.mutate', 'params': {
+            'session_id': sid, 'request_id': 'reasoning-high', 'operation': 'reasoning', 'payload': {'effort': 'high'},
+            'expected_revision': handle.revision, 'expected_generation': handle.execution_generation,
+        }})
+        assert 'result' in edited, edited
+        stream = authority.sessions[sid].event_stream
+        snapshots = [
+            e['payload'] for e in stream.since(stream.watermark()[0], 0)['events']
+            if e.get('type') == 'session.info' and e.get('payload', {}).get('reasoning_effort') == 'high'
+        ]
+        assert snapshots
+        assert (snapshots[-1]['service_tier'], snapshots[-1]['fast']) == ('ultrafast', True)
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

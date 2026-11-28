@@ -122,11 +122,11 @@ def service_tier_config(connection, ref, params):
     authorize(connection, ref, params, 'session:control')
     live = connection.authority.sessions[ref.session_id]
     connection.authority.runner._set_session_service_tier_override(live.route, tier or None)
-    from gateway.session_local import service_tier_fast
-    live.event_stream.publish(
-        ref.session_id,
+    from gateway.session_local import publish_local_session_info, service_tier_fast
+    publish_local_session_info(
+        connection.authority,
+        ref,
         {'service_tier': tier or '', 'fast': service_tier_fast(connection.authority, ref, tier or '')},
-        event_type='session.info',
     )
     return {'key': 'service_tier', 'value': tier or 'normal', 'scope': 'session'}
 
@@ -178,6 +178,18 @@ def adopts_owner_agent(authority, ref):
         return False
 
 
+def person_input_joined(authority, ref):
+    """An accepted ``session.steer``/``session.redirect`` joined the running turn: its event no
+    longer answers only a Hermes producer, so ``turn_origin()`` reads ``None`` for the rest of it."""
+    from gateway.session_detached import running_key
+    runner = authority.runner
+    peek = getattr(runner, '_peek_session_state', None)
+    state = peek(running_key(runner, authority.sessions[ref.session_id].route, ref.session_id)) if peek else None
+    running = state.turn.running_event() if state is not None else None
+    if running is not None:
+        running.clear_turn_origin()
+
+
 async def correct(connection, ref, params, *, verb):
     if (set(params) - {'session_id', 'profile', 'text', 'execution_generation'}
             or not isinstance(params.get('text'), str) or not params['text'].strip()
@@ -203,6 +215,7 @@ async def correct(connection, ref, params, *, verb):
         # the agent this generation adopts, never a later one.
         agent, latched = authority.steer_agent(ref, generation, params['text'] if verb == 'steer' else None)
         if latched:
+            person_input_joined(authority, ref)
             return {'status': 'queued', 'text': params['text'], 'execution_generation': generation,
                     'authority_epoch': authority.epoch}
         # A claim can outlive the agent that carried it (a reaped turn the client still believes is
@@ -218,6 +231,8 @@ async def correct(connection, ref, params, *, verb):
         if not callable(method):
             raise AuthorityRefusal('execution_not_ready')
         accepted = method(params['text'])
+        if accepted:
+            person_input_joined(authority, ref)
         return {'status': ({'steer': 'queued', 'redirect': 'redirected'}[verb] if accepted else 'rejected'),
                 'text': params['text'], 'execution_generation': generation,
                 'authority_epoch': authority.epoch}

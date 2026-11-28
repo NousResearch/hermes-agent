@@ -222,6 +222,16 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from cron.execution_identity import current_cron_execution
         return current_cron_execution()
 
+    def cron_delivery_platforms(self, job_id: Optional[str] = None) -> Optional[tuple[str, ...]]:
+        """The platforms cron delivers a job's output to, lower-cased, in order
+        (``cron.plugin_api.delivery_platforms``). With ``job_id=None``, answers for the firing cron
+        run using that run's own settings (or ``None`` outside one); with ``job_id``, previews the
+        saved job in this plugin's profile. Reads normal delivery (``deliver``), not
+        ``failure_deliver``. Under ``plugins.isolation: host`` this runs in the gateway, in the
+        calling hook's context."""
+        from cron.plugin_api import delivery_platforms
+        return delivery_platforms(job_id)
+
     def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
         """Register a cleanup callback for unload: runs in reverse acquisition order interleaved
         with registration teardown; exceptions are logged, never propagated."""
@@ -383,7 +393,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
             return True
         try:
             from hermes_cli.config import load_config
-            with _facade()._plugin_home_scope(self._manager.home_path):
+            with _facade()._plugin_home_scope(self._manager.owner_home):
                 cfg = load_config() or {}
         except Exception:
             return False  # fail closed: better to break the override than silently grant it
@@ -419,11 +429,35 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         from hermes_cli.plugin_session import turn_client
         return turn_client()
 
+    def turn_origin(self) -> str | None:
+        """The Hermes producer of the running turn (``plugin_session.turn_origin``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import turn_origin
+        return turn_origin()
+
     def session_viewers(self) -> list[dict]:
         """The clients attached to the calling session (``plugin_session.session_viewers``).
         Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
         from hermes_cli.plugin_session import session_viewers
         return session_viewers()
+
+    def session_source(self) -> str:
+        """The label the calling local session was created with, or ``""`` (``plugin_session.session_source``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import session_source
+        return session_source()
+
+    def in_delegated_child(self, *, include_subprocesses: bool = False) -> bool:
+        """Whether the calling code runs for a ``delegate_task`` child (``plugin_session.in_delegated_child``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import in_delegated_child
+        return in_delegated_child(include_subprocesses=include_subprocesses)
+
+    def fork_origin(self) -> str:
+        """The detached fork's label, ``""`` for a regular agent (``plugin_session.fork_origin``).
+        Under ``plugins.isolation: host`` this runs in the gateway, in the calling hook's context."""
+        from hermes_cli.plugin_session import fork_origin
+        return fork_origin()
 
     def post_message(self, text: str) -> Any:
         """Post *text* into the session bound to this call; the handle's ``edit(text)`` updates it in
@@ -446,7 +480,7 @@ class PluginContext(PluginCapabilityCtxMixin, PluginIdleTaskCtxMixin):
         """Return whether this plugin may trigger gateway session turns (read from the plugin's
         own profile config, never the calling thread's ambient home)."""
         try:
-            with _facade()._plugin_home_scope(self._manager.home_path):
+            with _facade()._plugin_home_scope(self._manager.owner_home):
                 cfg = _facade().load_config_readonly() or {}
         except Exception:
             return False

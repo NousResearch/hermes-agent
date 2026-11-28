@@ -266,3 +266,28 @@ def test_secondary_bridge_port_refuses_a_deleted_or_renamed_profile_home(tmp_pat
     with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
         secondary_bridge_port(home, None)
     assert not home.exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_bridge_deps_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """WhatsApp bridge dependency install runs off the loop so sibling connects in a wave do not time out."""
+    import threading
+    import plugins.platforms.whatsapp.adapter as module
+
+    monkeypatch.setattr(module, "find_node_executable", lambda name: f"/usr/bin/{name}")
+    home = tmp_path / "wa-offloop"
+    home.mkdir()
+    with _profile_runtime_scope(home, hydrate_secrets=False):
+        adapter = WhatsAppAdapter(PlatformConfig())
+    monkeypatch.setattr(adapter, "_preflight", lambda: True)
+    main_thread = threading.current_thread()
+    seen: list[threading.Thread] = []
+
+    def fake_ensure_deps(_bridge_dir):
+        seen.append(threading.current_thread())
+        return False
+
+    monkeypatch.setattr(adapter, "_ensure_bridge_deps", fake_ensure_deps)
+    assert await adapter.connect() is False
+    assert len(seen) == 1
+    assert seen[0] is not main_thread

@@ -3064,7 +3064,7 @@ def _save_compose_deliver(
         return
     d.unresolved_origin = (
         _normalize_deliver_value(_delivery_lane_value(job, for_failure=not d.success)) == "origin"
-        and not _resolve_delivery_targets(job, for_failure=not d.success)
+        and not _resolve_delivery_targets(job, for_failure=not d.success, skipped=(skipped := [])) and not skipped
     )
     execution_id = job.get('execution_id')
     if execution_id and not job.get('no_agent'):
@@ -3133,7 +3133,7 @@ def _deliver_crash_failure(
     unresolved_origin = bool(
         not delivery_error
         and normalized_deliver == "origin"
-        and not _resolve_delivery_targets(job, for_failure=True)
+        and not _resolve_delivery_targets(job, for_failure=True, skipped=(skipped := [])) and not skipped
     )
     delivery_outcome = _classify_delivery_outcome(
         delivery_error=delivery_error, should_deliver=True, unresolved_origin=unresolved_origin,
@@ -3995,16 +3995,16 @@ def _worktree_maintenance_repos() -> list[str]:
 
     with contextlib.suppress(Exception):
         from cron.jobs import load_jobs
+        from hermes_platform.resolver.git import resolve_usable_git
 
-        for job in load_jobs():
+        for job in load_jobs() if (git := resolve_usable_git()) else ():
             workdir = str(job.get("workdir") or "").strip()
             if not workdir or not Path(workdir).is_dir():
                 continue
             try:
                 probe = subprocess.run(
-                    ["git", "rev-parse", "--show-toplevel"],
-                    capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, cwd=workdir, check=False)
+                    [git, "-C", workdir, "rev-parse", "--show-toplevel"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5, check=False)
                 if probe.returncode == 0 and probe.stdout.strip():
                     repos.add(probe.stdout.strip())
             except Exception:

@@ -508,6 +508,9 @@ class TimelineNotification(str):
         instance.notification_category = notification_category
         return instance
 
+    def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__, which needs the display fields
+        return (str(self), self.display_text, self.display_kind, self.notification_category), {}
+
     @classmethod
     def for_delegation(cls, text: str, event: dict) -> "TimelineNotification":
         from agent.notification_presentation import diagnostic_process_event

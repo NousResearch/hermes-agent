@@ -956,7 +956,7 @@ export const planWhileRunning = {
       },
       {
         "name": "verify",
-        "title": "verify 127.0.0.1:9119: /api/status 200 from the gateway and the Webapp page served, within 90 s"
+        "title": "verify 127.0.0.1:9119: /api/status 200 from the gateway and the Webapp page served, within 300 s"
       }
     ],
     "text": [
@@ -977,7 +977,7 @@ export const planWhileRunning = {
       "    4. make sure the gateway runs as a user service",
       "    5. stop the old backend and disable it (its unit file is kept)",
       "    6. start or restart the gateway",
-      "    7. verify 127.0.0.1:9119: /api/status 200 from the gateway and the Webapp page served, within 90 s",
+      "    7. verify 127.0.0.1:9119: /api/status 200 from the gateway and the Webapp page served, within 300 s",
       "  Any failure after step 1 undoes what was changed and verifies the old backend answers again.",
       "  After a move, clients notice: one re-sign-in (new cookies); the browser gets the Webapp instead of the old dashboard UI; old-protocol WebSocket clients and loopback page-token clients stop working."
     ],

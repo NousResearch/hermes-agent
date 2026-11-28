@@ -810,19 +810,14 @@ jobs:
     runs-on: blacksmith-2vcpu-windows-2025
     environment: release-signing
     cache-mode: read
-    permissions:
-      contents: read
+    permissions: { contents: read }
     timeout-minutes: 15
     env:
       TARGET: win32-x64
       COMMIT_ARTIFACT_ID: ${{ needs.build-win32-x64-commit.outputs.commit-artifact-id }}
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-      LEGACY_COMMIT_BUILD: ${{ needs.validate.outputs.legacy-commit-build }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
-    steps: &stage-commit-win32-steps
+      DOWNLOAD_PATH: staged-artifacts
+      STAGE_INCLUDES: --include *.msix --include metadata-windows-x64.json
+    steps: &stage-commit-steps
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
           ref: ${{ github.sha }}
@@ -847,32 +842,65 @@ jobs:
         with:
           artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
           merge-multiple: true
-          path: staged-artifacts
+          path: ${{ env.DOWNLOAD_PATH }}
       # Reading the unreviewed leg's packages never holds the R2 secrets; only the upload does.
-      - name: Record commit claim Windows packages
+      - name: Record commit claim packages
         shell: bash
+        env:
+          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          LEGACY_COMMIT_BUILD: ${{ needs.validate.outputs.legacy-commit-build }}
         run: |
           root="$GITHUB_WORKSPACE/staged-artifacts"
           # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
-          # The recorder reads the one non-Store MSIX for this arch; nothing else may be staged.
-          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o -name 'Store-*' -o ! -name "*-win-${TARGET##*-}.msix" \) -print)"
+          shopt -s nullglob
+          case "$TARGET" in
+            win32-*)
+              platform=windows; arch="${TARGET##*-}"
+              unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o -name 'Store-*' -o ! -name "*-win-${arch}.msix" \) -print)"
+              ;;
+            darwin-*)
+              # This arch's one .dmg and one .zip and their blockmaps, none hidden: the globs below skip
+              # hidden names, the uploader's Path.glob does not.
+              platform=macos; arch="${TARGET##*-}"
+              unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o ! \( -name "*-mac-${arch}.dmg" -o -name "*-mac-${arch}.zip" -o -name "*-mac-${arch}.dmg.blockmap" -o -name "*-mac-${arch}.zip.blockmap" \) \) -print)"
+              for blockmap in "$root"/*.blockmap; do [ -f "${blockmap%.blockmap}" ] || unexpected+=" $blockmap"; done
+              dmgs=("$root"/*.dmg); [ "${#dmgs[@]}" -eq 1 ] || unexpected+=" ${#dmgs[@]} DMGs"
+              ;;
+            termux)
+              platform=termux; arch=aarch64
+              unexpected="$(find "$root" -mindepth 1 ! -path "$root/deb" \( -type d -o -type l -o -name '.*' -o ! -path "$root/deb/*.deb" \) -print)"
+              if [ ! -d "$root/deb" ] || [ -L "$root/deb" ]; then unexpected+=" $root/deb"; fi
+              ;;
+            *) echo "::error::unexpected commit-claim target: $TARGET"; exit 1 ;;
+          esac
           if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
+          if [ "$platform" = macos ]; then
+            zips=("$root"/*-mac-"${arch}".zip); test "${#zips[@]}" -eq 1
+            mkdir -p "$root/mac-${arch}"
+            ditto -x -k "${zips[0]}" "$root/mac-${arch}"
+          fi
           record_args=()
           if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
-          python -m scripts.bundles.release_artifacts record --platform windows --arch "${TARGET##*-}" \
+          python -m scripts.bundles.release_artifacts record --platform "$platform" --arch "$arch" \
             --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
             "${record_args[@]}" \
-            --out "$root/metadata-windows-${TARGET##*-}.json"
-      - name: Stage commit claim Windows packages to R2
+            --out "$root/metadata-${platform}-${arch}.json"
+      - name: Stage commit claim packages to R2
         shell: bash
         env:
+          HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
+          HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
+          CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
+          CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
           CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
-          root="$GITHUB_WORKSPACE/staged-artifacts"
+          root="$GITHUB_WORKSPACE/staged-artifacts"; read -ra includes <<< "$STAGE_INCLUDES"
           python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-            --name "$TARGET" --root "$root" --include '*.msix' --include "metadata-windows-${TARGET##*-}.json"
+            --name "$TARGET" --root "$root" "${includes[@]}"
 
   stage-commit-win32-arm64:
     name: stage win32-arm64 commit claim
@@ -885,19 +913,14 @@ jobs:
     runs-on: blacksmith-2vcpu-windows-2025
     environment: release-signing
     cache-mode: read
-    permissions:
-      contents: read
+    permissions: { contents: read }
     timeout-minutes: 15
     env:
       TARGET: win32-arm64
       COMMIT_ARTIFACT_ID: ${{ needs.build-win32-arm64-commit.outputs.commit-artifact-id }}
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-      LEGACY_COMMIT_BUILD: ${{ needs.validate.outputs.legacy-commit-build }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
-    steps: *stage-commit-win32-steps
+      DOWNLOAD_PATH: staged-artifacts
+      STAGE_INCLUDES: --include *.msix --include metadata-windows-arm64.json
+    steps: *stage-commit-steps
 
   build-win32-x64:
     name: bundled win32-x64 result
@@ -916,8 +939,7 @@ jobs:
     env:
       SELECTED_BUILD_SUCCEEDED: >-
         ${{ (inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') && needs.build-win32-x64-release.result == 'success' && needs.build-win32-x64-commit.result == 'skipped' && needs.stage-commit-win32-x64.result == 'skipped')
-          || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.build-win32-x64-commit.result == 'success' && needs.stage-commit-win32-x64.result == 'success' && needs.build-win32-x64-release.result == 'skipped')
-          || (!(inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && (inputs.build_commit != '' || inputs.channel != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.build-win32-x64-commit.result == 'success' && needs.stage-commit-win32-x64.result == 'skipped' && needs.build-win32-x64-release.result == 'skipped') }}
+          || ((inputs.build_commit != '' || inputs.channel != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.build-win32-x64-release.result == 'skipped' && needs.build-win32-x64-commit.result == 'success' && needs.stage-commit-win32-x64.result == ((inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && 'success' || 'skipped')) }}
     steps: &native-build-result-steps
       - name: Require exactly the selected native build to succeed
         shell: bash
@@ -929,14 +951,10 @@ jobs:
 
   build-win32-arm64:
     name: bundled win32-arm64 result
-    # always() crosses the deliberately skipped trust branch; failed admission
-    # still skips this result, just as it skipped the original native builder.
     if: >-
       always() && needs.validate.outputs.win32-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-    # The trust-branch legs are read through needs.*.result below, so they must
-    # stay in the list — the result job gates on their outcomes, not its own.
     needs: [validate, build-win32-arm64-release, build-win32-arm64-commit, stage-commit-win32-arm64]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions: {}
@@ -944,8 +962,7 @@ jobs:
     env:
       SELECTED_BUILD_SUCCEEDED: >-
         ${{ (inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') && needs.build-win32-arm64-release.result == 'success' && needs.build-win32-arm64-commit.result == 'skipped' && needs.stage-commit-win32-arm64.result == 'skipped')
-          || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.build-win32-arm64-commit.result == 'success' && needs.stage-commit-win32-arm64.result == 'success' && needs.build-win32-arm64-release.result == 'skipped')
-          || (!(inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && (inputs.build_commit != '' || inputs.channel != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.build-win32-arm64-commit.result == 'success' && needs.stage-commit-win32-arm64.result == 'skipped' && needs.build-win32-arm64-release.result == 'skipped') }}
+          || ((inputs.build_commit != '' || inputs.channel != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.build-win32-arm64-release.result == 'skipped' && needs.build-win32-arm64-commit.result == 'success' && needs.stage-commit-win32-arm64.result == ((inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && 'success' || 'skipped')) }}
     steps: *native-build-result-steps
 
   # ── macOS builders (REAL) ──────────────────────────────────────────────────
@@ -974,7 +991,7 @@ jobs:
       matrix:
         target:
           - label: darwin-arm64
-            runner: macos-15
+            runner: blacksmith-12vcpu-macos-15
     env: &darwin-env
       CHANNEL_BUILD: ${{ needs.validate.outputs.channel-build }}
       HERMES_DESKTOP_VARIANT: bundled
@@ -1276,7 +1293,8 @@ jobs:
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
         run: |
           root="$GITHUB_WORKSPACE/apps/desktop/release"
-          python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+          python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- \
+            -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
             --root "$root" --commit "$RELEASE_COMMIT" --channel-request "$RUNNER_TEMP/channel-request.json" \
             --out "$root/metadata-macos-${TARGET##*-}.json"
           python -m scripts.releases.handoff stage --channel-request "$RUNNER_TEMP/channel-request.json" \
@@ -1299,7 +1317,8 @@ jobs:
           root="$GITHUB_WORKSPACE/apps/desktop/release"
           args=(--include '*.dmg' --include '*.zip' --include '*.blockmap' --include '*-mac.yml')
           if [ "$RELEASE_PHASE" = candidate ] || { [ "$HERMES_DESKTOP_VARIANT" = bundled ] && [[ "$HERMES_PAYLOAD_TAG" == canary.* ]]; }; then
-            python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
+            python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- \
+              -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
               --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
               --out "$root/metadata-macos-${TARGET##*-}.json"
             args+=(--include 'metadata-*.json')
@@ -1356,93 +1375,24 @@ jobs:
       && needs.validate.outputs.darwin-arm64 == 'true'
       && inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')
       && needs.build-darwin-arm64-commit.result == 'success'
-    runs-on: macos-15
+    runs-on: blacksmith-6vcpu-macos-15
     environment: release-signing
     cache-mode: read
-    permissions:
-      contents: read
+    permissions: { contents: read }
     timeout-minutes: 15
     env:
       TARGET: darwin-arm64
       COMMIT_ARTIFACT_ID: ${{ needs.build-darwin-arm64-commit.outputs.commit-artifact-id }}
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-      LEGACY_COMMIT_BUILD: ${{ needs.validate.outputs.legacy-commit-build }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ needs.validate.outputs.public-root }}
-    steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: ./.github/actions/setup-pm
-        with:
-          toolchain: python
-          archive-inputs: false
-          cache-python: false
-          cache-node: false
-          save-tools-cache: false
-      - name: Require one numeric commit-claim artifact ID
-        shell: bash
-        run: |
-          if [[ ! "${COMMIT_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::expected one positive numeric commit-claim artifact ID, got '${COMMIT_ARTIFACT_ID:-}'"
-            exit 1
-          fi
-      - name: Download commit claim artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
-          merge-multiple: true
-          path: staged-artifacts
-      # Unzipping and reading the unreviewed leg's packages never holds the R2 secrets.
-      - name: Record commit claim macOS packages
-        shell: bash
-        run: |
-          root="$GITHUB_WORKSPACE/staged-artifacts"
-          # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
-          # This arch's one .dmg and one .zip and their blockmaps, none hidden: the globs below skip
-          # hidden names, the uploader's Path.glob does not.
-          shopt -s nullglob
-          unexpected="$(find "$root" -mindepth 1 \( -type d -o -type l -o -name '.*' -o ! \( -name "*-mac-${TARGET##*-}.dmg" -o -name "*-mac-${TARGET##*-}.zip" \
-            -o -name "*-mac-${TARGET##*-}.dmg.blockmap" -o -name "*-mac-${TARGET##*-}.zip.blockmap" \) \) -print)"
-          for blockmap in "$root"/*.blockmap; do [ -f "${blockmap%.blockmap}" ] || unexpected+=" $blockmap"; done
-          dmgs=("$root"/*.dmg)
-          if [ "${#dmgs[@]}" -ne 1 ]; then unexpected+=" ${#dmgs[@]} DMGs"; fi
-          if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
-          zips=("$root"/*-mac-"${TARGET##*-}".zip)
-          test "${#zips[@]}" -eq 1
-          mkdir -p "$root/mac-${TARGET##*-}"
-          ditto -x -k "${zips[0]}" "$root/mac-${TARGET##*-}"
-          record_args=()
-          if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
-          python -m scripts.bundles.release_artifacts record --platform macos --arch "${TARGET##*-}" \
-            --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            "${record_args[@]}" \
-            --out "$root/metadata-macos-${TARGET##*-}.json"
-      - name: Stage commit claim macOS packages to R2
-        shell: bash
-        env:
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-        run: |
-          root="$GITHUB_WORKSPACE/staged-artifacts"
-          python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-            --name "$TARGET" --root "$root" --include '*.dmg' --include '*.zip' --include '*.blockmap' --include "metadata-macos-${TARGET##*-}.json"
+      DOWNLOAD_PATH: staged-artifacts
+      STAGE_INCLUDES: --include *.dmg --include *.zip --include *.blockmap --include metadata-macos-arm64.json
+    steps: *stage-commit-steps
 
   build-darwin-arm64:
     name: bundled darwin-arm64 result
-    # always() crosses the deliberately skipped trust branch; failed admission
-    # still skips this result, just as it skipped the original native builder.
     if: >-
       always() && needs.validate.outputs.darwin-arm64 == 'true'
       && (inputs.release-phase == '' || inputs.release-phase == 'candidate')
       && needs.validate.result == 'success'
-    # The trust-branch legs are read through needs.*.result below, so they must
-    # stay in the list — the result job gates on their outcomes, not its own.
     needs: [validate, build-darwin-arm64-release, build-darwin-arm64-commit, stage-commit-darwin-arm64]
     runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions: {}
@@ -1450,8 +1400,7 @@ jobs:
     env:
       SELECTED_BUILD_SUCCEEDED: >-
         ${{ (inputs.build_commit == '' && inputs.channel == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') && needs.build-darwin-arm64-release.result == 'success' && needs.build-darwin-arm64-commit.result == 'skipped' && needs.stage-commit-darwin-arm64.result == 'skipped')
-          || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.build-darwin-arm64-commit.result == 'success' && needs.stage-commit-darwin-arm64.result == 'success' && needs.build-darwin-arm64-release.result == 'skipped')
-          || (!(inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && (inputs.build_commit != '' || inputs.channel != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.build-darwin-arm64-commit.result == 'success' && needs.stage-commit-darwin-arm64.result == 'skipped' && needs.build-darwin-arm64-release.result == 'skipped') }}
+          || ((inputs.build_commit != '' || inputs.channel != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.build-darwin-arm64-release.result == 'skipped' && needs.build-darwin-arm64-commit.result == 'success' && needs.stage-commit-darwin-arm64.result == ((inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && 'success' || 'skipped')) }}
     steps: *native-build-result-steps
 
   # ── Linux builders (diagnostic) ────────────────────────────────────────────
@@ -2340,73 +2289,17 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     environment: release-signing
     cache-mode: read
-    permissions:
-      contents: read
+    permissions: { contents: read }
     timeout-minutes: 15
     env:
+      TARGET: termux
       COMMIT_ARTIFACT_ID: ${{ needs.termux-deb-commit.outputs.commit-artifact-id }}
-      HERMES_PAYLOAD_TAG: ${{ inputs.tag }}
-      HERMES_ARCHIVE_TAG: ${{ needs.validate.outputs.archive-tag }}
-      RELEASE_COMMIT: ${{ needs.validate.outputs.sha }}
-      LEGACY_COMMIT_BUILD: ${{ needs.validate.outputs.legacy-commit-build }}
-      CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
-      CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
-    steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - uses: ./.github/actions/setup-pm
-        with:
-          toolchain: python
-          archive-inputs: false
-          cache-python: false
-          cache-node: false
-          save-tools-cache: false
-      - name: Require one numeric commit-claim artifact ID
-        shell: bash
-        run: |
-          if [[ ! "${COMMIT_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::expected one positive numeric commit-claim artifact ID, got '${COMMIT_ARTIFACT_ID:-}'"
-            exit 1
-          fi
-      - name: Download commit claim artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          artifact-ids: ${{ env.COMMIT_ARTIFACT_ID }}
-          merge-multiple: true
-          path: staged-artifacts/deb
-      # Reading the unreviewed leg's package never holds the R2 secrets; only the upload does.
-      - name: Record commit claim Termux package
-        shell: bash
-        run: |
-          root="$GITHUB_WORKSPACE/staged-artifacts"
-          # Only the built packages: the build leg ran the claimed code, which can rewrite its upload.
-          unexpected="$(find "$root" -mindepth 1 ! -path "$root/deb" \( -type d -o -type l -o -name '.*' -o ! -path "$root/deb/*.deb" \) -print)"
-          if [ ! -d "$root/deb" ] || [ -L "$root/deb" ]; then unexpected+=" $root/deb"; fi
-          if [ -n "$unexpected" ]; then echo "::error::unexpected commit-claim artifact entries: $unexpected"; exit 1; fi
-          record_args=()
-          if [ "${LEGACY_COMMIT_BUILD:-false}" = true ]; then record_args+=(--legacy-commit-build); fi
-          python -m scripts.bundles.release_artifacts record --platform termux --arch aarch64 \
-            --root "$root" --tag "$HERMES_PAYLOAD_TAG" --commit "$RELEASE_COMMIT" \
-            "${record_args[@]}" \
-            --out "$root/metadata-termux-aarch64.json"
-      - name: Stage commit claim Termux package to R2
-        shell: bash
-        env:
-          CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-        run: |
-          root="$GITHUB_WORKSPACE/staged-artifacts"
-          python -m scripts.releases.handoff stage --tag "${HERMES_ARCHIVE_TAG:-$HERMES_PAYLOAD_TAG}" --commit "$RELEASE_COMMIT" \
-            --name termux --root "$root" --include 'deb/*.deb' --include 'metadata-termux-aarch64.json'
+      DOWNLOAD_PATH: staged-artifacts/deb
+      STAGE_INCLUDES: --include deb/*.deb --include metadata-termux-aarch64.json
+    steps: *stage-commit-steps
 
   termux-deb:
     name: termux .deb result
-    # always() crosses the deliberately skipped trust branch; failed admission
-    # still skips this result, just as it skipped the original Termux builder.
     if: >-
       always() && inputs.channel == '' && inputs.disposable_channel == ''
       && needs.validate.outputs.termux == 'true'
@@ -2419,8 +2312,7 @@ jobs:
     env:
       SELECTED_BUILD_SUCCEEDED: >-
         ${{ (inputs.build_commit == '' && !startsWith(inputs.tag, 'commit.') && !startsWith(inputs.tag, 'channel.') && needs.termux-deb-release.result == 'success' && needs.termux-deb-commit.result == 'skipped' && needs.stage-commit-termux.result == 'skipped')
-          || (inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.') && needs.termux-deb-commit.result == 'success' && needs.stage-commit-termux.result == 'success' && needs.termux-deb-release.result == 'skipped')
-          || (!(inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && (inputs.build_commit != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.termux-deb-commit.result == 'success' && needs.stage-commit-termux.result == 'skipped' && needs.termux-deb-release.result == 'skipped') }}
+          || ((inputs.build_commit != '' || startsWith(inputs.tag, 'commit.') || startsWith(inputs.tag, 'channel.')) && needs.termux-deb-release.result == 'skipped' && needs.termux-deb-commit.result == 'success' && needs.stage-commit-termux.result == ((inputs.release-phase == 'candidate' && startsWith(inputs.tag, 'commit.')) && 'success' || 'skipped')) }}
     steps: *native-build-result-steps
 
   commit-builds-summary:

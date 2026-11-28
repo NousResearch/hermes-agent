@@ -8,6 +8,12 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 
+// Exact request bytes (per interpreter) the authoritative validator accepted in
+// this process. A build and its smoke verifier admit one request many times;
+// each spawn starts a Python interpreter, so re-validating identical bytes
+// multiplies cost without adding a check. Rejections are never cached.
+const admittedChannelRequests = new Set()
+
 /** Build-only structured bridge; never read by the installed runtime.
  * @param {NodeJS.ProcessEnv} [env]
  * @returns {import('../apps/desktop/electron/install-stamp.js').ChannelBuildRequest | null}
@@ -26,9 +32,14 @@ export function channelBuildRequest(env = process.env) {
     'from scripts.bundles.desktop_prepare import validate_channel_request',
     'validate_channel_request(decode_json(sys.stdin.buffer.read()))'
   ].join('; ')
-  execFileSync(env.HERMES_PYTHON || 'python', ['-I', '-S', '-c', validator, path.resolve(import.meta.dirname, '..')], {
-    env, input: env._HERMES_CHANNEL_REQUEST_JSON, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 30_000
-  })
+  const python = env.HERMES_PYTHON || 'python'
+  const admitted = JSON.stringify([python, env._HERMES_CHANNEL_REQUEST_JSON])
+  if (!admittedChannelRequests.has(admitted)) {
+    execFileSync(python, ['-I', '-S', '-c', validator, path.resolve(import.meta.dirname, '..')], {
+      env, input: env._HERMES_CHANNEL_REQUEST_JSON, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 30_000
+    })
+    admittedChannelRequests.add(admitted)
+  }
   if (env.HERMES_PAYLOAD_VERSION && env.HERMES_PAYLOAD_VERSION !== value.version) throw new Error('Channel package version conflicts with prepared request')
   Object.freeze(value.identity)
   Object.freeze(value.bundleEnv)

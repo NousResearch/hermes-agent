@@ -13,6 +13,8 @@ import sys
 import threading
 import time
 
+from contextlib import suppress
+from functools import cached_property
 from pathlib import Path
 from rich import box as rich_box
 from rich.panel import Panel
@@ -57,10 +59,9 @@ class CLIChatTurnMixin:
             return
         self._write_program_status(seq)
 
-    def _write_program_status(self, seq: str) -> None:
-        if not getattr(self, "program_status_enabled", True) or getattr(self, "_terminal_io_broken", False):
-            return
-        if not sys.stdout.isatty():
+    def _emit_osc_sequence(self, seq: str) -> None:
+        """Write an OSC escape sequence via the prompt_toolkit loop when running, else write_tty."""
+        if getattr(self, "_terminal_io_broken", False) or not sys.stdout.isatty():
             return
         from hermes_cli.terminal_notify import write_tty
         app = getattr(self, "_app", None)
@@ -76,6 +77,59 @@ class CLIChatTurnMixin:
                 pass
 
         _run_on_app_loop(app, _emit)
+
+    def _write_program_status(self, seq: str) -> None:
+        if not getattr(self, "program_status_enabled", True):
+            return
+        self._emit_osc_sequence(seq)
+
+    _program_resume_interactive: bool = False
+
+    @cached_property
+    def _program_resume(self):
+        from hermes_cli.program_resume import ProgramResumeReporter
+
+        return ProgramResumeReporter(self._write_osc7577)
+
+    def _write_osc7577(self, seq: str) -> None:
+        if not getattr(self, "program_resume_enabled", True):
+            return
+        self._emit_osc_sequence(seq)
+
+    def _resumable_session_id(self) -> str | None:
+        """The active session id once the session store holds its row (only then can a restart resume it)."""
+        agent = getattr(self, "agent", None)
+        sid = (getattr(agent, "session_id", None) if agent is not None else None) or getattr(self, "session_id", None)
+        if not sid:
+            return None
+        sid = str(sid)
+        if sid == getattr(self, "_program_resume_saved_sid", None):
+            return sid
+        from hermes_cli.program_resume import session_saved
+
+        if not session_saved(getattr(self, "_session_db", None), sid):
+            return None
+        self._program_resume_saved_sid = sid
+        return sid
+
+    def _sync_program_resume(self, *, force: bool = False) -> None:
+        """Report or update this pane's OSC 7577 resume command (interactive CLI only)."""
+        if (
+            not self._program_resume_interactive
+            or not getattr(self, "program_resume_enabled", True)
+            or getattr(self, "_terminal_io_broken", False)
+            or not sys.stdout.isatty()
+            or not self._program_resume.active
+        ):
+            return
+        from hermes_cli.program_resume import resume_argv
+
+        # Resolved under the reporter's lock: the SIGCONT thread must not report a session switched away from.
+        self._program_resume.sync(lambda: resume_argv(self._resumable_session_id(), "cli"), force=force)
+
+    def _clear_program_resume(self) -> None:
+        """The user ended Hermes: remove this pane's OSC 7577 record."""
+        self._program_resume.clear()
 
     # (state, msg) of the last finished turn; None = no outcome to show (fresh, early return, lost result).
     _program_turn_outcome: tuple[str, str] | None = None

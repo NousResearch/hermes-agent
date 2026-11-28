@@ -148,11 +148,13 @@ starts no `workflow_run` workflow when it completes. This is why:
 
 ### Runners
 
-`blacksmith-*` labels are Blacksmith runners (`4vcpu` for small jobs,
-`32vcpu` for test suites and builds, `-arm` for native arm64). `macos-15`,
-`windows-latest` (standard, free on a public repository), `windows-latest-32-core`
-and `windows-latest-32-arm-core` (larger, billed) are GitHub-hosted. The Windows
-install/update legs (`install-e2e-windows-run.yml`'s `e2e` job) use `windows-latest`.
+`blacksmith-*` labels are Blacksmith runners (`2vcpu`/`4vcpu` for small jobs,
+`8vcpu`/`16vcpu`/`32vcpu` for test suites and builds, `-arm` for native arm64). For the
+CI jobs measured when right-sizing, a halving of the cores was kept only where the job got
+less than 15% slower (a second halving, 16 → 8, was tried only for jobs under 10% at the
+first); `catalog-tests` and `docs-site-checks` moved anyway (each added under a minute).
+The only GitHub-hosted
+label is `windows-latest-32-arm-core`: Blacksmith has no Windows arm64 runners.
 No workflow runs on Intel macOS. Jobs that only run `docker buildx imagetools`
 (manifest lists, alias promotion) set up buildx with `docker/setup-buildx-action`
 and `driver: docker`, never `useblacksmith/setup-docker-builder`: its no-`cache-key`
@@ -227,7 +229,7 @@ of every suite that reads it.
 | ↳ `e2e-upgrade-plan`, `e2e-upgrade (shard)` | | `e2e_upgrade` lane (release or dispatch) | every PR and every push |
 | OS-specific tests | `tests-os.yml` | `python` or `desktop_updater` or `e2e` or `e2e_upgrade` | none of those |
 | ↳ macOS (2 slices), Windows x64, Windows arm64 (2 slices) | | always inside `tests-os.yml`; the real Windows hand-off tests only with `desktop_updater` | |
-| ↳ Windows install + update E2E | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
+| ↳ Windows install + update E2E: `Plan Windows install + update journeys`, then one job per journey file | `windows-install-update-e2e.yml` | `e2e_upgrade` (release or dispatch) | PRs and pushes |
 | ↳ Windows E2E (real processes) | | `e2e` (release or dispatch) | PRs and pushes |
 | Python lints | `lint.yml` (one job) | `python` or `frontend`; the job itself skips a frontend-only push | neither |
 | ↳ Windows footguns + sibling guards, `ruff check .` (steps) | | `python` | frontend-only |

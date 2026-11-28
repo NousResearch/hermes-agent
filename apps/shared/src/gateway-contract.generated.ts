@@ -1967,14 +1967,27 @@ export interface RelayEnvelope {
 }
 /** ``profile`` here is the TARGET profile on this gateway (also what the desktop route wrapper adds). */
 export interface BotRelayDeliverParams {
+  id: string
   profile: string
   message: string
   from_profile?: string | null
   from_handle?: string | null
   from_connection?: string | null
 }
+/** A delivery's receipt from the target profile's authority (``gateway/session_bot.py``), the same on the canonical door and across this relay bridge. It names its admission, unless ``refused``: a terminal ``failed`` receipt for a delivery that was never admitted (refused by the FIFO, or settled as not sent), which the relay settles as the sender's answer. */
 export interface BotRelayDeliverResult {
-  reply: string
+  status: string
+  delivery_id: string
+  profile_home: string
+  session_id: string
+  admission_id?: string | null
+  refused?: true | null
+  message: string
+  reply?: string | null
+  retry_admission_id?: string | null
+  error?: string | null
+  reason?: string | null
+  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
 }
 export interface BotRelayReplyParams {
   profile?: string | null
@@ -5617,21 +5630,6 @@ export interface CanonicalBotDeliverParams {
   author?: Record<string, unknown> | null
   notification_category?: string | null
 }
-/** A delivery's receipt. It names its admission, unless ``refused``: the FIFO refused the delivery before anything was committed (``gateway/session_bot.py``), a terminal ``failed`` receipt with no admission that the relay settles as the sender's answer. */
-export interface CanonicalBotDeliverResult {
-  status: string
-  delivery_id: string
-  profile_home: string
-  session_id: string
-  admission_id?: string | null
-  refused?: true | null
-  message: string
-  reply?: string | null
-  retry_admission_id?: string | null
-  error?: string | null
-  reason?: string | null
-  target_state?: 'idle' | 'working' | 'waiting_approval' | 'waiting_clarify' | 'paused' | null
-}
 export interface CanonicalBotCancelParams {
   profile?: string | null
   id: string
@@ -6147,6 +6145,17 @@ export interface ReactionPayload {
 export interface ReviewSummaryPayload {
   text: string
 }
+/** ``gateway.session_completion_notes`` after a plugin card's note row committed. */
+export interface PluginCardPayload {
+  plugin_id: string
+  card_id: string
+  text: string
+  directive?: PluginCardDirectivePayload | null
+}
+export interface PluginCardDirectivePayload {
+  name: string
+  attrs?: Record<string, string>
+}
 /** A session-authority local-viewer turn: one line the agent printed through ``_print_fn`` (subagent completion, compaction, errors, budget notices), which main's classic CLI rendered through ``_agent_status_print``. */
 export interface AgentPrintPayload {
   text: string
@@ -6432,7 +6441,7 @@ export interface RpcMethods {
   'billing.step_up': { params: BillingStepUpParams; result: BillingStepUpResult }
   /** Read-only: this bot's unsettled message_agent deliveries to local teammates, newest first. */
   'bot_delivery.list': { params: BotDeliveryListParams; result: BotDeliveryListResult }
-  /** Deliver a relayed DM into a Bot Chat on this gateway and return the one-turn reply (blocking). */
+  /** Forward an identified DM to the target profile's authority and return its delivery receipt. */
   'bot_relay.deliver': { params: BotRelayDeliverParams; result: BotRelayDeliverResult }
   /** Atomically claim every pending cross-connection envelope queued on this gateway. */
   'bot_relay.outbox.drain': { params: BotRelayOutboxDrainParams; result: BotRelayOutboxDrainResult }
@@ -7216,8 +7225,8 @@ export interface CanonicalRpcMethods {
   'a2a.forward': { params: A2aForwardParams; result: A2aForwardResult }
   'approval.respond': { params: CanonicalApprovalParams; result: PromptResponseResult }
   'bot_relay.cancel': { params: CanonicalBotCancelParams; result: CanonicalBotCancelResult }
-  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
-  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: CanonicalBotDeliverResult }
+  'bot_relay.deliver': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
+  'bot_relay.settle': { params: CanonicalBotDeliverParams; result: BotRelayDeliverResult }
   /** Lock one answer of the owner's batch clarify request (editable until every question is locked); only a viewer attached to that session with session:respond may lock. */
   'clarify.lock': { params: ClarifyLockParams; result: ClarifyLockResult }
   /** Generation-fenced answer to a pending clarify prompt (empty answer = skipped). */
@@ -7500,6 +7509,8 @@ export interface BackendGatewayEventMap {
   'pet.hatch.progress': PetHatchProgressPayload
   /** gateway_state.json moved; refetch platform status. */
   'platforms.changed': ChangeSignalPayload
+  /** A plugin posted a card into the session (a note, no model turn). */
+  'plugin.card': PluginCardPayload
   /** Close the preview pane or one tab. */
   'preview.close': PreviewClosePayload
   /** Open a URL / file in the desktop preview pane. */
@@ -7623,6 +7634,7 @@ export const GATEWAY_EVENT_TYPES = [
   'pet.generate.progress',
   'pet.hatch.progress',
   'platforms.changed',
+  'plugin.card',
   'preview.close',
   'preview.open',
   'preview.restart.complete',

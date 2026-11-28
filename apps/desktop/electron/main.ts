@@ -77,7 +77,7 @@ import {
 import { createBackendConnectionState } from './backend-connection-state'
 import { assertDescriptorStillOwned, forgetFailedDescriptor } from './backend-descriptor-cache'
 import { BackendDialClaims } from './backend-dial-claim'
-import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
+import { buildDesktopBackendEnv, POSIX_SANE_PATH_ENTRIES, profileBackendParentEnv } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   backendCommandMatches,
@@ -128,7 +128,7 @@ import {
 } from './bundle-swap'
 import { CHALLENGE_PARTITION } from './challenge-window'
 import { registerChallengeWindowIpc } from './challenge-window-ipc'
-import { provisionCliLinks } from './cli-provision'
+import { provisionCliLinks, shouldProvisionBundledCliLinks } from './cli-provision'
 import { readClipboardImagePng } from './clipboard-image'
 import { registerClipboardTextIpc } from './clipboard-ipc'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
@@ -220,6 +220,7 @@ import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
 import { resolveDesktopUserData } from './data-paths'
 import { extractDeepLink, handleLaunchDeepLink, registerDeepLinkProtocol as registerDeepLinkProtocolWith } from './deep-link-protocol'
+import { createPreflightGatewayRunner, DEFAULT_PLUGINS_BOOT_MESSAGE, DEFAULT_PLUGINS_BOOT_PHASE, DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS } from './default-plugins-preflight'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine, formatLogStamp } from './desktop-log-line'
 import {
@@ -362,10 +363,13 @@ import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPat
 import { resolveDesktopClientVersion } from './local-runtime-version'
 import { localSkinProfileKey, registerLocalSkinIpc } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
+import { guardMacApplicationsLaunch, type MacApplicationsGuardResult } from './mac-applications-guard'
+import { resolveMacAppBundle } from './mac-bundle-location'
+import { resolvePosixGitBinary, runOptionalGit } from './mac-clt-git'
 import { registerMachineProfile } from './machine-profile'
 import { resolveMainHermesHome } from './main-hermes-home'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
-import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
+import { activateWindow, ensureMainWindow, handleSecondInstance, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
@@ -446,7 +450,7 @@ import { registerPreparedSubmissions } from './prepared-submissions'
 import { attachPresenceSource, sendToEveryWindow } from './presence'
 import { capturePreviewContents } from './preview-capture'
 import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
-import { hasClosePreviewFlag, previewGuestInputAction } from './preview-guest-escape'
+import { previewGuestInputAction } from './preview-guest-escape'
 import { registerPreviewGuestIpc } from './preview-guest-ipc'
 import { commandFocusedGuest } from './preview-guest-offscreen'
 import { applyPreviewGuestAttachPrefs } from './preview-guest-throttle'
@@ -660,9 +664,9 @@ import { ChannelStrategy } from './updater/channel-strategy'
 import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
 import { type CheckoutStrategy, createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, sourceChannelName, type SourceUpdate } from './updater/checkout-source'
+import { createElectronUpdaterStrategy, type ElectronUpdaterClientDeps } from './updater/electron-updater-client'
 import { ExternalStrategy } from './updater/external'
 import { readUpdatesFeedBaseFromConfig, resolveFeedBaseUrl } from './updater/feed-config'
-import { createChannelMacStrategy, createMacStrategy } from './updater/mac-client'
 import { UpdateOperation } from './updater/operation'
 import {
   type ConsumedRelaunch,
@@ -1911,6 +1915,7 @@ const backendPool = new Map() // scope key -> { connectionPromise, remoteBaseUrl
 // Escape hatch: a dedicated, private backend for this app instead of the host's.
 const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
 const profileDeletionGate = new ProfileDeletionGate()
+let macGuardResult: MacApplicationsGuardResult | null = null
 
 // rememberLog() state. Declared before any top-level caller that logs during
 // module evaluation; declaring these later crashed launch with `undefined.push`
@@ -3200,23 +3205,21 @@ function findPathCandidates(command) {
   return candidates
 }
 
-function resolveGitBinary() {
+function resolveGitBinary(): string | null {
   if (_gitBinaryCache) {
     return _gitBinaryCache
   }
 
   if (!IS_WINDOWS) {
-    // Every PATH hit, probed — the first entry that merely exists can be
-    // unlaunchable while a working system git sits later on the same PATH.
-    const selected = selectRunnableBinary({
-      candidates: findPathCandidates('git'),
-      fileExists,
-      binaryRuns
-    })
+    const candidates = findPathCandidates('git')
+    const fallbackDirs = POSIX_SANE_PATH_ENTRIES
+    const selected = resolvePosixGitBinary({ candidates, fallbackDirs, fileExists, binaryRuns })
 
-    _gitBinaryCache = selected || 'git'
+    if (selected) {
+      _gitBinaryCache = selected
+    }
 
-    return _gitBinaryCache
+    return selected
   }
 
   const localAppData = process.env.LOCALAPPDATA || ''
@@ -3488,7 +3491,7 @@ function createNativePackagedStrategy(
   target?: ChannelTarget
 ): UpdaterStrategy {
   if (mechanism === 'electron-updater') {
-    const deps: Parameters<typeof createMacStrategy>[0] = {
+    const deps: ElectronUpdaterClientDeps = {
       channel: resolveUpdaterChannelFromStamp(),
       light: isLightVariant(),
       feedBaseUrl: resolveDesktopFeedBaseUrl(),
@@ -3499,7 +3502,7 @@ function createNativePackagedStrategy(
       onInstallFailure: restoreBundledBackend
     }
 
-    return target ? createChannelMacStrategy(deps, target) : createMacStrategy(deps)
+    return createElectronUpdaterStrategy(deps, target)
   }
 
   if (mechanism === 'app-installer') {
@@ -3653,7 +3656,7 @@ function resolveCheckoutUpdateStrategy(): CheckoutStrategy {
         log
       })
     },
-    runningAppBundle,
+    runningAppBundle: () => resolveMacAppBundle(app.getPath('exe'), process.platform),
     markQuittingForHandoff: () => {
       isQuittingForHandoff = true
     },
@@ -4473,22 +4476,6 @@ async function handOffWindowsBootstrapRecovery(reason) {
   return true
 }
 
-// The running app's .app bundle (packaged macOS): execPath is
-// <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
-function runningAppBundle() {
-  if (!IS_MAC) {
-    return null
-  }
-
-  let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
-
-  for (let i = 0; i < 2; i++) {
-    dir = path.dirname(dir)
-  } // -> .../X.app
-
-  return dir.endsWith('.app') ? dir : null
-}
-
 // macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
 // (scripts/desktop-update/posix.sh) detached and QUIT. The script waits us
 // out, runs `hermes update`, swaps/relaunches the app bundle, and writes
@@ -4829,7 +4816,7 @@ async function resolveHermesBackend(backendArgs: string[], progress?: typeof adv
   const payload = await runnableBundledPayload(rememberLog, progress)
 
   if (payload) {
-    if (!IS_WINDOWS) {
+    if (shouldProvisionBundledCliLinks(payload.root, rememberLog)) {
       provisionCliLinks(payload.commands, path.join(os.homedir(), '.local', 'bin'), rememberLog)
     }
 
@@ -10961,6 +10948,8 @@ function assertPoolEntryStillOwned(poolKey: string, entry: any) {
   assertDescriptorStillOwned(backendPool, poolKey, entry)
 }
 
+const preflightGateway = createPreflightGatewayRunner({ buildParentEnv: profile => profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }), buildSpawnEnv: desktopBackendSpawnEnv, getSignal: () => localBackendLifecycle.signal, hermesHome: HERMES_HOME, log: rememberLog, resolveCwd: resolveHermesCwd, runEnsure: runGatewayEnsure })
+
 // Resolve the connection descriptor for a named profile that is not the
 // primary: attach to (or start) its canonical local gateway via
 // `hermes gateway ensure`, or verify and describe its remote. Mirrors the local
@@ -11002,6 +10991,8 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
 
+  const preflightOnce = { ran: false }
+
   const connection = await launchedProfiles.startLocally(profile, ensureLocalGateway, async () => {
     const backend = await ensureRuntime(
       await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
@@ -11012,12 +11003,7 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
     assertPoolEntryStillOwned(poolKey, entry)
 
     // Never another profile's dotenv credentials from the Desktop env (#68367).
-    return runGatewayEnsure(
-      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile })
-    )
+    return preflightGateway.run(backend, profile, { once: preflightOnce, timeoutSeconds: DEFAULT_PLUGINS_POOL_PREFLIGHT_TIMEOUT_SECONDS, onAfter: () => { localBackendLifecycle.assertCanStart(); profileDeletionGate.assertCanStart(profile); assertPoolEntryStillOwned(poolKey, entry) } })
   }, async () => {
     // Same update mutual exclusion as the primary's waitForLocalStart (#73822);
     // a held update shows the window's blocked screen for this profile too.
@@ -11052,16 +11038,12 @@ const GATEWAY_RESTART_CLIENT_TIMEOUT_MS = 120_000
 // `--detach` (runGatewayOwnerRestart). A non-zero exit is logged, not thrown: the re-ensure reports
 // what answers.
 async function restartLocalGatewayOwner(ownerProfile: string): Promise<void> {
+  const preflightOnce = { ran: false }
+
   const result = await runGatewayOwnerRestart(async args => {
     const backend = await ensureRuntime(await resolveHermesBackend(args), () => undefined)
 
-    return runGatewayEnsure(
-      { ...backend, env: desktopBackendSpawnEnv(backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: ownerProfile }),
-      { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' }
-    )
+    return preflightGateway.run(backend, ownerProfile, { once: preflightOnce, ensureOptions: { timeoutMs: GATEWAY_RESTART_CLIENT_TIMEOUT_MS, label: 'hermes gateway restart' } })
   }, ownerProfile)
 
   const reason = `${result.stdout}\n${result.stderr}`.trim().split(/\r?\n/).filter(Boolean).pop()
@@ -11479,12 +11461,14 @@ async function startHermes(requestedProfile?: string, inheritsPrimary = false) {
     // Local WSL backend — paths are bridgeable.
     setWslBridgeProfileState(primaryProfile, true)
 
-    const connection = await ensureLocalGateway(() => runGatewayEnsure(
-      { ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}) },
-      resolveHermesCwd(),
-      HERMES_HOME,
-      profileBackendParentEnv({ hermesHome: HERMES_HOME, profile: primaryProfile })
-    ), undefined, restartStaleLocalGateway)
+    const connection = await ensureLocalGateway(
+      await preflightGateway.prepare(setup.backend, primaryProfile, {
+        onBefore: () => advanceBootProgress(DEFAULT_PLUGINS_BOOT_PHASE, DEFAULT_PLUGINS_BOOT_MESSAGE, 45),
+        onAfter: async () => { localBackendLifecycle.assertCanStart(); backendConnectionState.assertCurrentAttempt(connectionAttempt); await advanceBootProgress('backend.starting', 'Starting Hermes gateway...', 55) }
+      }),
+      undefined,
+      restartStaleLocalGateway
+    )
 
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
@@ -16703,7 +16687,7 @@ function resolveHermesVersion(scope: { connectionId?: string; profile?: string }
 // report in-sync rather than risk a false "your install is torn" warning.
 const checkRendererSkew = createBundleSkewChecker(
   INSTALL_STAMP,
-  (args, options) => execGit(resolveGitBinary(), args, options),
+  (args, options) => runOptionalGit(resolveGitBinary(), args, options, execGit),
   // Only a LIVE marker defers the warning: Desktop never deletes a dead one,
   // so a leftover file would otherwise suppress it indefinitely.
   { isUpdating: async () => updateInFlight || isQuittingForHandoff || Boolean(await readLiveUpdateMarker(HERMES_HOME)) }
@@ -17283,34 +17267,17 @@ if (!isPrimaryInstance) {
     console.error('[hermes] failed to persist --profile launch override:', error)
   }
 
-  app.on('second-instance', (_event, argv) => {
-    // --close-preview: the same escape hatch as hermes://close-preview, for
-    // environments where spawning a URL is harder than a flag (kiosk launchers,
-    // SSH-started sessions). Checked before deep links so a carried `hermes://`
-    // URL still routes normally when no flag is present.
-    if (hasClosePreviewFlag(argv)) {
-      handleDeepLink('hermes://close-preview')
-    }
-
-    const url = extractDeepLink(argv, DEEPLINK_SCHEMES)
-
-    if (url) {
-      handleDeepLink(url)
-    }
-
-    // #130810: a second Start-menu / shortcut / Hermes.exe launch must never
-    // silently exit. Log it so a future silent exit stays diagnosable, then
-    // restore a live primary with activation (restore + show + focus), or
-    // re-create it when it was destroyed.
-    rememberLog(`[second-instance] relaunch (deepLink=${url ? 'yes' : 'no'})`)
-    ensureMainWindow(mainWindow, {
-      isReady: app.isReady(),
+  app.on('second-instance', (_event, argv) =>
+    handleSecondInstance(argv, {
+      mainWindow,
+      launchGuard: macGuardResult,
+      deepLinkSchemes: DEEPLINK_SCHEMES,
+      handleDeepLink,
       createWindow,
       focusWindow: activateWindow,
-      // deep-link delivery focuses a live window after its renderer is ready.
-      focusExisting: !url
+      log: rememberLog
     })
-  })
+  )
 }
 
 // macOS delivers deep links via 'open-url' — register early (can fire before
@@ -17320,7 +17287,20 @@ app.on('open-url', (event, url) => {
   handleDeepLink(url)
 })
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  macGuardResult = await guardMacApplicationsLaunch({
+    app,
+    dialog,
+    appName: APP_NAME,
+    isPackaged: IS_PACKAGED,
+    installStamp: INSTALL_STAMP,
+    log: rememberLog
+  })
+
+  if (macGuardResult.action === 'relaunching') {
+    return
+  }
+
   if (NVIDIA_DRIVER_MAJOR !== null) {
     rememberLog(nvidiaEglRecovery.startupMessage)
   }

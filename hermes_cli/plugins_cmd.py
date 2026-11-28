@@ -79,7 +79,11 @@ def _resolve_git_executable() -> Optional[str]:
         candidates = [os.path.join(r, "Git", sub, "git.exe") for r in roots for sub in ("cmd", "bin")]
     else:
         candidates = ["/usr/bin/git", "/usr/local/bin/git", "/bin/git"]
-    return next((c for c in candidates if c and os.path.isfile(c)), None)
+    # _git_binary refused macOS's uninstalled CLT stub (it opens Apple's install dialog when
+    # launched); /usr/bin/git is that stub, so the fallback asks the same question.
+    from hermes_platform.resolver.git import is_usable_git_executable
+
+    return next((c for c in candidates if c and os.path.isfile(c) and is_usable_git_executable(c)), None)
 
 
 class PluginOperationError(Exception):
@@ -644,9 +648,12 @@ def _selection_lock() -> threading.Lock:
         return _SELECTION_LOCKS.setdefault(hermes_home_key(), threading.Lock())
 
 
-def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) -> None:
+def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None, unless_disabled: bool = False) -> bool:
     """Submit the command's delta with the version of the selection it read. Enabling a non-bundled plugin
-    on the kill list raises :class:`PluginOperationError`; the `hermes plugins` picker checks it itself."""
+    on the kill list raises :class:`PluginOperationError`; the `hermes plugins` picker checks it itself.
+    *unless_disabled* (an unattended install) writes nothing and returns False when ``plugins.disabled``
+    names *name* in the selection this write is versioned against: a disable another writer lands after
+    that read races the write, so the retry reads it. True once written."""
     from pm.plugins_state import read_home_selection
 
     if enable:
@@ -657,11 +664,14 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
         plugins = config.get("plugins") or {}
         enabled = set(plugins.get("enabled") or ())
         disabled = set(plugins.get("disabled") or ())
+        if unless_disabled and disabled & {*_plugin_aliases(name), *aliases}:
+            return False
         _apply_activation(enabled, disabled, name, aliases, enable=enable)
         _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                    action=f"{'Enable' if enable else 'Disable'} '{name}'",
                                    expected_config=expected_config, plugin=name if enable else None,
                                    settled=(name, *aliases))
+    return True
 
 
 def _refuse_recalled_entry(entry: Optional[tuple]) -> None:

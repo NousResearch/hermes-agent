@@ -13,6 +13,8 @@ import contextvars
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from hermes_cli.auth_constants import MODEL_RATE_LIMITED_CODE
+
 # Private runtime-dict key stamped by the resolution-time fallback walker.
 RUNTIME_KEY = "_primary_auth_failure"
 
@@ -29,7 +31,7 @@ class PrimaryAuthFailure:
 
 # AuthError codes whose fix is not a sign-in: an outage, a per-model cooldown, a CLI that is not installed,
 # or a configuration error (no provider, an unknown one, a custom route without a base URL).
-_NOT_A_LOGIN_PROBLEM = frozenset({"temporarily_unavailable", "model_rate_limited", "missing_external_process_cli",
+_NOT_A_LOGIN_PROBLEM = frozenset({"temporarily_unavailable", MODEL_RATE_LIMITED_CODE, "missing_external_process_cli",
                                   "no_provider_configured", "invalid_provider", "missing_base_url"})
 
 

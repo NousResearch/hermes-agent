@@ -19,3 +19,11 @@ test('resolveCheckoutHead runs the probed git binary, not the first PATH hit (#1
   assert.equal(resolveCheckoutHead('/repo', { gitBinary: '/usr/bin/git' }), 'abcdef1234567890')
   assert.equal(execFileSyncMock.mock.calls[0]?.[0], '/usr/bin/git')
 })
+
+test('resolveCheckoutHead returns null without spawning git when gitBinary is null', async () => {
+  const { resolveCheckoutHead } = await import('./bootstrap-runner')
+
+  execFileSyncMock.mockClear()
+  assert.equal(resolveCheckoutHead('/repo', { gitBinary: null }), null)
+  assert.equal(execFileSyncMock.mock.calls.length, 0)
+})

@@ -112,6 +112,9 @@ class Row:
     # The declared transport is mandated by the provider's OWN host (e.g. a Responses-native
     # endpoint); at a foreign base URL the product speaks plain chat completions instead.
     host_mandated: bool = False
+    # Bundled plugin directory under ``plugins/model-providers/`` that registered this profile
+    # (multi-profile plugins such as ``google/`` register multiple profiles from one dir).
+    plugin_dir: str | None = None
 
     @property
     def dialect(self) -> str | None:
@@ -156,15 +159,43 @@ class Row:
 _CATALOG: list[Row] | None = None
 
 _DISCOVER = """
-import json, providers
+import inspect, json, providers
+from pathlib import Path
+from hermes_agent.compat.paths import current_path
 from hermes_cli.providers import host_mandated_api_mode
+
+root = (Path.cwd() / current_path("plugins") / "model-providers").resolve()
+plugin_dir_of = {}
+orig_register = providers.register_provider
+
+def _observe_register(profile):
+    frame = inspect.currentframe()
+    try:
+        frame = frame.f_back if frame is not None else None
+        while frame is not None:
+            filename = frame.f_globals.get("__file__")
+            if filename:
+                try:
+                    rel = Path(filename).resolve().relative_to(root)
+                except ValueError:
+                    rel = None
+                if rel is not None and rel.parts:
+                    plugin_dir_of[profile.name] = rel.parts[0]
+                    break
+            frame = frame.f_back
+    finally:
+        del frame
+    return orig_register(profile)
+
+providers.register_provider = _observe_register
 out = []
 for p in providers.list_providers():
     key = next((e for e in p.env_vars if not e.endswith("_BASE_URL")), None)
     out.append(dict(name=p.name, api_mode=p.api_mode, auth_type=p.auth_type, key_env=key,
                     base_url=p.base_url, aliases=list(p.aliases),
                     supports_model_listing=bool(p.supports_model_listing),
-                    host_mandated=host_mandated_api_mode(p.base_url) is not None))
+                    host_mandated=host_mandated_api_mode(p.base_url) is not None,
+                    plugin_dir=plugin_dir_of.get(p.name)))
 print("CATALOG=" + json.dumps(out))
 """
 

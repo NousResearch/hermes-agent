@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 # Kept at module level on purpose: importing this module must fail when the dotenv install is
@@ -17,6 +18,7 @@ from pathlib import Path
 import dotenv
 from hermes_constants import hermes_home_key, is_launch_only_env_key
 from hermes_cli.left_core_migration import profile_env_names
+from pm.environments import remember_inherited_path
 from utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -418,30 +420,69 @@ def _parse_dotenv_file(path: Path) -> list[tuple[str, str | None]]:
 def _dotenv_lookup_env(load_pass: int | None) -> dict[str, str]:
     """``os.environ`` with every value an earlier pass (any pass, for ``None``) published peeled back to
     its baseline — what ``${VAR}`` resolves against (see ``_DOTENV_PUBLISHED``). Caller holds the lock."""
-    lookup_env = dict(os.environ)
-    for name, (baseline, published, published_pass) in _DOTENV_PUBLISHED.items():
-        if published_pass != load_pass and lookup_env.get(name) == published:
+    return _peel_dotenv_output(dict(os.environ), _DOTENV_PUBLISHED, load_pass)
+
+
+def _peel_dotenv_output(env: dict[str, str], published: dict[str, tuple[str | None, str, int]],
+                        load_pass: int | None) -> dict[str, str]:
+    """*env* with every value *published* records from a pass other than *load_pass* peeled back to its
+    baseline, in place."""
+    for name, (baseline, value, published_pass) in published.items():
+        if published_pass != load_pass and env.get(name) == value:
             if baseline is None:
-                del lookup_env[name]  # absent, so ``${VAR:-default}`` takes the default again
+                del env[name]  # absent, so ``${VAR:-default}`` takes the default again
             else:
-                lookup_env[name] = baseline
-    return lookup_env
+                env[name] = baseline
+    return env
+
+
+def dotenv_publication_lock() -> threading.RLock:
+    """The lock a dotenv load holds while it publishes into ``os.environ`` and ``_DOTENV_PUBLISHED``.
+    Holding it, a copy of both is one moment's (``launch_profile_policy``'s capture). Lock order: this
+    lock before ``launch_profile_policy``'s own; this module never calls into that one while holding it."""
+    return _DOTENV_LOCK
+
+
+def dotenv_publication_record() -> dict[str, tuple[str | None, str, int]]:
+    """A copy of this process's dotenv publication record (``_DOTENV_PUBLISHED``)."""
+    with _DOTENV_LOCK:
+        return dict(_DOTENV_PUBLISHED)
+
+
+def dotenv_lookup_from(env: dict[str, str], record: dict[str, tuple[str | None, str, int]]) -> dict[str, str]:
+    """What ``${VAR}`` resolves against in *env*, a copy of ``os.environ`` taken with *record*: this
+    process's dotenv output peeled back by that record (a later reload's record no longer matches it)."""
+    return _peel_dotenv_output(dict(env), record, None)
 
 
 def _resolve_dotenv_assignments(
     assignments: list[tuple[str, str | None]], lookup_env: dict[str, str], *, override: bool,
+    live_env: dict[str, str] | None = None, live_names: Callable[[str], bool] | None = None,
 ) -> dict[str, str | None]:
     """Expand ``${VAR}`` / ``${VAR:-default}`` like ``dotenv.main.resolve_variables``, minus the live
     ``os.environ``: a line sees *lookup_env* and the file's earlier lines (earlier lines win under
-    *override*, the environment otherwise)."""
+    *override*, the environment otherwise). With *live_env* (and *override*), each line is also expanded as
+    a load against *live_env* would expand it, a name *live_names* marks takes that value, which later lines
+    then see, and *live_env* takes the file's live values, as the caller does with *lookup_env*."""
     from dotenv.variables import parse_variables
 
+    def expand(value: str, lookup: dict[str, str | None]) -> str:
+        return "".join(atom.resolve(lookup) for atom in parse_variables(value))
+
     resolved: dict[str, str | None] = {}
+    live: dict[str, str | None] = {}
     for name, value in assignments:
-        if value is not None:
-            lookup = {**lookup_env, **resolved} if override else {**resolved, **lookup_env}
-            value = "".join(atom.resolve(lookup) for atom in parse_variables(value))
-        resolved[name] = value
+        if value is None:  # a bare key: nothing to expand
+            live[name] = resolved[name] = None
+            continue
+        if live_env is not None:
+            live[name] = expand(value, {**live_env, **live})
+        if live_env is not None and live_names(name):
+            resolved[name] = live[name]
+        else:
+            resolved[name] = expand(value, {**lookup_env, **resolved} if override else {**resolved, **lookup_env})
+    if live_env is not None:
+        live_env.update((k, v) for k, v in live.items() if v is not None)
     return resolved
 
 
@@ -478,18 +519,30 @@ def resolve_project_dotenv(project_env: Path, home: Path, *, removed: frozenset[
             if value is not None and (override or name not in lookup_env)}
 
 
-def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None) -> dict[str, str]:
+def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None,
+                        live_names: Callable[[str], bool] | None = None) -> dict[str, str]:
     """What ``load_hermes_dotenv`` would publish from *home*'s dotenv layers, read-only: the home's
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included.
-    *lookup_env* replaces that environment: another profile's file must not resolve against this one's."""
+    *lookup_env* replaces that environment: another profile's file must not resolve against this one's.
+    With it, *live_names* marks the names that read the process's own environment instead: a line naming one
+    sees its live value, set or unset, and one a line assigns takes what the live resolution gives it (what a
+    load published), which later lines then see. ``HERMES_HOME`` reads *home* in both, as the load of *home*
+    saw it: an embedding host mirrors the active turn's profile into the live env's."""
     from hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
+    live_env = None
     if lookup_env is not None:
         lookup_env = dict(lookup_env)
+        if live_names is not None:
+            with _DOTENV_LOCK:
+                live_env = _dotenv_lookup_env(None)
+            lookup_env = {k: v for k, v in lookup_env.items() if not live_names(k)}
+            lookup_env.update((k, v) for k, v in live_env.items() if live_names(k))
+            live_env["HERMES_HOME"] = lookup_env["HERMES_HOME"] = str(home)
     else:
         with _DOTENV_LOCK:
             lookup_env = _dotenv_lookup_env(None)
@@ -499,7 +552,9 @@ def resolve_home_dotenv(home: Path, *, lookup_env: dict[str, str] | None = None)
             assignments = _parse_dotenv_file(path)
         except OSError:
             continue
-        for name, value in _resolve_dotenv_assignments(assignments, lookup_env, override=True).items():
+        resolved = _resolve_dotenv_assignments(assignments, lookup_env, override=True, live_env=live_env,
+                                               live_names=live_names)
+        for name, value in resolved.items():
             if value is not None:
                 lookup_env[name] = out[name] = value
     return out
@@ -541,6 +596,8 @@ def _load_dotenv_with_fallback(
                 continue  # parent-minted per-process credential: .env must not split it from the parent
             # Ours and untouched since → keep the original baseline; anything else is a newer outside value.
             baseline = record[0] if ours else current
+            if name == "PATH":
+                remember_inherited_path()  # a new terminal never reads this file; doctor judges that PATH
             os.environ[name] = value
             _DOTENV_PUBLISHED[name] = (baseline, value, load_pass)
             if value.strip():
@@ -795,6 +852,69 @@ def dotenv_unreadable(path: Path) -> bool:
         return False
 
 
+class DotenvNotUtf8(OSError):
+    """A ``.env`` with a quoted value over several lines that is not UTF-8: removing an assignment from it would
+    re-encode every other byte, so it is refused."""
+
+
+def _dotenv_bindings(raw: bytes) -> list:
+    """*raw*'s assignments, comments and errors as python-dotenv (this loader's parser) reads them, in file
+    order, decoded as latin-1 like a file that is not UTF-8 (every line break and quote is ASCII); their
+    ``original.string`` values joined give the text back."""
+    from dotenv.parser import parse_stream
+    return list(parse_stream(io.StringIO(raw.decode("latin-1").removeprefix("\u00ef\u00bb\u00bf"))))
+
+
+def dotenv_multiline(raw: bytes) -> bool:
+    """Whether the ``.env`` *raw* holds a quoted value over several lines, which a line-by-line edit would cut
+    after its first line (or remove a look-alike line from)."""
+    return any(b.key is not None and not b.error and "\n" in b.original.string.strip() for b in _dotenv_bindings(raw))
+
+
+def dotenv_assigned(raw: bytes) -> list[str]:
+    """The names python-dotenv reads as assignments in the ``.env`` *raw* (a look-alike line inside another
+    quoted value is not one)."""
+    return [b.key for b in _dotenv_bindings(raw) if b.key is not None and not b.error]
+
+
+def _quoted_name(raw: bytes, key: str) -> bool:
+    """Whether *raw* assigns *key* under a quoted name (``'KEY'=value``), which python-dotenv reads as *key* and
+    the line-by-line reader does not see."""
+    return any(b.key == key and not b.error and b.original.string.strip().removeprefix("export").lstrip()[:1] == "'"
+               for b in _dotenv_bindings(raw))
+
+
+def remove_whole_dotenv_assignments(env_path: Path, key: str, write) -> bool | None:
+    """Remove every assignment of *key* from the ``.env`` at *env_path* whole, as python-dotenv reads it, when the
+    file holds a quoted value over several lines or assigns *key* under a quoted name; every other byte stays
+    (the blank lines before one included), written once by ``write(path, lines, preserve_mode=True, newline="")``.
+    Returns whether one was removed, or None for any other file (the line-by-line edit is exact there). A file
+    that is not UTF-8 with an assignment to remove raises :class:`DotenvNotUtf8`; with none it is left alone."""
+    raw = env_path.read_bytes()
+    if not dotenv_multiline(raw) and not _quoted_name(raw, key):
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        if key in dotenv_assigned(raw):
+            raise DotenvNotUtf8(f"{env_path} is not UTF-8 text, so {key} cannot be removed from it safely: remove "
+                                f"it there by hand") from None
+        return False
+    bom = "\ufeff" if text.startswith("\ufeff") else ""
+    kept, found = [bom], False
+    from dotenv.parser import parse_stream
+    for binding in parse_stream(io.StringIO(text[len(bom):])):
+        if binding.key == key and not binding.error:
+            lead = binding.original.string[:len(binding.original.string) - len(binding.original.string.lstrip())]
+            kept.append(lead[:lead.rfind("\n") + 1])
+            found = True
+        else:
+            kept.append(binding.original.string)
+    if found:
+        write(env_path, ["".join(kept)], preserve_mode=True, newline="")  # its own line endings, once
+    return found
+
+
 def _load_user_dotenv(path: Path, *, load_pass: int, override: bool = True) -> bool:
     """Load a profile env file (``.env``, or ``.op.env`` with ``override=False``); False when it exists
     but cannot be read and managed scope pins ``terminal.backend``. A sandbox launcher withholds the
@@ -826,7 +946,11 @@ def load_hermes_dotenv(
     fallback that only fills gaps when the user env exists (and overrides shell vars when it does not).
     *home_elsewhere* is a caller's answer to :func:`_home_runs_elsewhere` for the home; None asks."""
     from agent.safe_worker_policy import worker_config_snapshot
+    from hermes_cli.terminal_notify import claim_osc7577_token
 
+    # Every entry point loads its env here first: the pane's OSC 7577 token leaves os.environ before a
+    # secret source (or anything after it) can start a child that inherits it.
+    claim_osc7577_token()
     # The private bootstrap supplies credentials explicitly; do not rehydrate
     # profile behavior, external secret plugins, or managed env in this worker.
     if worker_config_snapshot() is not None:

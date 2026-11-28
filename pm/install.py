@@ -15,6 +15,7 @@ from typing import Optional
 
 from pm import paths
 from pm.downloader import DownloadPaused, ProgressFn
+from pm.environments import remember_inherited_path
 from pm.filesystem import native, remove_tree, retry_held
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
@@ -1211,6 +1212,7 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
     path = os.environ.get("PATH", "")
     first = store_first_path(path)
     if first != path:
+        remember_inherited_path()
         os.environ["PATH"] = first
     return problems
 

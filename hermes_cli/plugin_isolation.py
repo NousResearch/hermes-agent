@@ -20,10 +20,12 @@ cannot drift apart.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import importlib.util
 import logging
 import os
 import sys
+from pathlib import Path
 from types import ModuleType
 from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
 
@@ -48,6 +50,8 @@ HOST_UNSUPPORTED_CTX_METHODS: dict[str, str] = {
     "post_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "apost_message": "the returned handle is bound to the gateway's event loop and live adapter",
     "fork_session": "the returned handle tracks a fork thread of the live session agent in the Hermes process",
+    "post_card": "the card is admitted on the gateway's event loop into a session it owns",
+    "apost_card": "the card is admitted on the gateway's event loop into a session it owns",
 }
 
 # Registered in-process only; skipped (with a warning, the plugin still loads) inside the host
@@ -112,13 +116,22 @@ def isolation_mode(config: Optional[Mapping[str, Any]] = None) -> str:
 
 
 def host_launcher(config: Optional[Mapping[str, Any]] = None, *, home: Any = None) -> list[str]:
-    """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner). For a profile a
-    plugin runs elsewhere (*home*, else this process's) only the managed overlay's counts: that backend
-    writes the profile's config.yaml."""
+    """``plugins.host.launcher``: argv prefix the host process runs under (a sandbox runner). Read from the
+    config (no *config*), a launcher the managed overlay sets wins, even one that expands to nothing, its
+    ``${VAR}``s expanded against the process env as ``apply_managed_overlay`` documents, whichever profile's
+    secret scope the caller has bound. For a profile a plugin runs elsewhere (*home*, else this process's)
+    only that one counts: that backend writes the profile's config.yaml."""
     from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
-    if config is None and run_elsewhere_refusal(home) is not None:
+    if config is None:
         from hermes_cli.managed_scope import apply_managed_overlay
-        config = apply_managed_overlay({})  # the overlay alone, its ${VAR} refs expanded as for any profile
+        managed = contextvars.Context().run(apply_managed_overlay, {})  # no scope bound
+        host = _plugins_config(managed).get("host")
+        if (isinstance(host, Mapping) and "launcher" in host) or run_elsewhere_refusal(home) is not None:
+            return _launcher_in(managed)
+    return _launcher_in(config)
+
+
+def _launcher_in(config: Optional[Mapping[str, Any]]) -> list[str]:
     host = _plugins_config(config).get("host")
     launcher = host.get("launcher") if isinstance(host, Mapping) else None
     if not launcher:
@@ -127,6 +140,108 @@ def host_launcher(config: Optional[Mapping[str, Any]] = None, *, home: Any = Non
         import shlex
         return shlex.split(launcher)
     return [str(part) for part in launcher]
+
+
+# The launcher a host start in progress chose, lent to a provider extraction that start runs (a cold one, while it
+# builds the child's env, in the host's context, so for the same home) so it does not choose again.
+_START_LAUNCHER: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "plugin_host_start_launcher", default=None)
+
+
+def is_launch_home(home: Path) -> bool:
+    """Is *home* the launch profile's? The one answer a host start uses for its launcher and its child's env:
+    by the key the process remembered for its own path, as ``serves_routed_profile`` asks, not by where that
+    path leads now. After that link is renamed *home* is the new name and the old one leads to no files; after
+    it is repointed at another profile's directory, that profile is still another's."""
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    return hermes_home_key(home) == hermes_home_key(get_routing_process_hermes_home())
+
+
+def home_moved_refusal(home: Path) -> Optional[str]:
+    """Why plugin code must not start for *home* now, or None: its name leads to another directory than the one
+    this process remembered it by (``hermes_home_key``), so ``is_launch_home`` and the launcher it picks would
+    apply that directory's settings, and the remembered profile's values, to another directory's files."""
+    from hermes_constants import hermes_home_key
+    if os.path.normcase(os.path.realpath(home)) == hermes_home_key(home):
+        return None
+    return f"{home} leads to another directory than the one this process opened it as: restart Hermes"
+
+
+def launcher_for(home: Path, own: bool) -> tuple[list, Optional[dict[str, str]]]:
+    """*home*'s ``plugins.host.launcher``, chosen in a fresh context bound to *home*: a start can come from a
+    caller bound to another profile, or from a crash restart's thread, which has no binding at all. With it, the
+    env the launch profile's ``.env`` templates resolved against when they did not resolve against the live env
+    (the frozen launch env, under multiplexing), for the host child's env to resolve that ``.env`` the same way;
+    else None.
+
+    A profile a plugin runs elsewhere expands its ``${VAR}``s against the process env, as ``host_launcher``
+    documents for the managed overlay's launcher. A start inside a launch-profile body (a caller bound to the
+    launch profile's own scope: unstamped, or stamped with a home keyed to it, as the dashboard binds it) expands
+    the launch profile's launcher through the launch scope (``launch_secret_scope``: its ``.env`` over the launch
+    env), as that body reads, under its task-local multiplexing too, so a name the launch env froze without stays
+    unresolved; the TUI gateway and the dashboard bind it even single-profile. That scope is built again from
+    *home* rather than borrowed: the body read its files through a name a link moved since can have led
+    elsewhere. No caller's scope is ever lent. With no launch-profile body the launch profile outside
+    multiplexing uses the process env, so a restart reads what the process loaded; under multiplexing it uses the
+    launch scope too. The process env holds the launch profile's values, so any other profile's launcher expands
+    through its own files (``build_profile_secret_scope``), multiplexing or not: a desktop backend's cron ticker
+    serves a sibling under task-local multiplexing, which a fresh context does not carry. *own* is whether *home*
+    is the launch profile's: ``is_launch_home``'s answer, made once per start for the host child's env too (where
+    ``owner_secret_scope``, asking where the process's own name leads now, would take a renamed launch profile
+    for another and hand a profile its link was repointed at the launch env). No terminal policy: the launcher
+    is only read here."""
+    from agent.secret_scope import (current_secret_scope, current_secret_scope_home, is_multiplex_active,
+                                    set_multiplex_context)
+    from hermes_constants import get_routing_process_hermes_home, hermes_home_key
+    launch_key = hermes_home_key(get_routing_process_hermes_home())
+    stamp = current_secret_scope_home()
+    launch_body = current_secret_scope() is not None and (stamp is None or hermes_home_key(stamp) == launch_key)
+    multiplexed = is_multiplex_active()
+
+    def choose() -> tuple[list, Optional[dict[str, str]]]:
+        from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+        if launch_body and multiplexed:
+            set_multiplex_context(True)  # this context's own copy, dropped with it
+        if run_elsewhere_refusal(home) is not None or (own and not launch_body and not is_multiplex_active()):
+            from hermes_cli.plugins_loader import _plugin_home_scope
+            with _plugin_home_scope(home):
+                return host_launcher(home=home), None
+        from agent.runtime_scope import bind_state, scope_for_profile
+        from agent.secret_scope import build_profile_secret_scope
+        from tui_gateway.launch_profile_policy import launch_secret_scope, launch_template_env
+        # The launch profile's scope with its files read through *home*, the name that leads there now; any other
+        # profile's from its own files, by ``own`` rather than by where the process's own name leads now (its
+        # ``.env`` templates included).
+        templates = launch_template_env() if own and is_multiplex_active() else None
+        secrets = (launch_secret_scope(home, template_env=templates, process_home=True) if own
+                   else build_profile_secret_scope(Path(home), process_home=False))
+        with bind_state(scope_for_profile(home), secrets=secrets, terminal=False):
+            return host_launcher(home=home), templates
+
+    return contextvars.Context().run(choose)
+
+
+def extraction_launcher(home: Path) -> list:
+    """The launcher a provider-extraction child for *home* runs under: the one the host start for *home* in progress
+    chose (``_START_LAUNCHER``) while *home* still runs here, else the one a host start for *home* would choose
+    (``launcher_for``, with ``is_launch_home``'s answer), whichever context the extraction runs in. A profile
+    marked to run elsewhere since its start chose so takes a marked profile's launcher. Only the launcher: that
+    child's env carries no credentials."""
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
+    lent = _START_LAUNCHER.get()
+    if lent is not None and run_elsewhere_refusal(home) is None:
+        return list(lent)
+    return launcher_for(home, is_launch_home(home))[0]
+
+
+@contextlib.contextmanager
+def lending_launcher(launcher: list) -> Iterator[None]:
+    """Lend *launcher*, the one a host start chose, to a provider extraction that start runs meanwhile."""
+    token = _START_LAUNCHER.set(launcher)
+    try:
+        yield
+    finally:
+        _START_LAUNCHER.reset(token)
 
 
 def in_process_import_refusal(what: str, *, source: str = "user",
@@ -172,8 +287,34 @@ def user_plugin_host() -> Any:
     """
     if isolation_mode() != ISOLATION_HOST:
         return None
+    return requested_plugin_host()
+
+
+def requested_plugin_host() -> Any:
+    """The active profile's shared plugin host, for a caller that hands it plugin paths read through the active
+    home's name (:func:`refuse_moved_home`)."""
     from hermes_cli.plugins import get_plugin_manager
+    from hermes_constants import get_hermes_home
+    refuse_moved_home(get_hermes_home())
     return get_plugin_manager()._plugin_host()
+
+
+def refuse_moved_home(home: Path) -> None:
+    """``PluginHomeMoved`` when *home*'s name leads to another directory than the one the process opened it as.
+    Managers are found by the remembered key, so the active one is that directory's, possibly running under
+    another name (a renamed profile's) with that profile's environment: plugin paths read through *home*'s name
+    are another directory's plugin code."""
+    from hermes_cli.plugins_loader import PluginHomeMoved
+    if (moved := home_moved_refusal(Path(home).absolute())) is not None:
+        raise PluginHomeMoved(moved)
+
+
+def refuse_moved_plugin_dir(dashboard_dir: str | Path) -> None:
+    """``PluginHomeMoved`` when the home name a dashboard plugin's directory was read through has moved
+    (:func:`refuse_moved_home`). Discovery builds that directory as ``<home>/plugins/<plugin>/dashboard`` from the
+    name it scanned, so a plugin found in the Hermes root or the bundled tree is judged by that tree, not by a
+    profile name its path never went through."""
+    refuse_moved_home(Path(dashboard_dir).parents[2])
 
 
 @contextlib.contextmanager
@@ -185,6 +326,8 @@ def transient_plugin_host() -> Iterator[Any]:
     if isolation_mode() != ISOLATION_HOST:
         yield None
         return
+    from hermes_constants import get_hermes_home
+    refuse_moved_home(get_hermes_home())  # its manager keys the remembered directory too
     import uuid
 
     from hermes_cli.plugins import PluginManager

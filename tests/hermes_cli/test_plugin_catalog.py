@@ -481,3 +481,31 @@ def test_an_endless_gzip_stream_that_inflates_to_nothing_stops_at_the_cap(tmp_pa
         200, headers={"content-encoding": "gzip"}, stream=_Wire()))
     assert pc.fetch_live_catalog(force=True) is None
     assert len(sent) <= 128
+
+
+def test_load_catalog_cached_merges_like_live_without_network(tmp_path, monkeypatch):
+    """load_catalog_cached reuses entries_from_live_payload without HTTP and returns None past TTL."""
+    import time
+
+    in_tree_dir = tmp_path / "catalog"
+    in_tree_dir.mkdir()
+    newer_sha = "b" * 40
+    (in_tree_dir / "demo.yaml").write_text(yaml.safe_dump(_entry("demo", sha=newer_sha, tier="official", default=True)))
+    monkeypatch.setattr(pc, "get_catalog_dir", lambda: in_tree_dir)
+    monkeypatch.setattr(pc, "_in_tree_catalog_time", 2_000_000_000.0)
+    monkeypatch.setattr(pc, "_download_live_catalog", lambda *_a, **_k: pytest.fail("cached read must not hit network"))
+
+    cache = _fresh_cache(tmp_path, monkeypatch, {
+        "generated_at": "2025-01-01T00:00:00+00:00",
+        "entries": [_entry("demo", sha=SHA, tier="official")],
+        "removed": [],
+    })
+    cached = pc.load_catalog_cached()
+    assert cached is not None and len(cached) == 1
+    assert cached[0].sha == newer_sha and cached[0].default is True
+    assert pc.live_cache_signature() is not None
+
+    expired = time.time() - pc.LIVE_CATALOG_TTL_SECONDS - 60
+    os.utime(cache, (expired, expired))
+    assert pc.load_catalog_cached() is None
+    assert pc.live_cache_signature() is None

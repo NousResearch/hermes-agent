@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, UTC
 from typing import Callable, Iterable, cast
 from urllib.parse import quote, urlparse
@@ -547,13 +548,22 @@ def feed_dir_for(platform: str, channel: str) -> str:
     return f"releases/{platform}/{channel}"
 
 
+def channel_dmg_key_for(channel: str, arch: str = "arm64") -> str:
+    """The mutable unversioned macOS DMG alias for a release channel."""
+    return f"{feed_dir_for('darwin', channel)}/HermesBundled-mac-{arch}.dmg"
+
+
 def cache_control_for(key: str) -> str | None:
     """APT indexes are mutable; by-hash indexes and versioned packages are not."""
     if key.startswith("releases/channels/"):
         return "no-store"
     if key.startswith(("releases/channel-builds/", "releases/channel-identities/")):
         return "public, max-age=31536000, immutable"
-    if key.endswith((".appinstaller", ".html")) or key.startswith("releases/stable/") or (key.startswith("releases/darwin/") and key.endswith("-mac.yml")):
+    if (
+        key.endswith((".appinstaller", ".html"))
+        or key.startswith("releases/stable/")
+        or (key.startswith("releases/darwin/") and key.endswith(("-mac.yml", ".dmg")))
+    ):
         return "no-store"
     if not key.startswith("releases/termux/"):
         return None
@@ -703,6 +713,171 @@ def put_object(
     from scripts.releases.upload_summary import note
     note(key)
     print(f"OK r2: {key} ({size} bytes)")
+
+
+MAX_SINGLE_COPY_SIZE = 5 * 1024**3
+_RETRYABLE_COPY_CODES = frozenset({"InternalError", "SlowDown", "ServiceUnavailable", "RequestTimeout"})
+
+
+def head_object(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    key: str,
+    now: str,
+    fetcher: Callable[..., Response] | None = None,
+) -> Response | None:
+    """HEAD one object, or None when it does not exist."""
+    url = R2Scope.configured().object_url(base, bucket, key)
+    if fetcher is not None:
+        response = fetcher(method="HEAD", url=url, body_hash=EMPTY_SHA)
+        if response.status == 404:
+            return None
+        if response.status >= 400:
+            raise R2RequestError("HEAD", key, response.status, response.text())
+        return response
+    try:
+        return signed_request("HEAD", url, creds=creds, now=now)
+    except R2RequestError as err:
+        if err.status == 404:
+            return None
+        raise
+
+
+def _parse_copy_result(dest_key: str, response: Response) -> None:
+    from xml.etree import ElementTree as ET
+
+    text = response.text().strip()
+    if not text:
+        raise R2RequestError("PUT", dest_key, 502, "Empty CopyObject response")
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as exc:
+        raise R2RequestError("PUT", dest_key, 502, text) from exc
+    if root.tag.rsplit("}", 1)[-1] == "CopyObjectResult":
+        return
+    code = root.findtext("{*}Code") or ""
+    status = 503 if code in _RETRYABLE_COPY_CODES else 400
+    raise R2RequestError("PUT", dest_key, status, text)
+
+
+def _verify_copied_destination(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    dest_key: str,
+    expected_size: int,
+    meta_headers: dict[str, str],
+    fetcher: Callable[..., Response] | None,
+) -> None:
+    dest_head = head_object(creds, base, bucket, dest_key, amz_timestamp(), fetcher=fetcher)
+    if dest_head is None or dest_head.header("content-length") != str(expected_size):
+        remote = dest_head.header("content-length") if dest_head is not None else None
+        status = 502 if dest_head is None else dest_head.status
+        raise R2RequestError("HEAD", dest_key, status, f"size mismatch (remote {remote}, expected {expected_size})")
+    for header_name, expected_val in meta_headers.items():
+        if dest_head.header(header_name) != expected_val:
+            raise ValueError(f"Copied object metadata mismatch for {header_name}: {dest_key}")
+
+
+@dataclass(frozen=True)
+class CopySource:
+    """A CopyObject source checked against its receipt size and the single-copy limit. The copy
+    is conditional on this ETag, so it fails if the object changed after the check."""
+
+    key: str
+    size: int
+    etag: str
+
+
+def copy_source(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    key: str,
+    now: str,
+    *,
+    expected_size: int,
+    fetcher: Callable[..., Response] | None = None,
+) -> CopySource:
+    """Check a CopyObject source before anything is written: its path, the single-copy limit, and
+    that the object exists at its receipt size with an ETag to bind the copy to."""
+    relative_artifact_path(key)
+    if type(expected_size) is not int or expected_size <= 0 or expected_size > MAX_SINGLE_COPY_SIZE:
+        raise ValueError(f"CopyObject size must be between 1 and {MAX_SINGLE_COPY_SIZE} bytes")
+    head = head_object(creds, base, bucket, key, now, fetcher=fetcher)
+    if head is None:
+        raise R2RequestError("HEAD", key, 404)
+    if head.header("content-length") != str(expected_size):
+        raise ValueError(f"Source artifact size mismatch: {key}")
+    etag = head.header("etag")
+    if not etag:
+        raise R2RequestError("HEAD", key, 502, "missing ETag: the copy could not be bound to this object")
+    return CopySource(key=key, size=expected_size, etag=etag)
+
+
+def copy_object(
+    creds: dict[str, str],
+    base: str,
+    bucket: str,
+    source: CopySource,
+    dest_key: str,
+    now: str,
+    *,
+    content_type: str | None = None,
+    content_disposition: str | None = None,
+    metadata: dict[str, str] | None = None,
+    fetcher: Callable[..., Response] | None = None,
+) -> None:
+    """Server-side S3/R2 CopyObject of a checked source, with explicit metadata replacement and
+    HEAD verification."""
+    relative_artifact_path(dest_key)
+    scope = R2Scope.configured()
+    dest_url = scope.object_url(base, bucket, dest_key)
+    # R2's S3 CopyObject requires a leading slash on x-amz-copy-source.
+    extra: dict[str, str] = {
+        "x-amz-copy-source": f"/{bucket}/{encode_key_path(scope.key(source.key))}",
+        "x-amz-copy-source-if-match": source.etag,
+        "x-amz-metadata-directive": "REPLACE",
+    }
+    cache_control = cache_control_for(dest_key)
+    if cache_control:
+        extra["Cache-Control"] = cache_control
+    if content_disposition:
+        extra["Content-Disposition"] = content_disposition
+    meta_headers = {f"x-amz-meta-{k.lower()}": str(v) for k, v in (metadata or {}).items()}
+    extra.update(meta_headers)
+    resolved_type = content_type if content_type is not None else content_type_for(dest_key)
+    # One budget for HTTP errors, error documents sent with HTTP 200 and dropped connections:
+    # signed_request gets tries=1, as multipart completion does, so 503s cannot multiply.
+    for attempt in range(3):
+        req_now = now if attempt == 0 else amz_timestamp()
+        try:
+            response = (
+                fetcher(
+                    method="PUT", url=dest_url, body_hash=EMPTY_SHA, body=None,
+                    content_length=0, content_type=resolved_type, extra_headers=extra,
+                )
+                if fetcher is not None
+                else signed_request(
+                    "PUT", dest_url, body=None, body_hash=EMPTY_SHA, content_length=0,
+                    creds=creds, now=req_now, content_type=resolved_type, extra_headers=extra, tries=1,
+                )
+            )
+            if response.status >= 400:
+                raise R2RequestError("PUT", dest_key, response.status, response.text())
+            _parse_copy_result(dest_key, response)
+            break
+        except (R2RequestError, OSError, http.client.HTTPException) as err:
+            retryable = not isinstance(err, R2RequestError) or err.status in _RETRYABLE_STATUSES
+            if retryable and attempt < 2:
+                time.sleep(float(attempt + 1))
+                continue
+            raise
+    _verify_copied_destination(creds, base, bucket, dest_key, source.size, meta_headers, fetcher)
+    from scripts.releases.upload_summary import note
+    note(dest_key)
+    print(f"OK r2: copied {source.key} -> {dest_key} ({source.size} bytes)")
 
 
 def finalize(tag: str, dir: str, variant: str | None = None, archive: str | None = None,
@@ -1051,7 +1226,11 @@ def prune(
     now = amz_timestamp()
 
     feed_xml_by_dir: dict[str, list[str]] = {}
-    protected: set[str] = set()
+    protected: set[str] = {
+        channel_page_key_for("stable"),
+        channel_page_key_for("canary"),
+        channel_dmg_key_for("stable"),
+    }
     for key in [k for k in keys if k.endswith(".appinstaller")]:
         dir_key = key[: key.rfind("/")]
         xml = get_object(creds, base, bucket, key, now, fetcher=fetcher)

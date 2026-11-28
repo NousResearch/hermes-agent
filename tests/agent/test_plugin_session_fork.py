@@ -408,25 +408,43 @@ def test_handle_cancel_and_timeout(forks, consented):
     assert _settled(handle).outcome == "cancelled"
 
 
-def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented):
-    """``_loop_aux_task`` marks the fork's requests as auxiliary while it runs, and is cleared on
-    a clean finish and on an error exit alike."""
+def test_the_fork_leaves_the_auxiliary_mark_on_every_exit(forks, consented, monkeypatch):
+    """The run and error hook see the same single fork identity; the auxiliary mark clears."""
+    from contextvars import copy_context
+
+    from hermes_cli.plugin_session import fork_origin
+
+    origin = f"plugin_fork:{PLUGIN}"
     parent = _agent()
     during: list = []
+    closing: list = []
+
+    def observe_origin():
+        return fork_origin(), list(copy_context().values()).count(origin)
+
+    monkeypatch.setattr('agent.auxiliary_hooks.finish_aux_call_hooks',
+                        lambda *_a, **_kw: closing.append(observe_origin()))
 
     def _ok(fork):
-        during.append(fork._loop_aux_task)
+        during.append((fork._loop_aux_task, observe_origin()))
         return {"final_response": "done", "messages": []}
 
     def _boom(fork):
-        during.append(fork._loop_aux_task)
+        during.append((fork._loop_aux_task, observe_origin()))
+        fork._turn_origin = origin  # normally stamped by the builder
+        fork._loop_aux_hooks = object()  # provider failed before finishing its open hook pair
         raise RuntimeError("provider down")
 
-    for script in (_ok, _boom):
+    for script, outcome in ((_ok, "ok"), (_boom, "error")):
         forks.script = script
-        _settled(_ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q"))
-    assert during == [("plugin_fork", {"plugin_id": PLUGIN})] * 2
+        token = issue_side_question_token(parent, [], "turn-1")
+        assert token is not None
+        handle = _settled(_ctx(consented).fork_session(token, "q"))
+        assert handle.outcome == outcome
     assert [built["fork"]._loop_aux_task for built in forks.built] == [None, None]
+    assert closing == [(origin, 1)]
+    assert during == [(("plugin_fork", {"plugin_id": PLUGIN}), (origin, 1))] * 2
+    assert fork_origin() == ""
 
 
 def test_budget_exhaustion_and_errors_settle_the_handle(forks, consented):

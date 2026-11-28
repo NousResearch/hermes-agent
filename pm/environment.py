@@ -19,7 +19,8 @@ import tempfile
 import time
 from typing import TextIO
 
-from pm.filesystem import native
+from pm.filesystem import long_root, native
+from pm.index_config import TIMEOUT_HINT, bridged_index_settings, is_forwarded, is_index_redirect
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
 
@@ -48,6 +49,9 @@ _RESOLVER_MARKERS = (
 
 # A package's own build ran and failed; a fetch/download failure never prints this.
 _BUILD_MARKERS = ("the build backend returned an error",)
+# uv's wording for a network fetch that failed; a bare "operation timed out" can
+# also be a local write on a network mount, which download settings cannot fix.
+_HTTP_FAILURE_MARKERS = ("failed to download", "failed to fetch", "request failed after")
 
 # The index omitted upload times (no PEP 700 metadata), so the release-age cutoff
 # cannot date the file. uv words it as "no solution", but the index is at fault,
@@ -118,6 +122,9 @@ def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallErro
         from pm.build_compilers import missing_compiler_remedy
 
         return BuildFailure("venv", cause, missing_compiler_remedy(output))
+    if "operation timed out" in lowered and any(marker in lowered for marker in _HTTP_FAILURE_MARKERS):
+        # uv gave up on its own HTTP timeout/retries before PM's deadline (#148262).
+        return InstallError("venv", cause, TIMEOUT_HINT)
     return InstallError("venv", cause)
 
 
@@ -247,7 +254,6 @@ def _base_environment(env: Mapping[str, str] | None = None) -> dict[str, str]:
     Index and transport settings are the exception (pm.index_config): without
     them mirrored and air-gapped networks cannot resolve anything.
     """
-    from pm.index_config import bridged_index_settings, is_forwarded
 
     source = os.environ if env is None else env
     base = {key: value for key, value in source.items()
@@ -276,6 +282,50 @@ def _same_executable(candidate: Path, pinned: Path) -> bool:
         return False
 
 
+def _git_path_dirs() -> list[str]:
+    """PATH entries for PM's installed git (if any), ordinary spelling; never installs or raises."""
+    try:
+        from pm.install import installed_package
+        from pm.packages import Git
+        from pm.store import current_target
+
+        installed = installed_package("git")
+        if installed is None:
+            return []
+        raw = Git().env(installed.path, current_target()).get("PATH") or []
+    except (OSError, ValueError, KeyError, RuntimeError):
+        return []
+    entries = [raw] if isinstance(raw, str) else raw
+    return [native(entry) for entry in entries if entry]
+
+
+def _prepend_installed_git(build_env: dict[str, str], *, explicit_env: bool) -> None:
+    """Expose PM's installed git to uv even before ``pm.activate()`` runs.
+
+    ``pyproject.toml`` carries git-sourced requirements that ``uv lock`` must
+    fetch on every platform; standalone processes on stock Windows without
+    system Git otherwise fail with ``Git executable not found``. Callers that
+    passed an explicit ``env`` with no/empty PATH opted out of ambient PATH.
+    """
+    key = next((k for k in build_env if k.upper() == "PATH"), "PATH")
+    existing = build_env.get(key, "")
+    if explicit_env and not existing:
+        return
+    dirs = _git_path_dirs()
+    if not dirs:
+        return
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for entry in dirs:
+        norm = os.path.normcase(entry)
+        if norm not in seen:
+            seen.add(norm)
+            ordered.append(entry)
+    rest = [entry for entry in existing.split(os.pathsep)
+            if entry and os.path.normcase(entry) not in seen]
+    build_env[key] = os.pathsep.join([*ordered, *rest])
+
+
 def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
@@ -289,6 +339,7 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
+    _prepend_installed_git(build_env, explicit_env=env is not None)
     if _same_executable(python, pinned_python):
         # Staged copies (bundle payloads) share our interpreter's sysconfig; foreign ones (e.g. Nix) keep theirs.
         from pm.build_compilers import pinned_build_defaults
@@ -315,7 +366,7 @@ def _fresh_build(environment: PythonEnvironment, *, sealed: bool, lock: Path | N
         if sealed:
             prune_site_pth(out)
     except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
+        shutil.rmtree(long_root(out), ignore_errors=True)
         raise
 
 
@@ -347,10 +398,8 @@ class PythonEnvironment:
             # re-resolving its official-index lockfile against a mirror trips
             # `--locked` (#124418), and a fully-pinned graph never needs a
             # mirror to resolve. Index-REDIRECT settings are dropped; transport
-            # knobs (UV_NATIVE_TLS / UV_INSECURE_HOST / UV_HTTP_TIMEOUT) survive
-            # — corporate networks need them to reach the pinned URLs at all.
-            from pm.index_config import is_index_redirect
-
+            # knobs (pm.index_config.FORWARDED_UV_SETTINGS minus the redirects)
+            # survive — corporate and slow networks need them to reach the pinned URLs.
             env = {key: value for key, value in env.items() if not is_index_redirect(key)}
         # uv is a child: it gets the ordinary spelling of store paths (pm.filesystem.native),
         # or the venv it writes would record the extended-length one in pyvenv.cfg.
@@ -398,8 +447,6 @@ class PythonEnvironment:
                 return subprocess.run(command, cwd=native(cwd), env=env, capture_output=True,
                                       text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False)
             except subprocess.TimeoutExpired as exc:
-                from pm.index_config import TIMEOUT_HINT
-
                 # A silent stall against an unreachable index is the #95608 shape;
                 # name the mirror knobs instead of surfacing a raw TimeoutExpired.
                 raise InstallError("venv", f"uv {args[0]} timed out after {timeout}s", TIMEOUT_HINT) from exc

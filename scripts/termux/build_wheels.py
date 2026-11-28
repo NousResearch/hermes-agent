@@ -66,7 +66,8 @@ def normalize_reqs(export: Path, lock: Path, resolved: Path) -> None:
                 raise ValueError(f"Source requirement does not match one locked package: {name}")
             spec = f"=={matches[0]['version']}"
         rows.append((name, spec, str(req.marker) if req.marker else "", source))
-    resolved.write_text("".join("\t".join(row) + "\n" for row in rows), encoding="utf-8")
+    resolved.write_text("".join("\t".join(row) + "\n" for row in rows),
+                        encoding="utf-8", newline="\n")
 
 
 def load_entries(resolved: Path) -> dict[str, str]:
@@ -95,7 +96,7 @@ def write_reqs_file(resolved: Path, reqs: Path) -> None:
             line += " ; " + marker
         out.append(line)
     body = chr(10).join(out) + chr(10)
-    reqs.write_text(body, encoding="utf-8")
+    reqs.write_text(body, encoding="utf-8", newline="\n")
 
 
 def safe_extract(archive: Path, dest: Path) -> Path:

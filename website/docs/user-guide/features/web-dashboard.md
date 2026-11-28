@@ -489,8 +489,20 @@ stops and says to restart that backend with the updated hermes, then run the dry
 The plan names the old backend (its supervisor, pid and address) and the address the Webapp would
 take: the same bind and port (loopback stays loopback, a wildcard stays a wildcard, one IP address
 stays that address). It says whether sign-in is required, which `HERMES_DASHBOARD_*` settings would be
-copied into `.env` (names only; values are never printed), the public URL it would copy into
-`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed), the
+copied into `.env` (names only; values are never printed; one `.env` already sets is not copied, and a
+`.env` line that sets a sign-in setting as a `${VAR}` template reading a VAR from outside the `.env` blocks
+the move when the gateway's service would not start with the value VAR has for the old backend (a gateway
+service not installed yet is judged as `hermes gateway install` would write it: the user manager's
+environment plus the unit's `Environment=` lines, or the LaunchAgent's variables), or when
+the old unit's `env` launcher sets VAR: put the literal value in `.env`, or set VAR where the gateway
+runs), the public URL it would copy into
+`webapp.public_url` (only one the gateway accepts; a refused one is a blocker and is not printed — and
+when an external secret source is enabled under `secrets:`, the planner never reads vault values to
+guess whether it sets `HERMES_DASHBOARD_PUBLIC_URL`, so it blocks until `webapp.public_url` is set;
+"public" here just means the browser-facing `http://` or `https://` address used for sign-in
+callbacks and Host/Origin checks, so a LAN hostname/IP or a loopback URL such as
+`http://127.0.0.1:9119` works for local or Desktop-only setups without exposing anything to the
+internet), the
 state of the gateway service and the
 Webapp bundle, how many turns are running on the old backend, and the steps in order. To find this
 out it probes the old backend on its address as above and reads `systemctl show` / `launchctl`
@@ -522,7 +534,15 @@ the gateway cannot be a service, the last step is `hermes gateway run`, for the 
 stopped system unit counts for this home only when it runs as you (`User=`) and pins no other
 `HERMES_HOME`, judged by the environment systemd gives it (`Environment=`, then each `EnvironmentFile=`
 in order, the later value winning); when a file it needs cannot be read, the dry run is blocked instead
-of guessing. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
+of guessing. An `env` launcher in its ExecStart (`/usr/bin/env HERMES_HOME=/srv/other hermes dashboard`)
+runs after that environment, and `systemctl show` joins its arguments with spaces, so the planner does
+not read values on that line: one that sets or unsets a home variable (`HERMES_HOME`, `HOME`), uses an
+option that changes the environment as a whole (`-i`, `-S`) or one it does not know, or has a `$` anywhere
+but inside another variable's value (`-u ${DROP}`), blocks the dry run for that unit. Put `HERMES_HOME` in the unit's `Environment=` instead, or stop and disable that unit by
+hand. A line that sets or unsets only other variables leaves the home to the unit's environment. A `.env`
+sign-in template that reads a variable from outside the `.env` blocks the move when that line sets that
+variable, or has a `-u`, `-C` or `-S` option at all, because the joined line does not show what those
+leave set: put the literal value in `.env`. A backend whose command line cannot be read shows no address, and no step that needs one. On Windows the report names the Task Scheduler task that starts the old backend, or the
 Startup-folder entry whose target and arguments are exactly the backend's command (when more than one
 matches, or a matching entry may not be what started it, the steps say so and ask you to pick). The
 steps end and disable that task (`schtasks /End`, `schtasks /Change ... /DISABLE`) or set the entry
@@ -547,7 +567,7 @@ that exist only in the old unit's environment into `.env` (names are printed, va
 gateway as a user service (`hermes gateway install`, which also tries to enable lingering; a launchd agent
 on macOS), stops and disables the old unit (its file is kept; a drop-in `UNIT.d/hermes-migrated.conf` with
 `RestartPreventExitStatus=78` makes a later manual start exit once and stay down), starts the gateway and
-checks every address it now listens on within 90 seconds: `/api/status` answers from the gateway and the
+checks every address it now listens on within 300 seconds: `/api/status` answers from the gateway and the
 Webapp page itself is served. A backend you started by hand is stopped by its recorded process ID (only
 while that ID is still the same process); there is nothing to disable. Any failure puts back what the run
 had changed, and only that: the files, the gateway service exactly as it was, and the old unit with the
@@ -749,7 +769,18 @@ The response also carries two advisory resource blocks (they never affect the
   lifecycle ledger. Fields: `pressure` (`ok` / `elevated` / `critical` /
   `unknown`), `gateway_rss_mb`, `system_total_mb`, `system_available_mb`,
   `swap_used_mb`, `sampled_at`, `boot_id`, `last_boot_unclean`,
-  `last_boot_suspected_oom`. Pressure is `elevated` below 128 MiB (or 15%) of
+  `last_boot_suspected_oom`, `last_boot_oom_kill` (`null`, `cgroup` or
+  `host`: the gateway died uncleanly and, between its last heartbeat and this
+  boot, the kernel OOM-killed a process in the gateway's cgroup (`cgroup`) /
+  somewhere on the host (`host`); the counter does not say which process, and
+  `host` also counts any other process on the machine. A systemd unit or
+  container restart recreates the cgroup, so after one this is usually
+  `host`; `cgroup` applies only when the gateway restarts inside a surviving
+  cgroup. Compared only when the last heartbeat is at most 15 minutes old;
+  Linux only), `last_boot_watchdog_exit` (the previous gateway
+  life was ended by a watchdog: either the event-loop liveness watchdog or the
+  shutdown watchdog), `last_boot_memory_starved` (that watchdog kill happened
+  while host memory pressure was `critical`). Pressure is `elevated` below 128 MiB (or 15%) of
   available system memory and `critical` below 64 MiB (or 5%) — the same
   levels at which a subsequent unclean exit would be flagged as a suspected
   OOM kill. Heartbeats older than 150 seconds (or future-dated) keep their
@@ -1323,6 +1354,8 @@ dashboard:
 ```
 
 When set, the OAuth callback URL becomes `<public_url>/auth/callback` verbatim — `X-Forwarded-Prefix` is ignored on that code path because the operator has explicitly declared the public URL. This is intentional: stacking the prefix on top would double-prefix the common case where the prefix is already baked into `public_url`.
+
+Provider sign-in (`/auth/login` and the desktop start, `/auth/native/authorize`) happens on the `public_url` host. The sign-in cookie belongs to the host that set it, and the provider returns to `<public_url>/auth/callback`. So when one of those starts on another name that still reaches the dashboard (an old hostname, an alias), Hermes first redirects it to the same sign-in URL on the `public_url` host, and the browser lands there signed in. To decide which host the browser used, it reads `X-Forwarded-Host`, falling back to `Host`. Behind a proxy that rewrites `Host` and sends no `X-Forwarded-Host`, this costs one extra redirect and never loops.
 
 The hostname in `public_url` is also accepted as an **exact** HTTP `Host` and
 WebSocket `Origin` value. This supports a reverse proxy that preserves the

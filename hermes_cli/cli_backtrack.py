@@ -33,6 +33,9 @@ class BacktrackResend(str):
         obj.ordinal, obj.expected, obj.session_id, obj.number = ordinal, expected, session_id, number
         return obj
 
+    def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__, whose fields are keyword-only
+        return (str(self),), {k: getattr(self, k) for k in self.__slots__}
+
 
 class CLIBacktrackMixin:
     # browse: {"entries": [(ordinal, text)] newest first, "selected", "turns", "_scroll_offset", "_reveal"}

@@ -1167,7 +1167,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
     url, auth = probe
     if key == "GEMINI_API_KEY":
-        from agent.gemini_native_adapter import normalize_gemini_base_url
+        from agent.gemini_urls import normalize_gemini_base_url
         # Normalize guarantees the version segment; the key itself never decides the surface —
         # AQ. keys exist for both AI Studio and Vertex express mode (#115306).
         url = normalize_gemini_base_url(url.rsplit("/models", 1)[0]) + "/models"

@@ -287,7 +287,7 @@ def drop_session_terminal(authority, ref):
 
 
 async def _publish(authority, ref, moved=False):
-    from gateway.session_local import local_session_info, publish_local_policy
+    from gateway.session_local import publish_local_policy, publish_local_session_info
     if moved:  # before the drain can run a turn on the new binding with the old environment
         try:
             await asyncio.to_thread(drop_session_terminal, authority, ref)
@@ -302,5 +302,4 @@ async def _publish(authority, ref, moved=False):
     # Every viewer already attached adopts the new generation (its next fenced edit would otherwise be
     # refused as stale) and repaints from the refreshed policy, as a reasoning/workspace edit publishes.
     authority._publish_pending(ref)
-    authority.sessions[ref.session_id].event_stream.publish(
-        ref.session_id, local_session_info(authority, ref), event_type='session.info')
+    publish_local_session_info(authority, ref)

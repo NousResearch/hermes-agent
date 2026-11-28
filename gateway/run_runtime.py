@@ -583,71 +583,6 @@ async def recover_bot_mailbox(authority):
                        store_location(store.scope) if store is not None else authority.profile_id, exc)
 
 
-async def start_gateway_runtime_api(runner):
-    from gateway import run_api
-    from gateway.webapp_listener import (
-        STARTING, BrowserCredentialError, bind_origin, browser_session_token, dial_origin, listener_plan,
-        register_control_verbs,
-    )
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
-    # The bootstrap registered these before its control socket answered; a runner started without it
-    # (an embedded gateway) gets them here, before the listener's slow start.
-    register_control_verbs(runner, home)
-    host, port, webapp, unusable = listener_plan(home)
-    # A webapp: block that asks for the Webapp but cannot be used is reported with its reason.
-    runner.webapp_status = ({"state": "unavailable", "url": None, "reason": unusable} if unusable
-                            else {"state": "off", "url": None, "reason": None} if webapp is None
-                            else dict(STARTING))
-    try:
-        # Without the Webapp the listener is main's: the same call, a private ephemeral port.
-        runner.session_api = await (run_api.start_gateway_api(runner, host=host, port=port, webapp=webapp)
-                                    if webapp is not None else run_api.start_gateway_api(runner))
-    except (Exception, SystemExit) as exc:
-        if webapp is None:
-            raise
-        # The Webapp's listener could not start (port taken, address unavailable, its browser credential
-        # not storable in the home, or the dashboard's auth gate exiting on a wildcard bind with no
-        # sign-in provider): native clients still need this gateway, so it keeps main's private
-        # listener and reports why the Webapp is not served.
-        if isinstance(exc, SystemExit):
-            reason = str(exc.code).strip()  # the gate's own message names the fix
-        elif isinstance(exc, BrowserCredentialError):
-            reason = str(exc)  # names the file and why it cannot be stored
-        elif isinstance(exc, OSError) and exc.filename:  # the browser credential's file, not the port
-            reason = f"could not use {exc.filename} ({exc.strerror or exc})"
-        else:
-            import errno
-            from gateway.webapp_listener import loopback_companion
-            cause = (exc.strerror or exc) if isinstance(exc, OSError) else exc
-            # Only the specific address itself; a loopback socket that cannot bind (``::1`` with IPv6
-            # loopback off) keeps the OS's words.
-            if (loopback_companion(host) and isinstance(exc, OSError) and exc.errno == errno.EADDRNOTAVAIL
-                    and not isinstance(exc, run_api.ListenerAddressError)):
-                cause = "the address is not assigned to any network interface on this machine"
-            # A specific address's loopback socket names its own address (run_api.ListenerAddressError).
-            address = getattr(exc, "address", None) or f"{host}:{port}"
-            reason = f"could not listen on {address} ({cause})"
-        logger.error("Webapp unavailable: %s", reason)
-        runner.webapp_status = {"state": "unavailable", "url": None, "reason": reason}
-        # Open tabs keep sending their credential to whatever answers on the Webapp's port, and that
-        # is not this gateway now. Replace it, so one captured there never opens this gateway; the
-        # tabs sign in again once the Webapp is back.
-        try:
-            browser_session_token(home, rotate=True)
-        except OSError as write_error:
-            logger.warning("Could not replace the Webapp's browser credential: %s", write_error)
-        runner.session_api = await run_api.start_gateway_api(runner)
-    else:
-        if webapp is not None:
-            runner.webapp_status = {"state": "serving", "url": dial_origin(host, port), "reason": None}
-            if own := bind_origin(host, port):  # a specific address: the one a browser opens
-                runner.webapp_status["address"] = own
-    runner.session_runtime_descriptor['api_origin'] = runner.session_api.api_origin
-    for authority in _authorities(runner):
-        await _recover_profile_bot_mailbox(runner, authority)
-
-
 async def _recover_profile_bot_mailbox(runner, authority):
     """Startup Bot Chat recovery of one served profile. A secondary whose durable leftovers cannot
     be recovered is parked like one whose store cannot be opened (retired, unreserved, named under
@@ -839,7 +774,7 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
     TURN_SETTLE_SECONDS (clamped to ``budget``, what the stop's watchdog leash has left, minus
     STOP_TAIL_RESERVE_SECONDS) is logged and left running for recovery. The stop sequence continues:
     the executor quiesce skips the DB close while a writer is live, and process exit releases
-    the ownership lock, so raising here would only skip teardown and disarm the watchdog."""
+    the ownership lock, so raising here would only skip teardown until the watchdog forces the exit."""
     authorities = _authorities(runner)
     stop_managed_turns(runner, reason)
     from gateway.session_llm_oneshot import stop as stop_oneshots
@@ -866,12 +801,13 @@ async def settle_gateway_runtime(runner, budget=None, reason=None):
                            getattr(authority, 'profile_id', '?'))
     # Work settled above. ACP has no per-session destroy,
     # so the stop is the end of every ACP session nobody is viewing (#118216).
-    from gateway.session_acp_lifecycle import end_idle_acp_sessions
     for authority in _authorities(runner):
         try:
+            from gateway.session_acp_lifecycle import end_idle_acp_sessions
             end_idle_acp_sessions(authority)
         except Exception:
-            # Best-effort bookkeeping: a store that cannot answer must not abort the stop sequence.
+            # Best-effort bookkeeping: a store that cannot answer, or a module that no longer imports
+            # (its tree replaced under this process), must not abort the stop sequence.
             import logging
             logging.getLogger(__name__).warning('ACP sessions of %s not ended at shutdown',
                                                 getattr(authority, 'profile_id', '?'), exc_info=True)

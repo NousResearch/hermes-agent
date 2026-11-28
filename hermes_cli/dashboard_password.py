@@ -129,14 +129,14 @@ def _current_username() -> str:
 def _shadow_refusal() -> Optional[str]:
     """Why the overriding names cannot be cleared (an administrator-pinned one), or None. Asked before
     config.yaml is written: ``remove_env_value`` refuses by returning False."""
-    from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name, load_env, read_raw_config, require_env_writable
+    from hermes_cli.config import _ENV_REF_RE, _env_ref_var_name, read_raw_config, require_env_writable
     for name in SHADOWING_ENV:
         try:
             require_env_writable(name, "remove")
         except ValueError as exc:
             return f"{exc} It overrides config.yaml"
     from hermes_cli import managed_scope
-    removing = set(load_env()).intersection(SHADOWING_ENV)
+    removing = set(_dotenv_shadows())
     for config in (read_raw_config(), managed_scope.load_managed_config()):
         raw = ((config.get("dashboard") or {}).get("basic_auth") or {})
         raw_user = raw.get("username") if isinstance(raw, dict) else None
@@ -243,10 +243,46 @@ def _inherited_shadows() -> list[str]:
     return [name for name in SHADOWING_ENV if (environ_before_dotenv(name) or "").strip()]
 
 
+def _multiline_refusal() -> Optional[str]:
+    """Why the overrides cannot be removed from this home's ``.env`` without changing other bytes, or None:
+    it needs whole-assignment removal, is not UTF-8 text (which the rewrite would re-encode) and has an
+    override assignment to remove. With none to remove, the file is left alone, as on main."""
+    from hermes_cli.config import get_env_path
+    from hermes_cli.env_loader import _quoted_name, dotenv_assigned, dotenv_multiline
+    try:
+        raw = get_env_path().read_bytes()
+        raw.decode("utf-8")
+        return None
+    except OSError:
+        return None
+    except UnicodeDecodeError:
+        assigned = set(SHADOWING_ENV) & set(dotenv_assigned(raw))
+        if not assigned or not (dotenv_multiline(raw) or any(_quoted_name(raw, key) for key in assigned)):
+            return None
+    return (f"{get_env_path()} is not UTF-8 text, so "
+            f"{', '.join(SHADOWING_ENV)} cannot be removed from it safely: remove them there by hand")
+
+
+def _dotenv_shadows() -> list[str]:
+    """The names in :data:`SHADOWING_ENV` this home's ``.env`` sets: the line reader's, plus the ones python-dotenv
+    (the loader) assigns under a quoted name (``'KEY'=value``), which the line reader keeps quoted. The refusal
+    before the write and the cleanup after it both use this list."""
+    from hermes_cli.config import get_env_path, load_env
+    from hermes_cli.env_loader import dotenv_assigned
+    try:
+        assigned = set(dotenv_assigned(get_env_path().read_bytes()))
+    except OSError:
+        assigned = set()
+    return [name for name in SHADOWING_ENV if name in load_env() or name in assigned]
+
+
 def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
-    """Remove the names in :data:`SHADOWING_ENV` from this home's ``.env``; return (removed, still there)."""
-    from hermes_cli.config import load_env, remove_env_value
-    in_dotenv = [name for name in SHADOWING_ENV if name in load_env()]
+    """Remove the names in :data:`SHADOWING_ENV` from this home's ``.env``; return (removed, still there).
+    ``remove_env_value`` removes whole assignments from a ``.env`` with a quoted value over several lines, so a
+    name the line reader saw only inside another value there is not one to remove."""
+    from hermes_cli.config import get_env_path, remove_env_value
+    from hermes_cli.env_loader import dotenv_assigned, dotenv_multiline
+    in_dotenv = _dotenv_shadows()
     removed, left = [], []
     for name in in_dotenv:
         try:
@@ -254,6 +290,13 @@ def _clear_dotenv_shadows() -> tuple[list[str], list[str]]:
         except OSError:
             gone = False
         (removed if gone else left).append(name)
+    if left:
+        try:
+            raw = get_env_path().read_bytes()
+        except OSError:
+            return removed, left
+        if dotenv_multiline(raw):
+            left = [name for name in left if name in dotenv_assigned(raw)]
     return removed, left
 
 
@@ -331,7 +374,7 @@ def cmd_dashboard_password(args) -> int:
     from hermes_cli._startup_fast import project_root_str
     from hermes_cli.config import get_env_path
     project_env = Path(project_root_str()) / ".env"
-    refusal = (_case_variant_refusal([get_env_path(), project_env]) or _shadow_refusal()
+    refusal = (_case_variant_refusal([get_env_path(), project_env]) or _shadow_refusal() or _multiline_refusal()
                or _managed_config_refusal(username) or _checkout_refusal(project_env))
     if refusal:
         print(f"✗ {refusal}; nothing was changed.", file=sys.stderr)

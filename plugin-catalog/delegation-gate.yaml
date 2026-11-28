@@ -1,0 +1,22 @@
+name: delegation-gate
+title: Delegation Gate
+repo: https://github.com/kenpritchard/hermes-delegation-gate
+sha: bec2154c82c68f6ae10d2d9d01d12edd9f943708
+version: "1.3.3"
+requires_hermes: ">=0.18.2"
+description: "Ask a person before delegate_task spawns subagents. Every call that would start subagents goes to the same once / session / always / deny approval gate Hermes uses for dangerous shell commands, and the prompt shows what you'd be paying for: the subagent's goal, or the task count and the first five goals for a batch. Controlling subagents that are already running (list, steer, stop) is never gated, so stopping a runaway subagent never waits on approval. Optional block mode (DELEGATION_GATE_MODE=block) refuses delegation outright for unattended profiles; an unrecognized value also blocks. Fails closed: with no person present (cron, scripts) a gated call is blocked, not allowed. Smart approvals don't auto-approve it; YOLO mode bypasses it like every approval prompt. Disclosure: one pre_tool_call hook and no tools; no network or model calls, no shell commands, and it stores nothing. It reads DELEGATION_GATE_MODE through Hermes's agent.secret_scope.get_secret() (never a .env file), and logs the mode it chose once per profile; a call Hermes can't attribute to a profile is blocked."
+maintainer: kenpritchard
+tier: community
+category: tools
+docs_url: https://github.com/kenpritchard/hermes-delegation-gate/blob/bec2154c82c68f6ae10d2d9d01d12edd9f943708/README.md
+readme: true
+platforms: []
+known_issues:
+  - "Approve mode needs a Hermes build that honors the pre_tool_call approve directive (after commit 36308f066, July 2026). On older builds it loads but gates nothing; block mode still works there. The README has a one-line check."
+  - "The mode is fixed for the life of the process; after changing DELEGATION_GATE_MODE, restart the gateway (and, with a Docker or Desktop backend, the dashboard)."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

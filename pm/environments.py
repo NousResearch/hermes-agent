@@ -565,7 +565,27 @@ def activate_dependencies(project_root: Path) -> None:
         directories.append(venv_bin_dir(environment))
     prefix = [str(path) for path in directories if path.is_dir()]
     if prefix:
+        remember_inherited_path()
         os.environ["PATH"] = os.pathsep.join([*prefix, os.environ.get("PATH", "")])
+
+
+# PATH as this process inherited it, kept before the first startup step that writes PATH: this
+# module's activate_dependencies() (Hermes's own command dirs), pm.install.activate() (tool dirs) or
+# a PATH line in a Hermes .env file (hermes_cli.env_loader).
+_inherited_path: str | None = None
+
+
+def remember_inherited_path() -> None:
+    """Keep PATH as it is now, unless an earlier startup step already kept it."""
+    global _inherited_path
+    if _inherited_path is None:
+        _inherited_path = os.environ.get("PATH", "")
+
+
+def inherited_path() -> str:
+    """PATH as this process inherited it, before startup put Hermes's own directories first: the
+    PATH a new terminal starts from. PATH itself when startup never changed it."""
+    return os.environ.get("PATH", "") if _inherited_path is None else _inherited_path
 
 
 def activation_environment(project_root: Path) -> dict[str, str]:

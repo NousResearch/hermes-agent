@@ -60,10 +60,15 @@ class _ConsentRefusal(str):
     """A refusal reason (user-facing text) carrying its closed extension-install ``failure_class``,
     so publication classifies the refusal without matching the copy."""
 
+    failure_class: str
+
     def __new__(cls, text: str, failure_class: str) -> _ConsentRefusal:
         refusal = super().__new__(cls, text)
         refusal.failure_class = failure_class
         return refusal
+
+    def __getnewargs_ex__(self):  # copy/pickle rebuild via __new__, which needs the class
+        return (str(self), self.failure_class), {}
 
 
 def _install_plugin_python_deps(
@@ -83,14 +88,15 @@ def _install_plugin_python_deps(
     *assume_yes* is ``--yes-deps``: the user's own non-interactive answer
     to the Python question, so a headless install is not refused (#122134).
     """
-    from pm.plugin_declarations import read_python_declaration
+    from pm.plugin_declarations import assess_workspace_membership, read_python_declaration
 
     try:
         declaration = read_python_declaration(target)
-        deps = declaration.install_requirements
+        assessment = assess_workspace_membership(declaration)
+        deps = assessment.unsatisfied_requirements
+        has_python = assessment.needs_member
     except Exception as exc:
         return False, _ConsentRefusal(f"invalid Python dependency declaration: {exc}", "manifest_invalid")
-    has_python = declaration.installs_packages
     has_package_json = (target / "package.json").is_file()
     if not has_python and not has_package_json:
         return True, None  # no declared deps at all
@@ -918,25 +924,42 @@ def _place_tree(entry, identifier: str, *, force: bool, ref: Optional[str], assu
         return {"ok": False, "error": str(exc), **({"source_moved": True} if isinstance(exc, _pc().PluginSourceMoved) else {})}
 
 
-def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None]) -> Optional[dict]:
-    """None once enabled, else the refusal result. Enabling admits the plugin, and admission resolves
+_ENABLE_RACE_ATTEMPTS = 3
+
+
+def _enable_placed(installed_name: str, deps, step: Callable[[InstallPhase], None], *,
+                   unless_disabled: bool) -> dict:
+    """``{"enabled": bool}`` (False: *unless_disabled* and ``plugins.disabled`` names it when the enable
+    writes), else the refusal result (``"ok": False``). Enabling admits the plugin, and admission resolves
     its Python dependencies."""
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_cli.plugins_admission import AdmissionRefused, SelectionRaced
 
     if deps:
         step(InstallPhase.python_packages)
     try:
-        # _set_plugin_enabled serializes per home itself (parallel install-card rows).
-        _pc()._set_plugin_enabled(installed_name, enable=True)
+        # _set_plugin_enabled serializes per home itself (parallel install-card rows). It re-reads the
+        # selection each attempt, so an enable another writer's selection change beat (a second
+        # installer, a profile's gateway, an operator's disable) re-applies to theirs; past a few such
+        # races it is reported.
+        for attempt in range(_ENABLE_RACE_ATTEMPTS):
+            try:
+                enabled = _pc()._set_plugin_enabled(installed_name, enable=True, unless_disabled=unless_disabled)
+                break
+            except SelectionRaced:
+                if attempt == _ENABLE_RACE_ATTEMPTS - 1:
+                    raise
     except (AdmissionRefused, _pc().PluginOperationError) as exc:
-        return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False}
-    return None
+        # raced: other writers kept changing the selection; a later attempt has nothing to wait out.
+        return {"ok": False, "error": f"enable refused: {exc}", "plugin_name": installed_name, "enabled": False,
+                **({"raced": True} if isinstance(exc, SelectionRaced) else {})}
+    return {"enabled": enabled}
 
 
 def dashboard_install_plugin(
     identifier: str, *, force: bool, enable: bool, catalog_name: Optional[str] = None,
     ref: Optional[str] = None, assume_deps_consent: Optional[bool] = None,
     on_step: Optional[Callable[[InstallPhase], None]] = None, inspected_sha: Optional[str] = None,
+    unattended: bool = False,
 ) -> dict[str, Any]:
     """Non-interactive install for the dashboard/TUI. *catalog_name* installs a curated entry at its
     pinned SHA (identifier may be empty); *ref* pins either source to one full commit SHA (same
@@ -947,7 +970,9 @@ def dashboard_install_plugin(
     the same plugin unselected installs and enables. A forced replacement still needs explicit consent.
     *on_step* hears each slow phase as it starts (the catalog card draws it under its bar). *inspected_sha*
     is the commit an install dialog reviewed: a custom source whose branch moved since, or a catalog entry
-    re-pinned since, is refused."""
+    re-pinned since, is refused. *unattended* (an automatic install nobody asked for) never lifts a
+    ``plugins.disabled`` entry, one written while the download ran included: the plugin is placed but
+    left off (``"enabled": False, "kept_disabled": True``)."""
     if assume_deps_consent is None:
         assume_deps_consent = enable and not force
     step = on_step or (lambda _phase: None)
@@ -964,8 +989,24 @@ def dashboard_install_plugin(
         return placed
     target, installed_manifest, installed_name = placed
     deps = _pc()._python_dependency_summary(target, warnings)
-    if enable and (refused := _enable_placed(installed_name, deps, step)):
-        return refused
+    needs_python_sync = False
+    if deps:
+        from pm.plugin_declarations import needs_workspace_member, read_python_declaration
+        from pm.workspace import enabled_member_dirs
+
+        try:
+            decl = read_python_declaration(target)
+            needs_python_sync = needs_workspace_member(decl) or (
+                decl.installs_packages and bool(enabled_member_dirs())
+            )
+        except (OSError, ValueError):
+            needs_python_sync = True
+    kept_disabled = False
+    if enable:
+        outcome = _enable_placed(installed_name, needs_python_sync, step, unless_disabled=unattended)
+        if outcome.get("ok") is False:
+            return outcome
+        kept_disabled, enable = not outcome["enabled"], outcome["enabled"]
     ap = target / "after-install.md"
     # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)
     # and in the running gateway; ``activation`` says what is live now vs next session (#87770).
@@ -980,4 +1021,5 @@ def dashboard_install_plugin(
         "missing_env": [s["name"] for s in _pc()._missing_env_specs(installed_manifest)],
         "after_install_path": str(ap) if ap.exists() else None, "enabled": enable, **activated,
         "known_issues": list(entry.known_issues) if entry else [],
+        **({"kept_disabled": True} if kept_disabled else {}),
     }

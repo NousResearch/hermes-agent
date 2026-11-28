@@ -48,7 +48,8 @@ delegate_task(
 
 ## Parallel Batch
 
-Up to 10 concurrent subagents by default (configurable, no hard ceiling):
+Up to 10 subagents per batch by default (configurable). A managed host policy can
+impose a separate cross-process ceiling:
 
 ```python
 delegate_task(tasks=[
@@ -57,6 +58,71 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "context": "Project root: /home/user/project"}
 ])
 ```
+
+## Managed host worker admission
+
+An operator-reviewed [host policy](../security.md#managed-host-approval-policy)
+can bound **reserved and running delegated children across participating Hermes
+processes, profiles, and sessions for one OS account on one host**. The authority
+is `.local/state/hermes/host-policy/` under the OS account's canonical home,
+independent of `HOME`, `HERMES_HOME`, XDG, and gateway-lock overrides.
+Managed support is POSIX-only; installed Windows authorities fail closed until
+native ACL support is qualified.
+
+The host document's `admission` section has exactly `mode` (`disabled`,
+`observe`, or `enforce`) and a strictly positive integer `max_workers`. For an
+observe-first pilot, the section is `{"mode":"observe","max_workers":2}`:
+
+- `disabled` leaves worker admission unmanaged; approval constraints remain active.
+- `observe` records reservations and logs over-capacity requests without refusing them.
+- `enforce` atomically reserves the entire prospective runnable batch or refuses
+  it before constructing any children. Backend-refused tasks do not count.
+
+Each concrete child counts once, including nested orchestrators and descendants.
+Sync callers, background batches, independent completion groups, internal review
+callers, and the public lifecycle API share this authority. Grouping results or
+switching between sync/background cannot bypass it.
+`delegation.max_concurrent_children` remains a local batch/executor limit, not
+this host total. The per-turn spawn budget is another separate limit.
+
+A `worker_capacity` refusal includes occupancy and limit metadata and does not
+enqueue work. There is no FIFO/starvation guarantee: wait for workers to exit,
+avoid automatic retry storms, and do not switch execution modes to evade it.
+Reducing a limit below current occupancy lets existing workers drain without
+killing them; new work waits until sufficient capacity is genuinely free.
+
+A timeout, parent interrupt, stopped session, retired async result, or completed
+result record is not proof that the conversation thread exited. Reservations
+survive until the real conversation and deferred cleanup finish, including any
+output-schema retry. Children accepted for background execution retain their
+reservations when the parent's foreground turn stops.
+Construction/submission failures cancel only children proven never started.
+
+The private ledger uses the persistent `.admission.lock`, bounded transactions,
+opaque generation-bound claims, and process birth plus host/boot/PID-namespace
+identity. Only proven dead/recycled owners are reaped. Foreign or unavailable
+identities retain capacity; there is no heartbeat/TTL expiry or replay.
+Malformed/missing enforcing state, an absent installed lock, unsafe permissions,
+symlinks, or hardlinks refuse new work rather than manufacture free slots.
+Do not delete the ledger or lock to recover capacity; drain workers and use
+operator-reviewed repair.
+
+The read-only `tools.worker_admission.admission_status()` diagnostic reports
+policy revision, mode, configured limit, and recorded occupancy without reaping
+or writing state. An approval-only disabled authority without a ledger reports
+unknown occupancy, not a fabricated zero. These diagnostics are local runtime
+observations, not proof that all processes adopted the policy.
+
+Deploy compatible runtimes first, validate accounting in observe mode, then
+drain all old/uncooperative runtimes before an enforcing pilot. Publication
+must use the reviewed publisher and a quiescent window under the same lock;
+copying a policy file alone does not establish adoption. Keep the ledger intact
+during rollback. No live policy is installed automatically by these source changes.
+
+This is cooperative same-account admission, not an OS security sandbox or a
+cross-user/host resource manager. Root conversations, cron jobs themselves,
+provider-request quotas, remote workers, Factory/runner scheduling, and container
+CPU/memory limits are outside this pool.
 
 ## Structured Output (`output_schema`)
 

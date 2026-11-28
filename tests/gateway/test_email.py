@@ -1044,6 +1044,142 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
         asyncio.run(adapter.disconnect())
 
 
+class TestSmtpCredentialSeparation(unittest.TestCase):
+    """SMTP auth may differ from the visible mailbox identity."""
+
+    @staticmethod
+    def _make_adapter(*, smtp_username="", smtp_password=""):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "legacy@test.invalid",
+            "EMAIL_PASSWORD": "legacy-pw",
+            "EMAIL_IMAP_HOST": "imap.test.invalid",
+            "EMAIL_SMTP_HOST": "smtp.test.invalid",
+            "EMAIL_SMTP_USERNAME": smtp_username,
+            "EMAIL_SMTP_PASSWORD": smtp_password,
+        }, clear=False):
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def _assert_login_pair(self, adapter, expected):
+        import asyncio
+
+        smtp = MagicMock()
+        with patch.object(adapter, "_connect_smtp", return_value=smtp):
+            result = asyncio.run(adapter.send("recipient@test.invalid", "Hello"))
+        self.assertTrue(result.success)
+        smtp.login.assert_called_once_with(*expected)
+
+    def test_smtp_credentials_default_and_independent_fallback(self):
+        cases = (
+            ("", "", ("legacy@test.invalid", "legacy-pw")),
+            ("   ", "   ", ("legacy@test.invalid", "legacy-pw")),
+            ("smtp-user@test.invalid", "smtp-pw", ("smtp-user@test.invalid", "smtp-pw")),
+            ("smtp-user@test.invalid", "", ("smtp-user@test.invalid", "legacy-pw")),
+            ("", "smtp-pw", ("legacy@test.invalid", "smtp-pw")),
+        )
+        for username, password, expected in cases:
+            with self.subTest(username=username, password=password):
+                adapter = self._make_adapter(
+                    smtp_username=username,
+                    smtp_password=password,
+                )
+                self._assert_login_pair(adapter, expected)
+
+    def test_all_adapter_smtp_paths_use_override_but_keep_legacy_identity(self):
+        import asyncio
+        import tempfile
+
+        adapter = self._make_adapter(
+            smtp_username="smtp-user@auth.invalid",
+            smtp_password="smtp-pw",
+        )
+        smtp_servers = [MagicMock() for _ in range(4)]
+        imap = MagicMock()
+        imap.uid.return_value = ("OK", [b""])
+
+        async def connect_and_stop():
+            self.assertTrue(await adapter.connect())
+            await adapter.disconnect()
+
+        with tempfile.NamedTemporaryFile(suffix=".txt") as attachment, patch(
+            "imaplib.IMAP4_SSL", return_value=imap
+        ), patch.object(
+            adapter, "_connect_smtp", side_effect=smtp_servers
+        ):
+            asyncio.run(connect_and_stop())
+            adapter._send_email("recipient@test.invalid", "normal reply")
+            adapter._send_email_with_attachments(
+                "recipient@test.invalid", "multiple attachments", [attachment.name]
+            )
+            adapter._send_email_with_attachment(
+                "recipient@test.invalid", "single attachment", attachment.name
+            )
+
+        imap.login.assert_called_once_with("legacy@test.invalid", "legacy-pw")
+        for smtp in smtp_servers:
+            smtp.login.assert_called_once_with("smtp-user@auth.invalid", "smtp-pw")
+
+        for smtp in smtp_servers[1:]:
+            sent = smtp.send_message.call_args.args[0]
+            self.assertEqual(sent["From"], "legacy@test.invalid")
+            self.assertTrue(sent["Message-ID"].endswith("@test.invalid>"))
+            self.assertNotIn("@auth.invalid>", sent["Message-ID"])
+
+    def test_auth_error_is_sanitized_in_logs_and_fatal_state(self):
+        import asyncio
+        import smtplib
+
+        smtp_password = "smtp-secret-synthetic"
+        legacy_password = "legacy-secret-synthetic"
+        raw_response = (
+            f"Authentication failed with SMTP password {smtp_password} "
+            f"and legacy password {legacy_password}"
+        )
+        adapter = self._make_adapter(
+            smtp_username="smtp-user@auth.invalid",
+            smtp_password=smtp_password,
+        )
+        adapter._password = legacy_password
+        imap = MagicMock()
+        imap.uid.return_value = ("OK", [b""])
+        smtp = MagicMock()
+        smtp.login.side_effect = smtplib.SMTPAuthenticationError(
+            535, raw_response.encode()
+        )
+
+        with self.assertLogs(
+            "plugins.platforms.email.adapter", level="ERROR"
+        ) as captured, patch(
+            "imaplib.IMAP4_SSL", return_value=imap
+        ), patch.object(adapter, "_connect_smtp", return_value=smtp):
+            result = asyncio.run(adapter.connect())
+
+        message = adapter.fatal_error_message or ""
+        logs = "\n".join(captured.output)
+        self.assertFalse(result)
+        self.assertEqual(adapter.fatal_error_code, "email_auth_error")
+        self.assertFalse(adapter.fatal_error_retryable)
+        self.assertIn("SMTP authentication failed", message)
+        self.assertIn("EMAIL_SMTP_USERNAME", message)
+        self.assertIn("EMAIL_SMTP_PASSWORD", message)
+        self.assertIn("EMAIL_ADDRESS", message)
+        self.assertIn("EMAIL_PASSWORD", message)
+        self.assertIn("535", message)
+        self.assertIn("SMTP authentication failed", logs)
+        self.assertIn("535", logs)
+        for exposed in (
+            "smtp-user@auth.invalid",
+            "legacy@test.invalid",
+            smtp_password,
+            legacy_password,
+            raw_response,
+        ):
+            self.assertNotIn(exposed, message)
+            self.assertNotIn(exposed, logs)
+
+
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""
 
@@ -1080,6 +1216,101 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertIn("Date", send_call)
             self.assertEqual(send_call["To"], "user@test.com")
             self.assertEqual(send_call["From"], "hermes@test.com")
+
+    def test_standalone_sender_uses_smtp_override_or_legacy_fallback(self):
+        import asyncio
+        from types import SimpleNamespace
+
+        from plugins.platforms.email.adapter import _standalone_send
+
+        cases = (
+            ("", "", ("legacy@test.invalid", "legacy-pw")),
+            ("smtp-user@test.invalid", "smtp-pw", ("smtp-user@test.invalid", "smtp-pw")),
+        )
+        for username, password, expected in cases:
+            with self.subTest(username=username, password=password), patch.dict(
+                os.environ,
+                {
+                    "EMAIL_ADDRESS": "legacy@test.invalid",
+                    "EMAIL_PASSWORD": "legacy-pw",
+                    "EMAIL_SMTP_HOST": "smtp.test.invalid",
+                    "EMAIL_SMTP_PORT": "587",
+                    "EMAIL_SMTP_USERNAME": username,
+                    "EMAIL_SMTP_PASSWORD": password,
+                },
+                clear=False,
+            ), patch("smtplib.SMTP") as mock_smtp:
+                server = MagicMock()
+                mock_smtp.return_value = server
+
+                result = asyncio.run(
+                    _standalone_send(
+                        SimpleNamespace(extra={}),
+                        "recipient@test.invalid",
+                        "Hello",
+                    )
+                )
+
+                self.assertTrue(result["success"])
+                server.login.assert_called_once_with(*expected)
+                sent = server.send_message.call_args.args[0]
+                self.assertEqual(sent["From"], "legacy@test.invalid")
+
+    def test_standalone_sender_sanitizes_smtp_auth_error(self):
+        import asyncio
+        import smtplib
+        from types import SimpleNamespace
+
+        from plugins.platforms.email.adapter import _standalone_send
+
+        smtp_password = "smtp-secret-synthetic"
+        legacy_password = "legacy-secret-synthetic"
+        raw_response = (
+            f"Authentication failed with SMTP password {smtp_password} "
+            f"and legacy password {legacy_password}"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "EMAIL_ADDRESS": "legacy@test.invalid",
+                "EMAIL_PASSWORD": legacy_password,
+                "EMAIL_SMTP_HOST": "smtp.test.invalid",
+                "EMAIL_SMTP_PORT": "587",
+                "EMAIL_SMTP_USERNAME": "smtp-user@test.invalid",
+                "EMAIL_SMTP_PASSWORD": smtp_password,
+            },
+            clear=False,
+        ), patch("smtplib.SMTP") as mock_smtp:
+            server = MagicMock()
+            server.login.side_effect = smtplib.SMTPAuthenticationError(
+                535, raw_response.encode()
+            )
+            mock_smtp.return_value = server
+
+            result = asyncio.run(
+                _standalone_send(
+                    SimpleNamespace(extra={}),
+                    "recipient@test.invalid",
+                    "Hello",
+                )
+            )
+
+        error = result.get("error", "")
+        self.assertFalse(result.get("success", False))
+        self.assertIn("SMTP authentication failed", error)
+        self.assertIn("EMAIL_SMTP_USERNAME", error)
+        self.assertIn("EMAIL_SMTP_PASSWORD", error)
+        self.assertIn("EMAIL_ADDRESS", error)
+        self.assertIn("EMAIL_PASSWORD", error)
+        self.assertIn("535", error)
+        for exposed in (
+            "smtp-user@test.invalid",
+            "legacy@test.invalid",
+            smtp_password,
+            legacy_password,
+            raw_response,
+        ):
+            self.assertNotIn(exposed, error)
 
 
 class TestSmtpConnectionCleanup(unittest.TestCase):

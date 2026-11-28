@@ -106,9 +106,17 @@ EMAIL_AUTHSERV_ID=mx.google.com
 # Optional
 EMAIL_IMAP_PORT=993                    # Default: 993 (IMAP SSL)
 EMAIL_SMTP_PORT=587                    # Default: 587 (SMTP STARTTLS)
+EMAIL_SMTP_USERNAME=smtp-user          # Defaults to EMAIL_ADDRESS when blank/unset
+EMAIL_SMTP_PASSWORD=smtp-password      # Defaults to EMAIL_PASSWORD when blank/unset
 EMAIL_POLL_INTERVAL=15                 # Seconds between inbox checks (default: 15)
 EMAIL_HOME_ADDRESS=your@email.com      # Default delivery target for cron jobs
 ```
+
+`EMAIL_ADDRESS` and `EMAIL_PASSWORD` are the IMAP credentials. If
+your outbound relay uses different credentials, set either or both SMTP
+overrides. Each blank or unset override falls back independently to its legacy
+counterpart. The gateway uses `EMAIL_ADDRESS` for the `From` header and to
+generate the Message-ID.
 
 ---
 
@@ -229,6 +237,8 @@ Hermes acts on a message only when the `Authentication-Results` header stamped b
 | `EMAIL_SMTP_HOST` | Yes | — | SMTP server host (e.g., `smtp.gmail.com`) |
 | `EMAIL_IMAP_PORT` | No | `993` | IMAP server port |
 | `EMAIL_SMTP_PORT` | No | `587` | SMTP server port |
+| `EMAIL_SMTP_USERNAME` | No | `EMAIL_ADDRESS` | SMTP authentication username |
+| `EMAIL_SMTP_PASSWORD` | No | `EMAIL_PASSWORD` | SMTP authentication password |
 | `EMAIL_POLL_INTERVAL` | No | `15` | Seconds between inbox checks |
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_AUTHSERV_ID` | Yes, unless sender authentication is off | — | Exact authserv-id on your receiving server's topmost `Authentication-Results` header; without it every message needing an authenticated `From:` is dropped |

@@ -77,19 +77,24 @@ function sessionScopeQuery(scope?: ProfileScope): string {
 /**
  * The active registered gateway owns every row it returns, but its HTTP APIs
  * correctly know nothing about this Desktop-local registry id. Preserve an
- * explicit owner from a multi-source response; otherwise stamp the active
- * non-local source so a later resume cannot fall back to a same-named local
+ * explicit owner from a multi-source response; otherwise stamp the connection
+ * that SERVED the page so a later resume cannot fall back to a same-named local
  * profile. Delegates to the canonical row-stamp helper so this stays the ONE
  * write shape for connection_id on backend-returned rows.
+ *
+ * `servingConnection` is the scope captured BEFORE the request, never read
+ * here: a source switch that lands while the page is in flight otherwise
+ * stamps the outgoing source's rows with the incoming one, and those rows then
+ * render — and resume — under a source that has never seen them.
  */
-function stampActiveConnectionOwner(sessions: SessionInfo[]): SessionInfo[] {
+function stampActiveConnectionOwner(sessions: SessionInfo[], servingConnection: null | string): SessionInfo[] {
   // Durable half of the same ownership contract (#94724): enumeration under
   // registry topology triggers the one-shot server-side owner backfill for
   // the serving store when its owner is a single match. Fire-and-forget;
   // idempotent server-side; never blocks or fails the list that triggered it.
   maybeBackfillLegacySessionOwners()
 
-  return stampRowsWithOwningConnection(sessions, getApiRequestConnection())
+  return stampRowsWithOwningConnection(sessions, servingConnection)
 }
 
 /**
@@ -118,6 +123,10 @@ export async function listSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
+  // The scope this page is requested in; the response belongs to it even if the
+  // window moves on before it lands.
+  const servingConnection = getApiRequestConnection()
+
   const result = await hermesApi<PaginatedSessions>({
     ...profileScoped(),
     path:
@@ -128,7 +137,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
+    sessions: pageWindow(stampActiveConnectionOwner(result.sessions, servingConnection), limit),
     offset: 0
   }
 }
@@ -161,6 +170,10 @@ export async function listAllProfileSessions(
     ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
     : ''
 
+  // Captured with the request, like every other page: the rows belong to the
+  // source that served them, not to whichever source is in front when they land.
+  const servingConnection = getApiRequestConnection()
+
   const result = await hermesApi<PaginatedSessions>({
     ...listProfileScoped(profile),
     path:
@@ -171,7 +184,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: pageWindow(stampActiveConnectionOwner(result.sessions), limit),
+    sessions: pageWindow(stampActiveConnectionOwner(result.sessions, servingConnection), limit),
     offset: Math.max(0, offset)
   }
 }
@@ -345,6 +358,9 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
   let result: SidebarSessionsResponse
 
+  // One request, three slices: all of them belong to the source that served it.
+  const servingConnection = getApiRequestConnection()
+
   try {
     result = await hermesApi<SidebarSessionsResponse>({
       ...listProfileScoped(req.recentsProfile),
@@ -367,17 +383,17 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
   return {
     recents: {
       ...result.recents,
-      sessions: stampActiveConnectionOwner(result.recents?.sessions ?? []),
+      sessions: stampActiveConnectionOwner(result.recents?.sessions ?? [], servingConnection),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     cron: {
       ...result.cron,
-      sessions: stampActiveConnectionOwner(result.cron?.sessions ?? []),
+      sessions: stampActiveConnectionOwner(result.cron?.sessions ?? [], servingConnection),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     messaging: {
       ...result.messaging,
-      sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
+      sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? [], servingConnection),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
     errors: result.errors,

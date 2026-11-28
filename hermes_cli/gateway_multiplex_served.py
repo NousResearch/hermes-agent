@@ -43,6 +43,28 @@ def recorded_served_profiles(default_root: Optional[Path] = None) -> Optional[li
     return [str(p) for p in served] if isinstance(served, list) else None
 
 
+def booting_multiplexer_excludes(profile: str) -> bool:
+    """True once a live default gateway that had not published ``served_profiles`` yet (it was
+    still booting: its pid lands about a second before the record) publishes a roster without
+    ``profile``. Until then the CLI's config fallback guesses "served" and a ``gateway.standalone``
+    profile is refused with a permanent 78, so its start guard gives the record the same bounded
+    window the host attach path gives a silent owner. No live gateway, or a record already
+    published, returns False at once: the caller's verdict already stands."""
+    if live_default_gateway_pid() is None or recorded_served_profiles() is not None:
+        return False
+    from agent.deadline import poll_until
+    from gateway.host_attach import _CHANNEL_POLL_S, ATTACH_CHANNEL_WAIT_S
+    from hermes_cli.profiles import normalize_profile_name
+
+    def _published():
+        recorded = recorded_served_profiles()
+        # An empty list is an authoritative "serves nobody else": poll on presence, not truthiness.
+        return (recorded,) if recorded is not None else None
+
+    found = poll_until(_published, ATTACH_CHANNEL_WAIT_S, _CHANNEL_POLL_S)
+    return bool(found) and normalize_profile_name(profile) not in {normalize_profile_name(p) for p in found[0]}
+
+
 def multiplexer_served_secondaries() -> list[str]:
     """Named profiles the live default multiplexer serves (excludes ``default``); empty when none."""
     return [p for p in (recorded_served_profiles() or []) if p and p != "default"]

@@ -76,3 +76,26 @@ class TestFallBackStrictlyAfterContract:
             compute_next_run({"kind": "cron", "expr": "* * * * *"},
                              last_run_at=base.isoformat()))
         assert nxt.timestamp() > base.timestamp()
+
+    def test_repeated_hour_replays_wildcard_jobs_but_not_fixed_time_jobs(self, toronto):
+        """cronie semantics: a job with ``*`` leading its minute or hour field runs on the wall
+        clock both times through the repeated 01:00 hour; a fixed-time job runs once. Walking the
+        real next-run chain used to jump from 01:30 EDT straight to 02:00 EST for ``*/30``.
+        croniter's single-field aliases (``@hourly`` = HR_STAR, ``@daily`` = fixed) follow suit."""
+        start = datetime(2026, 11, 1, 0, 0, tzinfo=TORONTO)  # 00:00 EDT
+        end = datetime(2026, 11, 1, 3, 0, tzinfo=TORONTO)  # 03:00 EST
+        expected = {"*/30 * * * *": 4, "0 * * * *": 2, "*/15 1 * * *": 8, "30 1 * * *": 1,
+                    "@hourly": 2, "@daily": 0}
+        runs_in_repeated_hour = {}
+        for expr in expected:
+            last, runs = start, 0
+            while True:
+                nxt = datetime.fromisoformat(
+                    compute_next_run({"kind": "cron", "expr": expr}, last_run_at=last.isoformat()))
+                assert nxt.timestamp() > last.timestamp()
+                if nxt.timestamp() >= end.timestamp():
+                    break
+                runs += nxt.astimezone(TORONTO).hour == 1
+                last = nxt
+            runs_in_repeated_hour[expr] = runs
+        assert runs_in_repeated_hour == expected

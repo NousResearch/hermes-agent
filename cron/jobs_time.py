@@ -20,7 +20,7 @@ the "job timezone east of the profile timezone silently never fires" failure. Se
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -176,3 +176,44 @@ def oneshot_instant(value: Any, zone: Optional[ZoneInfo] = None) -> Optional[dat
     if dt.tzinfo is None and zone is not None:
         return dt.replace(tzinfo=zone)
     return _ensure_aware(dt, zone)
+
+
+def repeated_hour_folds(expr: str) -> tuple[int, ...]:
+    """The passes (``fold`` values) of a repeated DST fall-back wall clock that *expr* runs in.
+
+    Following cronie, a job with ``*`` leading its minute or hour field (MIN_STAR/HR_STAR), and
+    croniter's ``@hourly`` alias, keeps its real-time cadence and runs both times through. A
+    fixed-time job (``30 1 * * *``, ``@daily``) runs once per wall clock, in the first pass: a
+    base inside the second pass (a run that ended there, a recompute from "now") must not
+    schedule the same wall clock again that night.
+    """
+    return (0, 1) if _runs_both_passes(expr) else (0,)
+
+
+def _runs_both_passes(expr: str) -> bool:
+    """cronie's MIN_STAR/HR_STAR rule: ``*`` leads the minute or hour field, or ``@hourly``."""
+    fields = str(expr).lower().split()
+    return fields == ["@hourly"] or any(field.startswith("*") for field in fields[:2])
+
+
+def repeated_hour_second_pass(croniter: Any, expr: str, base_local: datetime, zone: Any) -> Optional[datetime]:
+    """Earliest second-pass (fold=1) occurrence of the repeated fall-back hour a FIRST-pass base
+    sits in, or None.
+
+    croniter walks naive wall clocks, so from 01:30 EDT the next wall clock for ``*/30`` is 02:00
+    and the strictly-later 01:00/01:30 EST instants were never candidates (a 90-minute silent gap).
+    Only a job that runs both passes (``_runs_both_passes``) gets one; a fixed-time job such as
+    ``30 1 * * *`` fires once. *croniter* is passed in because ``cron.jobs`` imports it lazily.
+    """
+    shift = base_local.utcoffset() - base_local.replace(fold=1).utcoffset()
+    if base_local.fold or shift <= timedelta(0) or not _runs_both_passes(expr):
+        return None  # the wall clock is not repeated, the base is already in the second pass, or a fixed time
+    base_wall = base_local.replace(tzinfo=None)
+    it = croniter(expr, base_wall - shift)  # every wall clock of the repeated span up to the base
+    wall = it.get_next(datetime)
+    while wall <= base_wall:
+        candidate = wall.replace(tzinfo=zone, fold=1)
+        if candidate.timestamp() > base_local.timestamp():
+            return candidate
+        wall = it.get_next(datetime)
+    return None

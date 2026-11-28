@@ -653,6 +653,31 @@ def _denied_or_directory_listing(resolved, task_id: str) -> str | None:
     return None
 
 
+def _resolve_missing_archive(path: str, result, result_dict, file_ops, offset: int, limit: int,
+                            resolved_str: str, task_id: str):
+    """Re-read a not-found archive under THIS home, else mark it expired; ``(result, dict, error)``.
+
+    A stub records its archive as a home-relative display path when the prune runs, so a session
+    resumed under another ``HERMES_HOME`` (a profile, another install) names a path that never
+    existed there while the bytes sit untouched in the original home. The transcript's promise is
+    about the bytes, not the path, so the name is resolved against this home before the archive is
+    reported expired (#156164 item 5). Only host-path backends re-resolve: a sandbox reads the
+    archive through its own mount, and a miss there is the sandbox's answer to give.
+    """
+    from tools.tool_result_storage import expired_archive_fields, rehome_archive_path
+
+    rehomed = rehome_archive_path(path) if _file_ops_uses_host_paths(file_ops) else None
+    if rehomed is not None:
+        retried = file_ops.read_file(rehomed, offset, limit)
+        retried_dict = retried.to_dict()
+        retried_err = retried_dict.get("error") or ""
+        if not (isinstance(retried_err, str) and retried_err.startswith("File not found:")):
+            return retried, retried_dict, retried_err
+    result_dict.update(expired_archive_fields(path))
+    _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
+    return result, result_dict, result_dict.get("error") or ""
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers.
 
@@ -741,9 +766,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         # Failed reads cannot establish whole-file knowledge.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
-            from tools.tool_result_storage import expired_archive_fields
-            result_dict.update(expired_archive_fields(path))
-            _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
+            result, result_dict, _err = _resolve_missing_archive(
+                path, result, result_dict, file_ops, offset, limit, resolved_str, task_id)
         if _err or result_dict.get("is_binary"):
             return json.dumps(result_dict, ensure_ascii=False)
 

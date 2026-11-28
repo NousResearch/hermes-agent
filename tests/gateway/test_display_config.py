@@ -271,3 +271,46 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
+
+
+class TestInterimMessagesForBotPeers:
+    """Visible interim prose has a separate, final-only-by-default bot gate."""
+
+    @staticmethod
+    def _allowed(config, platform="slack", *, webhook=False, bot=True, mode="on"):
+        from gateway.display_config import interim_assistant_messages_allowed
+
+        return interim_assistant_messages_allowed(
+            config, platform, is_webhook=webhook, bot_peer=bot, mode=mode,
+        )
+
+    def test_bot_peer_defaults_to_final_reply_only(self):
+        assert self._allowed({}) is False
+
+    def test_slack_opt_in_enables_visible_interim_messages(self):
+        config = {"display": {"platforms": {"slack": {
+            "interim_assistant_messages_for_bots": True,
+        }}}}
+        assert self._allowed(config) is True
+        # The opt-in is platform-scoped, not a global bot-loop override.
+        assert self._allowed(config, platform="telegram") is False
+
+    def test_global_key_cannot_enable_bot_peer_messages(self):
+        # This safety switch is intentionally platform-only.
+        assert self._allowed({"display": {"interim_assistant_messages_for_bots": True}}) is False
+
+    def test_non_bot_peer_behavior_is_unchanged(self):
+        assert self._allowed({}, bot=False) is True
+
+    def test_webhook_and_mode_off_stay_disabled(self):
+        config = {"display": {"platforms": {"slack": {
+            "interim_assistant_messages_for_bots": True,
+        }}}}
+        assert self._allowed(config, webhook=True, bot=False) is False
+        assert self._allowed(config, bot=False, mode="off") is False
+
+    def test_string_opt_in_is_normalized(self):
+        config = {"display": {"platforms": {"slack": {
+            "interim_assistant_messages_for_bots": "true",
+        }}}}
+        assert self._allowed(config) is True

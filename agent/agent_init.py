@@ -916,8 +916,8 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
         agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with model: {agent.model}")
-            if base_url:
-                print(f"🔗 Using custom base URL: {base_url}")
+            if agent.base_url:
+                print(f"🔗 Using effective base URL: {agent.base_url}")
             from gateway.warning_notifications import warning_notifications_enabled
             _print_key_banner(client_kwargs.get("api_key", "none"), "API key",
                               warn_missing=warning_notifications_enabled(agent.platform))

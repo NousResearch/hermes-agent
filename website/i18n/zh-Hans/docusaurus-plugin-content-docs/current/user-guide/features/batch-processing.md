@@ -15,11 +15,19 @@ description: "大规模生成 agent 轨迹——并行处理、断点续跑与�
 ## 快速开始
 
 ```bash
-# 基本批量运行
+# 基本批量运行——继承 `hermes model` 选择的 provider 和模型
 python batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
+    --num_workers=4
+
+# 为本次运行覆盖已配置的 provider 和模型
+python batch_runner.py \
+    --dataset_file=data/prompts.jsonl \
+    --batch_size=10 \
+    --run_name=openrouter_run \
+    --provider=openrouter \
     --model=anthropic/claude-sonnet-4.6 \
     --num_workers=4
 
@@ -35,7 +43,7 @@ python batch_runner.py --list_distributions
 ```
 
 :::tip 大规模运行下的可预测成本
-批量运行会启动大量并发 agent 会话，每个会话都会调用模型和工具。[Nous Portal](./tool-gateway.md) 订阅将模型访问、网页搜索、图像生成、TTS 以及云端浏览器统一计费——当你希望在不同供应商账户间稳定控制每条轨迹成本、避免触碰速率限制时非常实用。使用 `hermes setup --portal` 完成配置，然后将 `--model` 指向 Nous 模型。
+批量运行会启动大量并发 agent 会话，每个会话都会调用模型和工具。[Nous Portal](./tool-gateway.md) 订阅将模型访问、网页搜索、图像生成、TTS 以及云端浏览器统一计费——当你希望在不同供应商账户间稳定控制每条轨迹成本、避免触碰速率限制时非常实用。使用 `hermes setup --portal` 完成配置，然后将 Nous 选为当前 provider，或向批量运行器传入 `--provider=nous --model=<model>`。
 :::
 
 ## 数据集格式
@@ -60,16 +68,29 @@ python batch_runner.py --list_distributions
 | `--batch_size` | （必填） | 每批处理的 prompt 数量 |
 | `--run_name` | （必填） | 本次运行的名称（用于输出目录和断点续跑） |
 | `--distribution` | `"default"` | 采样所用的工具集分布 |
-| `--model` | `claude-sonnet-4.6` | 使用的模型 |
-| `--base_url` | `https://openrouter.ai/api/v1` | API 基础 URL |
-| `--api_key` | （环境变量） | 模型的 API 密钥 |
+| `--model` | `config.yaml` | 模型覆盖值；省略时使用已配置的默认模型 |
+| `--provider` | `config.yaml` | provider 覆盖值；省略时使用已配置的 provider |
+| `--api_mode` | 已配置的 provider | API 传输模式覆盖值，例如 `codex_responses` |
+| `--base_url` | 已配置的 provider | 显式 API 端点覆盖值 |
+| `--api_key` | 已配置的凭据 | 显式凭据覆盖值 |
 | `--max_turns` | `10` | 每条 prompt 的最大工具调用轮次 |
 | `--num_workers` | `4` | 并行工作进程数 |
 | `--resume` | `false` | 从断点恢复 |
 | `--verbose` | `false` | 启用详细日志 |
 | `--max_samples` | 全部 | 仅处理数据集中前 N 条样本 |
 
-### 供应商路由（OpenRouter）
+### Provider 与凭据解析
+
+省略 `--model`、`--provider`、`--api_mode`、`--base_url` 和 `--api_key` 时，每个 worker 都会继承 `config.yaml` 中选择的运行时，包括 `openai-codex` 这类使用 OAuth 的 provider。
+
+显式覆盖遵循以下规则：
+
+- 同时传入 `--api_key` 和 `--base_url` 会定义一个完整的直连运行时；端点有要求时还可以提供 `--provider` 和 `--api_mode`。
+- `--provider` 会选择该 provider 并解析其已配置凭据。切换到不同于当前配置的 provider 时，应同时传入 `--model`。
+- 单独传入 `--base_url` 时，显式 URL 优先于已配置的 provider，并作为显式自定义端点解析。OpenRouter 等已知主机会选择对应端点范围内的凭据。
+- 单独传入 `--api_key` 时，必须同时提供 `--provider`，或在配置中存在 `model.provider`；Hermes 不会根据不透明的 key 猜测 provider。
+
+### OpenRouter 路由选项
 
 | 参数 | 说明 |
 |-----------|-------------|
@@ -196,6 +217,7 @@ python batch_runner.py \
     --dataset_file=data/coding_prompts.jsonl \
     --batch_size=20 \
     --run_name=coding_v1 \
+    --provider=openrouter \
     --model=anthropic/claude-sonnet-4.6 \
     --num_workers=8 \
     --distribution=default \
@@ -211,6 +233,7 @@ python batch_runner.py \
     --dataset_file=data/eval_suite.jsonl \
     --batch_size=10 \
     --run_name=eval_gpt4 \
+    --provider=openrouter \
     --model=openai/gpt-4o \
     --num_workers=4 \
     --max_turns=10

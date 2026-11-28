@@ -23,6 +23,7 @@ import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { RewindBrowse } from './rewindBrowse.js'
 import { SkillsHub } from './skillsHub.js'
 import { SubscriptionOverlay } from './subscriptionOverlay.js'
+import { TranscriptFind } from './transcriptFind.js'
 import { WidgetGrid, type WidgetGridWidget } from './widgetGrid.js'
 
 const COMPLETION_WINDOW = 16
@@ -137,6 +138,14 @@ export function PromptZone({
       <PromptCell cols={cols} id="connection">
         <ConnectionSetupOverlay cols={cols} t={theme} />
       </PromptCell>
+    )
+  }
+
+  if (overlay.find) {
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1}>
+        <TranscriptFind cols={cols} onClose={() => patchOverlayState({ find: null })} req={overlay.find} t={theme} />
+      </Box>
     )
   }
 

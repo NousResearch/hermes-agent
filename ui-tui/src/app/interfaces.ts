@@ -287,6 +287,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   connection: ConnectionOverlayState | null
   connectors: boolean
+  find: FindOverlay | null
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */
@@ -314,6 +315,12 @@ export interface RewindTarget {
   /** The last stored row before this prompt (a fork keeps rows through it); absent for the first prompt. */
   throughRowId?: number
   turn: number
+}
+
+/** `/find`: the transcript rows it searches (read once when it opens) and the query typed with it. */
+export interface FindOverlay {
+  getRows: () => Msg[]
+  query: string
 }
 
 export interface RewindOverlay {

@@ -26,6 +26,7 @@ from hermes_cli.web_server_profiles import (
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
+from hermes_cli.config import _ENV_PLACEHOLDER_RE, _is_secret_config_key
 from hermes_cli.config_providers import (
     _CAMEL_ALIASES, ENDPOINT_ADDRESS_FIELDS, _canonical_api_mode, _custom_provider_entry_to_provider_config,
 )
@@ -79,6 +80,106 @@ def _env_write_errors(log_msg: str):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# the dashboard's own login credentials (``dashboard.basic_auth`` password /
+# password_hash / secret, and any credential-shaped key under ``dashboard.oauth``)
+# must never leave the server through GET /api/config. They are replaced with a
+# fixed placeholder; PUT /api/config swaps the placeholder back for the stored
+# value, so saving the settings form cannot overwrite (and destroy) the login.
+DASHBOARD_SECRET_PLACEHOLDER = "••••••••"
+_DASHBOARD_SECRET_SECTIONS = ("basic_auth", "oauth")
+
+
+def _is_dashboard_secret_leaf(key: Any) -> bool:
+    if not isinstance(key, str):
+        return False
+    # ``password_hash`` is a credential (offline-crackable) but not matched by the
+    # generic suffix list, so fold ``*_hash`` in explicitly.
+    return _is_secret_config_key(key) or key.lower().endswith("_hash")
+
+
+def _is_redactable_secret_value(v: Any) -> bool:
+    # YAML ``password: 12345678`` loads as an int, so any non-empty scalar counts — except bools
+    # (a flag, not a credential) and ``${VAR}`` references, which name a secret rather than hold it.
+    if isinstance(v, str):
+        return bool(v) and not _ENV_PLACEHOLDER_RE.match(v)
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _redact_secret_tree(node: Any, _depth: int = 0) -> Any:
+    if _depth > 20:
+        return node
+    if isinstance(node, list):
+        return [_redact_secret_tree(item, _depth + 1) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for k, v in node.items():
+        if _is_dashboard_secret_leaf(k) and _is_redactable_secret_value(v):
+            out[k] = DASHBOARD_SECRET_PLACEHOLDER
+        else:
+            out[k] = _redact_secret_tree(v, _depth + 1)
+    return out
+
+
+def _redact_dashboard_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    """Copy of ``config`` with dashboard auth secrets replaced by the placeholder."""
+    dashboard = config.get("dashboard")
+    if not isinstance(dashboard, dict):
+        return config
+    dashboard = dict(dashboard)
+    for section in _DASHBOARD_SECRET_SECTIONS:
+        if isinstance(dashboard.get(section), dict):
+            dashboard[section] = _redact_secret_tree(dashboard[section])
+    return {**config, "dashboard": dashboard}
+
+
+def _restore_secret_tree(incoming: dict[str, Any], existing: Any, _depth: int = 0) -> dict[str, Any]:
+    out = {}
+    for k, v in incoming.items():
+        prior = existing.get(k) if isinstance(existing, dict) else None
+        if v == DASHBOARD_SECRET_PLACEHOLDER:
+            # Placeholder = "unchanged": keep the stored value; drop the key when
+            # nothing is stored so the placeholder itself is never persisted.
+            if prior not in (None, ""):
+                out[k] = prior
+        elif isinstance(v, dict) and _depth < 20:
+            out[k] = _restore_secret_tree(v, prior, _depth + 1)
+        elif isinstance(v, list) and _depth < 20:
+            out[k] = _restore_secret_list(v, prior, _depth + 1)
+        else:
+            out[k] = v
+    return out
+
+
+def _restore_secret_list(incoming: list, existing: Any, _depth: int) -> list:
+    """Restore list items positionally against the stored list (redaction keeps positions)."""
+    prior = existing if isinstance(existing, list) else []
+    out = []
+    for i, item in enumerate(incoming):
+        before = prior[i] if i < len(prior) else None
+        if isinstance(item, dict):
+            out.append(_restore_secret_tree(item, before, _depth + 1))
+        elif isinstance(item, list) and _depth < 20:
+            out.append(_restore_secret_list(item, before, _depth + 1))
+        else:
+            out.append(item)
+    return out
+
+
+def _restore_dashboard_secrets(incoming: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    """Undo ``_redact_dashboard_secrets`` on a PUT body against the on-disk config."""
+    dashboard = incoming.get("dashboard")
+    if not isinstance(dashboard, dict):
+        return incoming
+    existing_dash = existing.get("dashboard") if isinstance(existing, dict) else None
+    existing_dash = existing_dash if isinstance(existing_dash, dict) else {}
+    dashboard = dict(dashboard)
+    for section in _DASHBOARD_SECRET_SECTIONS:
+        if isinstance(dashboard.get(section), dict):
+            dashboard[section] = _restore_secret_tree(dashboard[section], existing_dash.get(section))
+    return {**incoming, "dashboard": dashboard}
+
+
 @config_router.get("/api/config")
 async def get_config(profile: Optional[str] = None, include_defaults: bool = True):
     # _profile_scope blocks on the process-wide _SKILLS_PROFILE_LOCK and
@@ -90,7 +191,7 @@ async def get_config(profile: Optional[str] = None, include_defaults: bool = Tru
         profile, lambda: _normalize_config_for_web(load_config() if include_defaults else read_raw_config())
     )
     # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+    return _redact_dashboard_secrets({k: v for k, v in config.items() if not k.startswith("_")})
 
 
 @config_router.get("/api/config/defaults")
@@ -152,7 +253,8 @@ async def update_config(
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
-                incoming = _denormalize_config_from_web(body.config)
+                incoming = _restore_dashboard_secrets(
+                    _denormalize_config_from_web(body.config), existing)
                 merged = _deep_merge(existing, incoming)
                 _drop_carried_route_state(existing, merged)
                 # Compare normalized approvals.mode across the in-memory

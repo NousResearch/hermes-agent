@@ -39,3 +39,15 @@ export {
   type ToolMediaRendererContribution,
   type ToolMediaRendererProps
 } from '@/lib/tool-media-renderers'
+/** A panel in the Kanban card drawer's main column: register a
+ *  `KANBAN_CARD_DRAWER_AREAS.sections` data contribution whose `data.Section`
+ *  is a component taking `KanbanCardDrawerSectionProps` (`board`, `taskId`,
+ *  `status`, `running`). Core mounts each one in the drawer, in order, inside
+ *  its own error boundary. `KanbanCardDrawerSections` is the host the drawer
+ *  renders. */
+export {
+  KANBAN_CARD_DRAWER_AREAS,
+  type KanbanCardDrawerSectionContribution,
+  type KanbanCardDrawerSectionProps,
+  KanbanCardDrawerSections
+} from '@/contrib/kanban-card-drawer'

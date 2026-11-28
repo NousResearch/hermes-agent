@@ -23,6 +23,7 @@ import {
   ErrorState,
   host,
   isSubmitEnter,
+  KanbanCardDrawerSections,
   Loader,
   LogView,
   MessageTextContent,
@@ -1096,6 +1097,15 @@ export function TaskDrawer({
                     onComment={body => commentMut.mutate(body)}
                     onRequeue={body => requeueMut.mutate(body)}
                     running={running}
+                  />
+
+                  {/* Plugin-contributed drawer sections (the `kanban.card.drawer`
+                      area). Nothing renders when no plugin contributes one. */}
+                  <KanbanCardDrawerSections
+                    board={slug}
+                    running={running}
+                    status={task.status}
+                    taskId={task.id}
                   />
                 </div>
               </div>

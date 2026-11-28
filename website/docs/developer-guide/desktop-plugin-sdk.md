@@ -250,6 +250,7 @@ Import the area constants from the SDK; each area has its own `data` payload.
 | Composer | `COMPOSER_AREAS.*` | render slots, or middleware / attachment providers |
 | Model menu rows | `MODEL_MENU_ROW_AREA` | `data: ModelMenuRowContribution` — a leading icon / trailing badge per model |
 | Kanban card badges | `KANBAN_CARD_AREAS.badges` | `data: KanbanCardBadgeContribution` — short text labels per card, painted by the board |
+| Kanban card drawer panel | `KANBAN_CARD_DRAWER_AREAS.sections` | `data: KanbanCardDrawerSectionContribution` — a panel in the card drawer's main column ([Kanban card drawer sections](#kanban-card-drawer-sections)) |
 | Appearance settings | `APPEARANCE_AREAS.extra` | `render` — controls appended to Settings → Appearance |
 | Tool media | `TOOL_MEDIA_RENDERER_AREA` (`'transcript.toolMedia'`) | `data: { tools, render }` — draw the `MEDIA:` files your package's own tools produced ([Tool media renderers](#tool-media-renderers)) |
 | Plugin settings page | `SETTINGS_PLUGINS_AREA` (`'settings.plugins'`) | Use `ctx.registerSettingsPage({ id, title, render, icon?, order?, children? })` — your own entry (with sub-pages) under Settings → Plugins |
@@ -943,6 +944,66 @@ reads of the Kanban plugin's query cache. The whole decoration becomes the
 `board.tenants` instead of the query-cache snapshot, and its color pins map to
 `KANBAN_CARD_BADGE_HUES` (its twelve hues are the same `hsl(n×30 68% 58%)`
 set, in the same order).
+
+#### Kanban card drawer sections {#kanban-card-drawer-sections}
+
+`KANBAN_CARD_DRAWER_AREAS.sections` adds a panel to the main column of the
+Kanban card drawer — the module a card opens. The bundled `kanban-output-log`
+plugin uses it for a live transcript feed; a trace, a cost meter or a diff
+viewer fits the same shape.
+
+A contribution supplies `Section`, a React component the host mounts with the
+drawer's read-only task context. Core owns the host, the ordering and the blast
+wall: a section that throws during render degrades to an inline error in its
+own slot, and the drawer — plus every other section — keeps working. The area
+renders nothing at all when no plugin contributes to it.
+
+```tsx
+import {
+  KANBAN_CARD_DRAWER_AREAS,
+  type KanbanCardDrawerSectionContribution,
+  type KanbanCardDrawerSectionProps
+} from '@hermes/plugin-sdk'
+
+interface KanbanCardDrawerSectionProps {   // frozen; every field is a contract
+  taskId: string        // the card the drawer is showing (t_…)
+  board: string | null  // board slug, or null when the drawer has not resolved one
+  status: string        // the card's column: 'triage', 'ready', 'running', …
+  running: boolean      // true while the card is running — the cue to poll
+}
+
+function DiffPanel({ board, running, taskId }: KanbanCardDrawerSectionProps) {
+  const { data } = useQuery({
+    queryFn: () => myApi(`/tasks/${taskId}/diff?board=${board ?? ''}`),
+    queryKey: ['diff', board, taskId],
+    refetchInterval: running ? 5_000 : false   // poll only while the card runs
+  })
+
+  return <pre>{data?.text ?? 'No diff yet'}</pre>
+}
+
+ctx.register({
+  area: KANBAN_CARD_DRAWER_AREAS.sections,
+  id: 'diff',
+  order: 20,
+  data: { Section: DiffPanel } satisfies KanbanCardDrawerSectionContribution
+})
+```
+
+**Ordering.** Sections render lowest `order` first (default `0`); ties keep
+registration order. Unlike the badge row, this area honours `order` — panels
+stack in a column, so there is nothing to arbitrate.
+
+**Your own data.** The context carries no prose: the card's title, body,
+comments and run output reach you only through your own backend. Reach it with
+`ctx.rest`, which is scoped to *your* plugin's namespace
+(`/api/plugins/<your-plugin>/…`) — a companion plugin cannot call another
+plugin's routes, so a section that needs backend data ships its own.
+
+**Polling and teardown.** `running` is the only cue that the card is live; stop
+polling when it goes false, and drop state paged in for a previous card when
+`taskId` changes. The section unmounts with the drawer, so there is nothing to
+undo in `ctx.onDispose`.
 
 ### Appearance settings
 
@@ -2557,8 +2618,8 @@ pipeline as a trust boundary.
 |----------|---------|
 | Host | `host` (`.state.*`, `.settings`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`, `.composer`, `.spellcheck`, `.sessions`, `.skills`, `.toolsets`, `.profiles`, `.pluginDecisions`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginFiles`, `PluginFolder`, `PluginFileEntry`, `PluginFilesResult`, `PluginOs`, `PluginPet`, `PetSayOptions`, `PetMessageTone`, `PluginAppActionId`, `PluginAppActionInfo`, `PluginRunActionResult`, `PLUGIN_APP_ACTIONS`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
-| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
-| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `SidebarNavPrefsContribution` |
+| Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS`, `MODEL_MENU_ROW_AREA`, `KANBAN_CARD_AREAS`, `KANBAN_CARD_DRAWER_AREAS`, `SESSION_ROW_AREAS`, `SIDEBAR_NAV_PREFS_AREA`, `APPEARANCE_AREAS`, `SETTINGS_PLUGINS_AREA` |
+| Area payloads | `PluginSettingsPage`, `PluginSettingsSubpage` (+ `pluginSettingsHref`), `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider`, `ComposerContextMenuProvider` (+ `ComposerContextMenuItem`, `ComposerContextMenuContext`, `ComposerContextMenuAction`), `SessionRowSlotContribution`, `KanbanCardBadgeContribution` (+ `KanbanCard`, `KanbanCardBoard`, `KanbanCardBadge`, `KanbanCardBadgeTone`, `KANBAN_CARD_BADGE_HUES`, `KANBAN_CARD_BADGE_LIMITS`), `KanbanCardDrawerSectionContribution` (+ `KanbanCardDrawerSectionProps`), `SidebarNavPrefsContribution` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute`, `WorkspacePageHeaderControl` |
 | Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText`, `SandboxedFrame` |

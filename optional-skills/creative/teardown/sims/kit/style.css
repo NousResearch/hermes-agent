@@ -1,0 +1,137 @@
+/* HUD chrome shared by every sim. 1rem = 10px at the 1080x1350 reference
+   size; runtime sets html font-size from the viewport so it scales. */
+
+:root {
+  --bg: #09090a;
+  --fg: #ece6d6;
+  --dim: rgba(236, 230, 214, 0.64);
+  --mute: rgba(236, 230, 214, 0.38);
+  --faint: rgba(236, 230, 214, 0.16);
+  --line: rgba(236, 230, 214, 0.14);
+  --panel: rgba(9, 9, 10, 0.9);
+  --accent: #f2b632;
+  --top: 13.4rem;
+  --bot: 30.5rem;
+}
+:root[data-theme='light'] {
+  --bg: #f3f2ee;
+  --fg: #151515;
+  --dim: rgba(21, 21, 21, 0.66);
+  --mute: rgba(21, 21, 21, 0.42);
+  --faint: rgba(21, 21, 21, 0.16);
+  --line: rgba(21, 21, 21, 0.16);
+  --panel: rgba(243, 242, 238, 0.93);
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+#app {
+  position: fixed; inset: 0; color: var(--fg);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-variant-ligatures: none; -webkit-font-smoothing: antialiased;
+}
+#gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hud { position: absolute; inset: 0; pointer-events: none; }
+.hud.hidden { display: none; }
+.accent { color: var(--accent); }
+
+/* header */
+.hdr {
+  position: absolute; left: 0; right: 0; top: 0; height: var(--top);
+  padding: 2.4rem 2.8rem 0;
+  background: linear-gradient(var(--bg) 0%, var(--bg) 78%, transparent 100%);
+}
+.row { display: flex; align-items: baseline; white-space: nowrap; }
+.row1 { gap: 5.6rem; }
+.title { display: flex; align-items: center; gap: 1.3rem; font-size: 3.6rem; font-weight: 600; letter-spacing: 0.04em; }
+.title .bar { display: inline-block; width: 0.75rem; height: 3.6rem; background: var(--accent); }
+.sub { font-size: 1.75rem; color: var(--dim); letter-spacing: 0.08em; }
+.right { margin-left: auto; font-size: 1.6rem; color: var(--dim); letter-spacing: 0.1em; }
+.row2 { margin-top: 2rem; font-size: 1.95rem; }
+.row2 .stage { width: 21rem; letter-spacing: 0.05em; }
+.row2 .cmd { color: var(--fg); }
+.row2 .time { margin-left: auto; letter-spacing: 0.05em; }
+.prog { position: absolute; left: 2.8rem; right: 2.8rem; bottom: 1.2rem; height: 0.35rem; }
+.prog i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+
+/* viewport overlays */
+.ann { position: absolute; inset: 0; overflow: hidden; }
+.ann div {
+  position: absolute; transform: translate(1.4rem, -50%); white-space: nowrap;
+  font-size: 1.7rem; letter-spacing: 0.04em; color: var(--fg);
+  text-shadow: 0 0 0.6rem var(--bg), 0 0 1.2rem var(--bg);
+}
+.ann div.a { color: var(--accent); }
+.ann div.box {
+  padding: 0.8rem 1.1rem; border: 1px solid var(--line); background: var(--panel);
+  text-shadow: none; line-height: 1.45; font-size: 1.55rem;
+}
+.ann div.box b { color: var(--accent); font-weight: 600; }
+.wm {
+  position: absolute; right: 3rem; bottom: calc(var(--bot) + 1.6rem);
+  font-size: 2.3rem; letter-spacing: 0.06em; color: var(--fg); opacity: 0.3;
+}
+
+/* bottom panel */
+.bot {
+  position: absolute; left: 0; right: 0; bottom: 0; height: var(--bot);
+  display: flex; border-top: 1px solid var(--line); background: var(--panel);
+  padding: 2rem 2.8rem 1.6rem;
+}
+.term { flex: 1; min-width: 0; display: flex; flex-direction: column; padding-right: 2.6rem; }
+.thead { display: flex; align-items: baseline; gap: 2.4rem; font-size: 1.75rem; white-space: nowrap; }
+.thead .host { font-size: 2.1rem; }
+.thead .path { color: var(--dim); }
+.thead .status { margin-left: auto; font-size: 1.5rem; letter-spacing: 0.1em; display: flex; align-items: center; gap: 0.9rem; }
+.thead .status i { width: 1rem; height: 1rem; border-radius: 50%; background: var(--accent); display: inline-block; }
+.prompt { margin-top: 1.9rem; font-size: 2.2rem; white-space: nowrap; overflow: hidden; }
+.logs { margin-top: 1.1rem; font-size: 1.85rem; line-height: 1.52; flex: 1; overflow: hidden; }
+.logs div { white-space: nowrap; overflow: hidden; text-overflow: clip; }
+.logs .ln { color: var(--mute); display: inline-block; width: 6.4rem; }
+.logs .hl { color: var(--accent); }
+.caret { display: inline-block; width: 0.95em; height: 1.05em; vertical-align: -0.15em; background: var(--accent); margin-left: 0.15em; }
+.tfoot { font-size: 1.35rem; color: var(--mute); white-space: nowrap; letter-spacing: 0.04em; }
+.side {
+  width: 31%; border-left: 1px solid var(--line); padding-left: 2.2rem;
+  display: flex; flex-direction: column;
+}
+.shead { font-size: 1.45rem; letter-spacing: 0.12em; }
+.mini { width: 100%; flex: 1; min-height: 0; display: block; margin: 0.8rem 0; }
+.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem 1.4rem; font-size: 1.35rem; color: var(--mute); }
+.stats b { display: block; font-size: 2rem; color: var(--fg); font-weight: 600; letter-spacing: 0.02em; }
+.sfoot { margin-top: 0.8rem; font-size: 1.3rem; color: var(--mute); letter-spacing: 0.05em; }
+.baseline { position: absolute; left: 2.8rem; right: 2.8rem; bottom: 0.9rem; height: 0.25rem; background: var(--line); }
+.baseline i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+
+/* director layers */
+.dir-glitch { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.dir-flash {
+  position: absolute; inset: 0; pointer-events: none; opacity: 0; mix-blend-mode: screen;
+  background: radial-gradient(ellipse 75% 55% at 50% 45%, var(--accent) 0%, transparent 70%), rgba(255,255,255,0.18);
+}
+.dir-story {
+  position: absolute; left: 0; right: 0; top: 0; bottom: 0; pointer-events: none;
+  display: flex; align-items: flex-end; justify-content: center; padding: 0 4.5rem 6rem; opacity: 0;
+}
+.cap { text-align: center; max-width: 96rem; position: relative; }
+.cap::before {
+  content: ''; position: absolute; inset: -6rem -10rem; z-index: -1;
+  background: radial-gradient(ellipse 50% 50% at 50% 55%, rgba(0,0,0,0.62) 0%, rgba(0,0,0,0) 100%);
+}
+:root[data-theme='light'] .cap::before { background: radial-gradient(ellipse 50% 50% at 50% 55%, rgba(243,242,238,0.8) 0%, rgba(243,242,238,0) 100%); }
+.cap-main {
+  font-family: 'Inter', 'Inter Variable', system-ui, sans-serif; font-weight: 800;
+  font-size: 11.5rem; line-height: 0.98; letter-spacing: -0.035em; color: var(--fg);
+  text-shadow: 0 0.4rem 2.4rem rgba(0,0,0,0.55);
+}
+.cap.num .cap-main { font-size: 15rem; font-variant-numeric: tabular-nums; letter-spacing: -0.045em; }
+.cap-main .w { display: inline-block; transform-origin: 50% 70%; }
+.cap-main .w.hl { background: var(--accent); color: #0a0a0a; padding: 0 0.14em; text-shadow: none; border-radius: 0.06em; }
+.cap-sub {
+  margin-top: 2rem; font-size: 2.7rem; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--fg); opacity: 0.85; min-height: 1.3em;
+}
+.cap-tag {
+  display: inline-block; margin-bottom: 1.8rem; padding: 0.5rem 1.2rem; font-size: 2.2rem; letter-spacing: 0.12em;
+  border: 1px solid var(--accent); color: var(--accent); background: rgba(0,0,0,0.5);
+}

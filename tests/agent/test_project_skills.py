@@ -1,6 +1,7 @@
 """Tests for project-local skill discovery (skills.trusted_project_dirs)."""
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,69 @@ class TestPrecedence:
         assert dirs[0] == su.get_skills_dir()
         for d in dirs:
             assert ".agents" not in str(d)
+
+
+class TestSameFileAcrossRoots:
+    """One shared SKILL.md reached through two project roots is one skill, not a duplicate.
+
+    Tools that install a single shared copy and link it into each agent's folder (OpenSpec 2.x,
+    ``npx skills add``) expose the same file from ``.agents/skills`` and ``.hermes/skills``. Marking
+    that pair ambiguous hid the skill from ``skills_list`` and from every ``/command``.
+    """
+
+    @staticmethod
+    def _entry(root: Path, path: Path, name: str = "linked-skill") -> dict:
+        return {"name": name, "tier": su.TIER_PROJECT, "root": root, "path": path}
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="dir symlinks need admin rights on Windows")
+    def test_symlinked_copy_resolves_to_one_skill(self, project_env):
+        shared = project_env["repo"] / ".agents" / "skills" / "linked-skill"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text(
+            "---\nname: linked-skill\ndescription: shared\n---\nbody\n"
+        )
+        link_root = project_env["repo"] / ".hermes" / "skills"
+        (link_root / "linked-skill").symlink_to(shared, target_is_directory=True)
+
+        out = su.resolve_skill_catalog([
+            self._entry(link_root, link_root / "linked-skill" / "SKILL.md"),
+            self._entry(shared.parent, shared / "SKILL.md"),
+        ])
+
+        assert sorted(e["status"] for e in out) == ["shadowed", "unique"]
+        assert [e["load_name"] for e in out if e["status"] == "unique"] == ["linked-skill"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="dir symlinks need admin rights on Windows")
+    def test_same_root_link_still_loses_to_shallower_real_path(self, project_env):
+        root = project_env["repo"] / ".agents" / "skills"
+        real = root / "one"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text("---\nname: one\ndescription: one\n---\nbody\n")
+        nested = root / "cat"
+        nested.mkdir()
+        (nested / "one").symlink_to(real, target_is_directory=True)
+
+        out = su.resolve_skill_catalog([
+            self._entry(root, nested / "one" / "SKILL.md", "one"),
+            self._entry(root, real / "SKILL.md", "one"),
+        ])
+
+        status = {e["relative_path"]: (e["status"], e["load_name"]) for e in out}
+        assert status == {"cat/one": ("shadowed", None), "one": ("unique", "one")}
+
+    def test_distinct_files_with_one_name_stay_ambiguous(self, project_env):
+        roots = []
+        for root_name, body in ((".hermes", "one"), (".agents", "two")):
+            skill = project_env["repo"] / root_name / "skills" / "linked-skill"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                f"---\nname: linked-skill\ndescription: {body}\n---\n{body}\n"
+            )
+            roots.append(self._entry(skill.parent, skill / "SKILL.md"))
+
+        out = su.resolve_skill_catalog(roots)
+
+        assert [e["status"] for e in out] == ["ambiguous", "ambiguous"]
 
 
 class TestNonInteractiveInheritance:

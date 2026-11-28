@@ -451,10 +451,27 @@ def skill_candidate_rank(skill_md, root) -> tuple[bool, int]:
 
 def pick_skill_candidate(candidates) -> tuple[Optional[int], list[int]]:
     """Winner index among one identifier's ``(tier, root, rank, skill_md)`` candidates, plus the
-    winning tier's contender indexes. The lowest tier wins; inside it a lone candidate wins, identical
-    copies under one root resolve to the strictly best ``rank``, anything else is ambiguous (None)."""
+    winning tier's contender indexes. The lowest tier wins; inside it a lone candidate wins, views of
+    one file through different roots count as that one skill, identical copies under one root resolve
+    to the strictly best ``rank``, anything else is ambiguous (None)."""
     top = min(c[0] for c in candidates)
     contenders = [i for i, c in enumerate(candidates) if c[0] == top]
+    if len(contenders) > 1:
+        # One SKILL.md reached through two roots (a symlink or junction between skill dirs) is one
+        # skill, as skill_view's resolved-path dedup already treats it. Installers such as OpenSpec
+        # 2.x link a shared .agents/skills copy into .hermes/skills, which made both views ambiguous
+        # and hid the skill from skills_list and every /command. The best-ranked view stands for the
+        # file, so an already-working same-root link still loses to the shallower real path; ties
+        # keep root order. Returned contenders stay in scan order.
+        by_file: dict[str, int] = {}
+        for i in sorted(contenders, key=lambda i: candidates[i][2]):
+            try:
+                real = os.path.realpath(candidates[i][3])
+            except OSError:
+                real = str(candidates[i][3])
+            by_file.setdefault(real, i)
+        kept = set(by_file.values())
+        contenders = [i for i in contenders if i in kept]
     if len(contenders) > 1 and len({candidates[i][1] for i in contenders}) == 1 and provably_same_skill(
             [candidates[i][3] for i in contenders]):
         ranked = sorted(contenders, key=lambda i: candidates[i][2])

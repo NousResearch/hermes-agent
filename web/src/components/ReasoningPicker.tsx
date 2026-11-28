@@ -19,8 +19,7 @@
  * reads/writes the same config the chat PTY was launched from.
  */
 
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Brain } from "lucide-react";
+import { Brain, ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api } from "@/lib/api";
@@ -95,23 +94,27 @@ export function ReasoningPicker({
   );
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 text-xs">
+    <div className="flex items-center gap-1 px-2 py-2 text-xs">
       <div className="flex items-center gap-1.5 text-text-tertiary">
         <Brain className="h-3.5 w-3.5" />
         <span className="text-display tracking-wider">reasoning</span>
       </div>
-      <Select
-        className="ml-auto min-w-0"
-        disabled={!loaded || saving}
-        onValueChange={onSelect}
-        value={effort}
-      >
-        {EFFORT_OPTIONS.map((opt) => (
-          <SelectOption key={opt.value} value={opt.value}>
-            {opt.label}
-          </SelectOption>
-        ))}
-      </Select>
+      <div className="relative ml-auto min-w-0">
+        <select
+          aria-label="Reasoning effort"
+          className="h-9 w-full cursor-pointer appearance-none border border-midground/15 bg-background/40 py-1 pl-2 pr-6 text-left font-courier text-sm text-midground hover:border-midground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/30 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={!loaded || saving}
+          onChange={(event) => onSelect(event.currentTarget.value)}
+          value={effort}
+        >
+          {EFFORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-midground/60" />
+      </div>
     </div>
   );
 }

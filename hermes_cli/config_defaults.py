@@ -2471,8 +2471,8 @@ DEFAULT_CONFIG = {
         # check.
         "min_free_memory_mb": 1536,
         # Stop a screen nobody has used (no computer_use action, browser spawn, viewer or takeover) for this
-        # long; it restarts on the next use. Idle Xvnc + Xfce hold ~220 MB, an abandoned browser far more.
-        # 0 keeps screens up until stopped.
+        # long, and close a computer_use driver unused as long (it keeps an idle-pausing sandbox awake); both
+        # come back on the next use. Idle Xvnc + Xfce hold ~220 MB. 0 keeps both up until stopped.
         "idle_stop_minutes": 30,
         # Where the screen (and with it computer_use and the bot's browser) runs.
         #   auto      follow the terminal backend: inside the docker / ssh / streaming plugin sandbox when one is

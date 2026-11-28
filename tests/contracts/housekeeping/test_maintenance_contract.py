@@ -461,6 +461,21 @@ def test_session_projection_digest_tracks_the_listed_columns_only(backend, scope
     assert store_a.maintenance.session_projection_digest()[1] != first
 
 
+def test_session_projection_revision_is_absent_or_tracks_the_listed_columns(backend, scope_a):
+    store_a = backend.open(scope_a)
+    sid = _live(backend, scope_a, "pr-one")
+    first = store_a.maintenance.session_projection_revision()
+    # CONTRACT: a store without a revision says so (None) and still answers the digest.
+    if first is None:
+        assert store_a.maintenance.session_projection_digest() is not None
+        return
+    # CONTRACT: like the digest, an activity heartbeat leaves the revision as it was; a projected column change moves it.
+    store_a.sessions.touch_activity(sid, time.time(), description="busy", provenance="agent")
+    assert store_a.maintenance.session_projection_revision() == first
+    store_a.sessions.set_title(sid, "renamed")
+    assert store_a.maintenance.session_projection_revision() != first
+
+
 def test_retained_tree_is_live_reads_sessions_inside_the_tree(backend, scope_a, tmp_path):
     store_a = backend.open(scope_a)
     tree = tmp_path / "wt"

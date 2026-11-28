@@ -2,7 +2,7 @@
 
 Registered onto the assembled backend as the ``maintenance`` attribute. Session rows are the sessions reference's row dicts and records (its ``_record`` builds the ``SessionRecord`` every read here starts from, usage and transcript counters included); transcripts are the messages reference's stored rows, read back through ``read_transcript``; deletes run through the sessions reference's ledger check and retirement on one staged authority transaction. Heartbeat rows live under the ``"gateway_heartbeats"`` key (one dict per ``backend_id``, epoch floats). Every public method runs under the backend lock, so each verb is one atomic step.
 
-Reference limits: imported usage columns (tokens, cost, billing) are not stored (the usage reference owns them); imported rows keep ``SessionLineageKind.NONE``; shadowed-checkpoint pruning on import is not modelled; ``tool_names`` in ``export_all`` is the resolved text (the reference has no prompt-store hash); ``session_projection_digest`` hashes the reference's own values, so only digest equality within one backend is meaningful.
+Reference limits: imported usage columns (tokens, cost, billing) are not stored (the usage reference owns them); imported rows keep ``SessionLineageKind.NONE``; shadowed-checkpoint pruning on import is not modelled; ``tool_names`` in ``export_all`` is the resolved text (the reference has no prompt-store hash); ``session_projection_digest`` hashes the reference's own values, so only digest equality within one backend is meaningful. It keeps no list revision (``session_projection_revision`` is None).
 """
 
 from __future__ import annotations
@@ -645,6 +645,9 @@ class InMemoryMaintenance:
             digest.update(repr(tuple(values[field] for field in SESSION_PROJECTION_FIELDS)).encode("utf-8", "backslashreplace"))
             digest.update(b"\0")
         return SESSION_PROJECTION_FIELDS, digest.digest()
+
+    def session_projection_revision(self, *, busy_timeout_s: float = 0.05) -> Optional[tuple[int, int]]:
+        return None  # no list revision kept: callers use session_projection_digest
 
     def _inside(self, worktree_path: str) -> list[Mapping[str, Any]]:
         inside = _inside_tree(worktree_path)

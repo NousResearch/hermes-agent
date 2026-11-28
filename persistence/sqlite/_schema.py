@@ -36,6 +36,7 @@ from ._schema_ddl import (
     DEFERRED_INDEX_SQL, FTS_REBUILD_DEFERRAL_KEY,
     FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL, LEGACY_FTS_TRIGRAM_SQL,
     SCHEMA_SQL, SCHEMA_VERSION, _FTS5_SHADOW_SUFFIXES, _FTS_TRIGGERS, _drop_orphan_fts_shadow_tables,
+    SESSIONS_LIST_REVISION_SQL,
     _ephemeral_child_sql, _sql_json_extract, base_index_recognised, base_source_view_is_stale,
     fts_layout_current, fts_layout_drift, fts_trigram_session_sql,
 )
@@ -1113,6 +1114,9 @@ def _init_schema(holder: StoreHolder):
     except sqlite3.OperationalError as exc:
         logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
     _execute_ddl_skipping_settled_triggers(cursor, DEFERRED_INDEX_SQL)  # same ordering constraint (``active``)
+    # A missing list-revision trigger is (re)created here; that DDL moves the schema cookie
+    # session_projection_revision() returns with the revision, so no stamp read before the gap matches.
+    _execute_ddl_skipping_settled_triggers(cursor, SESSIONS_LIST_REVISION_SQL)
 
     # Heal NULL ``active`` rows on every startup: older reconciler builds added ``active``
     # without NOT NULL DEFAULT 1, so ``WHERE active = 1`` loaders hid whole histories. A

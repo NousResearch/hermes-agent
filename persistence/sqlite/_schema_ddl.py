@@ -5,6 +5,7 @@ import re
 import sqlite3
 from typing import Sequence
 
+from persistence.housekeeping.maintenance import SESSION_PROJECTION_FIELDS
 from persistence.sqlite._state.keys import CRON_PRINCIPAL_ID
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -448,6 +449,32 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+"""
+
+SESSIONS_LIST_REVISION_KEY = "sessions_list_revision"
+SESSIONS_LIST_REVISION_TRIGGERS = (
+    "sessions_list_revision_insert", "sessions_list_revision_delete", "sessions_list_revision_update",
+)
+_LIST_REVISION_BUMP = (
+    f"    INSERT INTO state_meta(key, value) VALUES ('{SESSIONS_LIST_REVISION_KEY}', 1)\n"
+    "    ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1;\n"
+)
+_LIST_REVISION_FIELDS = ", ".join(SESSION_PROJECTION_FIELDS)
+_LIST_REVISION_CHANGES = "\n  OR ".join(f"old.{field} IS NOT new.{field}" for field in SESSION_PROJECTION_FIELDS)
+SESSIONS_LIST_REVISION_SQL = f"""
+CREATE TRIGGER IF NOT EXISTS {SESSIONS_LIST_REVISION_TRIGGERS[0]}
+AFTER INSERT ON sessions
+BEGIN
+{_LIST_REVISION_BUMP}END;
+CREATE TRIGGER IF NOT EXISTS {SESSIONS_LIST_REVISION_TRIGGERS[1]}
+AFTER DELETE ON sessions
+BEGIN
+{_LIST_REVISION_BUMP}END;
+CREATE TRIGGER IF NOT EXISTS {SESSIONS_LIST_REVISION_TRIGGERS[2]}
+AFTER UPDATE OF {_LIST_REVISION_FIELDS} ON sessions
+WHEN {_LIST_REVISION_CHANGES}
+BEGIN
+{_LIST_REVISION_BUMP}END;
 """
 
 # Indexes on later-added columns must run AFTER _reconcile_columns(), or executescript fails on legacy DBs.

@@ -1400,8 +1400,8 @@ def _classify_400(c: _Ctx) -> Verdict:
         # Custom Responses endpoints wrap a replay rejection in a generic bad_request (#95834).
         "encrypted content could not be decrypted or parsed" in msg
     ) or (
-        # OpenCode Zen wraps this OpenAI replay rejection in ``invalid_request_error`` (#111309).
-        "encrypted_content" in msg and "was not issued to this caller" in msg
+        # OpenCode Zen/Go: a foreign replay blob (#111309) or one past its TTL (#156189).
+        "encrypted_content" in msg and ("was not issued to this caller" in msg or "has expired" in msg)
     ) or (
         # Azure Foundry (gpt-6-astra) rejects replayed reasoning from several prior responses this way (#105369).
         "conflicting authenticated continuation identities" in msg

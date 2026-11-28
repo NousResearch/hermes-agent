@@ -1,7 +1,10 @@
+import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import { TRANSLATIONS } from '@/i18n/catalog'
+import type { BundledLocale } from '@/i18n/types'
 
 import { ComposerTriggerPopover } from './trigger-popover'
 
@@ -151,5 +154,98 @@ describe('ComposerTriggerPopover keyboard scrolling', () => {
     rerender(popover(1, onHover, [...items, slashItem('/fourth')]))
 
     expect(drawer.scrollTop).toBe(30)
+  })
+})
+
+describe('ComposerTriggerPopover localization', () => {
+  it('localizes slash group headers, scope headers, skin helpers, and session picker rows across locales', () => {
+    const slashRows: Unstable_TriggerItem[] = [
+      {
+        id: '/new|0',
+        type: 'slash',
+        label: 'new',
+        metadata: { command: '/new', display: '/new', group: 'Session', meta: 'Start chat', rawText: '/new' }
+      },
+      {
+        id: '/skin list|1',
+        type: 'slash',
+        label: 'skin list',
+        metadata: {
+          command: '/skin list',
+          display: '/skin list',
+          group: 'Themes',
+          meta: 'Show available desktop themes',
+          rawText: '/skin list'
+        }
+      },
+      {
+        id: '/skin next|2',
+        type: 'slash',
+        label: 'skin next',
+        metadata: {
+          command: '/skin next',
+          display: '/skin next',
+          group: 'Themes',
+          meta: 'Cycle to the next desktop theme',
+          rawText: '/skin next'
+        }
+      },
+      {
+        id: '/resume|3',
+        type: 'slash',
+        label: 'resume',
+        metadata: {
+          action: 'session-picker',
+          command: '/resume',
+          display: 'Browse all sessions…',
+          group: 'Sessions',
+          meta: '',
+          rawText: '/resume'
+        }
+      }
+    ]
+
+    for (const locale of Object.keys(TRANSLATIONS) as BundledLocale[]) {
+      const copy = TRANSLATIONS[locale].composer
+
+      const { container, unmount } = render(
+        <I18nProvider configClient={null} initialLocale={locale}>
+          <ComposerTriggerPopover
+            activeIndex={0}
+            items={slashRows}
+            kind="/"
+            loading={false}
+            onHover={vi.fn()}
+            onPick={vi.fn()}
+          />
+        </I18nProvider>
+      )
+
+      const text = container.textContent ?? ''
+      expect(text, locale).toContain(copy.slashGroups.Session)
+      expect(text, locale).toContain(copy.slashGroups.Themes)
+      expect(text, locale).toContain(copy.slashGroups.Sessions)
+      expect(text, locale).toContain(copy.slashSkinList)
+      expect(text, locale).toContain(copy.slashSkinNext)
+      expect(text, locale).toContain(copy.slashBrowseAllSessions)
+      unmount()
+
+      const scoped = render(
+        <I18nProvider configClient={null} initialLocale={locale}>
+          <ComposerTriggerPopover
+            activeIndex={0}
+            items={[]}
+            kind="@"
+            loading={false}
+            onHover={vi.fn()}
+            onPick={vi.fn()}
+            scope="folder"
+          />
+        </I18nProvider>
+      )
+
+      expect(scoped.container.textContent ?? '', locale).toContain(copy.referenceScopes.folder)
+      scoped.unmount()
+    }
   })
 })

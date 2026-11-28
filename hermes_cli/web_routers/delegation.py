@@ -125,8 +125,11 @@ async def select_delegation_backend(body: DelegationBackendSelect, profile: Opti
     def _run():
         from agent.delegation_backends import set_global_backend
         from hermes_cli.plugins import discover_plugins
-        with config_write_scope(body.profile or profile):
+        with _profile_scope(body.profile or profile):
+            # Before the mutation span: plugins load on a deadline thread and read
+            # config, which the held config lock would block until they time out.
             discover_plugins()
+        with config_write_scope(body.profile or profile):
             try:
                 set_global_backend(name)
             except PermissionError as exc:
@@ -216,6 +219,12 @@ def _write_backend_block(profile: Optional[str], backend: str, build: Callable[[
     from hermes_cli.config import format_managed_message, is_managed
     if is_managed():
         raise _managed_install(format_managed_message(f"save delegation.backends.{backend}"))
+    if backend == MODEL_MAP:
+        from hermes_cli.plugins import discover_plugins
+        with _profile_scope(profile):
+            # Only model-map validation reads the registered backends; profile
+            # routes validate names and must not acquire an unnecessary plugin load.
+            discover_plugins()
     with config_write_scope(profile):
         config = load_config()
         blocks = _section(_section(config, "delegation"), "backends")

@@ -1,0 +1,24 @@
+name: snap-action
+repo: https://github.com/nini1294/snap-action
+sha: e04cae7d7e743e13d09e681fca500b6758d86ad2
+description: Send your agent a screenshot and it becomes action — bookings, bills and deliveries are auto-filed to a persistent ledger with tappable, time-aware actions.
+maintainer: nini1294
+tier: community
+category: tools
+version: "0.2.0"
+screenshots:
+  - https://raw.githubusercontent.com/nini1294/snap-action/e04cae7d7e743e13d09e681fca500b6758d86ad2/docs/screenshots/travel-keyboard.jpg
+  - https://raw.githubusercontent.com/nini1294/snap-action/e04cae7d7e743e13d09e681fca500b6758d86ad2/docs/screenshots/dinner-keyboard.jpg
+  - https://raw.githubusercontent.com/nini1294/snap-action/e04cae7d7e743e13d09e681fca500b6758d86ad2/docs/screenshots/sale-keyboard.jpg
+  - https://raw.githubusercontent.com/nini1294/snap-action/e04cae7d7e743e13d09e681fca500b6758d86ad2/docs/screenshots/desktop-capture.png
+known_issues:
+  - Telegram inline-keyboard taps and the auto-capture offer need gateway seams (photo hook + callback-handler registration) that are proposed upstream; without them snap_save/snap_list/snap_stats, /snaps and desktop text recall all work, but the Telegram buttons won't respond.
+capabilities:
+  provides_tools:
+    - snap_save
+    - snap_list
+    - snap_get
+    - snap_update
+    - snap_stats
+    - snap_delete
+    - snap_keyboard

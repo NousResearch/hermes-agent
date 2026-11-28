@@ -1,0 +1,42 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: wazza
+description: QC, conform and AI video, image and sound generation for film. Priced before every run.
+source: https://api-pro.wazza.ai/docs/guide
+
+# Official vendor-hosted remote MCP (URL-only, Hermes never spawns a local
+# process for this entry). Streamable HTTP. Native OAuth 2.1 + PKCE S256 +
+# Dynamic Client Registration (RFC 7591), verified live: RFC 9728
+# protected-resource metadata -> AS metadata with registration_endpoint.
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+
+transport:
+  type: http
+  url: https://api-pro.wazza.ai/v1/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - wazza
+    - video
+    - film
+    - qc
+    - loudness
+    - delivery
+    - transcode
+    - generation
+    - dubbing
+  hosts:
+    - wazza.ai
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Wazza (or run `hermes mcp login wazza`). Approve access,
+  then restart the session so tools load. Runs use prepaid
+  Wazza credits; each run shows its price before it starts.

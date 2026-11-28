@@ -320,6 +320,16 @@ method("groups.rename", params=GroupsRenameParams, result=GroupsRenameResult,
        doc="Rename one hosted room atomically with its replay event.")
 
 
+class GroupsMembersUpdateParams(RoomParams):
+    event_id: str
+    expected_revision: int
+    members: list[RoomMemberInput]
+
+
+method("groups.members.update", params=GroupsMembersUpdateParams, result=GroupsRenameResult,
+       doc="Replace the local roster of an idle hosted room while preserving the room and its history.")
+
+
 class GroupsContextParams(RoomParams):
     event_id: str
     purpose: str

@@ -191,6 +191,25 @@ def _store_transcript_event(
                 (event["room_id"], thread_id, int(cutoff["seq"])))
 
 
+def _with_historical_rosters(
+    conn: sqlite3.Connection, room_id: str, events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Give policy replay the roster each event was written under. Wire events stay unchanged."""
+    if not events:
+        return events
+    changes = iter(conn.execute("""SELECT seq, payload_json FROM hosted_room_events
+        WHERE room_id=? AND kind='room.members_changed' AND seq>? ORDER BY seq""", (room_id, events[0]["seq"])))
+    change = next(changes, None)
+    previous = json.loads(change["payload_json"])["previous_members"] if change is not None else None
+    result = []
+    for event in events:
+        while change is not None and change["seq"] <= event["seq"]:
+            change = next(changes, None)
+            previous = json.loads(change["payload_json"])["previous_members"] if change is not None else None
+        result.append({**event, "_historical_members": previous} if previous is not None else event)
+    return result
+
+
 def _discussion_events(
     conn: sqlite3.Connection, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str,
     max_active_events: int,
@@ -219,7 +238,7 @@ def _discussion_events(
         for event in (*map(_event_from_room_row, rows), *(json.loads(row["event_json"]) for row in active_rows))}
     for event in _settled_source_users(conn, room_id=room_id, thread_id=thread_id, events=events_by_seq):
         events_by_seq[int(event["seq"])] = event
-    return [events_by_seq[seq] for seq in sorted(events_by_seq)]
+    return _with_historical_rosters(conn, room_id, [events_by_seq[seq] for seq in sorted(events_by_seq)])
 
 
 # -- per-kind projection handlers (dispatched by _apply_event) -----------
@@ -527,7 +546,7 @@ class SQLiteHostedRoomPolicyRepository:
                     events[int(latest["seq"])] = _event_from_room_row(latest)
                 for event in published:
                     events[int(event["seq"])] = event
-                return [events[seq] for seq in sorted(events)]
+                return _with_historical_rosters(conn, room_id, [events[seq] for seq in sorted(events)])
             row = conn.execute(
                 f"SELECT {_ROOM_EVENT_COLUMNS} FROM hosted_room_events WHERE room_id=? AND seq=?",
                 (room_id, source_event_seq)).fetchone()

@@ -33,6 +33,7 @@ class BotLoopGuardSettings:
     cooldown_seconds: float = 600.0
     max_hops: int = 4
     bot_replies_expect_reply: bool = False
+    chain_scope: str = "channel"
 
 
 def _as_bool(raw, default: bool) -> bool:
@@ -69,6 +70,7 @@ def settings_from_config(cfg) -> BotLoopGuardSettings:
     if not isinstance(block, dict):
         return BotLoopGuardSettings()
     defaults = BotLoopGuardSettings()
+    chain_scope = str(block.get("chain_scope", "")).strip().lower()
     return BotLoopGuardSettings(
         enabled=_as_bool(block.get("enabled"), defaults.enabled),
         max_events=_as_positive_int(block.get("max_events"), defaults.max_events),
@@ -76,7 +78,15 @@ def settings_from_config(cfg) -> BotLoopGuardSettings:
         cooldown_seconds=_as_positive(block.get("cooldown_seconds"), defaults.cooldown_seconds),
         max_hops=_as_positive_int(block.get("max_hops"), defaults.max_hops),
         bot_replies_expect_reply=_as_bool(block.get("bot_replies_expect_reply"), defaults.bot_replies_expect_reply),
+        chain_scope=chain_scope if chain_scope in {"channel", "thread"} else defaults.chain_scope,
     )
+
+
+def _chain_key(conversation: Hashable, thread_id: str | None, settings: BotLoopGuardSettings) -> Hashable:
+    """Keep the channel budget identity intact; only exchanges may be partitioned by thread."""
+    if settings.chain_scope == "thread" and thread_id:
+        return (conversation, str(thread_id))
+    return conversation
 
 
 def configured_bot_user(platform_config, user_id) -> bool:
@@ -157,12 +167,14 @@ class BotLoopGuard:
             events.append(now)
             return True, "ok"
 
-    def chain_admit(self, conversation: Hashable, sender: str, text: str, *, is_bot: bool) -> tuple[bool, str]:
+    def chain_admit(self, conversation: Hashable, sender: str, text: str, *, is_bot: bool,
+                    thread_id: str | None = None) -> tuple[bool, str]:
         """Apply the chain rules to one admitted inbound message. Returns ``(allowed, state)``; state is
         ``disabled``, ``human`` (chain reset), ``ok``, ``max_hops``, ``duplicate`` or ``reply_to_reply``."""
         settings = self._settings()
         if not settings.enabled:
             return True, "disabled"
+        conversation = _chain_key(conversation, thread_id, settings)
         now = self._clock()
         with self._lock:
             self._sweep(now, settings)
@@ -184,12 +196,14 @@ class BotLoopGuard:
             chain.asks.add(ask)
             return True, "ok"
 
-    def note_reply(self, conversation: Hashable, recipient: str) -> None:
+    def note_reply(self, conversation: Hashable, recipient: str, *, thread_id: str | None = None) -> None:
         """Record that this bot's reply to bot ``recipient`` went out. Only a delivered reply makes the
         recipient's next message an answer to an answer: a message still waiting for its turn, or one
         the turn chose to leave unanswered, does not."""
-        if not self._settings().enabled:
+        settings = self._settings()
+        if not settings.enabled:
             return
+        conversation = _chain_key(conversation, thread_id, settings)
         with self._lock:
             chain = self._chains.get(conversation)
             if chain is not None:

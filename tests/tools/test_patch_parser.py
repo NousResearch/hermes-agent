@@ -299,6 +299,107 @@ class TestAdditionOnlyHunks:
         assert file_ops.written.endswith("def new_func():\n    return True\n")
         assert "existing = True" in file_ops.written
 
+    def test_addition_only_followed_by_dependent_modification(self):
+        """A hunk that modifies content inserted by an earlier addition-only hunk must validate and apply."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ import sys @@
++def helper():
++    return 42
+@@ def helper @@
+ def helper():
+-    return 42
++    return 100
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        assert len(ops[0].hunks) == 2
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                return SimpleNamespace(
+                    content="import sys\n\ndef main():\n    pass\n",
+                    error=None,
+                )
+            def write_file(self, path, content, pre_content=None):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True, f"Failed with: {result.error}"
+        assert "return 100" in file_ops.written
+        assert "return 42" not in file_ops.written
+
+    def test_addition_only_followed_by_second_addition_only_hunk(self):
+        """Sequential addition-only hunks must chain their simulated content during validation."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ import sys @@
++def first():
++    pass
+@@ def first @@
++def second():
++    pass
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        assert len(ops) == 1
+        assert len(ops[0].hunks) == 2
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                return SimpleNamespace(
+                    content="import sys\n\ndef main():\n    pass\n",
+                    error=None,
+                )
+            def write_file(self, path, content, pre_content=None):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True, f"Failed with: {result.error}"
+        assert "def first():" in file_ops.written
+        assert "def second():" in file_ops.written
+        assert file_ops.written.index("def first():") < file_ops.written.index("def second():")
+
+    def test_addition_only_creating_ambiguity_fails_validation_atomically(self):
+        """If an addition introduces an ambiguous hint for a later hunk, validation fails before disk write."""
+        patch = """\
+*** Begin Patch
+*** Update File: src/app.py
+@@ ANCHOR = 1 @@
++ANCHOR = 2
+@@ ANCHOR @@
++NEW_SETTING = 3
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            written = None
+            def read_file_raw(self, path):
+                return SimpleNamespace(
+                    content="ANCHOR = 1\nEND = True\n",
+                    error=None,
+                )
+            def write_file(self, path, content, pre_content=None):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is False
+        assert file_ops.written is None, "Validation failure must not touch disk"
+        assert "context hint 'ANCHOR' is ambiguous" in result.error
+        assert "Patch validation failed (no files were modified)" in result.error
+
 
 class TestReadFileRaw:
     """Bug 1 regression tests — files > 2000 lines and lines > 2000 chars."""

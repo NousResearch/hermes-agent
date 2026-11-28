@@ -403,25 +403,19 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
 
 
 def _refresh_credentials_after_401(
-    agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int]
+    agent: Any, api_error: Exception, _retry: TurnRetryState, status_code: Optional[int],
+    error_context: Any = None, classified_reason: Optional[FailoverReason] = None,
 ) -> bool:
     """Per-provider one-shot credential refresh on 401 (codex/xai, vertex, nous, a profile's
-    ``refresh_runtime_credentials``, anthropic), printing user-facing diagnostics when the
-    nous/anthropic refresh fails. Returns True when a refresh succeeded and the call should be retried."""
+    ``refresh_runtime_credentials``, anthropic), printing diagnostics if refresh fails.
+    Codex/xAI also handles xAI's rejected-bearer 403/SSE variant. True means retry the call."""
     from agent.conversation_loop import _credential_refresh_profile
+    from agent.credential_auth_recovery import _refresh_codex_credentials_after_auth_error
 
+    if _refresh_codex_credentials_after_auth_error(agent, _retry, status_code, error_context, classified_reason):
+        return True
     if status_code != 401:
         return False
-    if (
-        agent.api_mode == "codex_responses"
-        and agent.provider in {"openai-codex", "xai-oauth"}
-        and not _retry.codex_auth_retry_attempted
-    ):
-        _retry.codex_auth_retry_attempted = True
-        if agent._try_refresh_codex_client_credentials(force=True):
-            _label = "xAI OAuth" if agent.provider == "xai-oauth" else "Codex"
-            agent._buffer_vprint(f"🔐 {_label} auth refreshed after 401. Retrying request...")
-            return True
     if agent.api_mode == "chat_completions" and agent.provider == "vertex" and not _retry.vertex_auth_retry_attempted:
         _retry.vertex_auth_retry_attempted = True
         if agent._try_refresh_vertex_client_credentials():
@@ -659,7 +653,7 @@ def recover_after_classification(
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
     welcome-tier repair → credit-limited 402 output-cap clamp → ``reasoning.context`` opt-out → Nous paid-entitlement refresh →
-    Codex stale-reasoning strip on 401 ``token_expired`` → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
+    Codex stale-reasoning strip on 401 ``token_expired`` → matching xAI account (before the pool) → credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
     strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
     format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
@@ -695,6 +689,12 @@ def recover_after_classification(
         if _try_refresh_nous_paid_entitlement_credentials(agent):
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
+
+    from agent.credential_auth_recovery import recover_matching_xai_oauth_before_pool
+    if recover_matching_xai_oauth_before_pool(
+        agent, _retry, status_code, error_context, classified.reason,
+    ):
+        return True, False
 
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
         status_code=status_code, has_retried_429=_retry.has_retried_429,
@@ -804,7 +804,9 @@ def recover_after_classification(
             _vlines(agent, "🔕 OAuth subscription doesn't support the 1M-context beta — disabled for this session and retrying...")
             return True, recovered_with_pool
 
-    if _refresh_credentials_after_401(agent, api_error, _retry, status_code):
+    if _refresh_credentials_after_401(
+        agent, api_error, _retry, status_code, error_context=error_context, classified_reason=classified.reason
+    ):
         return True, recovered_with_pool
 
     if _recover_format_errors(agent, api_error, classified, _retry, messages, api_messages):

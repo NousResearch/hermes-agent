@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Union
 from unittest.mock import patch
 
-from agent.agent_runtime_helpers import (
+from agent.agent_runtime_intent import (
     intent_ack_continuation_mode,
     looks_like_codex_intermediate_ack,
 )

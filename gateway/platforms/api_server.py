@@ -3653,7 +3653,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         (``agent.session_persistence.adopt_unanswered_turn``; #115325)."""
         if getattr(self.gateway_runner, "session_authority", None) is not None:
             from gateway.session_api_turn import run_api_turn
-            return await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
+            started_at = time.perf_counter()
+            result, usage = await run_api_turn(self, user_message=user_message, conversation_history=conversation_history,
                 ephemeral_system_prompt=ephemeral_system_prompt, session_id=session_id,
                 stream_delta_callback=stream_delta_callback, tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback, tool_complete_callback=tool_complete_callback,
@@ -3667,6 +3668,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history_from_session=history_from_session, session_history_delivery=session_history_delivery,
                 turn_author=turn_author, resume_unanswered_turn=resume_unanswered_turn, relay_metadata=relay_metadata,
                 approval_notify_callback=approval_notify_callback, approval_session_key=approval_session_key)
+            if usage is not None:
+                self._record_api_metrics(usage, time.perf_counter() - started_at)
+            return result, usage
         loop = asyncio.get_running_loop()
         # ContextVars do not follow run_in_executor threads: capture here, re-enter in _run().
         request_profile = _api_request_profile.get()

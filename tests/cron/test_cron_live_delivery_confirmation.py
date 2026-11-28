@@ -28,6 +28,8 @@ from cron import scheduler_delivery as sched_delivery
 from cron.scheduler import _deliver_result
 from cron.scheduler_delivery import _confirm_adapter_delivery
 from gateway.config import Platform, PlatformConfig
+# Activates the autouse fixture that closes storage handles opened via ``storage_handle``.
+from tests.gateway.fixtures.storage_handles import close_storage_handles  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +423,82 @@ class TestStandaloneSendIsBounded:
 
         assert error is None
         assert f"delivered to telegram:{CHAT_ID}" in caplog.text
+
+
+def _ledger_rows(select):
+    """Rows of the launch home's ``delivery_obligations`` table; ``[]`` when nothing was ledgered
+    yet (the store creates the table on first use). Raw SQL beside the storage interface, the
+    idiom upstream tests use since the ledger moved behind ``persistence_assembly``."""
+    from gateway import delivery_ledger as dl
+    from tests.fixtures.storage_holder import raw_holder
+    from tests.gateway.fixtures.storage_handles import storage_handle
+    with raw_holder(storage_handle(dl._scope().profile_dir))._read_ctx() as conn:
+        if conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'delivery_obligations'").fetchone() is None:
+            return []
+        return conn.execute(f"SELECT {select} FROM delivery_obligations").fetchall()
+
+
+class TestLostCronDeliveryIsLedgered:
+    """Both lanes failed: the payload lands in the delivery ledger as a failed obligation so the
+    reconnect / boot sweeps can redeliver it (I-011 local patch, PENDING #38).
+
+    Cron sends bypass ``send_final_ledgered``, so before this a ``send_path_degraded`` failure
+    left ``sweep_failed_for_runtime`` with no row to claim — the reconnect redelivery spun empty
+    and the message was lost (two confirmed losses: 09-24 watchdog alert, 09-27 inspection cron).
+    """
+
+    def test_both_lanes_failed_records_a_failed_reconnect_only_obligation(self):
+        from gateway import delivery_ledger
+
+        send_result = _SendResult(success=False, error="send_path_degraded")
+
+        # The never-sent shape a contract-conforming sender stamps (``retryable`` marks the
+        # ``delivery_state`` NONE proven nothing left): the reconnect-only payload must land in
+        # exactly one row — ours skips it, ``_queue_for_live_reconnect`` keeps it, no double claim.
+        with patch("cron.scheduler_delivery._standalone_send",
+                   return_value=({"success": False, "error": "WeCom send failed: send_path_degraded",
+                                  "retryable": True}, None)):
+            error, _, standalone_calls = _run(_job(), "inspection report", send_result)
+        assert error is not None and "send_path_degraded" in error
+
+        rows = _ledger_rows("obligation_id, platform, chat_id, content, state, last_error")
+        assert len(rows) == 1
+        oid, platform, chat_id, content, state, last_error = rows[0]
+        assert platform == "telegram" and chat_id == CHAT_ID
+        assert content == "inspection report"
+        assert state == "failed"
+        assert last_error == "send_path_degraded"
+        # The exact string retry_not_before classifies as reconnect-only: due at once after reconnect.
+        assert delivery_ledger.is_reconnect_only(last_error)
+        assert delivery_ledger.retry_not_before(0.0, last_error, 0) == 0.0
+
+    def test_successful_delivery_records_nothing(self):
+        error, _, _ = _run(_job(), "all good", _SendResult(success=True, message_id=9))
+        assert error is None
+        # The table only exists once something was ledgered; absent == nothing recorded.
+        assert _ledger_rows("obligation_id") == []
+
+    def test_generic_error_is_ledgered_with_its_own_text(self):
+        with patch("cron.scheduler_delivery._standalone_send",
+                   return_value=(None, "delivery to telegram:-1001234567890 failed: boom")):
+            error, _, _ = _run(_job(), "payload", _SendResult(success=False, error="adapter down"))
+        assert error is not None
+        rows = _ledger_rows("state, last_error")
+        assert len(rows) == 1
+        assert rows[0][0] == "failed"
+        assert "boom" in rows[0][1] and rows[0][1] != "send_path_degraded"
+
+    def test_maybe_delivered_standalone_failure_ledgers_nothing(self):
+        """A standalone failure the contract cannot prove unsent (no ``retryable``/``delivery``
+        stamp: legacy sender, timeout, lost answer) may already be on screen. A ledger row there
+        would let the sweep post the payload twice, so nothing is ledgered — possible loss over
+        certain duplication, the same fail-safe ``_queue_for_live_reconnect`` gets."""
+        with patch("cron.scheduler_delivery._standalone_send",
+                   return_value=({"success": False, "error": "telegram send failed: boom"}, None)):
+            error, _, _ = _run(_job(), "payload", _SendResult(success=False, error="adapter down"))
+        assert error is not None
+        assert _ledger_rows("obligation_id") == []
 
 
 @pytest.mark.parametrize("cron_cfg,expected", [(None, True), ({"delivery": {"notify": False}}, False)])

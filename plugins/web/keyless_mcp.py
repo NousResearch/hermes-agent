@@ -18,6 +18,7 @@ from plugins.web._common import (
     document as _page, exa_crawl_status, is_origin_http_error, keenable_origin_error, origin_http_error, page_error as _page_error, search_fail,
     search_ok, vendor_error_entry, web_hit as _row,
 )
+from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -277,11 +278,27 @@ def exa_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     return _search("exa", lambda: _parse_exa_search_text(mcp_call(EXA_MCP_URL, "web_search_exa", {"query": query, "numResults": max(1, int(limit))}), limit))
 
 
+# ``web_fetch_exa`` cuts each page at ``maxCharacters`` (3,000 when omitted) and does not mark the
+# cut. Ask for as much as Hermes stores, so the truncate-and-store pipeline decides what the model sees.
+_EXA_FETCH_MAX_CHARACTERS = MAX_STORED_TEXT_CHARS
+# Exa counts ``maxCharacters`` in UTF-16 code units and its formatter trims trailing whitespace,
+# so a page it cut can come back a few characters short of the request.
+_EXA_CUT_SLACK = 64
+
+
+def _exa_page_was_cut(text: str, max_characters: int) -> bool:
+    """Whether the page body (after the ``# Title`` / ``URL:`` header block) filled ``max_characters``,
+    meaning Exa stopped there and the rest of the page was never sent."""
+    body = text.split("\n\n", 1)[-1]
+    return len(body.encode("utf-16-le")) // 2 >= max_characters - _EXA_CUT_SLACK
+
+
 def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
-    """Called per-URL; the tool returns one combined text payload."""
+    """Called per-URL; the tool returns one combined text payload. A page Exa cut at
+    ``_EXA_FETCH_MAX_CHARACTERS`` is prefixed with a notice saying so."""
     def _fetch(url: str) -> dict[str, Any]:
         try:
-            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url]})
+            text = mcp_call(EXA_MCP_URL, "web_fetch_exa", {"urls": [url], "maxCharacters": _EXA_FETCH_MAX_CHARACTERS})
         except KeylessMCPError as exc:
             # ``...: CRAWL_HTTP_429`` is the page's answer, not Exa throttling this client.
             if origin := origin_http_error(exa_crawl_status(exc)):
@@ -289,7 +306,13 @@ def exa_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
             raise
         # Title: first markdown H1 or ``Title:`` line, whichever comes first.
         titles = (_after(s, "# " if s.startswith("# ") else "Title:") for s in map(str.strip, text.splitlines()) if s.startswith(("# ", "Title:")))
-        return _page(url, next(titles, ""), text)
+        title = next(titles, "")
+        if _exa_page_was_cut(text, _EXA_FETCH_MAX_CHARACTERS):
+            logger.info("Exa keyless extract: %s cut by Exa at %d chars", url, _EXA_FETCH_MAX_CHARACTERS)
+            # Leading, so the head+tail window and the stored copy's own cap both keep it.
+            text = (f"[Exa returned only the first {_EXA_FETCH_MAX_CHARACTERS:,} characters of this page; "
+                    "the rest of the page was not fetched.]\n\n" + text)
+        return _page(url, title, text)
 
     return _per_url(urls, _fetch, "exa", catch=KeylessMCPError, hint=True)
 

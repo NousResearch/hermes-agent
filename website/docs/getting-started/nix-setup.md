@@ -539,7 +539,7 @@ Set `auth = "oauth"` for servers using OAuth 2.1. Hermes implements the full PKC
 }
 ```
 
-Tokens are stored in `$HERMES_HOME/mcp-tokens/<server-name>.json` and persist across restarts and rebuilds.
+OAuth state persists across restarts and Nix rebuilds as long as the Hermes home directory is preserved. OAuth JSON state is stored in the active profile's `$HERMES_HOME/mcp-tokens/` directory (`~/.hermes/mcp-tokens/` for the default profile): `<server>.json` stores tokens, `<server>.client.json` stores client registration, and `<server>.meta.json` stores discovered authorization-server metadata, including the token endpoint. Here `<server>` is the sanitized server name used for filenames. Files are created as needed; internal lock, marker, or backup files may also be present.
 
 <details>
 <summary><strong>Initial OAuth authorization on headless servers</strong></summary>
@@ -552,20 +552,29 @@ The first OAuth authorization requires a browser-based consent flow. In a headle
 # Container mode
 docker exec -it hermes-agent \
   hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+docker exec -it hermes-agent hermes mcp login my-oauth-server
 
 # Native mode
 sudo -u hermes HERMES_HOME=/var/lib/hermes/.hermes \
   hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
+sudo -u hermes HERMES_HOME=/var/lib/hermes/.hermes \
+  hermes mcp login my-oauth-server
 ```
 
 The container uses `--network=host`, so the OAuth callback listener on `127.0.0.1` is reachable from the host browser.
 
-**Option B: Pre-seed tokens** — complete the flow on a workstation, then copy tokens:
+**Option B: Pre-seed OAuth state.** Complete authorization on a workstation, then stop Hermes processes using that server before copying the existing JSON state files. The Bash example uses the workstation's `HERMES_HOME`, or the default profile when it is unset; the destination directory must already exist and be writable by your SSH account:
 
 ```bash
 hermes mcp add my-oauth-server --url https://mcp.example.com/mcp --auth oauth
-scp ~/.hermes/mcp-tokens/my-oauth-server{,.client}.json \
-    server:/var/lib/hermes/.hermes/mcp-tokens/
+hermes mcp login my-oauth-server
+state_files=()
+for file in "${HERMES_HOME:-$HOME/.hermes}/mcp-tokens"/my-oauth-server{,.client,.meta}.json; do
+  if [ -f "$file" ]; then
+    state_files+=("$file")
+  fi
+done
+scp "${state_files[@]}" server:/var/lib/hermes/.hermes/mcp-tokens/
 # Ensure: chown hermes:hermes, chmod 0600
 ```
 

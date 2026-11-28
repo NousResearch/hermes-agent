@@ -1,0 +1,17 @@
+name: webrouter
+title: WebRouter
+repo: https://github.com/yogev-nimble/hermes-webrouter
+sha: fda3b8f8ebba4bc052ed1967b61cffdc09ff69dc
+description: "WebRouter search and extract backend for web_search and web_extract: each call goes to one of many search and extraction APIs and falls back to the next when one fails, using free tiers when no API key is set. Disclosure — search queries and every URL passed to web_extract are sent to the backend WebRouter picks for the call (with no key, the free tiers of Nimble, Tavily, You.com, Exa, Parallel, Firecrawl, Jina and Keenable; with a key, that key's service, billed to it), which runs the search or fetches the page on its own servers. Optional backend keys (TAVILY_API_KEY, EXA_API_KEY, NIMBLE_API_KEY and others) are read through Hermes' profile-scoped lookup and sent only to their own backend. No telemetry, stored credentials, shell commands, background processes or self-updater."
+maintainer: yogev-nimble
+tier: community
+category: web
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/yogev-nimble/hermes-webrouter#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

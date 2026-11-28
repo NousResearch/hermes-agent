@@ -27,7 +27,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar, cast
 
-from hermes_constants import mkdir_under_hermes_home
+from hermes_constants import TRANSCRIPT_WRITE_PATIENCE_S, mkdir_under_hermes_home
 from persistence.sqlite._state.common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
 from persistence.sqlite._state.holders import read_only_db_uri
 from persistence.sqlite._state.health import (
@@ -240,7 +240,8 @@ class StoreHolder:
     # optimize); attempt-counted budgets destroyed turns on a healthy store. Transcript
     # writes (failure aborts the turn) get the long budget; observation-only activity
     # writes sit on the response-critical path and get a sub-second one.
-    _WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+    _WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 0.5
+    _TRANSCRIPT_WRITE_PATIENCE_S = TRANSCRIPT_WRITE_PATIENCE_S
     # A live compression lock gets a short wait (compression publishes in seconds), but the lease
     # is a correctness boundary: a writer still locked out afterwards is refused.
     # Observation-only activity heartbeat/label writes (#76354 review S1): these run on (or adjacent to) the

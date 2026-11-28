@@ -16,6 +16,7 @@ from pathlib import Path
 import queue
 import sys
 import threading
+from hermes_constants import TRANSCRIPT_WRITE_PATIENCE_S
 from hermes_dir_acl import make_user_dir
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,9 @@ class WorkerRPC:
                     self._drop()
                     link = self._connection()
                     link.send(request_id, message)
-                response = link.receive(20)
+                # Leave time to deliver the receipt after the owner's SQLite write budget.
+                timeout = TRANSCRIPT_WRITE_PATIENCE_S + 5 if method == 'worker.persist' else 20
+                response = link.receive(timeout)
             except BaseException:
                 # Outcome unknown once sent: surface the error and never resend; the next call redials.
                 self._drop()

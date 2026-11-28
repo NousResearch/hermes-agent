@@ -1,0 +1,39 @@
+name: chat-backgrounds
+repo: https://github.com/samieshmil-blip/hermes-chat-backgrounds
+sha: 81f14087b04c157d137099350689624d893fe77b
+description: >-
+  Per-chat background colour for the Hermes desktop. Every chat wears its own
+  session colour, washed into the theme's own background, and the chat in focus
+  gets a thin rail in the same colour — so two sessions side by side never look
+  the same. Colours come from the app's swatch grid, the system picker or a hex
+  code, all written through host.sessions.setColor; a chat without a colour of
+  its own gets a stable hue from its id. A measured contrast guard thins the
+  wash until the text passes 4.5:1, so white, black and every extreme stay
+  usable, in a light and a dark theme alike. The UI follows the app language
+  (en, ru, de, es, fr, ja, zh, zh-Hant, ar). Disclosure — no network calls, no
+  telemetry, no self-updater, no tools, hooks or middleware. Reads two
+  desktop-local localStorage keys only: hermes.desktop.sessionColors (the
+  per-session colours core itself persists) and its own preferences key; it
+  writes only through host.sessions.setColor and ctx.storage. No prototype
+  patches, no core module overrides and no observers on the document tree: one
+  CSS variable per chat surface, repainted on app-owned signals (session focus,
+  resize, visibility, pointer/key, route change).
+maintainer: samieshmil-blip
+tier: community
+category: desktop
+docs_url: https://github.com/samieshmil-blip/hermes-chat-backgrounds#readme
+version: "1.0.3"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+screenshots:
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/81f14087b04c157d137099350689624d893fe77b/docs/hero.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/81f14087b04c157d137099350689624d893fe77b/docs/hero-light.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/81f14087b04c157d137099350689624d893fe77b/docs/variants.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/81f14087b04c157d137099350689624d893fe77b/docs/menu-session.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/81f14087b04c157d137099350689624d893fe77b/docs/menu-tab.png
+  - https://raw.githubusercontent.com/samieshmil-blip/hermes-chat-backgrounds/81f14087b04c157d137099350689624d893fe77b/docs/picker.png
+requires_hermes: ">=0.23.0"

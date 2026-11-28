@@ -1,7 +1,7 @@
 """Durable delivery-obligation ledger for gateway final responses (rows in the launch home's store,
 written through its coordination repository; owner pid + process-start liveness, bounded retention)
-so a crash between finalize and platform ACK cannot lose a response silently. Checkpoints: record_obligation() 'pending' before
-any send | mark_attempting() 'attempting' right before the await | mark_delivered() 'delivered'
+so a crash between finalize and platform ACK cannot lose a response silently. Checkpoints:
+record_obligation(start_attempt=True) 'attempting' before the final send | mark_delivered() 'delivered'
 only on SendResult.success | mark_failed() 'failed' on a definitive rejection. Crash semantics
 (never silently resend an ambiguous send): pending = never started, redeliver plainly; attempting
 = crashed mid-await, platform MAY have it, redeliver WITH a visible recovered marker; failed =
@@ -234,15 +234,15 @@ def compute_obligation_id(session_key: str, message_ref: str, content: str) -> s
 
 
 def record_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
-                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None) -> None:
-    """Record a final response as owed to the platform (state='pending'); the store prunes old rows
-    in the same write."""
+                      thread_id: Optional[str], content: str, adapter_profile: Optional[str] = None,
+                      start_attempt: bool = False) -> None:
+    """Record an owed response, marking it attempting in the same write when a send starts."""
     pid, started = _owner_stamp()
     with _DB_LOCK, _store() as store:
         store.coordination.record_delivery_obligation(
             obligation_id=obligation_id, session_key=session_key, platform=platform, chat_id=chat_id,
             thread_id=thread_id, content=content, adapter_profile=adapter_profile,
-            owner=OwnerStamp(pid=pid, started_at=started))
+            owner=OwnerStamp(pid=pid, started_at=started), start_attempt=start_attempt)
 
 
 def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: str, chat_id: str,

@@ -1148,8 +1148,275 @@ const zhHant: KanbanMessages = {
   }
 }
 
+const tr: KanbanMessages = {
+  pinBoard: 'Panoyu sabitle',
+  unpinBoard: 'Panonun sabitlemesini kaldır',
+  pinnedBoards: 'Sabitlenen panolar',
+  pinnedBoardsHint: 'Sıralamak için sürükleyin veya Alt + Sol/Sağ tuşlarına basın',
+  nav: 'Kanban',
+  openBoard: 'Kanban: Panoyu aç',
+  newTaskCommand: 'Kanban: Yeni görev',
+  countTip: (running, ready) => `Kanban — ${running} çalışıyor, ${ready} hazır`,
+  col: {
+    triage: {
+      label: 'Ön değerlendirme',
+      help: 'İlk fikirler — planlama ajanı görev tanımını ayrıntılandırır.'
+    },
+    todo: {
+      label: 'Yapılacak',
+      help: 'Bağımlılıkları bekliyor veya atanmamış.'
+    },
+    scheduled: {
+      label: 'Zamanlanmış',
+      help: 'Zamanlanan saati bekliyor.'
+    },
+    ready: {
+      label: 'Hazır',
+      help: 'Bağımlılıklar karşılandı — bir profil atayın, görev dağıtıcısı çalıştırsın.'
+    },
+    running: {
+      label: 'Çalışıyor',
+      help: 'Bir ajan görevi aldı ve üzerinde çalışıyor. Bu durumu görev dağıtıcısı ayarlar.'
+    },
+    blocked: {
+      label: 'Engellendi',
+      help: 'Ajan sizden bilgi veya karar bekliyor.'
+    },
+    review: {
+      label: 'İnceleme',
+      help: 'Bir inceleme ajanı işi kontrol ediyor. Görev dağıtıcısı tarafından ayarlanır.'
+    },
+    done: {
+      label: 'Bitti',
+      help: 'Tamamlandı; bağımlı alt görevler hazır olur.'
+    },
+    archived: {
+      label: 'Arşivlendi',
+      help: 'Varsayılan pano görünümünden gizlendi.'
+    }
+  },
+  locked: {
+    review: 'İnceleme ajanı kartı aldığında görev dağıtıcısı kartı bu sütuna taşır.',
+    running: 'Bir ajan kartı aldığında görev dağıtıcısı kartı bu sütuna taşır.',
+    scheduled: 'Bir çalıştırma saati gerekir. Ajanlar ayarlar. Kartlar bu sütuna sürüklenemez.'
+  },
+  arcRunning: 'Bir ajan şu anda bunun üzerinde çalışıyor.',
+  arcStale:
+    'Ajan görevi aldı ancak iki dakikadan uzun süredir durum sinyali gelmedi. Görev dağıtıcısı görevi yeniden alacak.',
+  title: 'Kanban',
+  orchestrationSettings: 'Orkestrasyon ayarları',
+  newTask: 'Yeni görev',
+  filterCards: 'Kartları filtrele…',
+  noMatch: 'Filtrelerle eşleşen görev yok',
+  noTasks: 'Bu panoda görev yok',
+  open: 'Aç',
+  select: modifier => `Seç (${modifier}-tıklama)`,
+  deselect: 'Seçimi kaldır',
+  moveTo: label => `${label} sütununa taşı`,
+  delete: 'Sil',
+  reviewChecking: 'Bir inceleme ajanı tamamlanan işi kontrol ediyor.',
+  attachedTip: name => `${name} atandı. Görev dağıtıcısı bir sonraki kontrolde (en geç 1 dk.) görevi iletir.`,
+  orchestratorTip: name => `${name} (orkestratör) sonraki kontrolde görevi alır ve ayrıntılarını yazar.`,
+  autoAssignTip: name =>
+    `Bir sonraki görev dağıtımı kontrolünde “${name}” profiline (kanban.default_assignee) otomatik atanır.`,
+  wontRun: 'çalışmaz',
+  wontRunTip:
+    'Hazır kartlar yalnızca bir profil atandığında çalışır. Kartı açıp bir atanan belirleyin veya orkestrasyon ayarlarında varsayılan bir atanan yapılandırın.',
+  noHeartbeat: 'durum sinyali yok',
+  expand: label => `${label} genişlet`,
+  collapse: label => `${label} daralt`,
+  newTaskIn: label => `${label} içinde yeni görev`,
+  empty: 'Boş',
+  unassigned: 'atanmamış',
+  filters: 'Filtreler',
+  allProfiles: 'Tüm profiller',
+  allTenants: 'Tüm kiracılar',
+  showArchived: 'Arşivlenenleri göster',
+  groupRunning: 'Çalışanları profile göre grupla',
+  nSelected: n => `${n} seçildi`,
+  moveToShort: 'Taşı',
+  assign: 'Ata',
+  unassignAction: 'Atamayı kaldır',
+  archive: 'Arşivle',
+  clearSelection: 'Seçimi temizle (Esc)',
+  refused: 'reddedildi',
+  bulkFailed: (failed, total, err) =>
+    `${total} işlemden ${failed} tanesi başarısız — ${err}. Başarısız kartlar seçili kalır.`,
+  titlePlaceholderTriage: 'İlk fikir — bir ajan ayrıntılandıracak',
+  titlePlaceholder: 'Başlık',
+  descPlaceholder: 'Açıklama (isteğe bağlı)',
+  priority: 'Öncelik',
+  workspace: 'Çalışma alanı',
+  boardDefaultSuffix: ' · pano varsayılanı',
+  workspaceOverride: 'Çalışma alanı yolu (isteğe bağlı özel yol)',
+  model: 'Model',
+  modelInherit: 'Profil varsayılanı',
+  modelClear: 'Özel model seçimini kaldır',
+  modelHint:
+    'Bu görevi belirli bir modelde ve düşünme derinliğinde çalıştırır. Ayarlanmazsa atanan profilin kendi modeli kullanılır.',
+  workspaceInherit: 'Panonun proje dizinini devralır',
+  workspaceInheritDir: dir => `${dir} devralmak için boş bırakın`,
+  workspaceInheritGeneric: 'Panonun proje dizinini devralmak için boş bırakın.',
+  assignee: 'Atanan',
+  defaultOption: name => `${name} (varsayılan)`,
+  parkedOption: 'atanmamış (park edildi — çalışmaz)',
+  skills: 'Beceriler (virgülle ayrılmış)',
+  skillsPlaceholder: 'translation, github',
+  parent: 'Üst görev (bitene kadar engeller)',
+  noParent: '— üst görev yok —',
+  goalMode: 'Hedef modu (değerlendirici tamamlandığını onaylayana kadar ajan çalışmayı sürdürür)',
+  creating: 'Oluşturuluyor…',
+  createTask: 'Görev oluştur',
+  cancel: 'İptal',
+  save: 'Kaydet',
+  estimate: 'Tahmin',
+  estimateEffort: 'Eforu tahmin et',
+  estimating: 'Tahmin ediliyor…',
+  reEstimate: 'Yeniden tahmin et',
+  makesModelCall: 'bir model çağrısı yapar',
+  estimateTip: 'Token sayısını ve karmaşıklığı yaklaşık olarak hesaplamak için bir yardımcı model çağrısı yapar.',
+  estimateTipLong:
+    'Token sayısını ve karmaşıklığı tahmin etmek için kısa bir yardımcı model çağrısı yapar. Sonuç yaklaşık bir tahmindir ve fatura tutarını göstermez.',
+  roughEstimate: 'Kaba tahmin',
+  tokUnit: 'tok',
+  couldNotEstimate: 'Tahmin edilemedi',
+  complexity: {
+    S: 'Küçük',
+    M: 'Orta',
+    L: 'Büyük'
+  },
+  introBody:
+    'Kartları siz çalıştırmazsınız — ajanlar çalıştırır. Bir kartı atananıyla Hazır sütununa koyun, bir ajan bir dakika içinde alır. Atanan yoksa çalışmaz. Ön değerlendirme: bir ajan önce fikri düzgün bir göreve dönüştürür. Yapılacak: diğer kartları bekliyor. Zamanlanmış: bir zamanlayıcı bekliyor. Çalışıyor ve İnceleme sütunlarını ajanlar yönetir. Engellendi: sizi bekliyor. Sonuçlar kartta geri gelir.',
+  introGotIt: 'Anladım',
+  evtCreated: (where, assignee) => `oluşturuldu${where ? ` (${where})` : ''}${assignee ? ` · ${assignee} atandı` : ''}`,
+  evtMovedTo: col => `${col} sütununa taşındı`,
+  evtParentReopened: parent => `üst görev ${parent} yeniden açıldı`,
+  evtAssignedTo: assignee => `${assignee} atandı`,
+  evtUnassigned: 'atama kaldırıldı',
+  evtCommentBy: author => `${author} tarafından yorum`,
+  evtClaimedReview: 'bir inceleme ajanı tarafından alındı',
+  evtClaimedWorker: 'bir ajan tarafından alındı',
+  evtWorkerStarted: 'ajan çalışmaya başladı',
+  evtCompleted: 'tamamlandı',
+  evtBlocked: 'engellendi — insan girdisi gerekiyor',
+  evtUnblocked: col => `engel kaldırıldı${col ? ` → ${col}` : ' → Hazır'}`,
+  evtReclaimed: 'yeniden alındı — kuyruğa döndü',
+  evtSpecified: 'görev tanımı ön değerlendirme ajanı tarafından yazıldı',
+  evtPromoted: "bağımlılıklar tamamlandı — Hazır'a yükseltildi",
+  evtScheduled: 'sonraya zamanlandı',
+  evtArchived: 'arşivlendi',
+  evtReprioritized: priority => `öncelik ${priority} olarak ayarlandı`,
+  someone: 'biri',
+  metaPriority: 'Öncelik',
+  metaTenant: 'Kiracı',
+  metaCreatedBy: 'Oluşturan',
+  metaCreated: 'Oluşturuldu',
+  metaWorkerPid: 'Ajan işlem kimliği (PID)',
+  blockKindTip: kind =>
+    kind === 'needs_input'
+      ? 'Ajan sizden bilgi veya karar bekliyor.'
+      : kind === 'capability'
+        ? 'Ajan, gereken bir yeteneğe erişemedi.'
+        : kind === 'transient'
+          ? 'Ajan geçici bir hata nedeniyle görevi tamamlayamadı.'
+          : 'Ajan, tamamlanması gereken bir bağımlılık bildirdi.',
+  blockReason: 'Engel türü',
+  blockRecurrences: 'Engel tekrarları',
+  blockRecurrencesTip: 'Bir insan engeli kaldırdıktan sonra bu görevin aynı nedenle yeniden engellenme sayısı.',
+  consecutiveFailures: 'Ardışık başarısızlıklar',
+  lastFailureError: 'Son başarısızlık',
+  unblockedMessage: id => `${id} engeli kaldırıldı. Görev bir sonraki kontrolde çalıştırılmaya hazır.`,
+  readyUnassignedTitle: 'Hazır ama atanmamış — bu kart asla çalışmayacak.',
+  readyUnassignedBody:
+    'Görev dağıtıcısı yalnızca atananı olan Hazır kartları alır. Yukarıdaki Atanan alanından bir profil seçin (veya orkestrasyon ayarlarında varsayılan bir atanan belirleyin), bir dakika içinde çalışır.',
+  diagnosticsN: n => `Tanılama · ${n}`,
+  commandCopied: 'Komut kopyalandı',
+  description: 'Açıklama',
+  editDescription: 'Açıklamayı düzenle',
+  cancelEdit: 'Düzenlemeyi iptal et',
+  noDescription: 'Henüz açıklama yok.',
+  result: 'Sonuç',
+  latestSummary: 'En son özet',
+  dependencies: 'Bağımlılıklar',
+  blockedBy: 'Şununla engellendi',
+  blocks: 'Şunları engeller',
+  comments: n => `Yorumlar · ${n}`,
+  commentsHelpRunning:
+    'Bu görev çalışıyor. Notunuz birkaç saniye içinde ajanın devam eden turuna eklenir. Görevi durdurmanız gerekmez. “Notla yeniden kuyruğa al” ise görevi notunuz bağlamdayken baştan başlatır.',
+  commentsHelp: 'Yorumlar görev başlığına eklenir. Bir ajan görevi aldığında onları bağlamının parçası olarak okur.',
+  send: 'Gönder',
+  comment: 'Yorum',
+  messageWorker: 'Çalışan ajana mesaj…',
+  addComment: 'Bir yorum ekle…',
+  deliveredLive: 'Çalışan ajana birkaç saniye içinde iletildi.',
+  requeueWithNote: 'Notla yeniden kuyruğa al',
+  notePosted: 'Not gönderildi — görev yeniden kuyruğa alındı',
+  activity: n => `Etkinlik · ${n}`,
+  runs: n => `Çalıştırmalar · ${n}`,
+  workerLog: 'Ajan günlüğü',
+  workerLogTail: 'Ajan günlüğü · son',
+  attachments: n => `Ekler · ${n}`,
+  noAttachments: 'Henüz ek yok.',
+  uploadAttachment: 'Ek yükle',
+  taskActions: 'Görev eylemleri',
+  copyTaskId: 'Görev kimliğini kopyala',
+  copyTitle: 'Başlığı kopyala',
+  copiedId: id => `${id} kopyalandı`,
+  copiedTitle: 'Başlık kopyalandı',
+  close: 'Kapat',
+  working: 'çalışıyor',
+  board: 'Pano',
+  newBoard: 'Yeni pano',
+  switchBoard: 'Panoyu değiştir',
+  newBoardDots: 'Yeni pano…',
+  exportDots: 'Dışa aktar…',
+  importDots: 'İçe aktar…',
+  renameDots: 'Yeniden adlandır…',
+  settingsDots: 'Ayarlar…',
+  exportBoardTitle: 'Panoyu dışa aktar…',
+  importBoardTitle: 'Panoyu içe aktar…',
+  boardExported: path => `Pano ${path} konumuna aktarıldı`,
+  boardImported: name => `${name} içe aktarıldı`,
+  boardImportedAs: slug => `O ad alınmıştı — ${slug} olarak içe aktarıldı`,
+  renameBoardTitle: 'Panoyu yeniden adlandır',
+  deleteBoardTitle: name => `"${name}" silinsin mi?`,
+  deleteBoardConfirm: 'Pano silinmez, arşivlenir — görevleri ve ekleri diskte kalır ve geri yüklenebilir.',
+  boardArchived: path => `Pano ${path} konumuna arşivlendi`,
+  boardSettingsFor: name => `Pano ayarları — ${name}`,
+  name: 'Ad',
+  boardNamePlaceholder: 'Pano adı',
+  slug: slug => `slug: ${slug}`,
+  project: 'Proje',
+  noProject: 'Proje yok (geçici sanal alanlar)',
+  projectHintPre:
+    'Yeni görevler projenin deposunda çalışır (görev başına bir worktree); her görev yine de oluşturulurken çalışma alanını geçersiz kılabilir. Projeleri şununla yönetin: ',
+  projectHintCmd: 'hermes project',
+  createBoard: 'Pano oluştur',
+  orchestratorProfile: 'Orkestratör profili',
+  defaultAssignee: 'Varsayılan atanan',
+  defaultParen: '(varsayılan)',
+  autoDecompose: 'Ön değerlendirme görevlerini otomatik ayrıştır',
+  profileDescriptions: 'Profil açıklamaları',
+  profileDescriptionsHint:
+    'Açıklamalar ayrıştırıcının yönlendirmesine rehberlik eder. Yardımcı modelle otomatik üretin veya kendiniz yazın.',
+  profileGoodAt: 'Bu profil ne konuda iyi?',
+  auto: 'Otomatik',
+  notify: {
+    completedTitle: 'Görev tamamlandı',
+    blockedTitle: 'Görev engellendi — yanıtınız gerekiyor',
+    blockLoopTitle: 'Görev ön değerlendirmea yönlendirildi — bir karar gerekiyor',
+    gaveUpTitle: 'Görev durduruldu',
+    gaveUpBody: "Hermes bu görevi tamamlayamadı. Nedenini görmek ve yeniden atamak için Kanban'ı açın.",
+    crashedTitle: 'Görev bir sorunla karşılaştı — Hermes otomatik olarak yeniden deneyecek',
+    timedOutTitle: 'Görev çok uzun sürdü — Hermes otomatik olarak yeniden deneyecek',
+    openKanban: "Kanban'ı aç",
+    artifacts: (n: number) => `${n} yapıt`
+  }
+}
+
 /** Registered via `ctx.i18n.register` at plugin load (disposer tracked). */
-export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, zh, 'zh-hant': zhHant }
+
+export const KANBAN_LOCALES: PluginLocaleBundles = { en, ja, tr, zh, 'zh-hant': zhHant }
 
 // Bind the message SHAPE to a plugin translator: string leaves resolve now,
 // function leaves forward their args through t(path, …). One tiny generic

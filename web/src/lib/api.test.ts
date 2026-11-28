@@ -113,6 +113,21 @@ describe("api.getModelOptions", () => {
   });
 });
 
+describe("api.getSessions internal runs (#156048)", () => {
+  it("asks for internal runs only when the caller opts in", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ sessions: [], total: 0, limit: 20, offset: 0 });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getSessions(20, 0, { profile: "default", excludeSources: ["cron"] });
+    await api.getSessions(20, 0, { profile: "default", includeInternal: true });
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).not.toContain("include_internal");
+    expect(urls[1]).toContain("include_internal=1");
+  });
+});
+
 describe("management profile scope", () => {
   it("sends explicit WhatsApp re-pair consent to the selected profile", async () => {
     const fetchMock = jsonFetchMock({ pairing_id: "fresh", status: "starting" });

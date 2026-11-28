@@ -49,6 +49,20 @@ def subagent_listing_scope(
     return True, [s for s in excluded if s != SUBAGENT_SOURCE] or None
 
 
+def hide_internal_sources(exclude_sources: list[str] | None) -> list[str]:
+    """``exclude_sources`` plus every internal source (``INTERNAL_LISTING_SOURCES``) it lacks.
+
+    One-shot, kanban and tool runs are executions, not conversations: every picker hides them,
+    and one-shots carry no title (#151820). A list that does not name a source keeps them out
+    whatever else it excludes, so a client sending ``exclude_sources=cron`` still gets a list of
+    conversations (#156048, #148148).
+    """
+    from persistence.conversation.sessions import INTERNAL_LISTING_SOURCES
+
+    merged = list(exclude_sources or [])
+    return merged + [s for s in INTERNAL_LISTING_SOURCES if s not in merged]
+
+
 def parse_session_listing_args(raw_args: str) -> tuple[bool, bool, str, str | None]:
     """Parse `/sessions`-style args into ``(include_all_sources, include_unnamed, target, search_query)``.
 

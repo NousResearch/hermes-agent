@@ -974,7 +974,7 @@ export default function SessionsPage() {
     if (!silent) sessionsRequestRef.current = requestId;
     if (!silent) setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE, sessionQueryOptions)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE, { ...sessionQueryOptions, includeInternal: true })
       .then((resp) => {
         if (requestId !== sessionsRequestRef.current) return;
         setSessions(resp.sessions);
@@ -1063,7 +1063,7 @@ export default function SessionsPage() {
         })
         .catch(() => {});
       api
-        .getSessions(50, 0, sessionQueryOptions)
+        .getSessions(50, 0, { ...sessionQueryOptions, includeInternal: true })
         .then((r) => {
           if (cancelled) return;
           setOverviewSessions(r.sessions);

@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
-from hermes_cli.session_listing import subagent_listing_scope
+from hermes_cli.session_listing import hide_internal_sources, subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _listing_filters, _session_latest_descendant, _session_rows
@@ -207,12 +207,15 @@ def get_sessions(
     limit: int = Query(20, ge=0, le=100), offset: int = Query(0, ge=0), min_messages: int = 0,
     archived: str = "exclude", order: str = "created", source: str | None = None, sources: str | None = None,
     exclude_sources: str | None = None, cwd_prefix: str | None = None, full: bool = False,
-    profile: Optional[str] = None):
+    profile: Optional[str] = None, include_internal: bool = False):
     """List sessions.
 
     ``order=recent`` sorts by latest activity across the compression chain, so
     a long-running chat stays on page one after it auto-compresses onto a fresh
     id.  Rows omit ``system_prompt`` / ``model_config`` unless ``full=1``.
+    One-shot, kanban and tool runs are left out unless ``source``/``sources``
+    names them or ``include_internal=1`` asks for every source (the dashboard
+    Sessions page, whose filters cover automation runs).
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -233,6 +236,9 @@ def get_sessions(
             include_subagents, exclude_list = subagent_listing_scope(
                 home, source=source or None, sources=source_list or None,
                 exclude_sources=_csv(exclude_sources) or None)
+            # After the subagent scope: it reads an empty exclusion list as the recents shape.
+            if not (source or source_list or include_internal):
+                exclude_list = hide_internal_sources(exclude_list)
             scope = dict(
                 source=source or None, sources=source_list or None,
                 exclude_sources=exclude_list or None, cwd_prefix=(cwd_prefix or None),

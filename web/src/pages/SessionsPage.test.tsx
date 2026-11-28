@@ -190,6 +190,17 @@ describe("SessionsPage per-row profile routing (#99387)", () => {
   });
 });
 
+describe("SessionsPage lists internal runs (#156048)", () => {
+  it("asks /api/sessions for every source, one-shot, kanban and tool runs included", async () => {
+    await renderSessionsPage([{ id: "run-1", source: "oneshot", title: null, started_at: 1, message_count: 1 }]);
+    const calls = apiMocks.getSessions.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    for (const call of calls) {
+      expect((call[2] as { includeInternal?: boolean }).includeInternal).toBe(true);
+    }
+  });
+});
+
 describe("structured reasoning rendering (#59957)", () => {
   const reasoningSession = () => {
     apiMocks.getSessionMessages.mockResolvedValue({

@@ -390,6 +390,7 @@ export interface SessionQueryOptions {
   source?: string | null;
   sources?: string[];
   excludeSources?: string[];
+  includeInternal?: boolean; // one-shot, kanban and tool runs are left out otherwise
 }
 
 function normalizeSessionQueryOptions(
@@ -415,6 +416,7 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
   if (options.excludeSources && options.excludeSources.length > 0) {
     next = appendQueryParam(next, "exclude_sources", options.excludeSources.join(","));
   }
+  next = appendQueryParam(next, "include_internal", options.includeInternal ? "1" : undefined);
   return appendProfileParam(next, options.profile);
 }
 

@@ -219,66 +219,101 @@ def _nvidia_smi_path() -> str | None:
 
 
 def _nvidia_vram() -> tuple[int, int, str, int | None] | None:
-    """(total bytes, free bytes, name, optional packed PCI ID) from the shared nvidia-smi query, or None."""
+    """(total bytes, free bytes, name, optional packed PCI ID) of the first adapter.
+
+    Local-model fit stays on GPU 0. The managed runtime does not split one model
+    across cards, so a second adapter must not inflate the budget or replace this
+    identity.
+    """
     query = _cached_nvidia_gpu_query()
     if query is None:
         return None
     return query["total_bytes"], query["free_bytes"], query["gpu_name"], query.get("gpu_pci_id")
 
 
-_gpu_query_cache: tuple[float, dict | None] | None = None
+_gpu_query_cache: tuple[float, list[dict] | None] | None = None
 # The statusbar polls /api/local-models/hardware every 5s and the endpoint needs
 # name/util/vram; the budget probe needs total/free. One shared query (with a TTL
 # shorter than the poll) serves both, so one poll = one nvidia-smi spawn (#120262)
 # instead of two, and the spawn carries CREATE_NO_WINDOW so a console-less backend
 # never flashes a window (#101895).
 _GPU_QUERY_TTL_S = 4.0
+_NVIDIA_SMI_QUERY = "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu"
 
 
-def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
-    """One nvidia-smi read shared by the budget probe and the hardware endpoint.
-
-    Returns ``dict(gpu_name=, total_bytes=, free_bytes=, used_bytes=, gpu_util_percent=,
-    gpu_pci_id=)`` or None when nvidia-smi is absent, fails, or is not an NVIDIA card.
-    Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
-    """
-    global _gpu_query_cache
-    now = time.monotonic()
-    if _gpu_query_cache is not None and now - _gpu_query_cache[0] < ttl_s:
-        return _gpu_query_cache[1]
-
-    exe = _nvidia_smi_path()
-    if exe is None:
-        _gpu_query_cache = (now, None)
+def _parse_nvidia_gpu_row(index: int, row: list[str]) -> dict | None:
+    """One nvidia-smi CSV row, or None when the numbers are missing (``[N/A]``)."""
+    if len(row) < 6:
         return None
-
-    from hermes_cli._subprocess_compat import windows_hide_flags
-    with suppress(OSError, ValueError, subprocess.TimeoutExpired):
-        out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
-            creationflags=windows_hide_flags(), check=False)
-        if out.returncode != 0 or not out.stdout.strip():
-            _gpu_query_cache = (now, None)
-            return None
-        total_mib, free_mib, name, raw_id, used_mib, util = next(
-            csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True))
-        pci_id = None
-        with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
-            pci_id = int(raw_id, 16)
-        data = {
-            "gpu_name": name.strip(),
+    total_mib, free_mib, name, raw_id, used_mib, util = row[:6]
+    pci_id = None
+    with suppress(ValueError):  # N/A or unsupported identity must not lose memory data.
+        pci_id = int(raw_id, 16)
+    try:
+        parsed = {
+            "index": index,
+            "gpu_name": name.strip().strip('"'),
             "total_bytes": int(total_mib) << 20,
             "free_bytes": int(free_mib) << 20,
             "used_bytes": int(used_mib) << 20,
             "gpu_util_percent": int(util),
             "gpu_pci_id": pci_id,
         }
-        _gpu_query_cache = (now, data)
-        return data
+    except ValueError:
+        return None
+    return parsed
+
+
+def _cached_nvidia_gpus(ttl_s: float = _GPU_QUERY_TTL_S) -> list[dict]:
+    """Every NVIDIA adapter from one shared nvidia-smi read, in driver index order.
+
+    Returns ``[]`` when nvidia-smi is absent, fails, or yields no usable row.
+    Cached for ``ttl_s`` (failures too — a missing smi must not spawn per poll).
+    """
+    global _gpu_query_cache
+    now = time.monotonic()
+    if _gpu_query_cache is not None and now - _gpu_query_cache[0] < ttl_s:
+        return list(_gpu_query_cache[1] or [])
+
+    exe = _nvidia_smi_path()
+    if exe is None:
+        _gpu_query_cache = (now, None)
+        return []
+
+    from hermes_cli._subprocess_compat import windows_hide_flags
+    with suppress(OSError, subprocess.TimeoutExpired):
+        out = subprocess.run(
+            [exe, _NVIDIA_SMI_QUERY, "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
+            creationflags=windows_hide_flags(), check=False)
+        if out.returncode != 0 or not out.stdout.strip():
+            _gpu_query_cache = (now, None)
+            return []
+        gpus = []
+        for index, row in enumerate(
+                csv.reader(out.stdout.strip().splitlines(), skipinitialspace=True)):
+            parsed = _parse_nvidia_gpu_row(index, row)
+            if parsed is not None:
+                gpus.append(parsed)
+        if not gpus:
+            _gpu_query_cache = (now, None)
+            return []
+        _gpu_query_cache = (now, gpus)
+        return list(gpus)
     _gpu_query_cache = (now, None)
-    return None
+    return []
+
+
+def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
+    """First adapter from the shared nvidia-smi read.
+
+    Returns ``dict(index=, gpu_name=, total_bytes=, free_bytes=, used_bytes=,
+    gpu_util_percent=, gpu_pci_id=)`` or None when no adapter is usable.
+    Budget and vendor identity stay on this row so a second card cannot
+    replace them. The full list is ``_cached_nvidia_gpus()``.
+    """
+    gpus = _cached_nvidia_gpus(ttl_s)
+    return gpus[0] if gpus else None
 
 
 def _cuda_driver_pool() -> tuple[int, bool | None] | None:

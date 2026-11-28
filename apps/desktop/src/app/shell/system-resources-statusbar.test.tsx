@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, render, renderHook, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $localModelsEnabled } from '@/store/local-models-flag'
@@ -95,5 +95,52 @@ describe('system-resources statusbar polling', () => {
     })
 
     expect(getLocalHardware).not.toHaveBeenCalled()
+  })
+
+  it('aggregates every installed GPU in the chip and lists each in the menu', async () => {
+    getLocalHardware.mockResolvedValue({
+      gpu_name: 'NVIDIA RTX PRO 6000 A',
+      gpu_util_percent: 1,
+      vram_total_bytes: 96 * (1 << 30),
+      vram_used_bytes: 1 << 30,
+      vram_usable_bytes: 90 * (1 << 30),
+      ram_total_bytes: 256 * (1 << 30),
+      ram_available_bytes: 200 * (1 << 30),
+      uma: false,
+      gpus: [
+        {
+          index: 0,
+          name: 'NVIDIA RTX PRO 6000 A',
+          util_percent: 1,
+          vram_used_bytes: 1 << 30,
+          vram_total_bytes: 96 * (1 << 30),
+          vram_free_bytes: 95 * (1 << 30)
+        },
+        {
+          index: 1,
+          name: 'NVIDIA RTX PRO 6000 B',
+          util_percent: 40,
+          vram_used_bytes: 8 * (1 << 30),
+          vram_total_bytes: 96 * (1 << 30),
+          vram_free_bytes: 88 * (1 << 30)
+        }
+      ]
+    })
+
+    $localModelsEnabled.set(true)
+    $statusbarHiddenIds.set([])
+    const { result, unmount } = renderHook(() => useSystemResourcesStatusbarItem())
+
+    // Aggregate-only chip: mean(1, 40) = 21%, physical 9/192 GiB.
+    await waitFor(() => expect(result.current.label).toBe('Σ GPU 21% · VRAM 9.0/192.0 GiB'))
+    expect(result.current.title).toContain('arithmetic mean')
+
+    const panel = render(<>{result.current.menuContent}</>)
+
+    expect(panel.getByRole('region', { name: 'GPU 0 · NVIDIA RTX PRO 6000 A' })).toBeTruthy()
+    expect(panel.getByRole('region', { name: 'GPU 1 · NVIDIA RTX PRO 6000 B' })).toBeTruthy()
+    expect(panel.getByText('Σ All GPUs')).toBeTruthy()
+    expect(within(panel.getByRole('region', { name: 'GPU 1 · NVIDIA RTX PRO 6000 B' })).getByText('40%')).toBeTruthy()
+    unmount()
   })
 })

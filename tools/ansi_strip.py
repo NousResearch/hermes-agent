@@ -71,6 +71,22 @@ def sanitize_display_text(text: str) -> str:
     return _CONTROL_CHARS_RE.sub("", text)
 
 
+_SGR_RE = re.compile(r"\x1b\[[0-9;:]*m")
+
+
+def sanitize_for_tty(text: str, stream=None) -> str:
+    """Model text bound for a real terminal: only SGR colour/style survives, every other escape
+    (OSC 52 clipboard writes, OSC 0 titles, ``ESC[2J`` clears, ``ESC[H`` homing) and bare control
+    char is dropped. Pipes and files (``stream`` not a TTY) get the text unchanged."""
+    import sys
+    stream = sys.stdout if stream is None else stream
+    if not text or not _HAS_CONTROL.search(text) or not getattr(stream, "isatty", lambda: False)():
+        return text
+    parts = _SGR_RE.split(text)
+    sgrs = _SGR_RE.findall(text) + [""]
+    return "".join(sanitize_display_text(part) + sgr for part, sgr in zip(parts, sgrs))
+
+
 def strip_unicode_tags(text: str) -> str:
     """Remove invisible Unicode TAG chars (a prompt-injection smuggling channel in
     untrusted tool output); valid emoji tag sequences are preserved.

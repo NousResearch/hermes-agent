@@ -293,7 +293,8 @@ def _run_quiet_single_query(cli, effective_query, emitter=None):
     ):
         print(t("gateway.model.error_prefix", error=result["error"]), file=sys.stderr)
     elif response:
-        print(response)
+        from tools.ansi_strip import sanitize_for_tty
+        print(sanitize_for_tty(response))
 
     # ONE exit-code decision point for this driver, shared with the non-quiet one-shot
     # path via _single_query_exit_code: a quota/billing wall keeps the EX_TEMPFAIL

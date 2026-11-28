@@ -2971,7 +2971,7 @@ class _StreamingCall(StreamingWaitMonitor):
         from agent.chat_completion_helpers_tool_calls import _ToolCallAccumulator
         tool_calls = _ToolCallAccumulator()
         tool_calls_acc = tool_calls.acc
-        from agent.reasoning_carriers import StreamCarriers
+        from agent.reasoning_carriers import StreamCarriers, is_google_thought_delta
         carriers = StreamCarriers()
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
@@ -3055,6 +3055,13 @@ class _StreamingCall(StreamingWaitMonitor):
             # whose deltas carry only this field otherwise trips the empty-stream guard (#56516).
             if reasoning_text is None and isinstance(getattr(delta, "model_extra", None), dict):
                 reasoning_text = delta.model_extra.get("reasoning_content") or delta.model_extra.get("reasoning")
+            # Vertex / Google OpenAI-compat streams thought summaries in ``delta.content`` tagged
+            # with ``delta.extra_content.google.thought = True`` instead of ``delta.reasoning_content``.
+            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            if delta_content and is_google_thought_delta(delta):
+                if not reasoning_text:
+                    reasoning_text = delta_content
+                delta_content = ""
             # A profile-declared text carrier doubles as the readable reasoning.
             reasoning_text = carriers.feed(delta, reasoning_text)
             if reasoning_text:
@@ -3100,9 +3107,7 @@ class _StreamingCall(StreamingWaitMonitor):
             if isinstance(delta_refusal, str) and delta_refusal:
                 refusal_parts.append(delta_refusal)
 
-            # Text (list-of-blocks deltas flattened once); possible echoed SSE is
-            # buffered until it can be judged.
-            delta_content = flatten_message_text(getattr(delta, "content", None), sep="")
+            # Text (already flattened above; thought-tagged Google/Vertex chunks were cleared).
             if delta_content:
                 content_parts.append(delta_content)
                 if content_watch.feed(delta_content):

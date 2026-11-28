@@ -201,14 +201,16 @@ describe('titlebar reservation lifecycle', () => {
     expect(reservation('left')).toBe('200px')
 
     chipWidth = 200
+    // Contributed pages are OVERLAYS now (they used to mount in the workspace
+    // with their own titlebar chrome): like Settings, an open one owns the
+    // window, the app clusters step aside and nothing remeasures underneath.
     fireEvent.click(screen.getByText('Kanban'))
-    expect(screen.getByText('Openplanet').closest('[data-titlebar-cluster="left"]')).not.toBeNull()
-    expect(globalThis.document.querySelector('[data-titlebar-cluster="right"]')).not.toBeNull()
-    expect(reservation('left')).toBe('310px')
+    expect(globalThis.document.querySelector('[data-titlebar-cluster]')).toBeNull()
+    expect(reservation('left')).toBe('200px')
 
     fireEvent.click(screen.getByText('Settings'))
     expect(globalThis.document.querySelector('[data-titlebar-cluster]')).toBeNull()
-    expect(reservation('left')).toBe('310px')
+    expect(reservation('left')).toBe('200px')
 
     chipWidth = 90
     fireEvent.click(screen.getByText('Chat'))

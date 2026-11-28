@@ -14,7 +14,7 @@ import { OFFICIAL_SKILLS_KEY } from '@/store/hub-actions'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
-import { PanelEmpty } from '../overlays/panel'
+import { Panel, PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
@@ -51,6 +51,11 @@ interface CapabilitiesViewProps extends React.ComponentProps<'section'> {
    *  remote-target door — a bot living on another registered gateway gets the
    *  live surface pointed at ITS backend. Ignored without `fixedProfile`. */
   fixedConnection?: string
+  /** Overlay door (sidebar nav, ⌘K, deep links): render as a card floating over
+   *  the chat, like Settings, instead of a workspace page — reaching
+   *  Capabilities must not take the session tabs away. */
+  overlay?: boolean
+  onClose?: () => void
 }
 
 /** The Capabilities page SHELL: tab selection, the search header, the profile /
@@ -62,6 +67,8 @@ export function CapabilitiesView({
   embedded = false,
   fixedConnection,
   fixedProfile,
+  overlay = false,
+  onClose,
   setStatusbarItemGroup: _setStatusbarItemGroup,
   ...props
 }: CapabilitiesViewProps) {
@@ -166,11 +173,12 @@ export function CapabilitiesView({
     )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
-  return (
+  const page = (
     <PageSearchShell
       {...props}
       activeTab={mode}
       onTabChange={id => setMode(id as CapabilityMode)}
+      overlay={overlay}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
       // The profile picker shares the tab row. Plugins scopes only its Agent
@@ -187,6 +195,12 @@ export function CapabilitiesView({
       <div className="flex h-full flex-col">{loadGate ?? tabContent[mode]()}</div>
     </PageSearchShell>
   )
+
+  if (!overlay) {
+    return page
+  }
+
+  return <Panel onClose={() => onClose?.()}>{page}</Panel>
 }
 
 // Feature-detection flag for plugins (Bot Mode): TRUE means this build's

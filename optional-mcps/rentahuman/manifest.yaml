@@ -17,9 +17,7 @@ tools:
   # Start with public read-only discovery. Account access and state-changing
   # tools stay disabled until the user explicitly selects them in mcp configure.
   default_enabled:
-    - search_humans
-    - browse_taste_humans
-    - list_bounties
+    - list_humans
     - search_bounties
 
 suggest:
@@ -33,7 +31,11 @@ suggest:
 post_install: |
   On first connection, Hermes opens a browser to sign in to RentAHuman and
   approve access to your account. By default, this catalog entry enables only
-  public, read-only discovery tools. Account data and tools that post or fund
+  public, read-only discovery tools for people and open bounties. If you
+  installed before the v2 catalog update, use the configure command below
+  to select list_humans instead of search_humans.
+
+  Account data and tools that post or fund
   bounties, message people, accept applicants, book services, or manage payments
   remain disabled until you explicitly select them with:
     hermes mcp configure rentahuman

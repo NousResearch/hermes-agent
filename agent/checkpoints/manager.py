@@ -66,8 +66,7 @@ from typing import Optional
 
 from utils import env_int
 
-# Pinned name: these lines stay under `hermes logs --component tools`.
-logger = logging.getLogger("tools.checkpoint_manager")
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants

@@ -1517,6 +1517,35 @@ platform:
     confirm_cancel: "取消"
     prompt_other: "✏️ 其他（輸入答案）"
     prompt_expired: ⌛ 該提示已不再等待回答。請以一般訊息傳送您的回覆。
+egress:
+  status:
+    title: "出口代理狀態"
+    enabled: "已啟用"
+    binary: "執行檔"
+    binary_version: "執行檔版本"
+    config: "設定"
+    ca_cert: "CA 憑證"
+    tunnel_port: "通道連接埠"
+    process: "程序"
+    listening: "正在監聽"
+    credential_source: "憑證來源"
+    enforce_on_docker: "強制用於 Docker"
+    affirmative: "是"
+    negative: "否"
+    missing: "（缺少）"
+    unknown: "（未知）"
+    not_generated: "（尚未產生）"
+    stopped: "（已停止）"
+    scope: "適用範圍：此版本僅支援 Docker 後端"
+    token_mappings: "權杖對應"
+    uncovered_providers: "未涵蓋的提供者（實際憑證在沙箱內仍然可見）"
+    setup_hint: "下一步：執行 `hermes egress setup` 產生權杖並寫入 proxy.yaml。"
+    start_hint: "下一步：啟動 Docker 沙箱前，請執行 `hermes egress start`。"
+    real_env: "實際環境變數"
+    upstream: "上游主機"
+    proxy_token: "代理權杖"
+    show_tokens_warning: "已完整顯示代理權杖，可能仍儲存在 shell 歷程記錄中。可在指令執行後清除該記錄。"
+
 slash:
   rewind:
     description: "回溯至先前的提示以編輯並重新傳送,或從該處分支 (Esc Esc)"

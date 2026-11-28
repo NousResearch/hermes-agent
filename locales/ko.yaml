@@ -1517,6 +1517,35 @@ platform:
     confirm_cancel: "취소"
     prompt_other: "✏️ 기타 (직접 입력)"
     prompt_expired: ⌛ 이 프롬프트는 더 이상 답변을 기다리지 않아요. 일반 메시지로 답변을 보내 주세요.
+egress:
+  status:
+    title: "이그레스 프록시 상태"
+    enabled: "활성화"
+    binary: "바이너리"
+    binary_version: "바이너리 버전"
+    config: "설정 파일"
+    ca_cert: "CA 인증서"
+    tunnel_port: "터널 포트"
+    process: "프로세스"
+    listening: "연결 대기 중"
+    credential_source: "자격 증명 출처"
+    enforce_on_docker: "Docker에서 사용 강제"
+    affirmative: "예"
+    negative: "아니요"
+    missing: "(찾을 수 없음)"
+    unknown: "(알 수 없음)"
+    not_generated: "(생성되지 않음)"
+    stopped: "(중지됨)"
+    scope: "적용 범위: 이번 릴리스에서는 Docker 백엔드만 지원"
+    token_mappings: "토큰 매핑"
+    uncovered_providers: "보호 대상에서 제외된 제공업체(실제 자격 증명이 샌드박스 안에서 여전히 보임)"
+    setup_hint: "다음 단계: `hermes egress setup`을 실행하여 토큰을 발급하고 proxy.yaml을 작성하세요."
+    start_hint: "다음 단계: Docker 샌드박스를 시작하기 전에 `hermes egress start`를 실행하세요."
+    real_env: "실제 환경 변수"
+    upstream: "업스트림 호스트"
+    proxy_token: "프록시 토큰"
+    show_tokens_warning: "프록시 토큰이 그대로 출력되었습니다. 셸 기록에 남을 수 있으니 이 명령을 실행한 후 기록을 지우는 것이 좋습니다."
+
 slash:
   rewind:
     description: "이전 프롬프트로 되감아 편집 후 다시 보내거나, 그 지점에서 분기 (Esc Esc)"

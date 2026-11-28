@@ -1517,6 +1517,35 @@ platform:
     confirm_cancel: "取消"
     prompt_other: "✏️ 其他（输入回答）"
     prompt_expired: ⌛ 该提示已不再等待回答。请以普通消息发送您的回复。
+egress:
+  status:
+    title: "出站代理状态"
+    enabled: "已启用"
+    binary: "二进制文件"
+    binary_version: "二进制文件版本"
+    config: "配置"
+    ca_cert: "CA 证书"
+    tunnel_port: "隧道端口"
+    process: "进程"
+    listening: "正在监听"
+    credential_source: "凭据来源"
+    enforce_on_docker: "强制用于 Docker"
+    affirmative: "是"
+    negative: "否"
+    missing: "（缺失）"
+    unknown: "（未知）"
+    not_generated: "（未生成）"
+    stopped: "（已停止）"
+    scope: "适用范围：此版本仅支持 Docker 后端"
+    token_mappings: "令牌映射"
+    uncovered_providers: "未覆盖的提供方（真实凭据在沙箱内仍然可见）"
+    setup_hint: "下一步：运行 `hermes egress setup` 生成令牌并写入 proxy.yaml。"
+    start_hint: "下一步：启动 Docker 沙箱前，运行 `hermes egress start`。"
+    real_env: "实际环境变量"
+    upstream: "上游主机"
+    proxy_token: "代理令牌"
+    show_tokens_warning: "已完整显示代理令牌，可能仍保存在 shell 历史记录中。可以在命令结束后清除该记录。"
+
 slash:
   rewind:
     description: "回溯到之前的提示以编辑并重新发送,或从该处分叉 (Esc Esc)"

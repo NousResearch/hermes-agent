@@ -1517,6 +1517,35 @@ platform:
     confirm_cancel: "Cancelar"
     prompt_other: "✏️ Outro (digitar resposta)"
     prompt_expired: ⌛ Essa solicitação não está mais aguardando resposta. Envie sua resposta como uma mensagem normal.
+egress:
+  status:
+    title: "Status do proxy de saída"
+    enabled: "Ativado"
+    binary: "Binário"
+    binary_version: "Versão do binário"
+    config: "Configuração"
+    ca_cert: "Certificado da CA"
+    tunnel_port: "Porta do túnel"
+    process: "Processo"
+    listening: "Escutando"
+    credential_source: "Origem das credenciais"
+    enforce_on_docker: "Uso obrigatório no Docker"
+    affirmative: "sim"
+    negative: "não"
+    missing: "(ausente)"
+    unknown: "(desconhecido)"
+    not_generated: "(ainda não gerado)"
+    stopped: "(parado)"
+    scope: "Escopo: apenas o backend Docker nesta versão"
+    token_mappings: "Mapeamentos de tokens"
+    uncovered_providers: "Provedores sem proteção (as credenciais reais ainda estão visíveis dentro da sandbox)"
+    setup_hint: "Próximo passo: execute `hermes egress setup` para gerar os tokens e gravar o arquivo proxy.yaml."
+    start_hint: "Próximo passo: execute `hermes egress start` antes de iniciar sandboxes Docker."
+    real_env: "Variável de ambiente real"
+    upstream: "Destino upstream"
+    proxy_token: "Token do proxy"
+    show_tokens_warning: "Os tokens do proxy foram exibidos por inteiro e podem permanecer no histórico do shell. Considere limpar o histórico após este comando."
+
 slash:
   rewind:
     description: "Retroceder a um prompt anterior para editá-lo e reenviá-lo, ou bifurcar a partir dali (Esc Esc)"

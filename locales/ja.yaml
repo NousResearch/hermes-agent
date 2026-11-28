@@ -1517,6 +1517,35 @@ platform:
     confirm_cancel: "キャンセル"
     prompt_other: "✏️ その他（回答を入力）"
     prompt_expired: ⌛ このプロンプトはもう回答を待っていません。通常のメッセージとして返信を送ってください。
+egress:
+  status:
+    title: "egress プロキシの状態"
+    enabled: "有効"
+    binary: "バイナリ"
+    binary_version: "バイナリのバージョン"
+    config: "設定ファイル"
+    ca_cert: "CA 証明書"
+    tunnel_port: "トンネルポート"
+    process: "プロセス"
+    listening: "接続待ち受け中"
+    credential_source: "認証情報の取得元"
+    enforce_on_docker: "Docker での使用を強制"
+    affirmative: "はい"
+    negative: "いいえ"
+    missing: "（見つかりません）"
+    unknown: "（不明）"
+    not_generated: "（未生成）"
+    stopped: "（停止中）"
+    scope: "適用範囲：このリリースでは Docker バックエンドのみ対応"
+    token_mappings: "トークンのマッピング"
+    uncovered_providers: "保護対象外のプロバイダー（実際の認証情報は引き続きサンドボックス内で参照できます）"
+    setup_hint: "次の手順：`hermes egress setup` を実行してトークンを発行し、proxy.yaml に書き込みます。"
+    start_hint: "次の手順：Docker サンドボックスを起動する前に `hermes egress start` を実行してください。"
+    real_env: "実際の環境変数"
+    upstream: "上流ホスト"
+    proxy_token: "プロキシトークン"
+    show_tokens_warning: "プロキシトークンがすべて表示されました。シェルの履歴に残る場合があるため、このコマンドの実行後に履歴を消去することを検討してください。"
+
 slash:
   rewind:
     description: "以前のプロンプトまで巻き戻して編集・再送信、またはそこから分岐 (Esc Esc)"

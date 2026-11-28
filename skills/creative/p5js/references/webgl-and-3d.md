@@ -6,7 +6,7 @@
 function setup() {
   createCanvas(1920, 1080, WEBGL);
   // Origin is CENTER, not top-left
-  // Y-axis points UP (opposite of 2D mode)
+  // Positive Y points DOWN by default, as in 2D; WEBGL origin is centered.
   // Z-axis points toward viewer
 }
 ```

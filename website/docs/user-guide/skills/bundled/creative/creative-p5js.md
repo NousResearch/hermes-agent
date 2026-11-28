@@ -200,8 +200,8 @@ Single HTML file. Structure:
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Project Name</title>
-  <script>p5.disableFriendlyErrors = true;</script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/p5.min.js"></script>
+  <script>p5.disableFriendlyErrors = true;</script>
   <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.3/addons/p5.sound.min.js"></script> -->
   <!-- <script src="https://unpkg.com/p5.js-svg@1.6.0"></script> -->  <!-- SVG export -->
   <!-- <script src="https://cdn.jsdelivr.net/npm/ccapture.js-npmfixed/build/CCapture.all.min.js"></script> -->  <!-- video capture -->
@@ -464,7 +464,7 @@ Required when embedding multiple sketches on one page or integrating with framew
 ### WebGL Mode Gotchas
 
 - `createCanvas(w, h, WEBGL)` — origin is center, not top-left
-- Y-axis is inverted (positive Y goes up in WEBGL, down in P2D)
+- Positive Y points down by default in both WEBGL and P2D; WEBGL places the origin at the canvas center.
 - `translate(-width/2, -height/2)` to get P2D-like coordinates
 - `push()`/`pop()` around every transform — matrix stack overflows silently
 - `texture()` before `rect()`/`plane()` — not after

@@ -619,10 +619,10 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             # review fork reads a skill file with read_file (now whitelisted dispatch-side), register the
             # read the same way skill_view does, so a follow-up skill_manage(action='patch') on the loaded
             # file is accepted. A partial read doesn't count — the guard requires the CURRENT full content
-            # to have been seen. No-op outside review forks (mark_background_review_skill_read gates on
-            # is_background_review).
+            # to have been seen; the mark carries this snapshot's digest, so a later change is refused.
+            # No-op outside review forks (mark_background_review_skill_read gates on is_background_review).
             from tools.skill_manager_guards import mark_background_review_skill_read
-            mark_background_review_skill_read(Path(resolved_str))
+            mark_background_review_skill_read(Path(resolved_str), version[-1].hex() if version else None)
         except Exception:
             logger.debug("background-review read-mark failed", exc_info=True)
     return count

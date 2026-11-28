@@ -262,19 +262,23 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
             shutil.rmtree(snap_root, ignore_errors=True)
             return tool_error(snap_err, success=False)
         # Single-op path with the gate bypassed (the batch already cleared/staged it).
+        from tools.skill_manager_guards import _batch_operation, _begin_batch_mark_journal, _end_batch_mark_journal
         results = []
-        rollback_failed = False
+        rollback_failed = rolled_back = False
         token = _smt._skill_gate_bypass.set(True)
+        journal = _begin_batch_mark_journal()
         try:
             for i, op in enumerate(operations):
-                raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
-                                              task_id=task_id, session_id=session_id)
+                with _batch_operation():  # this call is the batch's own: it journals its mark moves
+                    raw = _smt._skill_manage_from({**op, "name": names[i], "operations": None},
+                                                  task_id=task_id, session_id=session_id)
                 try:
                     parsed = json.loads(raw)
                 except Exception:
                     parsed = {"success": False, "error": "unparseable op result"}
                 if not parsed.get("success"):
                     note, rollback_failed = _rollback(snapshots, _smt._find_skill, results)
+                    rolled_back = True  # the read marks the batch moved go back with the files
                     fail = {  # key order is wire-visible
                         "success": False,
                         "error": (f"operations[{i}] ({op['action']} on '{names[i]}') failed: "
@@ -294,6 +298,7 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
                 results.append(entry)
         finally:
             _smt._skill_gate_bypass.reset(token)
+            _end_batch_mark_journal(journal, rolled_back)
             if rollback_failed:
                 # Keep the snapshots so the operator can still recover by hand.
                 logger.warning("skill_manage batch rollback failed, snapshots kept at %s", snap_root)

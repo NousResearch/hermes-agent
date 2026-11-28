@@ -23,6 +23,25 @@ export function receiptUserRowIds(receipt: PersistedTurn): number[] {
 export const isTurnUserBubble = (message: ChatMessage) =>
   message.role === 'user' && !message.hidden && !message.id.startsWith('user-queued-')
 
+export function needsCompletionTranscript(
+  messages: ChatMessage[],
+  receipt: PersistedTurn | null | undefined,
+  { adoptedRunningTurn, sawAssistantPayload }: { adoptedRunningTurn: boolean; sawAssistantPayload: boolean }
+): boolean {
+  if (adoptedRunningTurn || !sawAssistantPayload) {
+    return true
+  }
+
+  // A complete receipt covers one prompt. Only user_row_ids attests that it
+  // is visible; user_row_id alone can address a hidden automation prompt.
+  const promptRowId = receipt?.complete === true ? receipt.user_row_ids?.[0] : undefined
+
+  return (
+    isRowId(promptRowId) &&
+    !messages.some(message => isTurnUserBubble(message) && transcriptRowIds(message).includes(promptRowId))
+  )
+}
+
 /**
  * Give the turn's on-screen user bubbles the stored row ids its completion
  * receipt names. A host that queues the turn (the session authority) writes the

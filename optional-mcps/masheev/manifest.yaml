@@ -1,0 +1,35 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: masheev
+connector_slug: masheev
+description: >-
+  AI-first unified inbox for WhatsApp, SMS, phone calls, email, Instagram
+  and website chat. Triage customer conversations, look up contacts, check
+  channel health and tune Masheev AI agents.
+source: https://docs.masheev.com/agents
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration;
+# Hermes's MCP client + mcp_oauth_manager handle discovery, PKCE, token
+# exchange, and refresh.
+transport:
+  type: http
+  url: https://api.masheev.com/api/agents/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - masheev
+  hosts:
+    - masheev.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with
+  Masheev (or run `hermes mcp login masheev`). Pick a workspace and
+  the actions to allow; sending customer messages is off unless you
+  tick it. Then restart the session so tools load.

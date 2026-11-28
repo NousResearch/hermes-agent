@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { memo, type ReactNode, useDeferredValue, useEffect, useRef, useState } from 'react'
+import { memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+import { useDebounced } from '../../hooks/use-debounced'
 import { DetailColumn, ListColumn, MasterDetail } from '../../master-detail'
 import { PanelEmpty } from '../../overlays/panel'
 import { CapabilitySearch } from '../ui/capability-search'
@@ -61,6 +62,11 @@ interface CatalogBrowserProps {
 }
 
 const PAGE_SIZE = 60
+/** A query re-derives the whole feed (the skills snapshot is ~105k rows), so the
+ *  filter waits for the typing to pause: 300 ms, the same pause the command
+ *  palette's marketplace search takes. The search field itself stays controlled,
+ *  so every character lands immediately; only the feed work waits. */
+const SEARCH_DEBOUNCE_MS = 300
 /** Related entries listed under a detail. */
 const RELATED_COUNT = 3
 // The skills hub carries ~10k distinct tags; the rail is for browsing, search covers the tail.
@@ -333,7 +339,11 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const c = t.catalog
   const cardView = useStore($catalogCardView)
   const { data, isPending, error, refetch } = useCatalog(kind)
-  const deferredQuery = useDeferredValue((query ?? '').trim().toLowerCase())
+  // A query re-derives the whole feed (the skills snapshot is ~105k rows), so the
+  // filter only sees a paused query: a burst of keys costs one pass, not one per
+  // key, while the field itself stays controlled and instant.
+  const settledQuery = useDebounced((query ?? '').trim().toLowerCase(), SEARCH_DEBOUNCE_MS)
+  const deferredQuery = useDeferredValue(settledQuery)
   const [selectedId, setSelectedId] = useState<string | null>(selectedEntryId ?? null)
   const [detailOpen, setDetailOpen] = useState(false)
   const [limit, setLimit] = useState(PAGE_SIZE)
@@ -369,9 +379,21 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const root = useRef<HTMLDivElement>(null)
   useEffect(() => (CATALOG_POINTER_ENABLED && root.current ? trackCatalogPointer(root.current) : undefined), [])
 
-  const entries = mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled)
-  const visible = isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries
-  const filtered = sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind)
+  // Pinned by hand, not left to the compiler: the header that renders the live
+  // query sits in the same render scope, so without these the whole feed pass
+  // re-runs on the urgent keystroke render AND again when the query settles.
+  // Keyed on `deferredQuery` and the feed, a burst of keys costs one pass.
+  const entries = useMemo(() => mergeInstalled(data ?? [], installedEntries ?? [], matchInstalled), [data, installedEntries, matchInstalled])
+
+  const visible = useMemo(
+    () => (isSuperseded ? entries.filter(entry => !isSuperseded(entry)) : entries),
+    [entries, isSuperseded]
+  )
+
+  const filtered = useMemo(
+    () => sortCatalog(filterCatalog(visible, facets, deferredQuery, isInstalled, kind), sort, kind),
+    [visible, facets, deferredQuery, isInstalled, kind, sort]
+  )
 
   const discover = isDiscoverView(facets, deferredQuery, kind, sort)
   const pageOrder = filtered
@@ -447,6 +469,13 @@ export const CatalogBrowser = memo(function CatalogBrowser({
 
   const sortControl = <CatalogSortSelect entries={visible} kind={kind} onChange={filters.setSort} value={sort} />
 
+  // The facet rails are the single most expensive per-keystroke pass (the tag
+  // rail visits every row's tags), and none of them depend on the query.
+  const railSources = useMemo(() => catalogSources(visible, kind), [visible, kind])
+  const railCategories = useMemo(() => catalogCategories(visible), [visible])
+  const railTags = useMemo(() => catalogTags(visible, facets.tags, TAG_LIMIT), [visible, facets.tags])
+  const railUpdateCount = useMemo(() => visible.filter(entry => entry.updateAvailable).length, [visible])
+
   const filterKey = [facets.sources, facets.categories, facets.tags].map(list => list.join(',')).join(':')
 
   return (
@@ -468,7 +497,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
           />
           <CatalogFilterBar
             actions={actions}
-            categories={catalogCategories(visible)}
+            categories={railCategories}
             facets={facets}
             kind={kind}
             onCategory={filters.toggleCategory}
@@ -479,9 +508,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             onUpdates={filters.toggleUpdates}
             resultCount={filtered.length}
             sortControl={sortControl}
-            sources={catalogSources(visible, kind)}
-            tags={catalogTags(visible, facets.tags, TAG_LIMIT)}
-            updateCount={visible.filter(entry => entry.updateAvailable).length}
+            sources={railSources}
+            tags={railTags}
+            updateCount={railUpdateCount}
           />
           {notice}
           {error && entries.length > 0 && (

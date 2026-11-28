@@ -60,6 +60,7 @@ def _make_adapter(extra=None):
     client.chat_startStream = AsyncMock(return_value={"ok": True, "ts": "123.456"})
     client.chat_appendStream = AsyncMock(return_value={"ok": True})
     client.chat_stopStream = AsyncMock(return_value={"ok": True})
+    client.users_info = AsyncMock(return_value={"user": {"team_id": "T_HOST"}})
     a._get_client = MagicMock(return_value=client)
     a.stop_typing = AsyncMock()
     a._running = True

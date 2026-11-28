@@ -463,6 +463,25 @@ def _slack_error_is(exc: BaseException, code: str) -> bool:
         return False
 
 
+# Permanent chat.startStream recipient-pair refusals (#159617). The gateway
+# recognizes these EXACT strings via run_turn_runner._CARD_DESTINATION_REFUSALS
+# and falls back to text quietly instead of logging a traceback every run.
+_RECIPIENT_TEAM_UNKNOWN = (
+    "slack task_card recipient user's home team unknown (users.info lookup "
+    "failed) — cannot build a valid recipient team/user pair")
+_RECIPIENT_PAIR_REFUSED = (
+    "slack task_card recipient user not in recipient team (user_not_found) "
+    "— the author's home team is not addressable by this app")
+
+
+class _RecipientPairError(Exception):
+    """The startStream recipient pair cannot be built — permanent for this run.
+
+    Raised BEFORE any API call so a failed home-team lookup never fires a
+    doomed chat.startStream. Not cached across runs: the lookup self-heals.
+    """
+
+
 def _slack_str_field(el: dict, name: str) -> str:
     """Read a string field of a Block Kit element; non-strings (text objects) would break ``str.join``."""
     value = el.get(name)
@@ -2097,13 +2116,18 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                     await client.api_call(
                         "chat.appendStream", json={"channel": chat_id, "ts": stream.stream_ts, "chunks": chunks})
                 return SendResult(success=True, message_id=stream.stream_ts)
+            except _RecipientPairError as exc:
+                return SendResult(success=False, error=str(exc), retryable=False)
             except Exception as exc:  # pragma: no cover - defensive logging
+                if _slack_error_is(exc, "user_not_found"):
+                    # Permanent pair refusal (#159617), not a transient outage:
+                    # retrying every run just spams the same traceback.
+                    return SendResult(success=False, error=_RECIPIENT_PAIR_REFUSED, retryable=False)
                 logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
                 return SendResult(success=False, error=str(exc), retryable=True)
 
-    @staticmethod
     async def _start_native_task_card_stream(
-        client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]]
+        self, client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]]
     ) -> None:
         """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
         start_payload: dict[str, Any] = {
@@ -2117,6 +2141,16 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
             value = _first_truthy(md, sources)
             if value:
                 start_payload[key] = value
+        user = start_payload.get("recipient_user_id")
+        if user:
+            # The recipient user must belong to the recipient team; session
+            # scope is the installing workspace, which a Connect author need
+            # not belong to (#159617). Pair from the author's home team.
+            home = await self._stream_recipient_team(
+                str(start_payload.get("recipient_team_id") or ""), stream.channel, str(user))
+            if not home:
+                raise _RecipientPairError(_RECIPIENT_TEAM_UNKNOWN)
+            start_payload["recipient_team_id"] = home
         result = await client.api_call("chat.startStream", json=start_payload)
         if hasattr(result, "get"):
             stream.stream_ts = str(result.get("ts") or result.get("message_ts") or "")
@@ -2530,8 +2564,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         md = metadata or {}
         user_id = md.get("user_id") or md.get("sender_id")
         if user_id:
+            home = await self._stream_recipient_team(team_id, chat_id, str(user_id))
+            if not home:
+                return SendResult(success=False, error=_RECIPIENT_TEAM_UNKNOWN, retryable=False)
             start_kwargs["recipient_user_id"] = str(user_id)
-        if team_id:
+            start_kwargs["recipient_team_id"] = home
+        elif team_id:
             start_kwargs["recipient_team_id"] = str(team_id)
         if text[base:].strip():
             start_kwargs["markdown_text"] = text[base:]
@@ -3924,6 +3962,19 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         cache[key] = user_team
         self._trim_oldest_dict_entries(cache, self._USER_NAME_CACHE_MAX)
         return user_team
+
+    async def _stream_recipient_team(self, team_id: str, chat_id: str, user_id: str) -> str:
+        """Home team to pair with ``user_id`` in chat.startStream's recipient fields.
+
+        Session scope is the installing workspace (#154560); a Slack Connect
+        author may belong to a partner org, and Slack rejects a mismatched
+        team/user pair with user_not_found (#159617). Returns "" when the home
+        team is unknown — callers must not send an unverified pair. With no
+        recipient user (bot posts) the session team stands.
+        """
+        if not user_id:
+            return str(team_id or "")
+        return await self._resolve_author_team(str(user_id), str(chat_id), str(team_id or ""))
 
     def _synthetic_reaction_event(
         self, event: dict, action: str, thread_ts: str, team_id: str) -> dict:

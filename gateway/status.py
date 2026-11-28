@@ -317,7 +317,7 @@ def _get_runtime_status_path() -> Path:
     return _get_process_hermes_home() / _RUNTIME_STATUS_FILE
 
 
-def _get_lock_dir() -> Path:
+def _get_lock_dir(*, os_user: bool = False) -> Path:
     """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
 
     Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
@@ -325,6 +325,13 @@ def _get_lock_dir() -> Path:
     means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
     and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
     ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
+
+    ``os_user=True`` makes that per-user scope literal for a caller that keeps one directory of per-USER state
+    here instead of role state: the root then resolves from the account home, not from ``$HOME`` — which Hermes
+    repoints per process (``hermes_constants.get_subprocess_home`` hands a container's tool children
+    ``{HERMES_HOME}/home``). Two processes of one user pinning one profile must land in ONE root, and resolving
+    from ``$HOME`` split it in two. Role state (the default) is deliberately left on the process ``$HOME``: this
+    option changes where per-user state lives, not what role state means.
     """
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
@@ -332,8 +339,47 @@ def _get_lock_dir() -> Path:
     # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
     # lock dir CWD-relative, so two serves started from different directories shared no singleton.
     state_home_env = os.getenv("XDG_STATE_HOME") or ""
-    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
+    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else None
+    if state_home is None:
+        if os_user:
+            home = _os_user_state_home()
+            if home is None:
+                raise RuntimeError(
+                    "no stable per-OS-user state root: $HOME carries no account home behind it (a transient or "
+                    "profile HOME, and no HERMES_REAL_HOME), so per-user state cannot be placed without splitting "
+                    "it per process")
+            state_home = home / ".local" / "state"
+        else:
+            state_home = Path.home() / ".local" / "state"
     return state_home / "hermes" / _LOCKS_DIRNAME
+
+
+def _os_user_state_home() -> Optional[Path]:
+    """The account home behind a profile ``$HOME``, or ``None`` when no stable one can be named.
+
+    ``get_real_home`` climbs out of the profile HOME Hermes itself rewrote. Its own fallback is the temporary
+    directory, which is per-process and so no user-level root at all, and the profile HOME is the very thing being
+    climbed out of: both are refused here — ``None``, never a silent ``$HOME`` — and the caller decides. A caller
+    that keeps per-user state (the browser launcher) refuses the operation instead of placing that state where the
+    next process with a different ``HOME`` will not find it. This is best effort under Hermes' own subprocess
+    ``HOME`` contract; it promises nothing about uniqueness under an arbitrary ``HOME``.
+    """
+    import tempfile
+    from hermes_constants import _profile_home_path, get_real_home
+    candidate = str(get_real_home() or "").strip()
+    if not candidate or not os.path.isabs(candidate):
+        logger.debug("gateway: no absolute OS-user home behind $HOME; per-user state cannot be placed")
+        return None
+    home = Path(candidate)
+    profile_home = _profile_home_path(None)
+    with contextlib.suppress(RuntimeError, OSError):
+        if profile_home and os.path.realpath(str(home)) == os.path.realpath(profile_home):
+            logger.debug("gateway: $HOME resolves to the profile home; per-user state cannot be placed")
+            return None
+        if home == Path(tempfile.gettempdir()):
+            logger.debug("gateway: $HOME resolves only to the temp dir; per-user state cannot be placed")
+            return None
+    return home
 
 
 def _utc_now_iso() -> str:

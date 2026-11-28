@@ -336,15 +336,24 @@ def _foreign_record_names(user_data_dir: str, pid: int) -> bool:
     launch there that reached another endpoint is not that browser, whatever pid number it had."""
     from tools.browser_launcher_holders import same_namespace
     state = _shared_state_dir(user_data_dir)
-    if state is None:
-        return False
+    # A record from another PID namespace is why this profile is refused, so it must be found wherever the launcher
+    # that wrote it kept it: this root, and the PRE-FIX roots a profile ``$HOME`` launcher used before the root was
+    # unified. Read-only there (:func:`_read_only_json`): the guard/refusal path never edits old state.
+    states = [state] if state is not None else []
+    states += _legacy_state_dirs(_profile_digest(user_data_dir)[:32])
     found = _read_devtools_file(user_data_dir)
-    for name in _record_names(state, user_data_dir, pid):
-        record = _load_record(state / name)
-        if (record is not None and record.get("pid") == pid and not same_namespace(record)
-                and _same_profile(record.get("user_data_dir"), user_data_dir)
-                and record.get("devtools") in (None, found and found[1])):
-            return True
+    for records in states:
+        for name in _record_names(records, user_data_dir, pid):
+            if records == state:
+                record = _load_record(records / name)
+            else:
+                status, record = _read_only_json(records / name)
+                if status == _MISSING:
+                    continue
+            if (record is not None and record.get("pid") == pid and not same_namespace(record)
+                    and _same_profile(record.get("user_data_dir"), user_data_dir)
+                    and record.get("devtools") in (None, found and found[1])):
+                return True
     return False
 
 
@@ -534,12 +543,30 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
     through its endpoint, or refused; never launched over."""
     from tools import browser_launcher_holders as holders
     state = _shared_state_dir(udd)
-    with holders.records_lock(state) if state is not None else contextlib.nullcontext():
+    if state is None:
+        # No private state dir means no profile lock: a launch here would race whoever is already driving the
+        # profile. Refuse instead of falling through to an unsynchronised start (the pre-existing fail-open path).
+        return None, (f"Hermes cannot serialise access to the shared browser profile {udd}: its launcher state "
+                      "directory is not private to this OS user. Repair the ownership/permissions of the launcher "
+                      "state root, or point HERMES_GATEWAY_LOCK_DIR at a directory private to this user.")
+    with holders.records_lock(state):
+        # EVERY path that would lease this browser passes the pre-fix guard first — including the attach a reachable
+        # foreign endpoint allows (``_attach_foreign`` writes a lease just like a local attach does). A browser this
+        # environment cannot verify is still refused as before; that verdict itself is unchanged, and it reads the
+        # same evidence (pre-fix records included, see ``_foreign_record_names``).
+        blocked = _legacy_guard(state.name)
         foreign = _foreign_holder(udd)
         if foreign is not None:
+            if blocked is not None:
+                logger.warning("browser: not attaching to %s — %s", udd, blocked)
+                return None, _foreign_unreachable(udd)
             attached = _attach_foreign(key, udd, home_key, foreign)
             if attached is None:
                 return None, _foreign_unreachable(udd)
+        elif blocked is not None:
+            # Pre-fix state still names a live launcher, holder or browser: starting here would put two launchers in
+            # charge of one Chromium, so the profile stays out of this version's hands.
+            return None, blocked
         else:
             attached, refused = _attach_local(key, udd, home_key, launch.get("timeout"))
             if refused:
@@ -774,15 +801,35 @@ def _stop_locked(key: str) -> None:
         proc = _procs.get(key)
     if browser is None:
         return
-    record = None if browser.ephemeral else _record_path(browser)
-    if record is None:
+    if browser.ephemeral:
+        # A throwaway profile is this process's alone: no record, no lock, nobody else can be driving it.
         if browser.owned:
             _terminate(browser.pid, browser.start_time, proc)
         with _lock:
             _forget(key, browser)
         return
-    from tools.browser_launcher_holders import records_lock
-    with records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
+    record = _record_path(browser)
+    if record is None:
+        # A persistent profile whose launcher state dir is gone or unusable cannot be serialised, so this process
+        # cannot prove it is the last holder: it must not stop the browser (the same fail-closed rule the launch
+        # path applies when it refuses a profile it cannot lock).
+        logger.warning("browser: not stopping Chromium pid %s on %s: its launcher state dir is unavailable",
+                       browser.pid, browser.user_data_dir)
+        with _lock:
+            _forget(key, browser, drop_record=False)
+        return
+    from tools import browser_launcher_holders as holders
+    with holders.records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
+        blocked = _legacy_guard(record.parent.name)
+        if blocked is not None:
+            # A holder from before this version may still be driving it: do not stop this browser. The lease is
+            # _forget()'s to drop, and only when no other key of this process still holds the same browser (what
+            # _heir_key() decides) — so nothing here touches the lease itself.
+            logger.warning("browser: not stopping Chromium pid %s on %s — %s", browser.pid, browser.user_data_dir,
+                           blocked)
+            with _lock:
+                _forget(key, browser, drop_record=False)
+            return
         if _heir_key(browser) is None and _last_holder_out(record, browser):
             _terminate(browser.pid, browser.start_time, proc)
             record.unlink(missing_ok=True)
@@ -858,11 +905,184 @@ def _private_dir(path: Path) -> Optional[Path]:
 
 
 def _shared_profiles_root() -> Path:
-    """Launcher state of persistent (shared) profiles, per OS user rather than per HERMES_HOME: two homes pinning
-    one ``browser.user_data_dir`` drive its one Chromium, so they must see one launch record, one lease set and
-    one lock. The host rendezvous root the gateway's own cross-profile locks use."""
+    """Launcher state of persistent (shared) profiles, per OS USER rather than per ``$HOME``: two processes pinning
+    one ``browser.user_data_dir`` drive its one Chromium, so they must see one launch record, one lease set and one
+    lock — whichever ``$HOME`` Hermes handed them. In a container that is the whole point: the gateway runs on
+    ``HOME={HERMES_HOME}`` while the tool children it spawns run on ``HOME={HERMES_HOME}/home``
+    (``hermes_constants.get_subprocess_home``), so a root resolved from ``$HOME`` split one profile's state in two
+    and a holder's stop then read no peer. ``HERMES_GATEWAY_LOCK_DIR``, then an absolute ``XDG_STATE_HOME``, still
+    pick the root explicitly. One root, one lock, one record/lease protocol: :func:`_legacy_guard` keeps a launcher
+    from entering a second ownership domain implied by pre-fix state."""
     from gateway.status import _get_lock_dir
-    return _get_lock_dir() / "browser-shared-profiles"
+    return _get_lock_dir(os_user=True) / "browser-shared-profiles"
+
+
+def _canonical_shared_root() -> Optional[Path]:
+    """The one shared-profile root, or ``None`` when no stable per-OS-user root can be resolved.
+
+    ``None`` costs a persistent profile its launcher state, so it is not a fallback: a launch/attach is refused and
+    the reaper skips, because the alternative — resolving from ``$HOME`` again — is exactly the split this change
+    removes."""
+    try:
+        return _shared_profiles_root()
+    except RuntimeError as exc:
+        logger.debug("browser: shared-profile launcher state unavailable: %s", exc)
+        return None
+
+
+def _legacy_state_roots(homes=()) -> list[Path]:
+    """Shared-profile roots a PRE-FIX launcher resolved for the synthetic profile ``HOME`` Hermes itself creates.
+
+    That HOME is ``{HERMES_HOME}/home``: for this process and for every served home path handed in (the janitor
+    runs across profiles, so it passes its served homes). Nothing else is scanned — an arbitrary ``$HOME`` is not
+    evidence of this installation's state, and reading one would reach into a user's real home.
+
+    An explicit root means the caller has already said where state lives, so nothing is probed at all:
+    ``HERMES_GATEWAY_LOCK_DIR`` and an absolute ``XDG_STATE_HOME`` keep their present meaning.
+    """
+    if os.getenv("HERMES_GATEWAY_LOCK_DIR"):
+        return []
+    if os.path.isabs(os.getenv("XDG_STATE_HOME") or ""):
+        return []
+    from hermes_constants import _profile_home_path
+    # One discovery rule for launch/attach, stop, the foreign check and the reaper: the homes this process serves,
+    # exactly what the janitor threads through (``_served_home_keys``). Each contributes the synthetic HOME Hermes
+    # makes for it — ``{home}/home`` — and nothing else is looked at.
+    candidates: list[Path] = []
+    profile_home = _profile_home_path(None)
+    if profile_home:
+        candidates.append(Path(profile_home))
+    for home in sorted(_served_home_keys(homes)):
+        synthetic = Path(home) / "home"
+        # ``is_dir()`` would report False for an unreadable directory; only a definite absence skips it here, so an
+        # inaccessible pre-fix root is still examined (and then refused by the guard).
+        if _probe_state_dir(synthetic) != _MISSING and synthetic not in candidates:
+            candidates.append(synthetic)
+    canonical = _canonical_shared_root()
+    current = os.path.realpath(str(canonical)) if canonical is not None else None
+    roots: list[Path] = []
+    for candidate in candidates:
+        root = candidate / ".local" / "state" / "hermes" / "gateway-locks" / "browser-shared-profiles"
+        if (current is not None and os.path.realpath(str(root)) == current) or root in roots:
+            continue
+        roots.append(root)
+    return roots
+
+
+def _probe_state_dir(path: Path) -> str:
+    """``_PRESENT`` / ``_MISSING`` / ``_UNCERTAIN`` for a directory this process may have to judge.
+
+    ``os.path.isdir`` and ``os.path.lexists`` answer False for "there but not readable", which would let an
+    inaccessible pre-fix directory pass as absent. Only a definite ``FileNotFoundError`` means absent here; every
+    other failure, a symlink, and a non-directory are UNCERTAIN and make the caller refuse.
+    """
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return _MISSING
+    except OSError:
+        return _UNCERTAIN
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        return _UNCERTAIN
+    return _PRESENT
+
+
+def _legacy_state_dirs(state_name: str, homes=()) -> list[Path]:
+    """This profile's state dir in each PRE-FIX root that has one *and* is safe to read.
+
+    A directory that cannot be confirmed (unreadable, a symlink, not a directory) is reported by
+    :func:`_legacy_guard` as a refusal; here it is simply not read."""
+    dirs = []
+    for root in _legacy_state_roots(homes):
+        state = root / state_name
+        if _probe_state_dir(state) == _PRESENT and _is_private_dir(state):
+            dirs.append(state)
+    return dirs
+
+
+_PRESENT, _MISSING, _UNCERTAIN = "present", "missing", "uncertain"
+
+
+def _read_only_json(path: Path) -> tuple[str, Optional[dict]]:
+    """``(state, data)`` for a launch record or holder lease, read WITHOUT side effects.
+
+    :func:`_load_record` deletes a record it cannot parse; a guard must not write anything, so it reads here and
+    keeps "the file is gone" apart from "the file is there but cannot be confirmed". Only the first means there is
+    nothing to judge: a permission error, an I/O error or unparseable bytes name an owner, a holder or a browser
+    that this process cannot rule out, and the caller refuses instead of calling that safe.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return _MISSING, None
+    except (OSError, UnicodeError):
+        return _UNCERTAIN, None
+    try:
+        data = json.loads(raw)
+    except (ValueError, UnicodeError):
+        return _UNCERTAIN, None
+    return (_PRESENT, data) if isinstance(data, dict) else (_UNCERTAIN, None)
+
+
+def _legacy_guard_message(state: Path, why: str) -> str:
+    """The refusal a guard raises, naming the pre-fix state and what the operator can do about it."""
+    return (f"This browser profile still has launcher state from before this Hermes version, in {state}, where "
+            f"{why}. Hermes will not start, attach to or stop a browser on it: that state cannot be re-homed "
+            "safely from here, and starting anyway would put two launchers in charge of one Chromium. Stop the "
+            "older Hermes processes that used this profile, then remove that directory once no browser runs on it.")
+
+
+def _legacy_guard(state_name: str, homes=()) -> Optional[str]:
+    """Why a launch, attach or stop of the profile whose state dir is ``state_name`` must not proceed, or ``None``.
+
+    Judged from PRE-FIX state only: a root this build no longer writes, left by a launcher that resolved its state
+    from a profile ``HOME`` Hermes repointed. Such state can still name a live launcher, a live holder or a running
+    browser, and this version does not re-home live ownership — it stops instead of entering a second ownership
+    domain that would let one side stop a browser the other is still driving.
+
+    READ-ONLY by construction (``_read_only_json``, no lock of the pre-fix root, no create/move/copy/delete), so a
+    guard never repairs, migrates or removes what it inspects — it only refuses. State it cannot confirm is refused
+    as well: a directory that is absent is nothing to judge, but one that exists and cannot be read, listed or
+    parsed may still name a live holder, and calling that safe would be a guess. ``None`` is the normal answer, and
+    always the answer on an install that never ran the older layout. This is a safety check, not a cross-version
+    mutex: pre-upgrade launchers must be stopped.
+    """
+    from tools.browser_launcher_holders import process_alive, same_namespace
+    for root in _legacy_state_roots(homes):
+        state = root / state_name
+        probe = _probe_state_dir(state)
+        if probe == _MISSING:
+            continue
+        if probe == _UNCERTAIN:
+            return _legacy_guard_message(state, "it cannot be read or confirmed")
+        if not _is_private_dir(state):
+            # The same rule every other launcher directory is held to: a state dir that is not this user's private
+            # directory is not judged, it is refused, because nothing in it can be trusted either way.
+            return _legacy_guard_message(state, "it is not a private directory of this user")
+        try:
+            entries = sorted(p for p in state.iterdir() if p.suffix in (".json", ".lease"))
+        except OSError:
+            return _legacy_guard_message(state, "it cannot be listed")
+        for path in entries:
+            status, data = _read_only_json(path)
+            if status == _MISSING:
+                continue
+            if status == _UNCERTAIN or data is None:
+                return _legacy_guard_message(state, f"{path.name} cannot be read or confirmed")
+            recorded = data.get("user_data_dir")
+            if isinstance(recorded, str) and _profile_digest(recorded)[:32] != state.name:
+                continue
+            if path.suffix == ".lease":
+                if not (same_namespace(data) and not process_alive(data.get("holder_pid"),
+                                                                  data.get("holder_start_time"))):
+                    return _legacy_guard_message(state, "a Hermes from before this version still holds it")
+                continue
+            if _owner_alive(data):
+                return _legacy_guard_message(state, "a Hermes from before this version may still own it")
+            pid = data.get("pid")
+            if isinstance(pid, int) and recorded and _pid_alive(pid) and _cmdline_names_dir(pid, recorded):
+                return _legacy_guard_message(state, "a Chromium started before this version is still running on it")
+    return None
 
 
 def _profile_digest(user_data_dir: str) -> str:
@@ -895,7 +1115,8 @@ def _record_is(record: dict, browser: LaunchedBrowser) -> bool:
 
 def _shared_state_dir(user_data_dir: str) -> Optional[Path]:
     """Shared profile ``user_data_dir``'s own private dir (its launch record, leases and lock)."""
-    root = _private_dir(_shared_profiles_root())
+    canonical = _canonical_shared_root()
+    root = _private_dir(canonical) if canonical is not None else None
     return _private_dir(root / _profile_digest(user_data_dir)[:32]) if root is not None else None
 
 
@@ -1060,23 +1281,27 @@ def _reap_home(home: str) -> int:
     return _reap_state_dir(_records_dir(home), home)
 
 
-def _reap_shared_profiles() -> int:
-    """Every shared profile's records, whichever home launched its browser."""
-    root = _shared_profiles_root()
-    if not os.path.lexists(root) or not _is_private_dir(root):
+def _reap_shared_profiles(homes=()) -> int:
+    """Every shared profile's records, whichever home launched its browser.
+
+    ``homes`` is the janitor's served home paths: they are the only pre-fix roots that are looked at, because a
+    profile ``HOME`` is ``{HERMES_HOME}/home`` for each of them and nothing else is this installation's state."""
+    canonical = _canonical_shared_root()
+    if canonical is None or _probe_state_dir(canonical) != _PRESENT or not _is_private_dir(canonical):
         return 0
     try:
-        states = sorted(root.iterdir())
+        states = sorted(canonical.iterdir())
     except OSError as exc:
-        logger.debug("browser: shared-profile launcher state unavailable in %s: %s", root, exc)
+        logger.debug("browser: shared-profile launcher state unavailable in %s: %s", canonical, exc)
         return 0
-    return sum(_reap_state_dir(state, None) for state in states)
+    return sum(_reap_state_dir(state, None, homes) for state in states)
 
 
-def _reap_state_dir(records: Path, home: Optional[str]) -> int:
+def _reap_state_dir(records: Path, home: Optional[str], homes=()) -> int:
     """Reap one launcher state dir (``home``'s records, or a shared profile's dir when ``home`` is None). A
-    shared profile whose lock is taken (a first launch holds it for up to its whole readiness wait) is left
-    to the next pass."""
+    shared profile whose lock is taken (a first launch holds it for up to its whole readiness wait) is left to the
+    next pass, and so is one whose PRE-FIX state still names a holder — judged under this profile's lock, inside the
+    same mutual-exclusion domain, never beside it."""
     if not os.path.lexists(records):
         return 0
     if not _is_private_dir(records):
@@ -1086,6 +1311,9 @@ def _reap_state_dir(records: Path, home: Optional[str]) -> int:
     with holders.records_lock(records, blocking=home is not None) as locked:
         if not locked:
             logger.debug("browser: %s is busy (a launch or stop holds it); reaping it next pass", records)
+            return 0
+        if home is None and _legacy_guard(records.name, homes) is not None:
+            logger.debug("browser: not reaping %s: pre-fix launcher state still names a holder", records)
             return 0
         try:
             paths = sorted(records.glob("*.json"))
@@ -1142,7 +1370,7 @@ def reap_orphaned_browsers(homes=()) -> int:
     (``_served_home_keys``; the janitor and atexit run outside any profile scope, so each home's records
     are read by path); returns the count. A pid is signalled only after its start time AND its
     ``--user-data-dir`` argv token match the record. Throwaway profiles of owners that are gone go too."""
-    reaped = _reap_shared_profiles()
+    reaped = _reap_shared_profiles(homes)
     for home in sorted(_served_home_keys(homes)):
         reaped += _reap_home(home)
         _reclaim_throwaway_dirs(home)

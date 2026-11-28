@@ -169,14 +169,16 @@ def _dispatch_to_plugin_provider(
         return None
     try:
         from agent.transcription_registry import get_provider
+        from hermes_cli.plugin_provider_retry import lookup_with_forced_refresh
         from hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
         plugin_provider = get_provider(key)
         if plugin_provider is None:
             # Long-lived sessions may have discovered plugins before a backend
-            # was patched in or config changed — retry once with a forced refresh.
-            _ensure_plugins_discovered(force=True)
-            plugin_provider = get_provider(key)
+            # was patched in or config changed — retry once with a forced refresh
+            # per plugin-source stamp, NOT per call: the forced pass unloads every
+            # plugin and the name is still missing afterwards.
+            plugin_provider = lookup_with_forced_refresh("stt", key, lambda: get_provider(key))
     except Exception as exc:
         logger.debug("STT plugin dispatch skipped (discovery failed): %s", exc)
         return None

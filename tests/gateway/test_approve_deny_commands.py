@@ -133,6 +133,30 @@ class TestBlockingGatewayApproval:
         unregister_gateway_notify(session_key)
 
 
+    def test_resolve_by_request_id_targets_that_entry(self):
+        """A card resolves its own request out of FIFO order, never a neighbour."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        session_key = "test-targeted"
+        e1, e2 = _ApprovalEntry({"command": "first"}), _ApprovalEntry({"command": "second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        assert resolve_gateway_approval(session_key, "deny", request_id=e2.data["request_id"]) == 1
+        assert (e1.result, e1.event.is_set()) == (None, False)
+        assert (e2.result, e2.event.is_set()) == ("deny", True)
+        assert _gateway_queues[session_key] == [e1]
+
+    def test_resolve_by_unmatched_request_id_resolves_nothing(self):
+        """An id that names no waiter never falls back to the oldest one."""
+        from tools.approval import resolve_gateway_approval, _gateway_queues
+        from tools.approval_gateway_wait import _ApprovalEntry
+
+        entry = _ApprovalEntry({"command": "only"})
+        _gateway_queues["test-unmatched"] = [entry]
+        assert resolve_gateway_approval("test-unmatched", "once", request_id="nope") == 0
+        assert (entry.result, entry.event.is_set()) == (None, False)
+
     def test_resolve_single_pops_oldest_fifo(self):
         """resolve_gateway_approval without resolve_all resolves oldest first."""
         from tools.approval import resolve_gateway_approval, _gateway_queues

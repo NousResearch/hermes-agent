@@ -37,6 +37,9 @@ def _invalid_update(adapter, sanitized: dict):
             return web.json_response({"error": f"{key.capitalize()} must be a string"}, status=400)
     if "name" in sanitized and len(sanitized["name"]) > adapter._MAX_NAME_LENGTH:
         return web.json_response({"error": f"Name must be ≤ {adapter._MAX_NAME_LENGTH} characters"}, status=400)
+    script_err = adapter._validate_cron_script_fields(sanitized)
+    if script_err is not None:
+        return script_err
     return adapter._validate_cron_prompt(sanitized["prompt"]) if "prompt" in sanitized else None
 
 

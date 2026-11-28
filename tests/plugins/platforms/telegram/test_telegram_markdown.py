@@ -38,6 +38,21 @@ def test_bold_without_quote_keeps_its_markers(adapter):
     assert mdv2_error(out) is None
 
 
+def test_mail_sender_underline_survives_telegram_formatting(adapter):
+    out = adapter.format_message("**1.** __Accounting - Hetzner Online GmbH__ **Factură**")
+    assert out == "*1\\.* __Accounting \\- Hetzner Online GmbH__ *Factură*"
+    assert mdv2_error(out) is None
+
+
+def test_mail_sender_with_underscores_is_underlined(adapter):
+    assert adapter.format_message("__john_doe@example.com__") == "__john\\_doe@example\\.com__"
+
+
+@pytest.mark.parametrize("message", ["__*x*__", "__x *y*__", r"__a \__ b__"])
+def test_complex_underline_does_not_create_invalid_markdown(adapter, message):
+    assert mdv2_error(adapter.format_message(message)) is None
+
+
 @pytest.mark.parametrize(
     ("markdown", "expected"),
     [

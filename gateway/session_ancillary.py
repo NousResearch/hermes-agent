@@ -325,6 +325,10 @@ async def reload_mcp(connection, ref, params):
 
     def reconcile():
         with suppress_interactive_oauth():
+            # A ``rev`` call is the TUI config watcher, which re-polls a refusal on its own timer:
+            # only a user's reload skips the connect backoff, or the watcher would bypass it.
+            if 'rev' not in params:
+                discovery.retry_mcp_connections_now()
             return (discovery.reconcile_mcp_servers_with_config(), discovery.mcp_servers_not_connected(),
                     discovery.mcp_servers_ready())
     result, failed, ready = await asyncio.to_thread(reconcile)

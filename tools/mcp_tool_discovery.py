@@ -722,6 +722,15 @@ def _awaiting_connect(wanted: set[str], scope) -> list[str]:
     return sorted(name for name in _unregistered(wanted, scope) if not _connect_cooldown_active(name))
 
 
+def retry_mcp_connections_now() -> None:
+    """Let an explicit reload retry enabled servers in this profile once, without changing
+    automatic discovery's backoff or another profile's same-named server."""
+    names = _enabled_config_names()
+    with _core._lock:
+        for name in names:
+            _clear_connect_failure(name)
+
+
 def _enabled_config_names() -> set[str]:
     with _owner_secret_scope():
         servers = _config._load_mcp_config()

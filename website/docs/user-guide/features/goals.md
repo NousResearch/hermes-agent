@@ -60,6 +60,7 @@ What you'll see:
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. On a messaging platform, a `/goal` sent as the caption of a photo or file keeps that attachment on the kickoff turn. |
 | `/goal -- <text>` | Set goal text that starts with a control word (`/goal -- pause the nightly cron`). Without `--`, `resume`/`continue`/`unpause`/`pause`/`status`/`show`/`unwait` followed by words run the control command and ignore the rest. |
 | `/goal draft <text>` | Draft a structured completion contract from a plain-language objective, then set it. See [Completion contracts](#completion-contracts). |
+| `/goal edit <text>` | Reword the current goal in place, even mid-turn. Unlike `/goal <text>`, it keeps the goal's status, turns used, subgoals, quality gates and wait barrier; the next judge check and continuation use the new text. Inline `field: value` lines replace the completion contract; without them the old contract stays. For a goal whose text starts with the word "edit", use `/goal -- edit …`. |
 | `/goal show` | Print the active goal's completion contract. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |

@@ -78,6 +78,23 @@ def _wait(mgr, arg):
     return GoalCommandResult(f"⏳ Goal parked on pid {pid}{suffix}. Loop pauses until it exits.")
 
 
+def _edit(mgr, arg):
+    # A control verb (dispatched mid-run), so it never sets a new goal: that would race the turn.
+    if not arg:
+        return GoalCommandResult("Usage: /goal edit <new goal text>", error=True)
+    if not mgr.has_goal():
+        return GoalCommandResult("No goal to edit. Set one with /goal <text> "
+                                 "(/goal -- edit … for a goal that starts with 'edit').", error=True)
+    previous = mgr.state.goal
+    headline, contract = goals.parse_contract(arg)
+    state = mgr.edit(headline or arg, contract=None if contract.is_empty() else contract)
+    output = (f"✎ Goal updated ({state.status}, {state.turns_used}/{state.max_turns} turns kept): "
+              f"{state.goal}\n  was: {previous}")
+    if not contract.is_empty():
+        output += f"\nCompletion contract:\n{state.contract.render_block()}"
+    return GoalCommandResult(output)
+
+
 def _gate_add(mgr, arg):
     gate = mgr.add_gate(arg)
     return GoalCommandResult(f"⚿ Gate added: $ {gate.command} "
@@ -105,7 +122,7 @@ _EXACT_HANDLERS = {
 # clear/stop/done stay out — guessing wrong would end a goal the user meant to keep.
 _BARE_CONTROL_VERBS = frozenset({"resume", "continue", "unpause", "pause", "status", "show", "unwait"})
 # First words that make a command goal control (the gateway busy path dispatches these).
-_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate"}
+_CONTROL_FIRST_WORDS = _BARE_CONTROL_VERBS | {"wait", "gate", "edit"}
 
 
 def _bare_control(mgr, verb, rest, render):
@@ -209,6 +226,9 @@ def dispatch_goal_command(
         if verb == "gate":
             prefix = "/goal gate"
             return _gate(mgr, rest, authorize_gate)
+        if verb == "edit":
+            prefix = "/goal edit"
+            return _edit(mgr, rest)
         return _set(mgr, rest if verb == "draft" else arg,
                     drafting=verb == "draft", last_user_message=last_user_message,
                     render=render, progress=progress)

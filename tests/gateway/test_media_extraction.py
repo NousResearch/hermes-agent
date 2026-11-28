@@ -379,5 +379,42 @@ caption
 
 
 
+    def test_gcode_documents_are_deliverable_and_text_readable(self, tmp_path, monkeypatch):
+        """G-code files should be recognized as text and delivered with or without MEDIA tags."""
+        from gateway.platforms import base as base_module
+        from gateway.platforms.base import (
+            MEDIA_DELIVERY_EXTS,
+            SUPPORTED_DOCUMENT_TYPES,
+            BasePlatformAdapter,
+            _TEXT_INJECT_EXTENSIONS,
+        )
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(base_module, "_HERMES_HOME", hermes_home)
+        monkeypatch.setattr(base_module, "_HERMES_ROOT", hermes_home)
+        monkeypatch.setattr(base_module, "_media_delivery_denied_paths", lambda: [])
+
+        gcode = tmp_path / "first-layer-test.gcode"
+        gcode.write_text("G28\nG1 X100 Y100 Z0.3\n", encoding="utf-8")
+
+        media_files, media_cleaned = BasePlatformAdapter.extract_media(
+            f"Test file MEDIA:{gcode}"
+        )
+        filtered = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+        local_files, local_cleaned = BasePlatformAdapter.extract_local_files(
+            f"Test file {gcode}"
+        )
+
+        assert SUPPORTED_DOCUMENT_TYPES[".gcode"] == "text/plain"
+        assert ".gcode" in _TEXT_INJECT_EXTENSIONS
+        assert ".gcode" in MEDIA_DELIVERY_EXTS
+        assert media_files == [(str(gcode), False)]
+        assert filtered == [(str(gcode), False)]
+        assert media_cleaned.strip() == "Test file"
+        assert local_files == [str(gcode)]
+        assert local_cleaned.strip() == "Test file"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

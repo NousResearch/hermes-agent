@@ -412,7 +412,9 @@ def _run_task_turns(agent, frame, history, context):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
-        raise ValueError('kanban_skills_unavailable')
+        # Name them: this raise ends the worker before its first model call, and the crash is all
+        # an operator sees ("managed worker lost"/"execution unknown") unless the log says which.
+        raise ValueError('kanban_skills_unavailable: ' + ', '.join(missing))
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 

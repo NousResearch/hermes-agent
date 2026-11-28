@@ -557,7 +557,7 @@ export function mapBackendCheck(res: BackendUpdateCheckResponse): DesktopUpdateS
     rollback: Boolean(res.rollback_to),
     held: res.held ?? undefined,
     sourceVersion: res.rollback_to ?? (res.held ? res.source_version : undefined) ?? undefined,
-    behind: behind === null || behind < 0 ? null : behind,
+    behind: behind === -2 ? -2 : behind === null || behind < 0 ? null : behind,
     currentVersion: res.current_version,
     channel: res.channel,
     branch: res.branch ?? undefined,

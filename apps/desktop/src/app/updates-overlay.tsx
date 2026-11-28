@@ -206,7 +206,7 @@ export function UpdatesOverlay() {
   }, [check, checking, open, status])
 
   const behind = status?.behind ?? 0
-  const updateAvailable = status?.updateAvailable || behind > 0
+  const updateAvailable = status?.updateAvailable || behind > 0 || behind === -2
 
   const phase = overlayPhase(apply)
 
@@ -434,7 +434,12 @@ function IdleView({
   const rollbackTag = rollbackRelease(status)
   const channelCopy = t.settings.about.channel
 
-  const { title, body } = rollbackTag
+  const { title, body } = behind === -2
+    ? {
+        title: 'Branch diverged',
+        body: 'HEAD and origin/main have diverged (not a fast-forward). Review WIP before updating — this may switch to main / stash WIP.',
+      }
+    : rollbackTag
     ? { title: channelCopy.rollbackTitle(rollbackTag), body: channelCopy.rollbackBody(rollbackTag) }
     : resolveUpdateCopy({
         target,

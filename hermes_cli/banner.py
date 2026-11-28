@@ -322,6 +322,12 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
 def _format_update_notice(behind: int) -> str:
     """Render the update warning line for a non-zero ``behind`` result."""
     from hermes_cli.config import get_managed_update_command, recommended_update_command
+    from hermes_cli.source_check import UPDATE_DIVERGED
+    if behind == UPDATE_DIVERGED:
+        return (
+            "[bold yellow]⚠ branch diverged from origin/main[/]"
+            "[dim yellow] — not a fast-forward; review before "
+            f"[bold]{recommended_update_command()}[/bold][/]")
     if behind > 0:
         return (
             f"[bold yellow]⚠ {behind} {_plural(behind, 'commit')} behind[/]"

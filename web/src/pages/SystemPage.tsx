@@ -113,11 +113,15 @@ function backupFileName(path: string | null): string {
 /** Badge for an available update; a rollback names the release it returns to. */
 function updateBadge(info: UpdateCheckResponse): string {
   if (info.rollback_to) return `newer than v${info.rollback_to}`;
+  if (info.behind === -2) return "diverged";
   return info.behind && info.behind > 0 ? `${info.behind} behind` : "update available";
 }
 
 function updateToast(info: UpdateCheckResponse): string {
   if (info.rollback_to && info.message) return info.message;
+  if (info.behind === -2) {
+    return info.message || "Branch diverged from origin/main (not a fast-forward)";
+  }
   return info.behind && info.behind > 0
     ? `Update available — ${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
     : "Update available";
@@ -793,7 +797,9 @@ export default function SystemPage() {
         onConfirm={() => void applyUpdate()}
         title="Update Hermes?"
         description={
-          updateInfo && updateInfo.behind && updateInfo.behind > 0
+          updateInfo?.behind === -2
+            ? `Branch diverged from origin/main (not a fast-forward). Review WIP before running '${updateInfo.update_command}'. This may switch to main / stash WIP. The gateway restarts when the update finishes.`
+            : updateInfo && updateInfo.behind && updateInfo.behind > 0
             ? `This will run 'hermes update' (${updateInfo.update_command}) and pull ${updateInfo.behind} new commit${updateInfo.behind === 1 ? "" : "s"}. The gateway restarts when the update finishes; the current session keeps its prompt cache until then.`
             : `This will run 'hermes update' (${updateInfo?.update_command ?? "hermes update"}) and restart the gateway when it finishes.`
         }

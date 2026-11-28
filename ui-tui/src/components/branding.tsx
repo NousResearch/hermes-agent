@@ -488,6 +488,18 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text color={t.color.muted}>{T.helpHint}</Text>
       </Text>
 
+      {typeof info.update_behind === 'number' && info.update_behind === -2 && (
+        <Text bold color={t.color.warn}>
+          {T.branchDiverged}
+          <Text bold={false} color={t.color.warn} dimColor>
+            {T.branchDivergedHint}
+          </Text>
+          <Text bold color={t.color.warn}>
+            {info.update_command || 'hermes update'}
+          </Text>
+        </Text>
+      )}
+
       {typeof info.update_behind === 'number' && info.update_behind > 0 && (
         <Text bold color={t.color.warn}>
           {info.update_behind === 1 ? T.commitsBehindOne(info.update_behind) : T.commitsBehindOther(info.update_behind)}

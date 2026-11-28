@@ -183,6 +183,51 @@ def test_counts_are_honest_without_fetch(installation, tip_kind, compare, expect
         assert requests == ["/repos/fixture/fork/commits/main"]
 
 
+def test_diverged_full_clone_is_not_a_behind_count(installation):
+    """Shared history, neither tip contains the other: not a fast-forward count."""
+    from hermes_cli.source_check import UPDATE_DIVERGED, check_for_updates
+
+    root, _linked, home, base, head, responses, requests, git = installation
+    git("checkout", "-B", "side", base)
+    git("commit", "--allow-empty", "-m", "side")
+    side = git("rev-parse", "HEAD")
+    git("checkout", "main")
+    responses["/repos/fixture/fork/commits/main"] = (200, side)
+    responses[f"/repos/fixture/fork/compare/{head}...{side}"] = (
+        200, {"ahead_by": 1, "commits": []})
+    status = check_for_updates(install_root=root, home=home, force=True)
+    assert status["behind"] == UPDATE_DIVERGED
+    assert status["updateAvailable"] is True
+    assert not any("/compare/" in path for path in requests)
+
+
+def test_fast_forward_behind_still_counts(installation):
+    """HEAD ancestor of the remote tip still uses the compare count."""
+    from hermes_cli.source_check import UPDATE_DIVERGED, check_for_updates
+
+    root, _linked, home, base, head, responses, requests, git = installation
+    git("reset", "--hard", base)
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    responses[f"/repos/fixture/fork/compare/{base}...{head}"] = (
+        200, {"ahead_by": 1, "commits": []})
+    status = check_for_updates(install_root=root, home=home, force=True)
+    assert status["behind"] == 1
+    assert status["behind"] != UPDATE_DIVERGED
+    assert any("/compare/" in path for path in requests)
+
+
+def test_format_update_notice_diverged_is_not_a_tip_count(monkeypatch):
+    from hermes_cli import banner
+    from hermes_cli.source_check import UPDATE_DIVERGED
+
+    monkeypatch.setattr(
+        "hermes_cli.config.recommended_update_command", lambda: "hermes update")
+    text = banner._format_update_notice(UPDATE_DIVERGED)
+    assert "diverged" in text.lower()
+    assert "-2" not in text
+    assert "2 commit" not in text
+
+
 def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
     from hermes_cli import source_check
     root, _linked, home, _base, head, responses, requests, git = installation

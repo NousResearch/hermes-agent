@@ -80,6 +80,20 @@ describe('mapBackendCheck', () => {
     expect(status.targetSha).toBe('backend:9.9.9')
   })
 
+  it('keeps UPDATE_DIVERGED (-2) so the UI does not render a fake tip count', () => {
+    const status = mapBackendCheck(
+      response({
+        behind: -2,
+        update_available: true,
+        message: 'Branch diverged from origin/main (not a fast-forward). Review WIP before updating.'
+      })
+    )
+
+    expect(status.behind).toBe(-2)
+    expect(status.updateAvailable).toBe(true)
+    expect(status.message).toContain('diverged')
+  })
+
   it('leaves a backend that cannot self-update to the unsupported branch', () => {
     // pip/nix and managed runtimes also answer `behind: null`, but `can_apply: false` renders
     // the "not available" copy first — those must not be turned into failures.

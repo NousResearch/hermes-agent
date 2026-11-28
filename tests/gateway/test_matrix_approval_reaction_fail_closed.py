@@ -62,7 +62,10 @@ def _stub_mautrix():
     m.TrustState = TrustState
 
 
-_stub_mautrix()
+try:
+    import mautrix.types  # noqa: F401  (real SDK present: never shadow it)
+except ImportError:
+    _stub_mautrix()
 
 from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 

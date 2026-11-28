@@ -243,6 +243,12 @@ def cmd_send(args: argparse.Namespace) -> None:
     if mentions:
         tool_args["mentions"] = mentions
     result = send_message_tool(tool_args)
+    from hermes_cli.send_plugin_retry import maybe_retry_send_after_plugin_load_timeout
+    result, timeout_exit = maybe_retry_send_after_plugin_load_timeout(
+        target, result, lambda: send_message_tool(tool_args),
+    )
+    if timeout_exit is not None:
+        sys.exit(timeout_exit)
     sys.exit(_emit_result(result, json_mode=getattr(args, "json", False), quiet=getattr(args, "quiet", False)))
 
 

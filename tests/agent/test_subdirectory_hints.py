@@ -1,5 +1,6 @@
 """Tests for progressive subdirectory hint discovery."""
 
+import os
 import time
 
 import pytest
@@ -446,6 +447,24 @@ class TestHomeWorkingDirGuard:
         (the other reachable entry) must refuse home-rooted loads too."""
         tracker = self._home_tracker(home_tree)
         assert tracker._load_hints_for_directory(home_tree / "notes") is None
+
+    def test_home_reached_through_a_link_is_still_home(self, tmp_path, monkeypatch):
+        """The tracker resolves its working dir, so a home behind a symlink (a junction on
+        Windows) only matches the guard when the home is resolved too."""
+        real = tmp_path / "real-home"
+        (real / "notes").mkdir(parents=True)
+        (real / "notes" / "AGENTS.md").write_text("HOME-SUBTREE-HINT notes/AGENTS.md", encoding="utf-8")
+        link = tmp_path / "home-link"
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(real), str(link))
+        else:
+            link.symlink_to(real)
+        monkeypatch.setattr(Path, "home", lambda: link)
+
+        tracker = SubdirectoryHintTracker(working_dir=str(link))
+        assert tracker.check_tool_call("read_file", {"path": str(link / "notes" / "x.py")}) is None
+        assert tracker._load_hints_for_directory(real / "notes") is None
 
     def test_session_workspace_adoption_rebinds_discovery(self, home_tree):
         """A home-pinned tracker whose session adopted a real project resumes hint

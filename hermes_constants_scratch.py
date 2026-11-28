@@ -22,6 +22,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import hermes_constants_scratch_stuck as stuck
+from hermes_constants import is_ntfs_junction
 
 logger = logging.getLogger(__name__)
 
@@ -78,21 +79,23 @@ def _open_prune_log(log_file: Path | None) -> logging.Logger:
 
 
 def _tree_bytes(path: Path) -> int:
-    """Apparent size of *path* and everything under it, symlinks not followed."""
+    """Apparent size of *path* and everything under it, symlinks and junctions not followed."""
     try:
-        total = os.lstat(path).st_size
+        st = os.lstat(path)
     except OSError:
         return 0
-    stack = [str(path)] if path.is_dir() and not path.is_symlink() else []
+    total = st.st_size
+    stack = [str(path)] if path.is_dir() and not path.is_symlink() and not is_ntfs_junction(st) else []
     while stack:
         try:
             with os.scandir(stack.pop()) as it:
                 for child in it:
                     try:
-                        total += child.stat(follow_symlinks=False).st_size
+                        st = child.stat(follow_symlinks=False)
                     except OSError:
                         continue
-                    if child.is_dir(follow_symlinks=False):
+                    total += st.st_size
+                    if child.is_dir(follow_symlinks=False) and not is_ntfs_junction(st):
                         stack.append(child.path)
         except OSError:
             continue

@@ -1146,14 +1146,34 @@ def _prune_scratch_dir_once(scratch: Path) -> None:
         spawn_prune(scratch)
 
 
+def is_ntfs_junction(st: os.stat_result) -> bool:
+    """True for the no-follow stat (``os.lstat``, ``DirEntry.stat(follow_symlinks=False)``) of an
+    NTFS junction. ``os.walk``, ``os.scandir`` and ``Path.rglob`` treat a junction as a plain
+    directory (only symlinks answer ``is_symlink()``), so a tree walk that skips links must ask
+    this too. POSIX stat results carry no reparse tag, so it is False there."""
+    return getattr(st, "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT
+
+
 def scratch_dir_usage_bytes(scratch: Path | None = None) -> int:
-    """Total bytes under the scratch dir (for ``hermes doctor``); 0 when unreadable."""
+    """Total bytes of the files under the scratch dir, or any tree *scratch* names (for
+    ``hermes doctor``); 0 when unreadable.
+
+    Directory links are never descended, junctions included: pnpm's
+    ``store/v11/projects/<hash>`` junction to the install dir billed the whole install to
+    ``cache/pnpm/`` (#156487).
+    """
     root = scratch if scratch is not None else get_scratch_dir(prune=False)
     total = 0
-    for dirpath, _dirnames, filenames in os.walk(root, onerror=lambda _e: None):
-        for name in filenames:
-            with contextlib.suppress(OSError):
-                total += os.lstat(os.path.join(dirpath, name)).st_size
+    stack = [os.fspath(root)]
+    while stack:
+        with contextlib.suppress(OSError), os.scandir(stack.pop()) as it:
+            for child in it:
+                with contextlib.suppress(OSError):
+                    st = child.stat(follow_symlinks=False)
+                    if not child.is_dir():
+                        total += st.st_size
+                    elif not child.is_symlink() and not is_ntfs_junction(st):
+                        stack.append(child.path)
     return total
 
 

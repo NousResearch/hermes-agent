@@ -167,12 +167,10 @@ def check_legacy_desktop_checkout() -> None:
         and stashes is not None and stashes.returncode == 0 and stashes.stdout.strip() == ""
     )
 
-    size_note = ""
-    try:
-        total = sum(f.stat().st_size for f in checkout.rglob("*") if f.is_file())
-        size_note = f" (~{total / 1_000_000_000:.1f} GB)"
-    except OSError:
-        pass
+    from hermes_constants import scratch_dir_usage_bytes
+
+    # Links not followed: pnpm's node_modules junctions would count the store twice (#156487).
+    size_note = f" (~{scratch_dir_usage_bytes(checkout) / 1_000_000_000:.1f} GB)"
 
     if pristine:
         check_warn(
@@ -247,11 +245,15 @@ def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN
     Finished campaign trees parked at the cache root sat for weeks (95 GB on one host)
     because only ``scratch/`` and ``terminal/`` are reaped; doctor is where that shows."""
     from hermes_constants import scratch_dir_usage_bytes
+    from pm.filesystem import is_junction
 
     cache = hermes_home / "cache"
     hogs: list[tuple[str, int]] = []
     try:
-        entries = [e for e in cache.iterdir() if e.is_dir() and not e.is_symlink() and e.name not in _PRUNED_CACHE_DIRS]
+        entries = [
+            e for e in cache.iterdir()
+            if e.is_dir() and not e.is_symlink() and not is_junction(e) and e.name not in _PRUNED_CACHE_DIRS
+        ]
     except OSError:
         return hogs
     for entry in entries:

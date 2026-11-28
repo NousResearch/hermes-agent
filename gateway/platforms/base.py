@@ -34,16 +34,6 @@ from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _sh
 logger = logging.getLogger(__name__)
 
 
-def _consume_detached_handler_exception(task: asyncio.Task) -> None:
-    """Done-callback for a detached fatal-error handler task (carrier cancelled in
-    ``_notify_fatal_error``): retrieve its exception so asyncio never logs "never retrieved"."""
-    if task.cancelled():
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Detached fatal-error handler task failed: %s", exc, exc_info=exc)
-
-
 # Audio exts for native audio delivery; Telegram's narrower sets stay separate (.m2a is audio to
 # Hermes but not to sendAudio).
 _AUDIO_MIME_TYPES = {
@@ -436,10 +426,11 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Any, Callable, Awaitable
 if (_checkout_root := str(Path(__file__).resolve().parents[2])) not in sys.path:
     sys.path.append(_checkout_root)  # append, never prepend: never shadow same-named installed packages
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
+from gateway.platforms.helpers import consume_detached_handler_exception, fence_state_after, reply_file_off, try_reply_file, typing_metadata_for_turn, sender_may_see_activity, typing_pause_key, typing_refresh_wanted
 from gateway.platforms.base_post_delivery import run_post_delivery_callback
 from gateway.platforms.base_delivery_ledger import (
     finalize_final_obligation, ledger_attempted, ledger_bracket, record_final_obligation)
+from gateway.platforms.base_session_groups import acquire_group_turn, defer_to_group_turn
 from gateway.platforms.base_exec_approval import (
     approval_timeout_seconds, ea_action_labels, ea_default_reason_text, ea_header_text,
     ea_reason_label_text, ea_smart_deny_line_text, exec_approval_cmd_budget, format_approval_deadline_line,
@@ -451,7 +442,7 @@ from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import CREDENTIAL_STORE_DIRS, HOME_ENV_FILES, SECRET_CACHE_STORES
 from agent.file_safety import deny_path_under
-from gateway.session import SessionSource, build_session_key
+from gateway.session import SessionSource, build_session_key, key_source_for
 from gateway.session_dm_threads import dm_thread_batch_suffix, dm_thread_key_source, session_db_for_source
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import CONNECTOR_DOWNLOADS_SUBDIR, get_default_hermes_root, get_hermes_dir, get_hermes_home, get_real_home
@@ -2104,7 +2095,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             except asyncio.CancelledError:
                 # Carrier cancelled (our own teardown inside the handler): let it finish detached.
                 if not task.done():
-                    task.add_done_callback(_consume_detached_handler_exception)
+                    task.add_done_callback(consume_detached_handler_exception)
                 raise
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
@@ -2432,7 +2423,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         self._canonicalize(source)  # identity FIRST; no key derivation before it
         extra, store = self.config.extra, getattr(self, "_session_store", None)
         return build_session_key(
-            dm_thread_key_source(source, extra, lambda: session_db_for_source(store, source)), group_sessions_per_user=extra.get("group_sessions_per_user", True),
+            dm_thread_key_source(key_source_for(source), extra, lambda: session_db_for_source(store, source)), group_sessions_per_user=extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=extra.get("thread_sessions_per_user", False), profile=self._session_key_profile(source))
 
     def _text_batch_key(self, event: MessageEvent) -> str:
@@ -3905,6 +3896,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if session_key in self._active_sessions or behind_burst:
             await self._handle_message_while_active(event, session_key)
             return
+        if await defer_to_group_turn(self, event, session_key):
+            return  # another chat in the session group (#79198) owns the key
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
@@ -4333,6 +4326,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         delivery_attempted = delivery_succeeded = False  # feeds the processing-complete hook
+        group_turn = None  # session-group turn lock (#79198), held through delivery
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -4349,6 +4343,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         generation = None
         try:
             await self._run_processing_hook("on_processing_start", event)
+            group_turn = await acquire_group_turn(event, session_key)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             generation = getattr(interrupt_event, "_hermes_run_generation", None)
@@ -4447,16 +4442,20 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)) and not isinstance(e, _outage):  # rest contained
                 raise
         finally:
-            await self._release_turn_marker(event)
-            event._turn_marker_handoff = False  # a later run of this object clears its own marker
-            # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
-            await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
-            await self._fire_post_delivery_callback(session_key, getattr(interrupt_event, "_hermes_run_generation", None) if generation is None else generation)
-            # Callback work or a late refresh may have recreated typing — one final bounded stop.
-            await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1, event=event)
-            # Flush any timer that missed the in-band drain, then reconcile ownership.
-            await self._flush_text_debounce_now(session_key)
-            self._finish_session_task(session_key, interrupt_event)
+            try:
+                await self._release_turn_marker(event)
+                event._turn_marker_handoff = False  # a later run of this object clears its own marker
+                # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it alive.
+                await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_typing_metadata, event=event)
+                await self._fire_post_delivery_callback(session_key, getattr(interrupt_event, "_hermes_run_generation", None) if generation is None else generation)
+                # Callback work or a late refresh may have recreated typing — one final bounded stop.
+                await self._stop_typing_refresh(event.source.chat_id, None, metadata=_typing_metadata, stop_attempts=1, event=event)
+                # Flush any timer that missed the in-band drain, then reconcile ownership.
+                await self._flush_text_debounce_now(session_key)
+                self._finish_session_task(session_key, interrupt_event)
+            finally:  # release even when cleanup raises, so the group key never stays locked
+                if group_turn is not None:
+                    group_turn.release()
 
     _REQUEUE_BACKOFF_INITIAL_SECONDS = 0.25
     # Kept at 1s: nothing wakes the back-off sleep, so a genuine message merged into the slot

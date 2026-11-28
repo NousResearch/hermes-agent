@@ -51,11 +51,14 @@ class Changes:
     ``document`` replaces the whole user-layer document (``atomic_config_write``: the file backend
     merges it onto the on-disk document, comment-preserving); ``set`` / ``unset`` are single dotted
     keys (``atomic_roundtrip_yaml_update`` semantics). A backend applies ``document`` first.
+    ``document_text`` is ``document`` as its author typed it (the dashboard YAML editor): the file
+    backend lands the document on that text, so its comments and key order are the ones kept.
     """
     document: Optional[dict] = None
     set: Mapping[str, Any] = field(default_factory=dict)
     unset: tuple[str, ...] = ()
     extra_content_on_create: Optional[str] = None
+    document_text: Optional[str] = None
 
 
 @runtime_checkable
@@ -220,7 +223,8 @@ class FileBackend:
     def write_path(path: Path, changes: Changes) -> None:
         from utils import atomic_roundtrip_yaml_save, atomic_roundtrip_yaml_update
         if changes.document is not None:
-            atomic_roundtrip_yaml_save(path, changes.document, extra_content_on_create=changes.extra_content_on_create)
+            atomic_roundtrip_yaml_save(path, changes.document, extra_content_on_create=changes.extra_content_on_create,
+                                       document_text=changes.document_text)
         for key, value in changes.set.items():
             atomic_roundtrip_yaml_update(path, key, value)
         for key in changes.unset:
@@ -494,10 +498,12 @@ def config_exists(config_path: PathLike) -> bool:
     return backend.exists(home)
 
 
-def write_config_document(config_path: PathLike, document: dict, *, extra_content_on_create: Optional[str] = None) -> None:
+def write_config_document(config_path: PathLike, document: dict, *, extra_content_on_create: Optional[str] = None,
+                          document_text: Optional[str] = None) -> None:
     """Replace a config file's document (comment-preserving merge for the file backend)."""
     backend, home = _route(config_path)
-    backend.write_changes(home, Changes(document=document, extra_content_on_create=extra_content_on_create))
+    backend.write_changes(home, Changes(document=document, extra_content_on_create=extra_content_on_create,
+                                        document_text=document_text))
 
 
 def config_destination(config_path: PathLike) -> str:

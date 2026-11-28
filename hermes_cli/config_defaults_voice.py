@@ -12,6 +12,11 @@ VOICE_DEFAULTS = {
         "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
         # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
         "instructions": "",
+        # Standby (WebRTC): pause inference after N seconds without speech (5-60) and bill the
+        # lower standby rate until someone talks again. 0 = off (always active).
+        "standby_idle_seconds": 0,
+        # Optional 0-1 speech-detection threshold for waking from standby (vendor default 0.5).
+        "standby_vad_threshold": None,
         # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
     },
     "record_key": "ctrl+b",

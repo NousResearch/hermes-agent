@@ -144,6 +144,28 @@ def resolve_gpt_live_status() -> dict[str, Any]:
     }
 
 
+def standby_settings(live: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """GPT-Live standby (WebRTC only): wait for speech before starting inference, then pause
+    inference after ``standby_idle_seconds`` without transcript activity. Paused time bills at the
+    lower standby rate while the call stays open. Off (``{}``) unless a positive value is set."""
+    live = live if live is not None else _live_section()
+    try:
+        seconds = int(live.get("standby_idle_seconds") or 0)
+    except (TypeError, ValueError):
+        return {}
+    if seconds <= 0:
+        return {}
+    wake: dict[str, Any] = {"type": "speech"}
+    vad = live.get("standby_vad_threshold")
+    if vad not in (None, ""):
+        try:
+            wake["vad_threshold"] = max(0.0, min(1.0, float(vad)))
+        except (TypeError, ValueError):
+            pass
+    # Vendor range for idle_timeout_s is a whole number from 5 to 60.
+    return {"wake_policy": wake, "idle_timeout_s": max(5, min(60, seconds))}
+
+
 def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
     """The ``session`` object for ``POST /v1/live/sessions`` (client delegation, WebRTC — the
     transport negotiates the audio format, so none is set)."""
@@ -154,6 +176,7 @@ def build_session_config(history: Optional[list] = None) -> dict[str, Any]:
         "audio": {"output": {"voice": str(live.get("voice") or DEFAULT_LIVE_VOICE)}},
         "delegation": {"type": "client"},
     }
+    config.update(standby_settings(live))
     if history:
         config["input"] = history
     return config

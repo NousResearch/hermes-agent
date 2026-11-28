@@ -17,6 +17,8 @@ import urllib.request
 from typing import Optional
 from urllib.parse import urlparse
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 _DEFAULT_PORTAL = "https://portal.nousresearch.com"
 
 # Docker-style adjective_noun names; the portal keys on row id, so collisions are harmless.
@@ -73,7 +75,7 @@ def _register_self_hosted_client(
         headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json",
                  "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with open_credentialed_url(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         try:  # structured JSON errors: {error, error_description}

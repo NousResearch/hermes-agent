@@ -99,6 +99,8 @@ def runtime(request, tmp_path, monkeypatch):
         response.status = 200
         return response
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    monkeypatch.setattr("hermes_cli.nous_billing.open_credentialed_url", urlopen)
+    monkeypatch.setattr("hermes_cli.nous_account.open_credentialed_url", urlopen)
     try:
         yield SimpleNamespace(server=server, homes={"launch": launch, "secondary": secondary},
                               calls=calls, expired=request.param)

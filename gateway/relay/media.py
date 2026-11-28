@@ -28,6 +28,7 @@ from typing import Optional
 
 from gateway.platforms.event import clean_attachment_filename
 from gateway.relay.auth import make_upgrade_token
+from hermes_cli.urllib_security import open_credentialed_url
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,7 @@ class RelayMediaClient:
             }
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                with open_credentialed_url(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     media_id = json.loads(resp.read().decode("utf-8")).get("id")
                     if media_id:
                         return f"{self._base_url}/relay/media/{media_id}", "", False
@@ -246,7 +247,7 @@ class RelayMediaClient:
             try:
                 # Inside the try: a malformed URL (`https://[::1/…`) raises ValueError here.
                 req = urllib.request.Request(url, headers=headers)
-                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                with open_credentialed_url(req, timeout=_REQUEST_TIMEOUT_S) as resp:
                     if int(resp.headers.get("Content-Length") or 0) > MEDIA_MAX_BYTES:
                         logger.warning("relay media download too large: %s", url)
                         return None

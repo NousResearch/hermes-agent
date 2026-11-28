@@ -257,16 +257,16 @@ async def test_download_sends_a_user_agent_on_every_request():
         seen.append(dict(req.headers))
         return _Resp()
 
-    import urllib.request as _ur
+    import gateway.relay.media as _media
 
-    orig = _ur.urlopen
-    _ur.urlopen = _fake_urlopen  # type: ignore[assignment]
+    orig = _media.open_credentialed_url
+    _media.open_credentialed_url = _fake_urlopen  # type: ignore[assignment]
     try:
         c = RelayMediaClient("https://conn.example", "gw1", "sec")
         assert await c.download("https://cdn.discordapp.com/attachments/1/2/v.ogg")
         assert await c.download("https://conn.example/relay/media/deadbeef")
     finally:
-        _ur.urlopen = orig  # type: ignore[assignment]
+        _media.open_credentialed_url = orig  # type: ignore[assignment]
 
     assert len(seen) == 2
     for headers in seen:
@@ -328,9 +328,7 @@ async def test_download_routes_auth_decision_through_is_relay_media_url(monkeypa
         seen.append(dict(req.headers))
         return _Resp()
 
-    import urllib.request as _ur
-
-    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("gateway.relay.media.open_credentialed_url", _fake_urlopen)
     assert await c.download("https://cdn.discordapp.com/attachments/1/2/i.png")
     assert asked[-1] == "https://cdn.discordapp.com/attachments/1/2/i.png"
     assert len(seen) == 1 and "Authorization" not in seen[0]
@@ -387,9 +385,7 @@ async def test_download_never_sends_bearer_to_foreign_origin_with_relay_path(mon
         seen.append((req.full_url, dict(req.headers)))
         return _Resp()
 
-    import urllib.request as _ur
-
-    monkeypatch.setattr(_ur, "urlopen", _fake_urlopen)
+    monkeypatch.setattr("gateway.relay.media.open_credentialed_url", _fake_urlopen)
     c = RelayMediaClient("https://conn.example", "gw1", "sec")
     hostile = "https://evil.example/relay/media/abc.png"
     path = await c.download(hostile)
@@ -416,12 +412,10 @@ async def test_rehost_on_another_origin_names_both_origins_once(monkeypatch, cap
     """A connector whose PUBLIC_BASE_URL differs from GATEWAY_RELAY_URL mints re-hosts the
     bearer no longer reaches: the lost attachment is logged with both origins, once."""
     import urllib.error
-    import urllib.request as _ur
-
     def _unauthorized(req, timeout=None):
         raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", {}, None)
 
-    monkeypatch.setattr(_ur, "urlopen", _unauthorized)
+    monkeypatch.setattr("gateway.relay.media.open_credentialed_url", _unauthorized)
     c = RelayMediaClient("https://relay.example/team-a", "gw1", "sec")
     with caplog.at_level("WARNING", logger="gateway.relay.media"):
         assert await c.download("https://pilot.example/relay/media/a") is None
@@ -453,9 +447,7 @@ async def test_malformed_url_does_not_abort_later_attachments(monkeypatch):
         def __exit__(self, *_a):
             return False
 
-    import urllib.request as _ur
-
-    monkeypatch.setattr(_ur, "urlopen", lambda req, timeout=None: _Resp())
+    monkeypatch.setattr("gateway.relay.media.open_credentialed_url", lambda req, timeout=None: _Resp())
     adapter, _stub, _fake = _adapter()
     adapter._media_client = RelayMediaClient("https://conn.example", "gw1", "sec")
     event = _make_event(["https://[::1/relay/media/x", "https://conn.example/relay/media/good"])

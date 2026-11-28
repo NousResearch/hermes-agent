@@ -25,6 +25,7 @@ import os
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
+from hermes_cli.urllib_security import open_credentialed_url
 
 _HTTP_TIMEOUT_S = 10.0
 # Longer than one connector call so the dashboard sees the connector's answer, not a socket timeout.
@@ -140,7 +141,7 @@ def _get(path: str) -> dict:
     req = urllib.request.Request(f"{base}{path}", method="GET", headers={
         "Authorization": f"Bearer {token}", "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+        with open_credentialed_url(req, timeout=_HTTP_TIMEOUT_S) as resp:
             payload = json.loads(resp.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         reason = redact_excerpt(connector_reason(read_error_body(exc)), (token,))

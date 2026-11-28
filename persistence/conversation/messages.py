@@ -979,6 +979,22 @@ class MessageRepository(Protocol):
         """Record an unviewed completion's note once as a ``user`` row, keyed by ``admission_id`` (stored as ``metadata.completion_admission``) over the compression lineage, with the guards of ``append_delegation_delivery``."""
         ...
 
+    def claim_caller_history_deliveries(self, session_id: SessionId) -> list[dict[str, JsonValue]]:
+        """Consume for good the pending delegation delivery rows (active ``user`` rows of kind ``async_delegation_complete`` or ``hidden`` carrying a ``delegation_id``, neither consumed nor under a live reservation) of the session's resume lineage, in id order; each as ``{id, delivery_id, session_id, content, result, display_metadata}``."""
+        ...
+
+    def reserve_caller_history_deliveries(self, session_id: SessionId, owner: str, ttl_seconds: float, limit: Optional[int] = None) -> list[dict[str, JsonValue]]:
+        """Lease up to ``limit`` pending delivery rows to ``owner`` for ``ttl_seconds`` under one fresh ``reservation_token`` (returned on each row); a lease past its time is pending again."""
+        ...
+
+    def commit_caller_history_deliveries(self, reservation_token_or_ids: str | Sequence[int], owner: str) -> int:
+        """Consume for good the unconsumed rows leased to ``owner``: by token (even once its lease expired), or by row ids under a live lease; returns rows committed."""
+        ...
+
+    def release_caller_history_deliveries(self, session_id: Optional[SessionId] = None, row_ids: Optional[Sequence[int]] = None, *, reservation_token: Optional[str] = None, owner: Optional[str] = None) -> int:
+        """Return rows to pending: with ``owner`` drop its lease (by ``reservation_token``, else ``row_ids`` under a live lease), else undo a claim of ``row_ids`` within ``session_id``'s resume lineage; returns rows released."""
+        ...
+
     def replace_transcript(self, session_id: SessionId, messages: Sequence[NewMessage], mode: ReplaceMode, *, reject_active_turn_lease: bool = False) -> ReplaceResult:
         """Replace the live transcript with ``messages`` per ``mode`` in one transaction, counters reset to the replacement. With ``reject_active_turn_lease`` a live compression lock (``CompressionInProgress``) or live turn lease (``TurnLeaseLost``) refuses and a stale one is removed; a session ended by compression raises ``CompressionClosed``."""
         ...

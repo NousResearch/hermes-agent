@@ -51,7 +51,7 @@ from ._store.search import SUPERSEDED_ORIGINAL_SQL, get_anchored_view
 from ._store.todo import get_latest_todo_result
 from ._store.transcript_repair import _active_logical_message_row, transcript_row_snapshot
 from ._errors import refusals
-from ._store import stored_reads, timeline
+from ._store import caller_history, stored_reads, timeline
 
 __all__ = ["SQLiteMessageRepository"]
 
@@ -336,6 +336,30 @@ class SQLiteMessageRepository:
         with _refusals(holder, session_id):
             return MessageId(append_completion_note(holder, session_id, admission_id, content, display_kind,
                                                        dict(metadata)))
+
+    def claim_caller_history_deliveries(self, session_id: SessionId) -> list[dict[str, JsonValue]]:
+        holder = self._store.holder()
+        with _refusals(holder, session_id):
+            return caller_history.claim_caller_history_deliveries(holder, session_id)
+
+    def reserve_caller_history_deliveries(self, session_id: SessionId, owner: str, ttl_seconds: float,
+                                          limit: Optional[int] = None) -> list[dict[str, JsonValue]]:
+        holder = self._store.holder()
+        with _refusals(holder, session_id):
+            return caller_history.reserve_caller_history_deliveries(holder, session_id, owner, ttl_seconds, limit)
+
+    def commit_caller_history_deliveries(self, reservation_token_or_ids: str | Sequence[int], owner: str) -> int:
+        holder = self._store.holder()
+        with _refusals(holder):
+            return caller_history.commit_caller_history_deliveries(holder, reservation_token_or_ids, owner)
+
+    def release_caller_history_deliveries(self, session_id: Optional[SessionId] = None,
+                                          row_ids: Optional[Sequence[int]] = None, *,
+                                          reservation_token: Optional[str] = None, owner: Optional[str] = None) -> int:
+        holder = self._store.holder()
+        with _refusals(holder, session_id):
+            return caller_history.release_caller_history_deliveries(
+                holder, session_id, row_ids, reservation_token=reservation_token, owner=owner)
 
     def replace_transcript(self, session_id: SessionId, messages: Sequence[NewMessage], mode: ReplaceMode, *,
                            reject_active_turn_lease: bool = False) -> ReplaceResult:

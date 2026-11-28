@@ -119,6 +119,17 @@ Hermes is compatible with Cursor IDE's `.cursorrules` file and `.cursor/rules/*.
 
 This means your existing Cursor conventions automatically apply when using Hermes.
 
+Each `.mdc` rule is loaded by the rule type its front matter declares, the way Cursor applies it:
+
+| Front matter | What Hermes does |
+|---|---|
+| `alwaysApply: true`, or no front matter | Body goes into the system prompt |
+| `globs: <patterns>` | Listed in a short rule index; the body is added to the tool result the first time a file tool names a matching file (`*.tsx` matches at any depth, `src/**/*.ts` relative to the working directory) |
+| `description: <text>` only | Listed in the index with its description; the agent reads the file with `read_file` when it fits the task |
+| `alwaysApply: false` and nothing else | Listed in the index as a manual rule |
+
+The front matter itself never reaches the model. Values may be unquoted (`globs: *.ts, *.tsx`), quoted, or YAML lists, and a trailing `# comment` is ignored.
+
 ## How Context Files Are Loaded
 
 ### At startup (system prompt)

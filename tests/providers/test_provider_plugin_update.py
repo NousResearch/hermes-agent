@@ -133,3 +133,40 @@ def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     # The fixed release after it loads clean: nothing the broken one half-imported is reused.
     assert "new sessions use this version" in activation_hint(update_to(4))
     assert get_provider_profile("demo-provider").create_client().version == "v4"
+
+
+def test_a_scan_that_loses_the_import_race_keeps_the_winners_provider(plugin, monkeypatch):
+    """Two scans of one home: the one that finds the plugin already imported by the other must not publish its
+    empty staging layer over the other's registrations (the provider then stayed "Unknown" for good)."""
+    import threading
+
+    import providers
+    from providers import plugin_reload
+
+    _write(plugin, 1)
+    real_snapshot = plugin_reload._snapshot
+    inside, release = threading.Event(), threading.Event()
+
+    def snapshot(plugin_dir, module_name):
+        # The slow scan has already seen no live tree; it stops here, before its import, as a long copy would.
+        if threading.current_thread().name == "slow-scan":
+            inside.set()
+            release.wait(5)
+        return real_snapshot(plugin_dir, module_name)
+
+    monkeypatch.setattr(plugin_reload, "_snapshot", snapshot)
+
+    def scan():
+        providers._home_layer(force_stamp_check=True)
+
+    slow = threading.Thread(target=scan, name="slow-scan")
+    slow.start()
+    assert inside.wait(5)
+    other = threading.Thread(target=scan)
+    other.start()
+    other.join(timeout=1)  # without a lock it imports and publishes now; with one it waits for the slow scan
+    release.set()
+    slow.join(5)
+    other.join(5)
+
+    assert "demo-provider" in providers._home_layer(force_stamp_check=True).registry

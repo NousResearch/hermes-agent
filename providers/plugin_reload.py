@@ -53,6 +53,10 @@ _SETUP_WAIT_SECONDS = 30
 # One directory per process for the frozen copies; removed on a normal exit, reclaimed later otherwise.
 _snapshot_root: Path | None = None
 _snapshot_lock = threading.Lock()
+# One import of a plugin at a time (#160126): a scan that found no live tree and then the module already in
+# ``sys.modules`` (another scan's import) staged nothing, and publishing that removed the other's registrations.
+_import_locks: dict[str, threading.Lock] = {}
+_import_locks_guard = threading.Lock()
 
 
 def _owner_gone(root: Path) -> bool:
@@ -185,6 +189,13 @@ def tree_fingerprint(plugin_dir: Path) -> str:
 def import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     """Import *plugin_dir* into the layer being scanned unless that exact tree is already live there; an
     updated tree replaces the live one only once it imported completely."""
+    with _import_locks_guard:
+        lock = _import_locks.setdefault(base_name, threading.Lock())
+    with lock:
+        _import_into_layer(plugin_dir, source, base_name)
+
+
+def _import_into_layer(plugin_dir: Path, source: str, base_name: str) -> None:
     import providers as P
 
     layer = P._REGISTRATION_TARGET.get()

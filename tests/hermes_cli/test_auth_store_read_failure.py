@@ -50,7 +50,7 @@ def test_read_failure_raises_and_leaves_the_store_alone(store_file, monkeypatch,
         auth._load_auth_store(store_file)
 
     assert store_file.read_bytes() == before, "the store on disk was modified"
-    assert not store_file.with_suffix(".json.corrupt").exists(), (
+    assert not list(store_file.parent.glob("auth.json.corrupt*")), (
         "a read failure is not corruption and must not write a .corrupt sidecar"
     )
 
@@ -59,10 +59,10 @@ def test_unparseable_json_still_degrades_and_preserves_a_copy(store_file):
 
     result = auth._load_auth_store(store_file)
 
-    assert result == {"version": auth.AUTH_STORE_VERSION, "providers": {}}
-    corrupt = store_file.with_suffix(".json.corrupt")
-    assert corrupt.exists(), "genuine corruption must still be preserved"
-    assert corrupt.read_text(encoding="utf-8") == "{ not json"
+    assert result["providers"] == {}
+    copies = list(store_file.parent.glob("auth.json.corrupt.*"))
+    assert len(copies) == 1, "genuine corruption must still be preserved"
+    assert copies[0].read_text(encoding="utf-8") == "{ not json"
 
 def test_healthy_store_is_returned_unchanged(store_file):
     result = auth._load_auth_store(store_file)

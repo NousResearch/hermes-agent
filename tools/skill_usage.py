@@ -121,9 +121,12 @@ def _parse_iso_timestamp(value: Any) -> Optional[datetime]:
 
 
 def latest_activity_at(record: dict[str, Any]) -> Optional[str]:
-    """Newest use/view/patch timestamp; ``created_at`` is excluded so never-active skills stay distinguishable."""
-    stamps = [(dt, str(raw)) for raw in (record.get(k) for k in ("last_used_at", "last_viewed_at", "last_patched_at"))
-              if (dt := _parse_iso_timestamp(raw)) is not None]
+    """Newest use/view/patch/restore timestamp; ``created_at`` is excluded so never-active skills stay distinguishable."""
+    stamps = [
+        (dt, str(raw))
+        for raw in (record.get(k) for k in ("last_used_at", "last_viewed_at", "last_patched_at", "restored_at"))
+        if (dt := _parse_iso_timestamp(raw)) is not None
+    ]
     return max(stamps, key=lambda t: t[0])[1] if stamps else None
 
 
@@ -349,6 +352,7 @@ def _empty_record() -> dict[str, Any]:
     return {"created_by": None, "use_count": 0, "view_count": 0, "last_used_at": None, "last_viewed_at": None,
             "patch_count": 0, "patch_generation": 0, "last_reused_patch_generation": 0, "last_patched_at": None,
             "created_at": _now_iso(), "state": STATE_ACTIVE, "pinned": False, "archived_at": None,
+            "restored_at": None,
             # When the curator first anchored this skill's inactivity clock (seed or re-anchor); None = never seen.
             "first_seen_at": None}
 
@@ -556,7 +560,7 @@ def mark_agent_created(skill_name: str) -> None:
     _set_field(skill_name, "created_by", "agent")
 
 
-def set_state(skill_name: str, state: str) -> None:
+def set_state(skill_name: str, state: str, *, restored: bool = False) -> None:
     """Set lifecycle state (no-op if invalid / unmanageable). Emits archived/stale/restored; active<-stale is silent."""
     if state not in _VALID_STATES:
         logger.debug("set_state: invalid state %r for %s", state, skill_name)
@@ -564,15 +568,18 @@ def set_state(skill_name: str, state: str) -> None:
 
     def _apply(rec: dict[str, Any]) -> dict[str, Any]:
         previous = rec.get("state")
+        is_restore = state == STATE_ACTIVE and (previous == STATE_ARCHIVED or restored)
         if previous != state:
             rec["state"] = state
             if state != STATE_STALE:
                 rec["archived_at"] = _now_iso() if state == STATE_ARCHIVED else None
-        return {"changed": previous != state, "created_by": rec.get("created_by"), "previous_state": previous}
+        if is_restore:
+            rec["archived_at"] = None
+            rec["restored_at"] = _now_iso()
+        return {"changed": previous != state, "created_by": rec.get("created_by"), "restored": is_restore}
     facts = _mutate(skill_name, _apply, require_curation_eligible=True)
     if isinstance(facts, dict) and facts["changed"]:
-        restored = state == STATE_ACTIVE and facts["previous_state"] == STATE_ARCHIVED
-        action = "restored" if restored else {STATE_ARCHIVED: "archived", STATE_STALE: "stale"}.get(state)
+        action = "restored" if facts["restored"] else {STATE_ARCHIVED: "archived", STATE_STALE: "stale"}.get(state)
         if action is not None:
             _emit_skill_lifecycle(skill_name, action, record=facts)
 
@@ -639,7 +646,7 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
             os.utime(dest)
     if not archiving or is_bundled(skill_name):  # pruning a built-in only sticks if the re-seeder skips it
         _toggle_suppressed_name(skill_name, add=archiving)
-    set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE)
+    set_state(skill_name, STATE_ARCHIVED if archiving else STATE_ACTIVE, restored=not archiving)
     with suppress(Exception):
         if _ledger is not None:
             _ledger.record_mutation(action, skill_name, before=_ledger_before or [], after_root=dest)

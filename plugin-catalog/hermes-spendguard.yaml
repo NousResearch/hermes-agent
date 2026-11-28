@@ -1,0 +1,25 @@
+# Catalog entry for NousResearch/hermes-agent/plugin-catalog/
+# Pin: the v0.1.1 release commit of the public plugin repo
+# (https://github.com/Blackleets/hermes-spendguard).
+name: hermes-spendguard
+repo: https://github.com/Blackleets/hermes-spendguard
+sha: 4a2259aece7e36735497623cbf2d84e082b4c211
+description: "SpendGuard — a wallet guard for Hermes Agent. Prices every provider API call (provider-reported cost when available, otherwise public list-price estimates; unknown models are counted by tokens and marked unpriced, never priced by invention), tracks spend against daily/monthly USD budgets, warns at configurable thresholds, and hard-stops new turns before they reach the model when a budget runs out — the block makes zero model calls. Budgets change only via the human-typed /spendguard command; the agent's two tools are read-only, and its file/terminal calls are blocked from touching SpendGuard's own config, so it cannot rewrite its cap either. Local SQLite ledger, no network, no credentials, no telemetry."
+maintainer: Blackleets
+tier: community
+category: automation
+version: "0.1.1"
+requires_hermes: ">=0.22.6"
+platforms: [linux, macos, windows]
+docs_url: https://github.com/Blackleets/hermes-spendguard
+capabilities:
+  tools:
+    - spendguard_status
+    - spendguard_report
+  hooks:
+    - pre_llm_call
+    - pre_tool_call
+    - post_api_request
+    - post_auxiliary_call
+  middleware: []
+  env: []

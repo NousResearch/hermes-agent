@@ -1103,6 +1103,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".log": "text/plain", ".json": "application/json", ".xml": "application/xml",
     ".yaml": "application/yaml", ".yml": "application/yaml", ".toml": "application/toml",
     ".ini": "text/plain", ".cfg": "text/plain", ".zip": "application/zip",
+    ".svg": "image/svg+xml",
     ".doc": "application/msword", ".xls": "application/vnd.ms-excel",
     ".ppt": "application/vnd.ms-powerpoint",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1113,7 +1114,7 @@ SUPPORTED_DOCUMENT_TYPES = {
 # Files safe to inline into the prompt when small. An extension gate, NOT a blind UTF-8 decode
 # (PDF/zip/docx can start with decodable ASCII). Non-members are still cached by path.
 _TEXT_INJECT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".jsonl", ".ndjson", ".xml",
+    ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".json", ".jsonl", ".ndjson", ".xml", ".svg",
     ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env", ".properties", ".html", ".htm",
     ".css", ".scss", ".sass", ".less", ".py", ".pyi", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
     ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".c", ".h", ".cpp", ".cc", ".hpp", ".cs",
@@ -1457,6 +1458,10 @@ def cache_media_bytes(data: bytes, *, filename: str = "", mime_type: str = "",
             ("image", SUPPORTED_IMAGE_DOCUMENT_TYPES, ".jpg", cache_image_from_bytes, True),
             ("video", SUPPORTED_VIDEO_TYPES, ".mp4", cache_video_from_bytes, False),
             ("audio", _AUDIO_MIME_TYPES, ".ogg", cache_audio_from_bytes, True)):
+        if kind == "image" and (mime == "image/svg+xml" or ext == ".svg"):
+            # Vector, not raster: cache_image_from_bytes rejects it and None would drop the file.
+            # Skipping the image branch lets it fall through to the document cache below.
+            continue
         if not (mime.startswith(f"{kind}/") or ext in table or default_kind == kind):
             continue
         kind_ext = ext if ext in table else default_ext

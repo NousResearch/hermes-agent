@@ -40,7 +40,12 @@ IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic",
 def is_image_document(doc: Any) -> bool:
     """A document the download path caches as an image: an image filename or an ``image/*`` MIME type."""
     ext = os.path.splitext(getattr(doc, "file_name", None) or "")[1].lower()
-    return ext in IMAGE_EXTENSIONS or (getattr(doc, "mime_type", None) or "").lower().startswith("image/")
+    mime = (getattr(doc, "mime_type", None) or "").lower()
+    if ext == ".svg" or mime == "image/svg+xml":
+        # Vector, not raster: the image cache refuses non-raster bytes ("could not be read as an image").
+        # Let it fall through to the generic document path so the file (and its source) reaches the agent.
+        return False
+    return ext in IMAGE_EXTENSIONS or mime.startswith("image/")
 
 
 def _carries_media(msg: Any) -> bool:

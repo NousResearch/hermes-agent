@@ -235,7 +235,9 @@ def probe_ollama_local_models(
     cache_key = _ollama_probe_cache_key(root, headers)
     failure_key = f"{cache_key}|timeout:{float(timeout):.3f}"
     cached = _OLLAMA_LOCAL_MODELS_CACHE.get(cache_key)
-    if cached is not None and time.monotonic() - cached[1] < _OLLAMA_LOCAL_MODELS_CACHE_TTL:
+    # An empty catalog is never warm: the next read asks again, so a model pulled after the
+    # first look shows up at once instead of after the TTL.
+    if cached is not None and cached[0] and time.monotonic() - cached[1] < _OLLAMA_LOCAL_MODELS_CACHE_TTL:
         return list(cached[0])
     failed_at = _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.get(failure_key)
     if failed_at is not None:

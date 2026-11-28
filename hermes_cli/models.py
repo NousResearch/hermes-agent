@@ -2557,11 +2557,10 @@ def _disk_serve_tier(entry: Any, fp: str, now: float, *, is_ollama: bool,
     ``"fresh"`` inside the row's TTL (a curated fallback row only for
     ``_PROVIDER_MODELS_FALLBACK_TTL``), ``"stale"`` for a non-empty, non-fallback row inside
     ``_PROVIDER_MODELS_STALE_SERVE_MAX`` (served while an SWR thread revalidates), else ``None``:
-    the call would block on a live fetch. Empty native catalogs are authoritative only inside the
-    short native TTL, never through the stale window."""
+    the call would block on a live fetch. An empty catalog is never fresh: it is re-asked until it fills."""
     if is_ollama:
         ttl_seconds = min(ttl_seconds, _OLLAMA_LOCAL_MODELS_CACHE_TTL)
-    if not _cache_entry_valid(entry, fp, allow_empty=is_ollama):
+    if not _cache_entry_valid(entry, fp):
         return None
     age = now - entry["at"]
     if age < (_PROVIDER_MODELS_FALLBACK_TTL if entry.get("fallback") else ttl_seconds):
@@ -2614,12 +2613,11 @@ def cached_fetch_api_models(
 
     if valid:
         age = now - entry["at"]
-        if age < ttl_seconds:
+        # An empty native catalog is not warm: re-ask it so a just-pulled model shows on the next open
+        # (a command-issued key keeps it, or each open mints one; cache-only serves it + warms below).
+        if age < ttl_seconds and (entry["models"] or callable(api_key)):
             return _catalog(entry)
-        # An empty native catalog is authoritative only inside the TTL (as in
-        # cached_provider_model_ids): never stale-serve it, or an Ollama that was model-less at
-        # first open keeps an empty row for the whole stale window after models are pulled.
-        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        if (entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX) or (cache_only and age < ttl_seconds):
             # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
             # opens (GUI pickers that must not block on a stopped local server) take the same
             # non-blocking refresh: without it a locally loaded model stayed invisible for the

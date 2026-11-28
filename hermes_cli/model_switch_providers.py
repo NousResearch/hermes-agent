@@ -216,9 +216,9 @@ def _prefetch_provider_models_parallel(provider_slugs: list[str]) -> None:
 
     Only providers the serial call cannot serve from disk are fetched — missing,
     fingerprint-mismatched, or hard-expired entries. TTL-expired non-empty rows are served
-    inside the stale-serve window while revalidating off-thread, and an empty local-ollama
-    catalog is authoritative inside its own short native TTL, so prefetching either trades a
-    non-blocking serial read for a parallel fetch the picker waits on. Persistence is
+    inside the stale-serve window while revalidating off-thread, so prefetching them trades a
+    non-blocking serial read for a parallel fetch the picker waits on. An empty local-ollama
+    catalog is always re-asked (a cheap local probe), so it is prefetched too. Persistence is
     ``cached_provider_model_ids``'s own locked write; workers add none of their own."""
     from hermes_cli.models import (
         _credential_fingerprint, _disk_serve_tier, _load_provider_models_cache,

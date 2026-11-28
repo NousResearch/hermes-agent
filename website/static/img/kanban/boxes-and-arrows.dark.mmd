@@ -1,0 +1,198 @@
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "ui-sans-serif, -apple-system, Segoe UI, Helvetica, Arial, sans-serif", "fontSize": "13px", "background": "#0f172a", "primaryColor": "#1e293b", "primaryBorderColor": "#818cf8", "primaryTextColor": "#e2e8f0", "lineColor": "#94a3b8", "secondaryColor": "#1e293b", "tertiaryColor": "#0f172a", "clusterBkg": "#0b1220", "clusterBorder": "#334155", "titleColor": "#f1f5f9", "edgeLabelBackground": "#0f172a", "edgeLabelFontSize": "11px"}, "flowchart": {"curve": "basis", "nodeSpacing": 40, "rankSpacing": 56, "padding": 8, "htmlLabels": true, "useMaxWidth": false}} }%%
+flowchart TB
+
+  %% ============================ BANDS ============================
+  subgraph ACT["Actors — who acts"]
+    direction LR
+    human_operator["<b>Human operator</b><br/><span style='font-size:10px;opacity:.72'>creates roots · comments · unblocks</span>"]
+    auto_decomposer["<b>Auto-decomposer</b><br/><span style='font-size:10px;opacity:.72'>fans triage roots out each tick</span>"]
+    orchestrator["<b>Orchestrator</b><br/><span style='font-size:10px;opacity:.72'>specifies · fans out · routes</span>"]
+    profile_roster["<b>Profile roster</b><br/><span style='font-size:10px;opacity:.72'>installed profiles + default_assignee</span>"]
+    gateway["<b>Gateway</b><br/><span style='font-size:10px;opacity:.72'>hosts dispatcher + notifier</span>"]
+    dispatcher["<b>Dispatcher</b><br/><span style='font-size:10px;opacity:.72'>promotes · claims · spawns · reclaims</span>"]
+    worker["<b>Worker</b><br/><span style='font-size:10px;opacity:.72'>reads card · works · heartbeats</span>"]
+    reviewer["<b>Reviewer</b><br/><span style='font-size:10px;opacity:.72'>approves · requests changes</span>"]
+    notifier["<b>Notifier</b><br/><span style='font-size:10px;opacity:.72'>delivers events to chats</span>"]
+  end
+  subgraph SUB["Substrate — durable state"]
+    direction LR
+    board_db["<b>Shared board</b><br/><span style='font-size:10px;opacity:.72'>durable queue + state machine</span>"]
+    comment_thread["<b>Comment thread</b><br/><span style='font-size:10px;opacity:.72'>comments + handoff records</span>"]
+    workspace["<b>Workspace</b><br/><span style='font-size:10px;opacity:.72'>scratch · dir · worktree</span>"]
+  end
+  subgraph COL["Board columns — the card's state"]
+    direction LR
+    triage["<b>triage</b><br/><span style='font-size:10px;opacity:.72'>unspecified root</span>"]
+    todo["<b>todo</b><br/><span style='font-size:10px;opacity:.72'>gated on an open parent</span>"]
+    scheduled["<b>scheduled</b><br/><span style='font-size:10px;opacity:.72'>parked until a wake time</span>"]
+    ready["<b>ready</b><br/><span style='font-size:10px;opacity:.72'>parents done · claimable</span>"]
+    running["<b>running</b><br/><span style='font-size:10px;opacity:.72'>claimed · worker executing</span>"]
+    blocked["<b>blocked</b><br/><span style='font-size:10px;opacity:.72'>stopped · routed by cause</span>"]
+    review["<b>review</b><br/><span style='font-size:10px;opacity:.72'>handed to a reviewer</span>"]
+    done["<b>done</b><br/><span style='font-size:10px;opacity:.72'>terminal · releases dependents</span>"]
+    archived["<b>archived</b><br/><span style='font-size:10px;opacity:.72'>filter, never a column</span>"]
+  end
+
+  %% ============================ EDGES ============================
+  human_operator -->|"root card created"| triage
+  triage -->|"picked up each tick"| auto_decomposer
+  auto_decomposer -->|"roster read"| profile_roster
+  auto_decomposer -->|"root → todo"| todo
+  auto_decomposer -->|"child rows written"| board_db
+  triage -->|"root specified"| orchestrator
+  orchestrator -->|"assignee grounded"| profile_roster
+  orchestrator -->|"children created"| todo
+  orchestrator -->|"child rows + links"| board_db
+  todo -->|"parents done"| ready
+  ready -->|"atomic claim"| dispatcher
+  dispatcher -->|"spawn worker"| running
+  dispatcher -->|"card handed to worker"| worker
+  worker -->|"card read"| board_db
+  worker -->|"work in workspace"| workspace
+  worker -->|"heartbeat extends claim"| running
+  running -->|"request review"| review
+  review -->|"review lane claims"| dispatcher
+  dispatcher -->|"reviewer spawned"| reviewer
+  reviewer -->|"approve"| done
+  running -->|"complete directly"| done
+  review -->|"changes requested<br/>(re-gated to todo<br/>if a parent is open)"| ready
+  done -->|"releases dependents"| ready
+  done -->|"root waits on children"| todo
+  done -->|"root wakes on last child"| ready
+  orchestrator -->|"body + criteria + deps"| worker
+  worker -->|"notes appended"| comment_thread
+  comment_thread -->|"thread re-read"| worker
+  worker -->|"summary + metadata + artifacts"| reviewer
+  reviewer -->|"changes reason routed back"| worker
+  human_operator -->|"human context added"| comment_thread
+  running -->|"block: needs_input<br/>/ capability / transient"| blocked
+  running -->|"dependency block → todo"| todo
+  blocked -->|"surfaced for decision"| human_operator
+  human_operator -->|"unblock → ready<br/>(re-gated to todo<br/>if a parent is open)"| ready
+  human_operator -->|"unblock → review<br/>(re-gated to todo<br/>if a parent is open)"| review
+  running -->|"reclaim stale / crashed"| ready
+  running -->|"circuit breaker"| blocked
+  running -->|"provider error (sticky)"| blocked
+  running -->|"rate-limit requeue"| ready
+  running -->|"protocol budget exceeded"| blocked
+  running -->|"max runtime → retry"| ready
+  todo -->|"parked until wake time"| scheduled
+  scheduled -->|"unblock re-gates<br/>(re-gated to todo<br/>if a parent is open)"| ready
+  blocked -->|"loop breaker → triage"| triage
+  blocked -->|"archive (any column)"| archived
+  archived -->|"restore → triage / todo / ready"| ready
+  gateway -->|"dispatcher in gateway"| dispatcher
+  dispatcher -->|"durable writes"| board_db
+  dispatcher -->|"spawn gate: profile exists"| profile_roster
+  notifier -->|"events → subscribed chats"| human_operator
+  worker -->|"terminal board call"| board_db
+  review -->|"claim (review)"| running
+  ACT --> SUB --> COL
+  triage ~~~ todo ~~~ scheduled ~~~ ready ~~~ running ~~~ blocked ~~~ review ~~~ done ~~~ archived
+
+  %% ============================ LEGEND ============================
+  subgraph LEGEND["Legend · not part of the inventory"]
+    direction LR
+    lg_actor["actor"]
+    lg_col["board column"]
+    lg_sub["substrate"]
+    lg_note["<b>Edge styles</b><br/><span style='color:#60a5fa'>■</span> solid blue — happy path<br/><span style='color:#a78bfa'>■</span> solid violet — dependency / fan-in<br/><span style='color:#22d3ee'>■</span> dashed cyan — data handoff<br/><span style='color:#f87171'>■</span> dashed red — exception &amp; recovery<br/><span style='color:#94a3b8'>■</span> thin gray — substrate write"]
+  end
+
+  %% ============================ STYLES ============================
+  classDef actor fill:#1e293b,stroke:#60a5fa,stroke-width:1.5px,color:#dbeafe
+  classDef column fill:#14291d,stroke:#4ade80,stroke-width:1.5px,color:#bbf7d0
+  classDef substrate fill:#241a3a,stroke:#a78bfa,stroke-width:1.5px,color:#ddd6fe
+  classDef legend fill:#1e293b,stroke:#64748b,stroke-width:1px,color:#cbd5e1
+  class human_operator actor
+  class auto_decomposer actor
+  class orchestrator actor
+  class dispatcher actor
+  class gateway actor
+  class worker actor
+  class reviewer actor
+  class profile_roster actor
+  class notifier actor
+  class triage column
+  class todo column
+  class scheduled column
+  class ready column
+  class running column
+  class blocked column
+  class review column
+  class done column
+  class archived column
+  class board_db substrate
+  class workspace substrate
+  class comment_thread substrate
+  class lg_actor actor
+  class lg_col column
+  class lg_sub substrate
+  class lg_note legend
+  linkStyle 0 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 1 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 2 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 3 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 4 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 5 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 6 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 7 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 8 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 9 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 10 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 11 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 12 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 13 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 14 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 15 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 16 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 17 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 18 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 19 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 20 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 21 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 22 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 23 stroke:#a78bfa,stroke-width:1.7px,color:#c4b5fd
+  linkStyle 24 stroke:#a78bfa,stroke-width:1.7px,color:#c4b5fd
+  linkStyle 25 stroke:#22d3ee,stroke-width:1.5px,stroke-dasharray:5 4,color:#67e8f9
+  linkStyle 26 stroke:#22d3ee,stroke-width:1.5px,stroke-dasharray:5 4,color:#67e8f9
+  linkStyle 27 stroke:#22d3ee,stroke-width:1.5px,stroke-dasharray:5 4,color:#67e8f9
+  linkStyle 28 stroke:#22d3ee,stroke-width:1.5px,stroke-dasharray:5 4,color:#67e8f9
+  linkStyle 29 stroke:#22d3ee,stroke-width:1.5px,stroke-dasharray:5 4,color:#67e8f9
+  linkStyle 30 stroke:#22d3ee,stroke-width:1.5px,stroke-dasharray:5 4,color:#67e8f9
+  linkStyle 31 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 32 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 33 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 34 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 35 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 36 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 37 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 38 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 39 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 40 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 41 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 42 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 43 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 44 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 45 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 46 stroke:#f87171,stroke-width:1.7px,stroke-dasharray:6 4,color:#fca5a5
+  linkStyle 47 stroke:#64748b,stroke-width:1px,color:#94a3b8
+  linkStyle 48 stroke:#64748b,stroke-width:1px,color:#94a3b8
+  linkStyle 49 stroke:#64748b,stroke-width:1px,color:#94a3b8
+  linkStyle 50 stroke:#64748b,stroke-width:1px,color:#94a3b8
+  linkStyle 51 stroke:#64748b,stroke-width:1px,color:#94a3b8
+  linkStyle 52 stroke:#60a5fa,stroke-width:1.7px,color:#93c5fd
+  linkStyle 53 stroke-width:0,fill:none,color:transparent
+  linkStyle 54 stroke-width:0,fill:none,color:transparent
+  linkStyle 55 stroke-width:0,fill:none,color:transparent
+  linkStyle 56 stroke-width:0,fill:none,color:transparent
+  linkStyle 57 stroke-width:0,fill:none,color:transparent
+  linkStyle 58 stroke-width:0,fill:none,color:transparent
+  linkStyle 59 stroke-width:0,fill:none,color:transparent
+  linkStyle 60 stroke-width:0,fill:none,color:transparent
+  linkStyle 61 stroke-width:0,fill:none,color:transparent
+  linkStyle 62 stroke-width:0,fill:none,color:transparent
+  style ACT fill:#16213a,stroke:#3b4a6b,stroke-width:1.2px,color:#c7d2fe
+  style SUB fill:#1a1430,stroke:#4c3a75,stroke-width:1.2px,color:#ddd6fe
+  style COL fill:#0e2418,stroke:#2f5c3e,stroke-width:1.2px,color:#bbf7d0
+  style LEGEND fill:#1e293b,stroke:#334155,stroke-width:1.2px,color:#cbd5e1

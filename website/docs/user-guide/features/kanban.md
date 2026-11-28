@@ -4,11 +4,67 @@ title: "Kanban (Multi-Agent Board)"
 description: "Durable SQLite-backed task board for coordinating multiple Hermes profiles"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+import {ThemedComponent} from '@docusaurus/theme-common';
+
+{/*
+  Themed image for the workflow figure. `useBaseUrl` must run in this component's
+  own scope, never inside ThemedComponent's render prop: that callback executes
+  once per rendered variant, so a hook there registers twice during SSR (both
+  palettes) but once on client hydration, and React throws "Rendered fewer hooks
+  than expected".
+*/}
+export const KanbanWorkflowImage = () => {
+  const lightSrc = useBaseUrl('/img/kanban/boxes-and-arrows.light.svg');
+  const darkSrc = useBaseUrl('/img/kanban/boxes-and-arrows.dark.svg');
+  return (
+    <ThemedComponent>
+      {({theme, className}) => (
+        <img
+          className={className}
+          src={theme === 'dark' ? darkSrc : lightSrc}
+          alt="Flowchart of the Hermes Kanban multi-agent workflow in three stacked bands. Top band, Actors: human operator, auto-decomposer, orchestrator, profile roster, gateway, dispatcher, worker, reviewer, notifier. Middle band, Substrate: shared board, comment thread, workspace. Bottom band, the board columns in dashboard order: triage, todo, scheduled, ready, running, blocked, review, done, plus archived as a filter rather than a column. Fifty-three labelled arrows connect them: a root card is created in triage, decomposed into todo children, gated to ready when its parents finish, atomically claimed by the dispatcher, executed by a worker, and approved through review into done, with separate paths for blocked, unblock, retry, reclaim and the circuit breaker. Arrow colour and pattern encode the transition type: solid blue happy path, solid violet dependency, dashed cyan data handoff, dashed red exception and recovery, thin grey substrate write. A legend names the three node kinds and five edge styles. Dense by design: 21 nodes and 53 edges."
+        />
+      )}
+    </ThemedComponent>
+  );
+};
+
 # Kanban — Multi-Agent Profile Collaboration
 
 > **Want a walkthrough?** Read the [Kanban tutorial](./kanban-tutorial) — four user stories (solo dev, fleet farming, role pipeline with retry, circuit breaker) with dashboard screenshots of each. This page is the reference; the tutorial is the narrative.
 
 Hermes Kanban is a durable task board, shared across all your Hermes profiles, that lets multiple named agents collaborate on work without fragile in-process subagent swarms. Every task is a row in `~/.hermes/kanban.db`; every handoff is a row anyone can read and write; every worker is a full OS process with its own identity.
+
+The diagram below is the whole system in one picture: **who acts**, **what persists**, and **the card's state**. Follow one colour at a time rather than tracing every arrow.
+
+<figure className="kanban-overview-figure">
+  <KanbanWorkflowImage />
+  <figcaption className="docs-figure-caption">
+    **The Kanban multi-agent workflow.** 21 nodes and 53 labelled edges across three bands — Actors, Substrate, board columns. Dense by design:{' '}
+    <a
+      className="kanban-overview-figure__fullsize"
+      href={useBaseUrl('/img/kanban/boxes-and-arrows.light.png')}
+      target="_blank"
+      rel="noopener noreferrer"
+    >
+      view full size
+    </a>
+    {' '}(2× PNG, 4986 × 7124, light palette), or read the inline figure at ~150 %.
+  </figcaption>
+</figure>
+
+The editable Mermaid source is alongside the figure as{' '}
+<a href={useBaseUrl('/img/kanban/boxes-and-arrows.diagram.mmd')} target="_blank" rel="noopener noreferrer">
+  `boxes-and-arrows.diagram.mmd`
+</a>{' '}
+(light) and{' '}
+<a href={useBaseUrl('/img/kanban/boxes-and-arrows.dark.mmd')} target="_blank" rel="noopener noreferrer">
+  `boxes-and-arrows.dark.mmd`
+</a>{' '}
+(dark). It is the source of truth for regeneration, **not** a guarantee: the docs pin
+mermaid 11.17.2, which lays this flowchart out as a landscape 4496 × 2442, so the
+rendered figure above is the approved SVG, not a live render of that source.
 
 ### Completion checkpoints before the iteration cap
 

@@ -302,3 +302,26 @@ pre.prism-code.language-ascii code {
   background: linear-gradient(135deg, #07070d 0%, #0f0f18 100%);
   padding: 4rem 0;
 }
+
+/* ─── Kanban overview figure (docs/user-guide/features/kanban.md) ──────────
+   Frame and sizing for the approved Boxes-and-Arrows diagram, shipped as two
+   palette-matched SVG variants of one geometry (2492.5 × 3561.5).
+
+   Do NOT set `display` on the <img>. ThemedComponent's own classes
+   (.themedComponent / .themedComponent--light|dark) control it, and a
+   (0,1,1) `display: block` here would out-rank `.themedComponent`'s
+   (0,1,0) `display: none` — both variants would render at once. */
+.kanban-overview-figure {
+  margin: 1.5rem 0;
+  padding: 0.5rem;
+  overflow: hidden;                 /* clips the SVG corners to the radius */
+  text-align: center;               /* centres the inline <img> */
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 12px;
+}
+
+.kanban-overview-figure img {
+  width: auto;
+  max-width: 100%;                  /* never widen the article column */
+  height: auto;                     /* keep the 2492.5 : 3561.5 aspect ratio */
+}

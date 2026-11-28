@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import re
+import threading
 import time
 import traceback
 import uuid
@@ -234,6 +235,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             from gateway.platforms._http_client_limits import platform_httpx_limits  # tighter keepalive: idle CLOSE_WAIT drains promptly
             self._http_client = httpx.AsyncClient(timeout=30.0, limits=platform_httpx_limits())
             self._stream_client = dingtalk_stream.DingTalkStreamClient(dingtalk_stream.Credential(self._client_id, self._client_secret))
+            _offload_open_connection(self._stream_client)
             if CARD_SDK_AVAILABLE:
                 sdk_config = open_api_models.Config()
                 sdk_config.protocol, sdk_config.region_id = "https", "central"
@@ -706,6 +708,34 @@ class DingTalkAdapter(BasePlatformAdapter):
                 out.append("")
             out.append(line.lstrip() if line.strip().startswith("```") else line)
         return "\n".join(out)
+
+
+# How long the loop waits on the handshake thread before start() gets None and backs off (10s, on the loop).
+_OPEN_CONNECTION_WAIT_S = 0.5
+
+
+def _offload_open_connection(client) -> None:
+    """dingtalk-stream's async ``start()`` calls the sync ``open_connection()`` (a ``requests.post`` with no
+    timeout) on the event loop, so a stalled proxy or DNS freezes the gateway until the liveness watchdog
+    exits 75 (#144992). Run the handshake in a daemon thread and give the loop at most
+    ``_OPEN_CONNECTION_WAIT_S`` of it; a stalled attempt is picked up by the next call instead of starting
+    another. Daemon: a request that never returns must not hold up gateway shutdown."""
+    fetch, state = client.open_connection, {}
+
+    def open_connection():
+        worker = state.get("worker")
+        if worker is None:
+            worker = state["worker"] = threading.Thread(
+                target=lambda: state.update(ticket=fetch()), name="dingtalk-open-connection", daemon=True)
+            worker.start()
+        worker.join(_OPEN_CONNECTION_WAIT_S)
+        if worker.is_alive():
+            return None
+        ticket = state.get("ticket")
+        state.clear()
+        return ticket
+
+    client.open_connection = open_connection
 
 
 class _IncomingHandler(dingtalk_stream.ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):

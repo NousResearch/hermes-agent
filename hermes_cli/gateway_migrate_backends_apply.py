@@ -827,7 +827,7 @@ def _undo(run: Run, errors: list[str]) -> None:
     stopping that gateway or restoring the files failed, or the gateway still listens there, the old
     backend stays down and the run ends incomplete (exit 5) instead of leaving two session owners."""
     host, m = run.host, run.data
-    gw_before, rec = m["gateway"], m["old_backend"]
+    gw_before = m["gateway"]
     phase = _phases(run)
     safe = [True]  # may the old backend be started again?
 
@@ -882,6 +882,83 @@ def _undo(run: Run, errors: list[str]) -> None:
     if not safe[0]:
         errors.append("did not start the old backend again: the migrated gateway may still own its address")
         print("  ✗ the old backend was not started again (it would run beside the migrated gateway)")
+        return
+    _undo_old_backend(run, attempt, errors)
+
+
+def _has_disabled_plist(rec: dict) -> bool:
+    """Whether a launchd job's parked ``.disabled`` plist still sits on disk un-restored."""
+    unit_path = (rec.get("unit_path") or "").strip() if rec.get("supervisor") == "launchd" else ""
+    return bool(unit_path and os.path.lexists(f"{unit_path}.disabled"))
+
+
+def _manually_recovered(host, m: dict) -> bool:
+    """Whether a ``state == 'failed'`` manifest's old backend is already back up and answering by hand.
+
+    Requires every proof that manual recovery succeeded: the manifest is in ``failed`` state, the old
+    backend was active before (so :func:`old_backend_answers` verifies active status, HTTP ``/api/health``
+    200, and non-gateway ownership rather than returning None trivially), no ``.disabled`` launchd plist
+    remains on disk un-restored, and :func:`old_backend_answers` returns None.
+    """
+    rec = m["old_backend"]
+    if m.get("state") != "failed" or not rec.get("was_active"):
+        return False
+    if _has_disabled_plist(rec):
+        return False
+    return old_backend_answers(host, m) is None
+
+
+def _is_privileged_service(rec: dict) -> bool:
+    """Whether *rec* is a system-scope service whose re-enable requires elevated privileges."""
+    sup = rec.get("supervisor")
+    if sup == "systemd":
+        return rec.get("scope") != "user"
+    if sup == "launchd":
+        return is_system_launchd(rec.get("scope"), rec.get("unit_path"))
+    return False
+
+
+def _reconcile_manual_recovery(run: Run, attempt) -> None:
+    """Reconcile a ``state == 'failed'`` manifest whose old backend is already answering by hand.
+
+    Still attempts ``old_enable`` when the old backend was recorded disabled (so a user unit or LaunchAgent
+    the operator started without re-enabling is enabled again). On a privileged system-scope service, an
+    unprivileged enable failure (such as a system LaunchDaemon already re-enabled with ``sudo``) is logged
+    and tolerated without clearing ``old_backend_disabled``; on a user-domain service, enable failure is
+    routed through *attempt* into rollback errors so the manifest stays ``failed`` for retry. Never calls
+    ``old_start`` (avoids failing on system daemons or spawning a duplicate manual backend).
+    """
+    host, m = run.host, run.data
+    rec = m["old_backend"]
+    if m.get("old_backend_enabled") and m.get("old_backend_disabled") is not False:
+        if _is_privileged_service(rec):
+            try:
+                host.old_enable(rec)
+            except Exception as exc:
+                logger.warning("backend migration rollback: re-enable skipped after manual recovery", exc_info=True)
+                print(
+                    f"  ⚠ could not re-enable the old backend ({exc}), "
+                    f"but it is already answering on {m['old_address']}"
+                )
+            else:
+                m["old_backend_disabled"] = False
+                run.save()
+                print("  ✓ re-enabled the old backend")
+        elif attempt("re-enabled the old backend", lambda: host.old_enable(rec)):
+            m["old_backend_disabled"] = False
+            run.save()
+    if rec.get("was_active") or rec.get("was_loaded"):
+        m["old_backend_stopped"] = False
+        run.save()
+        print(f"  ✓ old backend is already answering on {m['old_address']} (manual recovery verified)")
+
+
+def _undo_old_backend(run: Run, attempt, errors: list[str]) -> None:
+    """Restore or reconcile the old backend once the gateway is proven off its port."""
+    host, m = run.host, run.data
+    rec = m["old_backend"]
+    if _manually_recovered(host, m):
+        _reconcile_manual_recovery(run, attempt)
         return
     if rec["supervisor"] == "manual" and rec.get("was_active") and (why := _respawn_dies_here(host)) is not None:
         errors.append(f"did not start the old backend again: {why}")
@@ -1075,14 +1152,29 @@ def _launchd_manual_rollback_step(m: dict, rec: dict) -> str:
     )
 
 
-def _manual_rollback_steps(m: dict) -> list[str]:
+def _manual_close_step(m: dict, hermes: str, raw_home: Optional[str]) -> str:
+    """Final manual-recovery step telling the operator how to verify recovery and close the manifest."""
+    record = str(manifest_path(Path(raw_home))) if raw_home else MANIFEST_NAME
+    addr = m.get("old_address") or "its address"
+    rec = m["old_backend"]
+    when = (f"once the old backend is answering on {addr} again"
+            if not _old_never_stopped(m) and rec.get("was_active", True)
+            else "once those steps are done")
+    if m.get("state") == "done":
+        return f"# {when}, move {record} aside to close the migration record"
+    return (f"# {when}, run `{hermes} gateway migrate --backends --restore` to verify recovery and close the "
+            f"failed migration record (or move {record} aside)")
+
+
+def _manual_rollback_steps(m: dict, *, home: Optional[Path] = None) -> list[str]:
     """The numbered-by-the-caller steps that finish a rollback by hand, from the recorded state. Every
     ``hermes`` command names this run's profile (``hermes -p NAME``), so it acts on this home."""
     from hermes_cli.gateway_migrate_backends_plan import hermes_command
     rec = m["old_backend"]
-    home = m.get("home") or "the Hermes home"
-    hermes = hermes_command(m.get("home"), powershell=os.name == 'nt')
-    steps = [f"{hermes} gateway stop", *(_file_step(m, home, key, name) for key, name in _RESTORED_FILES)]
+    raw_home = m.get("home") or (str(home) if home is not None else None)
+    home_text = raw_home or "the Hermes home"
+    hermes = hermes_command(raw_home, powershell=os.name == 'nt')
+    steps = [f"{hermes} gateway stop", *(_file_step(m, home_text, key, name) for key, name in _RESTORED_FILES)]
     if not m["gateway"]["installed"]:
         steps.append(f"{hermes} gateway uninstall")
     elif m["gateway"]["active"]:
@@ -1090,20 +1182,20 @@ def _manual_rollback_steps(m: dict) -> list[str]:
     steps += _legacy_manual_steps(m)
     if m.get("old_unit_dropin"):
         steps.append(f"rm -f {m['old_unit_dropin']} && systemctl --user daemon-reload")
-    if _old_never_stopped(m):  # it ran all along: nothing of it to enable, start or bootstrap again
-        return steps
-    if rec["supervisor"] == "systemd":
-        systemctl = "systemctl --user" if rec["scope"] == "user" else "systemctl"
-        enable = {"enabled": f"{systemctl} enable {rec['unit']}",
-                  "enabled-runtime": f"{systemctl} enable --runtime {rec['unit']}"}.get(rec.get("unit_file_state") or "")
-        steps += [line for line in (enable, f"{systemctl} start {rec['unit']}" if rec.get("was_active") else None)
-                  if line]
-    elif rec["supervisor"] == "launchd":
-        steps.append(_launchd_manual_rollback_step(m, rec))
-    else:  # its command line may carry a credential (env NAME=value, a token argument): never printed
-        pid = f" (it was pid {rec['pid']})" if rec.get("pid") else ""
-        steps.append(f"start the old backend again the way you started it before{pid}, so it serves "
-                     f"{m.get('old_address') or 'its address'} again")
+    if not _old_never_stopped(m):  # otherwise it ran all along: nothing of it to enable, start or bootstrap again
+        if rec["supervisor"] == "systemd":
+            systemctl = "systemctl --user" if rec["scope"] == "user" else "systemctl"
+            enable = {"enabled": f"{systemctl} enable {rec['unit']}",
+                      "enabled-runtime": f"{systemctl} enable --runtime {rec['unit']}"}.get(rec.get("unit_file_state") or "")
+            steps += [line for line in (enable, f"{systemctl} start {rec['unit']}" if rec.get("was_active") else None)
+                      if line]
+        elif rec["supervisor"] == "launchd":
+            steps.append(_launchd_manual_rollback_step(m, rec))
+        else:  # its command line may carry a credential (env NAME=value, a token argument): never printed
+            pid = f" (it was pid {rec['pid']})" if rec.get("pid") else ""
+            steps.append(f"start the old backend again the way you started it before{pid}, so it serves "
+                         f"{m.get('old_address') or 'its address'} again")
+    steps.append(_manual_close_step(m, hermes, raw_home))
     return steps
 
 
@@ -1273,12 +1365,12 @@ def _in_progress(host, m: dict) -> bool:
 # --------------------------------------------------------------------------- status
 
 
-def manual_steps_for(m: dict) -> list[str]:
+def manual_steps_for(m: dict, *, home: Optional[Path] = None) -> list[str]:
     """The numbered-by-the-caller manual steps of a ``failed`` run (rollback incomplete), else []."""
     if m.get("state") != "failed":
         return []
     try:
-        return list(_manual_rollback_steps(m))
+        return list(_manual_rollback_steps(m, home=home))
     except (KeyError, TypeError, AttributeError):  # a damaged manifest: the message still says why
         return []
 
@@ -1292,7 +1384,7 @@ def status_payload_from(host, m: dict) -> dict:
             "steps": [{"name": s["name"], "state": s["state"]} for s in m.get("steps", [])],
             "message": message, "old_address": m.get("old_address", ""), "new_address": m.get("new_address", ""),
             "started_at": float(m.get("started_at") or 0.0), "finished_at": m.get("finished_at"),
-            "manual_steps": manual_steps_for(m)}
+            "manual_steps": manual_steps_for(m, home=getattr(host, "home", None))}
 
 
 def status_payload(host) -> dict:

@@ -289,8 +289,9 @@ def test_a_rollback_that_cannot_bring_the_old_backend_back_exits_5_with_numbered
     assert status["state"] == "failed" and "rollback incomplete" in status["message"]
     assert status["manual_steps"][0] == " ".join(["hermes", "-p", "default", "gateway", "stop"])
     # From the recorded state: it was enabled and running, so exactly that comes back.
-    assert status["manual_steps"][-2:] == ["systemctl --user enable hermes-dashboard.service",
-                                           "systemctl --user start hermes-dashboard.service"]
+    assert status["manual_steps"][-3:-1] == ["systemctl --user enable hermes-dashboard.service",
+                                             "systemctl --user start hermes-dashboard.service"]
+    assert "gateway migrate --backends --restore" in status["manual_steps"][-1]
     numbered = [f"  {n}. {s}" for n, s in enumerate(status["manual_steps"], 1)]
     assert "\n".join(numbered) in out  # the printed steps are exactly the ones --status reports
     assert host.gw == {"installed": False, "enabled": False, "active": False}  # the rest was undone
@@ -654,7 +655,7 @@ def test_the_manual_steps_put_back_the_recorded_unit_state(home, state, tail):
     assert engine.cmd_apply(host, _args()) == engine.EXIT_ROLLBACK_INCOMPLETE
 
     steps = engine.status_payload(host)["manual_steps"]
-    assert [s.rsplit("&& ", 1)[-1] for s in steps[-2:]] == tail
+    assert [s.rsplit("&& ", 1)[-1] for s in steps[-3:-1]] == tail
     assert not any("enable --now" in s for s in steps)
 
 

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from functools import cached_property
 from urllib.parse import unquote, urlsplit
 
 import hermes_yaml as yaml
@@ -48,15 +49,15 @@ class SkillEntry:
     def value(self) -> dict:
         return json.loads(self.data)
 
-    @property
+    @cached_property
     def uri(self) -> str:
         return self.value["uri"]
 
-    @property
+    @cached_property
     def root(self) -> str:
         return self.uri.rsplit("/", 1)[0] + "/"
 
-    @property
+    @cached_property
     def revision(self) -> str:
         return hashlib.sha256(self.data.encode("utf-8")).hexdigest()
 

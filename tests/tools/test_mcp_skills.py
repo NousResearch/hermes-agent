@@ -145,6 +145,22 @@ def test_changed_listing_revokes_old_approval_without_replacing_held_entry(conne
     assert consent.call_count == 2
 
 
+def test_manifest_flipping_back_to_an_approved_revision_still_needs_fresh_consent(connected):
+    server, consent = connected
+    loaded = call(uri=URI)
+    original = dict(server.session.files)
+    server.session.files[REFERENCE] = "Different checklist.\n"
+    server.session.entries = [make_entry(server.session.files)]
+    call("list_skills")  # observes B: A's approval is revoked
+    server.session.files = original
+    server.session.entries = [make_entry(original)]
+    call("list_skills")  # A again must not restore it
+    assert "changed" in call(uri=URI, revision=loaded["revision"], file_path="references/check.md")["error"]
+    consent.return_value = "decline"
+    assert "error" in call(uri=URI)
+    assert consent.call_count == 2
+
+
 def test_nested_skill_is_supporting_data_and_needs_its_own_activation_consent(connected):
     server, consent = connected
     nested_uri = "skill://review/nested/SKILL.md"

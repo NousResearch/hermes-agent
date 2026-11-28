@@ -156,6 +156,45 @@ function settleClarify(request: ClarifyRequest, result: Record<string, unknown>)
   $settledClarifyResults.set({ ...$settledClarifyResults.get(), [request.requestId]: result })
 }
 
+/** What a card has staged for one open request (see `$clarifyPicks`). */
+export interface ClarifyPicks {
+  /** Locked answers the card already staged: qid → answer. */
+  seenLocks: Record<string, null | string>
+  staged: Record<string, { choices: string[]; draft: string }>
+}
+
+export const NO_CLARIFY_PICKS: ClarifyPicks = { seenLocks: {}, staged: {} }
+
+const CLARIFY_PICKS_KEPT = 16
+
+/**
+ * What each open request's card has staged, by request id. The card remounts
+ * while its request stays open (the early clarify projection gives way to the
+ * stored row once the transcript reconciles, a session switch re-renders it,
+ * an older history page regroups its turn), and two rows can render the same
+ * request for a moment. A pick belongs to the request, not to one mount. The
+ * card drops its entry when it answers or skips; the cap bounds the entries
+ * requests answered elsewhere leave behind.
+ */
+export const $clarifyPicks = atom<Record<string, ClarifyPicks>>({})
+
+export function updateClarifyPicks(requestId: string, update: (current: ClarifyPicks) => ClarifyPicks): void {
+  const { [requestId]: current = NO_CLARIFY_PICKS, ...others } = $clarifyPicks.get()
+  const kept = Object.entries(others).slice(1 - CLARIFY_PICKS_KEPT)
+
+  $clarifyPicks.set({ ...Object.fromEntries(kept), [requestId]: update(current) })
+}
+
+export function forgetClarifyPicks(requestId: string): void {
+  const picks = $clarifyPicks.get()
+
+  if (requestId in picks) {
+    const next = { ...picks }
+    delete next[requestId]
+    $clarifyPicks.set(next)
+  }
+}
+
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
   const requests = $clarifyRequests.get()
 
@@ -191,6 +230,10 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 
   if (changed) {
     $clarifyRequests.set(next)
+  }
+
+  if (!requestId) {
+    $clarifyPicks.set({})
   }
 }
 
@@ -232,6 +275,7 @@ export function skipClarify(request: ClarifyRequest): void {
   // Clear first: the answer is already decided, and an in-flight RPC must not
   // leave a live card the user can answer a second time.
   clearClarifyRequest(request.requestId, request.sessionId)
+  forgetClarifyPicks(request.requestId)
 
   respondToServerRequest(request.requestId, {})
 

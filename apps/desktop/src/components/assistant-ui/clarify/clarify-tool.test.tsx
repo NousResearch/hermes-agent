@@ -8,7 +8,7 @@ import { type SessionView, SessionViewProvider } from '@/app/chat/session-view'
 import { hiddenPaneProps } from '@/components/pane-shell/pane-visibility'
 import { $activeTreeGroup, $hoveredTreeGroup } from '@/components/pane-shell/tree/store'
 import { I18nProvider } from '@/i18n'
-import { $settledClarifyResults, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
+import { $clarifyPicks, $settledClarifyResults, clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $profiles } from '@/store/profile'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
@@ -916,6 +916,61 @@ describe('ClarifyTool batch card', () => {
     })
   })
 
+  it('keeps staged picks when the card remounts while its request is open', async () => {
+    // The card remounts while its request is open: the early clarify
+    // projection gives way to the stored row, an older history page regroups
+    // the turn. A pick made before that must still be there to confirm.
+    const { request } = renderLiveBatch()
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    cleanup()
+    renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    // Answered: nothing is kept for the request any more.
+    await waitFor(() => expect($clarifyPicks.get()['request-batch']).toBeUndefined())
+  })
+
+  it('keeps staged picks when the same request is cleared and delivered again', () => {
+    // A resume reconcile can drop the parked request and park it again; the
+    // card goes to its preview and back, and must come back with its picks.
+    renderLiveBatch()
+
+    const parked = {
+      questions: [
+        { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+        { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+      ],
+      requestId: 'request-batch',
+      sessionId: 'session-1'
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    act(() => clearClarifyRequest('request-batch', 'session-1'))
+    act(() => setClarifyRequest(parked))
+
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    // A different request is a different card: it starts with nothing staged.
+    act(() => setClarifyRequest({ ...parked, requestId: 'request-next' }))
+
+    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
+  })
+
   it('keeps a picked multi-select batch choice when typing a custom answer alongside it', async () => {
     const { request } = renderLiveBatch(undefined, true)
 
@@ -1000,12 +1055,14 @@ describe('ClarifyTool batch card', () => {
   it('Skip cancels the whole batch with an empty response (no answers)', async () => {
     const { request, respond } = renderLiveBatch()
 
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Skip' }))
 
     await waitFor(() => {
       expect(respond).toHaveBeenCalledWith({})
     })
     expect(request).not.toHaveBeenCalled()
+    expect($clarifyPicks.get()['request-batch']).toBeUndefined()
   })
 
   // ─── Single-entry batch (one-question questions[]) ────────────────────────

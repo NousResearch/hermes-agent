@@ -8,11 +8,16 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { MessageQuestion } from '@/lib/icons'
 import {
+  $clarifyPicks,
   bareChoice,
+  type ClarifyPicks,
   type ClarifyQuestion,
   type ClarifyRequest,
   clearClarifyRequest,
-  skipClarify
+  forgetClarifyPicks,
+  NO_CLARIFY_PICKS,
+  skipClarify,
+  updateClarifyPicks
 } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { reconnectAction } from '@/store/gateway-reconnect'
@@ -28,8 +33,40 @@ import type { ClarifyArgs } from './parse'
 import { handleClarifySubmitShortcut } from './submit-shortcut'
 import { UndeliveredNotice } from './undelivered-notice'
 
+/**
+ * A card's staged picks and seen locks for one open request. They live in
+ * `$clarifyPicks`, not in the mount: the card remounts while its request is
+ * open, and a pick made before the remount must still be there to confirm.
+ */
+function useClarifyPicks(requestId: string | undefined) {
+  const allPicks = useStore($clarifyPicks)
+  const { seenLocks, staged } = (requestId && allPicks[requestId]) || NO_CLARIFY_PICKS
+
+  const update = useCallback(
+    (change: (current: ClarifyPicks) => ClarifyPicks) => {
+      if (requestId) {
+        updateClarifyPicks(requestId, change)
+      }
+    },
+    [requestId]
+  )
+
+  const setStaged = useCallback(
+    (next: (current: ClarifyPicks['staged']) => ClarifyPicks['staged']) =>
+      update(current => ({ ...current, staged: next(current.staged) })),
+    [update]
+  )
+
+  const setSeenLocks = useCallback(
+    (locks: ClarifyPicks['seenLocks']) => update(current => ({ ...current, seenLocks: locks })),
+    [update]
+  )
+
+  return { seenLocks, setSeenLocks, setStaged, staged }
+}
+
 /** Live batch card: all questions at once, staged locally, ONE confirm.
- * Picks and drafts stay in component state — nothing reaches the server
+ * Picks and drafts stay on the client (`useClarifyPicks`) — nothing reaches the server
  * until the user presses the single
  * "Confirm and continue" button, which sends the per-question locks
  * back-to-back and completes the batch. Staged answers stay editable up to
@@ -74,28 +111,27 @@ export function ClarifyToolPending({
 
   const questions = ready ? liveQuestions : previewQuestions
 
-  const [staged, setStaged] = useState<Record<string, { choices: string[]; draft: string }>>({})
-  const [submitting, setSubmitting] = useState(false)
+  const requestId = request?.requestId
 
   // Locked answers (a reconnect replay, or text typed in the composer) stage
   // their questions. A newly locked answer replaces what the card staged, so
   // Confirm never re-sends an older pick; an answer seen before is left alone,
   // so a later edit on the card stands.
-  const [seenLocks, setSeenLocks] = useState<Record<string, null | string>>({})
+  const { seenLocks, setSeenLocks, setStaged, staged } = useClarifyPicks(requestId)
+
+  const [submitting, setSubmitting] = useState(false)
 
   // A canonical gateway answers a batch one card at a time through the SAME
   // mounted tool row: a new live request is a new card, so the previous card's
-  // submit latch, staged picks and seen locks must not carry over (that left
-  // question 2 disabled behind question 1's spinner).
-  const [cardRequestId, setCardRequestId] = useState(request?.requestId)
+  // submit latch must not carry over (that left question 2 disabled behind
+  // question 1's spinner). Its picks are keyed by the new request id already.
+  const [cardRequestId, setCardRequestId] = useState(requestId)
 
-  if (request?.requestId !== cardRequestId) {
-    setCardRequestId(request?.requestId)
+  if (requestId !== cardRequestId) {
+    setCardRequestId(requestId)
 
-    if (request?.requestId) {
+    if (requestId) {
       setSubmitting(false)
-      setStaged({})
-      setSeenLocks({})
     }
   }
 
@@ -211,37 +247,44 @@ export function ClarifyToolPending({
       onAnswered()
       // tool.complete lands next → ClarifyToolSettled.
       clearClarifyRequest(request.requestId, request.sessionId)
+      forgetClarifyPicks(request.requestId)
     } catch (error) {
       notifyError(error, copy.sendFailed)
       setSubmitting(false)
     }
   }, [copy, gateway, onAnswered, questions, request, stagedAnswer])
 
-  const toggleChoice = useCallback((question: ClarifyQuestion, choice: string) => {
-    setStaged(current => {
-      const stage = current[question.qid] ?? emptyStage
+  const toggleChoice = useCallback(
+    (question: ClarifyQuestion, choice: string) => {
+      setStaged(current => {
+        const stage = current[question.qid] ?? emptyStage
 
-      const next = question.multiSelect
-        ? stage.choices.includes(choice)
-          ? stage.choices.filter(value => value !== choice)
-          : [...stage.choices, choice]
-        : [choice]
+        const next = question.multiSelect
+          ? stage.choices.includes(choice)
+            ? stage.choices.filter(value => value !== choice)
+            : [...stage.choices, choice]
+          : [choice]
 
-      // Multi-select keeps the typed text alongside the toggled choices;
-      // single-select stays mutually exclusive.
-      return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
-    })
-  }, [])
+        // Multi-select keeps the typed text alongside the toggled choices;
+        // single-select stays mutually exclusive.
+        return { ...current, [question.qid]: { choices: next, draft: question.multiSelect ? stage.draft : '' } }
+      })
+    },
+    [setStaged]
+  )
 
-  const draftFor = useCallback((question: ClarifyQuestion, value: string) => {
-    setStaged(current => {
-      const stage = current[question.qid] ?? emptyStage
+  const draftFor = useCallback(
+    (question: ClarifyQuestion, value: string) => {
+      setStaged(current => {
+        const stage = current[question.qid] ?? emptyStage
 
-      // Multi-select keeps the staged choices while the free-text field is
-      // edited; single-select stays mutually exclusive.
-      return { ...current, [question.qid]: { choices: question.multiSelect ? stage.choices : [], draft: value } }
-    })
-  }, [])
+        // Multi-select keeps the staged choices while the free-text field is
+        // edited; single-select stays mutually exclusive.
+        return { ...current, [question.qid]: { choices: question.multiSelect ? stage.choices : [], draft: value } }
+      })
+    },
+    [setStaged]
+  )
 
   const cancelAll = useCallback(async () => {
     if (!request) {
@@ -264,9 +307,12 @@ export function ClarifyToolPending({
     [canConfirm, confirmAll, ready]
   )
 
-  const clearStage = useCallback((question: ClarifyQuestion) => {
-    setStaged(current => ({ ...current, [question.qid]: emptyStage }))
-  }, [])
+  const clearStage = useCallback(
+    (question: ClarifyQuestion) => {
+      setStaged(current => ({ ...current, [question.qid]: emptyStage }))
+    },
+    [setStaged]
+  )
 
   const isStaged = useCallback((question: ClarifyQuestion) => stagedAnswer(question) !== null, [stagedAnswer])
 

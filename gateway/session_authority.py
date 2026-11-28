@@ -1307,10 +1307,13 @@ class SessionAuthority:
                     row, first = await self._claim_next(ref, live)
                 except AuthorityRefusal as exc:
                     if exc.reason == 'unknown_execution':
-                        # An automation turn nobody is waiting on settles interrupted (GW-10); only a
-                        # person's lost turn keeps the FIFO paused for them to resolve.
-                        from gateway.session_unattended_unknown import settle_unattended_unknown
-                        if await settle_unattended_unknown(self, ref):
+                        # An automation turn nobody is waiting on settles interrupted (GW-10), and so
+                        # does a person's lost turn once they have typed past it; a lost turn with
+                        # nothing behind it keeps the FIFO paused for them to resolve.
+                        from gateway.session_unattended_unknown import (settle_superseded_unknown,
+                                                                        settle_unattended_unknown)
+                        if (await settle_unattended_unknown(self, ref)
+                                or await settle_superseded_unknown(self, ref)):
                             continue
                     if exc.reason == 'admission_conflict':
                         # A verdict on the head alone (its route or binding moved under it) that every drain
@@ -1382,10 +1385,13 @@ class SessionAuthority:
             self.pending_stop_causes.pop(ref.session_id, None)
             self.pending_steers.pop(ref.session_id, None)
             self.adopted.pop(ref.session_id, None)
-            # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10),
-            # so the followers already queued run in this drain; a person's turn still pauses.
-            from gateway.session_unattended_unknown import settle_unattended_unknown
-            if await settle_unattended_unknown(self, ref):
+            # An automation turn nobody waits on settles here, at the exit that fenced it (GW-10), so
+            # the followers already queued run in this drain; so does a person's turn a later input
+            # of theirs already supersedes. A person's turn with nothing behind it still pauses.
+            from gateway.session_unattended_unknown import (settle_superseded_unknown,
+                                                            settle_unattended_unknown)
+            if (await settle_unattended_unknown(self, ref)
+                    or await settle_superseded_unknown(self, ref)):
                 return None, 'settled_unknown'
             self._pause(ref, 'unknown_execution')
             raise

@@ -159,7 +159,7 @@ def upsert_incident(
 ) -> tuple[str, bool]:
     """Record (or refresh) the incident for ``job_id`` + ``error``; returns ``(incident_id,
     is_new)``. An existing row for the signature refreshes
-    ``last_seen_at``/``error``/``output_file`` and keeps its state — a ``closed`` incident stays
+    ``last_seen_at``/``error``/``failure_type``/``output_file`` and keeps its state — a ``closed`` incident stays
     closed, while a ``resolved`` one (job recovered, then broke the same way again) re-opens as
     ``detected`` so the operator is alerted once more. A changed error text mints a new incident."""
     job_id = str(job_id or "")
@@ -178,12 +178,12 @@ def upsert_incident(
             reopen = row["state"] == "resolved"
             conn.execute(
                 """UPDATE cron_incidents
-                   SET last_seen_at=?, error=?, output_file=?,
+                   SET last_seen_at=?, error=?, failure_type=?, output_file=?,
                        state=CASE WHEN state='resolved' THEN 'detected' ELSE state END,
                        alerted_at=CASE WHEN state='resolved' THEN NULL ELSE alerted_at END,
                        closed_at=CASE WHEN state='resolved' THEN NULL ELSE closed_at END
                    WHERE id=?""",
-                (now, stored_error, output_file, incident_id),
+                (now, stored_error, failure_type, output_file, incident_id),
             )
             return incident_id, reopen
         conn.execute(

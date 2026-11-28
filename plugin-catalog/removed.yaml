@@ -13,3 +13,6 @@ removed:
 - name: flowcanvas
   reason: "Renamed to arachne-flow (the plugin id changed in 1.1.0). Install arachne-flow; flows stay in plugin-data/flowcanvas/ and can be copied to plugin-data/arachne-flow/."
   date: "2026-11-19"
+- name: hermes-kame-provider
+  reason: "Folded into hermes-kame-api-rotation 1.9.0.5 (one package). Installing the provider alone does nothing. Install hermes-kame-api-rotation; an installed hermes-kame-provider can be removed."
+  date: "2026-11-23"

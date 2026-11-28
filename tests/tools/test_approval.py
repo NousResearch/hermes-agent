@@ -62,9 +62,9 @@ class TestSmartApproval:
             choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
         )
         with mock_patch("agent.auxiliary_client.call_llm", return_value=response):
-            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+            verdict, reason = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
 
-        assert result == "approve"
+        assert (verdict, reason) == ("approve", "")
 
     def test_smart_approval_does_not_allowlist_the_pattern_for_session(self, monkeypatch):
         session_key = "test-smart-per-command"
@@ -80,7 +80,7 @@ class TestSmartApproval:
             lambda: {"mode": "smart"},
         )
         monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
-        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: "approve")
+        monkeypatch.setattr(approval_smart, "_smart_approve", lambda *_: ("approve", ""))
         approval_module.clear_session(session_key)
         approval_module._permanent_approved.clear()
 

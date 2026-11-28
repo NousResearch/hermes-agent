@@ -5320,6 +5320,8 @@ export interface CanonicalPendingPrompt {
   question?: string | null
   multi_select?: boolean | null
   timeout_s?: number | null
+  smart_reason?: string | null
+  smart_denied?: boolean | null
 }
 export interface CanonicalSnapshotInfo {
   provider?: string | null

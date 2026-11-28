@@ -6,7 +6,7 @@ import { $backendTransitions, backendTransitionLabel, transitionProfileKey } fro
 import { resetBrowseState } from '@/store/composer-input-history'
 import { $activeGatewayProfile } from '@/store/profile'
 
-import { pickPlaceholder } from '../composer-utils'
+import { pickPlaceholderIndex } from '../composer-utils'
 
 interface UseComposerPlaceholderOptions {
   disabled: boolean
@@ -22,6 +22,12 @@ interface UseComposerPlaceholderOptions {
  * a *different* conversation — the null→id persist of a freshly-started session
  * keeps its starter so the text doesn't flip mid-stream. While the transport is
  * down, it swaps to a reconnecting / starting message instead.
+ *
+ * Only the picked slot is kept in state: the locale arrives after first paint,
+ * and resolving the string from the active catalogue on render keeps the words
+ * following the UI language instead of freezing the fallback-language pick.
+ * The slot remembers which pool it was picked from, so a session id arriving
+ * does not flip the starter to the follow-up wording under the same slot.
  */
 export function useComposerPlaceholder({
   disabled,
@@ -35,9 +41,10 @@ export function useComposerPlaceholder({
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
 
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
-  )
+  const [restingPick, setRestingPick] = useState(() => ({
+    followUp: sessionId != null,
+    index: pickPlaceholderIndex((sessionId ? followUpPlaceholders : newSessionPlaceholders).length)
+  }))
 
   const prevSessionIdRef = useRef(sessionId)
 
@@ -57,8 +64,14 @@ export function useComposerPlaceholder({
     }
 
     resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+    setRestingPick({
+      followUp: sessionId != null,
+      index: pickPlaceholderIndex((sessionId ? followUpPlaceholders : newSessionPlaceholders).length)
+    })
   }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+
+  const restingPool = restingPick.followUp ? followUpPlaceholders : newSessionPlaceholders
+  const restingPlaceholder = restingPool[restingPick.index % restingPool.length]
 
   // When the transport is disabled it's because the gateway isn't open.
   // Distinguish a cold start ("Starting Hermes...") from a dropped connection

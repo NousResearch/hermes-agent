@@ -7,6 +7,7 @@ import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { $desktopBoot } from '@/store/boot'
 import { $connectionsRegistry } from '@/store/connections'
 import { $connection } from '@/store/session'
+import { deferred } from '@/test/deferred'
 import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
@@ -16,7 +17,8 @@ const emulator = vi.hoisted(() => ({
   input: (_data: string) => {},
   output: '',
   latestFontFamilyRef: { current: 'monospace' },
-  mountedRef: { current: false }
+  mountedRef: { current: false },
+  terms: [] as Array<{ cols: number; rows: number }>
 }))
 
 vi.mock('@xterm/xterm', () => ({
@@ -30,6 +32,7 @@ vi.mock('@xterm/xterm', () => ({
     parser = { registerOscHandler: () => ({ dispose() {} }) }
     constructor(options: Record<string, unknown>) {
       this.options = options
+      emulator.terms.push(this)
     }
     loadAddon() {}
     open() {}
@@ -182,6 +185,7 @@ afterEach(() => {
   Socket.persistent = false
   Socket.refusal = null
   emulator.output = ''
+  emulator.terms.length = 0
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
@@ -573,4 +577,79 @@ it('native Desktop: a removed gateway shows the exited state and never attaches'
   expect(screen.getByText('closed')).toBeTruthy()
   expect(attach).not.toHaveBeenCalled()
   expect($terminals.get().some(tab => tab.id === id)).toBe(true)
+})
+
+function startResizeApi(start: ReturnType<typeof vi.fn>) {
+  const resize = vi.fn(async () => true)
+
+  delete window.document.documentElement.dataset.hermesDesktopHost
+  ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+    terminal: {
+      attach: vi.fn(async () => true),
+      cwd: vi.fn(async () => null),
+      dispose: vi.fn(async () => true),
+      onData: vi.fn(() => () => {}),
+      onExit: vi.fn(() => () => {}),
+      resize,
+      start,
+      write: vi.fn(async () => true)
+    }
+  }
+
+  return resize
+}
+
+// jsdom lays nothing out, so clientWidth is 0 and the hook's fit guard would skip
+// every resize — the regression this file proves would be invisible.
+function makeMeasurable(host: Element) {
+  Object.defineProperty(host, 'clientHeight', { configurable: true, value: 400 })
+  Object.defineProperty(host, 'clientWidth', { configurable: true, value: 672 })
+}
+
+// The shell's PTY is created at the size start() sent. A fit that runs while the
+// start is still in flight (the pane shrank, a sibling pane collapsed) moves xterm
+// off that size with no session id to resize, so opening must send the current one
+// instead of remembering xterm's live size as already sent (#148181).
+it('native Desktop: a refit during startup reaches the PTY when the shell opens', async () => {
+  const started = deferred<{ id: string; shell: string }>()
+  const start = vi.fn((_payload: { cols: number; rows: number }) => started.promise)
+  const resize = startResizeApi(start)
+  const id = createTerminal('/work')
+  const { container } = render(<Harness id={id} />)
+
+  makeMeasurable(container.querySelector('div')!)
+  await waitFor(() => expect(start).toHaveBeenCalled())
+  const terminal = emulator.terms.at(-1)!
+  terminal.cols = 96
+
+  await act(async () => {
+    started.resolve({ id: 'pty-1', shell: 'fish' })
+    await started.promise
+  })
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  expect(start.mock.calls[0][0]).toMatchObject({ cols: 80, rows: 24 })
+  expect(resize).toHaveBeenCalledTimes(1)
+  expect(resize).toHaveBeenCalledWith('pty-1', { cols: 96, rows: 24 })
+})
+
+// The other half: an unchanged pane must not get a second resize on open (every
+// SIGWINCH makes the shell reprint its prompt).
+it('native Desktop: opening at the spawned size sends no extra resize', async () => {
+  const started = deferred<{ id: string; shell: string }>()
+  const start = vi.fn((_payload: { cols: number; rows: number }) => started.promise)
+  const resize = startResizeApi(start)
+  const id = createTerminal('/work')
+  const { container } = render(<Harness id={id} />)
+
+  makeMeasurable(container.querySelector('div')!)
+  await waitFor(() => expect(start).toHaveBeenCalled())
+
+  await act(async () => {
+    started.resolve({ id: 'pty-1', shell: 'fish' })
+    await started.promise
+  })
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+
+  expect(resize).not.toHaveBeenCalled()
 })

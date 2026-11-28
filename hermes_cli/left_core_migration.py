@@ -71,33 +71,39 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     layer, then config.yaml's ``gateway.platforms`` / ``platforms`` / ``gateway.<name>`` blocks and a top-level
     ``<name>:`` block in the loader's order (managed overlay and ``${VAR}`` applied). ``None`` when no layer names it."""
     from gateway import config_loader
-    gw_data = config_loader.load_legacy_gateway_json(home)
-    gw_data = gw_data if isinstance(gw_data, dict) else {}
-    try:
+    also = frozenset({name})
+
+    def merged() -> Optional[dict]:
         from hermes_cli import managed_scope
+        gw_data = config_loader.load_legacy_gateway_json(home)
+        gw_data = gw_data if isinstance(gw_data, dict) else {}
         yaml_cfg = config_loader.read_yaml_layers(home)
         managed = managed_scope.apply_managed_overlay({})
-    except Exception:  # malformed config.yaml: the gateway falls back to gateway.json alone too
-        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
-        yaml_cfg, managed = {}, {}
-    yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
-    platforms = config_loader.merge_platform_sections(
-        yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=frozenset({name}))
-    authored = config_loader.snapshot_authored_extra(config_loader.merge_platform_sections(
-        yaml_cfg, yaml_cfg.get("gateway"), {}, also=frozenset({name})))
-    # Reconcile cross-shape pins before the root bridge, even before this platform is registered.
-    managed["platforms"] = config_loader.merge_platform_sections(
-        managed, managed.get("gateway"), {}, also=frozenset({name}))
-    config_loader._apply_managed_extra(authored, managed, platforms)
-    block = platforms.get(name)
-    root = yaml_cfg.get(name)
-    if isinstance(root, dict):  # a top-level ``<name>:`` block, bridged as bridge_platform_shared_keys does: its
-        from gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
-        block = dict(block) if isinstance(block, dict) else {}
-        block["extra"] = {**(block.get("extra") or {}), **PlatformConfig.from_dict({**root, "home_channel": None}).extra,
-                          **authored.get(name, {})}  # a home_channel names a plugin's Platform
-        if "enabled" in root:  # and its enabled wins
-            block["enabled"] = root["enabled"]
+        yaml_cfg = yaml_cfg if isinstance(yaml_cfg, dict) else {}
+        platforms = config_loader.merge_platform_sections(yaml_cfg, yaml_cfg.get("gateway"), gw_data, also=also)
+        authored = config_loader.snapshot_authored_extra(config_loader.merge_platform_sections(
+            yaml_cfg, yaml_cfg.get("gateway"), {}, also=also))
+        # Reconcile cross-shape pins before the root bridge, even before this platform is registered.
+        managed["platforms"] = config_loader.merge_platform_sections(
+            managed, managed.get("gateway"), {}, also=also)
+        config_loader._apply_managed_extra(authored, managed, platforms)
+        block = platforms.get(name)
+        root = yaml_cfg.get(name)
+        if isinstance(root, dict):  # a top-level ``<name>:`` block, bridged as bridge_platform_shared_keys does: its
+            from gateway.config import PlatformConfig  # adapter keys beat gateway.json's extra, not config.yaml's nested one
+            block = dict(block) if isinstance(block, dict) else {}
+            block["extra"] = {**(block.get("extra") or {}), **PlatformConfig.from_dict({**root, "home_channel": None}).extra,
+                              **authored.get(name, {})}  # a home_channel names a plugin's Platform
+            if "enabled" in root:  # and its enabled wins
+                block["enabled"] = root["enabled"]
+        return block
+
+    def gateway_json_only() -> Optional[dict]:  # a fresh read: the failed merge may have half-filled its copy
+        gw_data = config_loader.load_legacy_gateway_json(home)
+        return config_loader.merge_platform_sections(
+            {}, None, gw_data if isinstance(gw_data, dict) else {}, also=also).get(name)
+
+    block = config_loader.with_yaml_fallback(home, merged, gateway_json_only)
     return block if isinstance(block, dict) else None
 
 

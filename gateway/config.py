@@ -887,26 +887,9 @@ def load_gateway_config(*, strict: bool = False) -> GatewayConfig:
 def _load_gateway_config_layers(_home: Path, gw_data: dict, strict: bool) -> GatewayConfig:
     from gateway import config_loader
     from gateway.platforms._shared import abort_yaml_env_refresh
-    try:
-        config_loader.load_yaml_layer(_home, gw_data)
-    except Exception as e:
-        if strict:
-            raise
-        abort_yaml_env_refresh()
-        logger.warning(
-            # DingTalk settings → env vars: migrated to the dingtalk plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/dingtalk/adapter.py). #41112 / #3823.
-            # Mattermost config bridge moved into plugins/platforms/mattermost/
-            # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
-            # Matrix settings → env vars: migrated to the matrix plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/matrix/adapter.py). #41112 / #3823.
-            # Feishu settings → env vars: migrated to the feishu plugin's apply_yaml_config_fn hook
-            # (plugins/platforms/feishu/adapter.py). #41112 / #3823.
-            "Failed to process config.yaml — falling back to .env / gateway.json values. "
-            "Check %s for syntax errors. Error: %s",
-            _home / "config.yaml", e,
-        )
-
+    # Platform settings → env vars live in each plugin's apply_yaml_config_fn hook (#41112 / #3823 / #25443).
+    config_loader.with_yaml_fallback(
+        _home, lambda: config_loader.load_yaml_layer(_home, gw_data), abort_yaml_env_refresh, strict=strict)
     config = GatewayConfig.from_dict(gw_data)
     _apply_env_overrides(config)
     _validate_gateway_config(config)

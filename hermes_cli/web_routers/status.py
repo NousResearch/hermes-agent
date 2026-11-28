@@ -12,6 +12,7 @@ import re
 import asyncio
 import os
 import sys
+import threading
 import time
 from fastapi import APIRouter
 from hermes_cli.web_deps import LateState, late
@@ -67,6 +68,11 @@ _session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.
 
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
+# The count is a "sessions active in the last 5 min" garnish: a few seconds stale is invisible, while
+# recounting per poll rebuilds the local lineage index each time on a fresh read-only handle (#155093).
+_STATUS_ACTIVE_SESSIONS_TTL = 10.0
+_status_count_flights: dict[Path, threading.Lock] = {}  # one count in flight per state.db
+_status_counts: dict[Path, tuple[float, int]] = {}  # state.db path -> (monotonic time counted, count)
 _GATEWAY_HEALTH_ROUTE_TIMEOUT = 1.0
 _HEALTHY_PLATFORM_STATES = {"connected", "running", "ok"}
 
@@ -89,13 +95,26 @@ def _count_status_active_sessions() -> int:
     db_path = _session_db_path_for_profile(None)
     if not db_path.exists():
         return 0
-    store = _open_session_db_for_profile(None, read_only=True)
+    cached = _status_counts.get(db_path)
+    if cached is not None and time.monotonic() - cached[0] < _STATUS_ACTIVE_SESSIONS_TTL:
+        return cached[1]
+    # wait_for() in _status_active_sessions cancels the await, never this worker thread: without the
+    # flight lock every poll behind a slow count starts another full count beside it (#160281).
+    flight = _status_count_flights.setdefault(db_path, threading.Lock())
+    if not flight.acquire(blocking=False):
+        return cached[1] if cached is not None else 0
     try:
-        sessions = store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50), compact_rows=True)
+        store = _open_session_db_for_profile(None, read_only=True)
+        try:
+            sessions = store.sessions.list_sessions(SessionQuery(), SessionWindow(limit=50), compact_rows=True)
+        finally:
+            store.close()
         now = time.time()
-        return sum(1 for s in sessions if s.session.ended_at is None and (now - s.last_active) < 300)
+        count = sum(1 for s in sessions if s.session.ended_at is None and (now - s.last_active) < 300)
+        _status_counts[db_path] = (time.monotonic(), count)
+        return count
     finally:
-        store.close()
+        flight.release()
 
 
 async def _status_active_sessions() -> int:

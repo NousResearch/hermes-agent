@@ -49,7 +49,7 @@ Deletion rules (same as the original PR):
 - The state directory `$HERMES_HOME/disk-cleanup/` is itself excluded
 - `$HERMES_HOME/logs/`, `memories/`, `sessions/`, `skills/`, `plugins/`,
   and config files are never tracked
-- User project trees (`workspace/`, `projects/`, `plans/`, `home/`, `patches/`,
+- User project trees (`workspace/`, `projects/`, `workbenches/`, `plans/`, `home/`, `patches/`,
   `skins/`, `themes/`, `contributors/`, `profiles/`, `backups/`) and `kanban/`
   (task attachments/workspaces) are never tracked or swept, even for files
   named `test_*`/`tmp_*`

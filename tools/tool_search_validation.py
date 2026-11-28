@@ -14,6 +14,7 @@ from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
+_MAX_REPORTED_ERRORS = 10
 
 
 def _schema_for_local_validation(node: Any) -> Any:
@@ -71,11 +72,37 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
         hint="Retry tool_call with 'arguments' matching the parameters schema above.")
 
 
+def _schema_errors(name: str, args: dict[str, Any], validation_schema: Any) -> list:
+    """Every jsonschema violation of the repaired *args*, most relevant first; empty when the
+    validator is unavailable or the schema has an external ``$ref`` (fail open)."""
+    if _schema_has_external_ref(validation_schema):
+        logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
+        return []
+    try:
+        from jsonschema.exceptions import relevance
+        from jsonschema.validators import validator_for
+    except ImportError:
+        logger.debug("jsonschema unavailable; keeping required-only validation for %s", name)
+        return []
+    # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
+    # normalize in place (dispatch re-coerces canonically).
+    try:
+        from model_tools import coerce_tool_args
+        candidate_args = coerce_tool_args(name, dict(args))
+    except Exception:
+        logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
+        candidate_args = dict(args)
+    validator_cls = validator_for(validation_schema)
+    validator_cls.check_schema(validation_schema)
+    return sorted(validator_cls(validation_schema).iter_errors(candidate_args), key=relevance, reverse=True)
+
+
 def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
-    downstream failure makes cheap models loop. Required-field probe first, then the same
-    schema-guided coercion normal dispatch applies, then jsonschema on the repaired copy.
+    downstream failure makes cheap models loop. Required-field probe, then the same
+    schema-guided coercion normal dispatch applies, then jsonschema on the repaired copy; the
+    error lists every violation found.
     Missing/malformed schemas, no validator, and external refs all fail OPEN. Returns a JSON
     error string when invalid, ``None`` when the call should dispatch.
 
@@ -96,42 +123,27 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         required = params.get("required")
         missing = ([r for r in required if isinstance(r, str) and r not in args]
                    if isinstance(required, list) else [])
-        if missing:
-            return _validation_error(
-                f"tool_call to '{name}' is missing required argument(s): "
-                f"{', '.join(missing)}. The tool was NOT invoked.",
-                path="arguments", constraint="required", parameters=params)
-        validation_schema = _schema_for_local_validation(params)
-        if _schema_has_external_ref(validation_schema):
-            logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
-            return None
-        # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
-        # normalize in place (dispatch re-coerces canonically).
-        try:
-            from model_tools import coerce_tool_args
-            candidate_args = coerce_tool_args(name, dict(args))
-        except Exception:
-            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
-            candidate_args = dict(args)
-        try:
+        problems = [f"missing required argument(s): {', '.join(missing)}"] if missing else []
+        path, constraint = "arguments", "required"
+        errors = _schema_errors(name, args, _schema_for_local_validation(params))
+        # Root ``required`` findings are already named by *missing*.
+        errors = [e for e in errors if not missing or e.validator != "required" or e.absolute_path]
+        if errors and not missing:
             from jsonschema.exceptions import best_match
-            from jsonschema.validators import validator_for
-        except ImportError:
-            logger.debug("jsonschema unavailable; keeping required-only validation for %s", name)
+            primary = best_match(iter(errors))
+            path, constraint = _validation_path(primary), str(getattr(primary, "validator", None) or "schema")
+        # Every violation, not only the first: a model that repairs one argument per retry
+        # spends a turn per mistake.
+        for error in errors[:_MAX_REPORTED_ERRORS]:
+            detail = re.sub(r"\s+", " ", str(error.message)).strip()
+            problems.append(f"{_validation_path(error)} ({error.validator}): "
+                            f"{detail if len(detail) <= 300 else detail[:297] + '...'}")
+        if len(errors) > _MAX_REPORTED_ERRORS:
+            problems.append(f"...and {len(errors) - _MAX_REPORTED_ERRORS} more")
+        if not problems:
             return None
-        validator_cls = validator_for(validation_schema)
-        validator_cls.check_schema(validation_schema)
-        validation_error = best_match(validator_cls(validation_schema).iter_errors(candidate_args))
-        if validation_error is None:
-            return None
-        path = _validation_path(validation_error)
-        constraint = str(getattr(validation_error, "validator", None) or "schema")
-        detail = re.sub(r"\s+", " ", str(validation_error.message)).strip()
-        if len(detail) > 600:
-            detail = detail[:597] + "..."
         return _validation_error(
-            f"tool_call to '{name}' failed argument validation at {path} "
-            f"({constraint}): {detail}. The tool was NOT invoked.",
+            f"tool_call to '{name}' failed argument validation: {'; '.join(problems)}. The tool was NOT invoked.",
             path=path, constraint=constraint, parameters=params)
     except Exception:  # pragma: no cover — never block dispatch on validator bugs
         logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)

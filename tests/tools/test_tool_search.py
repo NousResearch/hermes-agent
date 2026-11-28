@@ -832,6 +832,36 @@ class TestDeferredCallSchemaProbe:
         assert result["path"] == expected_path
         assert result["constraint"] == expected_constraint
 
+    def test_validator_reports_every_invalid_argument_in_one_refusal(self):
+        """One refusal names every bad argument (missing, wrong type, bad enum), so the
+        model fixes them all in one retry instead of discovering them one per turn."""
+        import model_tools
+
+        calls = []
+        name = "mcp_probe_all_errors"
+        toolset = "mcp-probe-all-errors"
+        self._register_schema(name, toolset, {
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "mode": {"type": "string", "enum": ["a", "b"]},
+                "limit": {"type": "integer"},
+                "doc": {"type": "string"},
+            },
+            "required": ["doc", "count"],
+        }, calls)
+
+        result = json.loads(model_tools.handle_function_call(
+            function_name="tool_call",
+            function_args={"name": name, "arguments": {"count": "many", "mode": "z", "limit": "x"}},
+            enabled_toolsets=[toolset],
+        ))
+
+        assert calls == []
+        for fragment in ("doc", "arguments.count (type)", "arguments.mode (enum)", "arguments.limit (type)"):
+            assert fragment in result["error"]
+        assert (result["path"], result["constraint"]) == ("arguments", "required")
+
     def test_coercible_arguments_validate_then_dispatch_repaired(self):
         import model_tools
 

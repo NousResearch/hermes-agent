@@ -7,9 +7,10 @@ wrapping the actual execution callback. Agent-loop call sites and plugins share 
 from __future__ import annotations
 
 import logging
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +21,59 @@ TOOL_REQUEST_MIDDLEWARE = "tool_request"
 TOOL_EXECUTION_MIDDLEWARE = "tool_execution"
 LLM_REQUEST_MIDDLEWARE = "llm_request"
 LLM_EXECUTION_MIDDLEWARE = "llm_execution"
+PRE_INFERENCE_ROUTE_MIDDLEWARE = "pre_inference_route"
 
 VALID_MIDDLEWARE: set[str] = {
     TOOL_REQUEST_MIDDLEWARE, TOOL_EXECUTION_MIDDLEWARE, LLM_REQUEST_MIDDLEWARE, LLM_EXECUTION_MIDDLEWARE,
+    PRE_INFERENCE_ROUTE_MIDDLEWARE,
 }
+
+_ROUTE_PROVIDER_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_ROUTE_MAX_MODEL_LEN = 199
+_ROUTE_KEY_LIKE = ("sk-", "sk_", "bearer ", "api_key=", "api-key=", "ghp_", "gho_", "github_pat_",
+                    "nvapi-", "hf_")
+_ROUTE_MAX_STRING = 500
+_ROUTE_MAX_RECEIPT_ITEMS = 32
+_ROUTE_METADATA_LIMITS = {
+    "session_id": 256, "task_id": 256, "turn_id": 256, "platform": 64,
+    "hermes_profile": 128, "requested_model": 199, "requested_provider": 64,
+}
+_ROUTE_METADATA_DEFAULT_LIMIT = 256
+
+
+def _bounded_str(value: Any, limit: int) -> str:
+    text = str(value if value is not None else "")
+    text = "".join(char for char in text if ord(char) >= 32 and ord(char) != 127)
+    return text[:limit]
+
+
+def _bounded_pre_inference_route_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    bounded: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        key_text = _bounded_str(key, 64)
+        limit = _ROUTE_METADATA_LIMITS.get(str(key), _ROUTE_METADATA_DEFAULT_LIMIT)
+        if isinstance(value, str):
+            bounded[key_text] = _bounded_str(value, limit)
+        elif isinstance(value, bool) or value is None:
+            bounded[key_text] = value
+        elif isinstance(value, (int, float)):
+            bounded[key_text] = value
+        else:
+            bounded[key_text] = _bounded_str(value, limit)
+    return bounded
+
+
+def _bounded_pre_inference_route_receipt(receipt: Any) -> Dict[str, Any]:
+    if not isinstance(receipt, dict):
+        return {}
+    bounded: Dict[str, Any] = {}
+    for key, value in list(receipt.items())[:_ROUTE_MAX_RECEIPT_ITEMS]:
+        key_text = _bounded_str(key, 64)
+        if isinstance(value, str):
+            bounded[key_text] = _bounded_str(_sanitize_pre_inference_route_value(value), _ROUTE_MAX_STRING)
+        else:
+            bounded[key_text] = _sanitize_pre_inference_route_value(value)
+    return bounded
 
 
 @dataclass
@@ -34,6 +84,126 @@ class RequestMiddlewareResult:
     original_payload: Any
     changed: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class PreInferenceRouteResult:
+    """Outcome of the pre-inference selection pass (issue #104 host extension).
+
+    ``status`` is one of:
+      * ``"route"``       — build the provider client for ``provider``/``model``.
+      * ``"refuse"``      — stop before any provider request is issued.
+      * ``"passthrough"`` — proceed exactly as if no pre-inference consumer existed.
+    """
+
+    status: str
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    reason: str = ""
+    receipt: Dict[str, Any] = field(default_factory=dict)
+
+
+def _sanitize_pre_inference_route_value(value: Any) -> Any:
+    """Defense in depth: metadata delivered to pre-inference consumers may never
+    carry credential-like material. Any string carrying a known key shape collapses
+    to ``"[redacted]"``."""
+    if isinstance(value, str):
+        lowered = value.lower()
+        if any(fragment in lowered for fragment in _ROUTE_KEY_LIKE):
+            return "[redacted]"
+        return value
+    if isinstance(value, dict):
+        return {str(k): _sanitize_pre_inference_route_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_pre_inference_route_value(v) for v in value]
+    return value
+
+
+def _parse_pre_inference_route_result(result: Any) -> Optional[PreInferenceRouteResult]:
+    """Validate a consumer's return value. Malformed results are dropped."""
+    if not isinstance(result, dict):
+        return None
+    status = result.get("status")
+    if not isinstance(status, str):
+        return None
+    status = status.strip().lower()
+    reason = _sanitize_pre_inference_route_value(str(result.get("reason") or ""))[:500]
+    receipt = _bounded_pre_inference_route_receipt(result.get("receipt"))
+    if status == "passthrough":
+        return PreInferenceRouteResult(status="passthrough", reason=reason or "passthrough")
+    if status == "refuse":
+        return PreInferenceRouteResult(
+            status="refuse",
+            reason=reason or "route refused",
+            receipt=receipt,
+        )
+    if status != "route":
+        return None
+    provider = result.get("provider")
+    model = result.get("model")
+    if not isinstance(provider, str) or not isinstance(model, str):
+        return None
+    provider = provider.strip().lower()
+    model = model.strip()
+    if not _ROUTE_PROVIDER_RE.match(provider):
+        return None
+    if not model or len(model) > _ROUTE_MAX_MODEL_LEN:
+        return None
+    if any(ord(char) < 32 for char in model):
+        return None
+    if any(fragment in model.lower() for fragment in _ROUTE_KEY_LIKE):
+        return None
+    return PreInferenceRouteResult(
+        status="route", provider=provider, model=model,
+        reason=reason or "route selected",
+        receipt=receipt,
+    )
+
+
+def apply_pre_inference_route_middleware(metadata: Dict[str, Any], **context: Any) -> Optional["PreInferenceRouteResult"]:
+    """Invoke ``pre_inference_route`` consumers with non-secret session metadata.
+
+    ``metadata`` is the ONLY thing a consumer sees — never credentials, clients or
+    config objects. Returns ``None`` when no consumer is registered (stock behavior,
+    byte-identical to pre-extension Hermes). Otherwise the first *valid* consumer
+    result wins; a refusal is absolute and the caller must stop before any provider
+    request is issued. If consumers ran but every result was malformed, returns a
+    fail-closed ``refuse`` rather than silently proceeding stock.
+    """
+    from hermes_cli.plugins import has_middleware, invoke_middleware
+
+    if not isinstance(metadata, dict):
+        metadata = {}
+    if not has_middleware(PRE_INFERENCE_ROUTE_MIDDLEWARE):
+        return None
+    safe_metadata = _sanitize_pre_inference_route_value(_bounded_pre_inference_route_metadata(dict(metadata)))
+    try:
+        results = invoke_middleware(PRE_INFERENCE_ROUTE_MIDDLEWARE, **safe_metadata)
+    except Exception as exc:
+        logger.warning("pre_inference_route consumer failed unexpectedly; refusing", exc_info=True)
+        return PreInferenceRouteResult(
+            status="refuse",
+            reason="pre_inference_route consumer failed unexpectedly; refusing before any provider request",
+        )
+    malformed = 0
+    for result in results:
+        parsed = _parse_pre_inference_route_result(result)
+        if parsed is not None:
+            return parsed
+        malformed += 1
+    if malformed:
+        return PreInferenceRouteResult(
+            status="refuse",
+            reason="pre_inference_route consumer returned a malformed result; refusing before any provider request",
+        )
+    # A consumer was registered but produced no usable result at all (e.g. it
+    # raised and the delivery layer isolated the failure). That is a failure,
+    # not an opt-out — refuse. The only provable opt-out is an explicit
+    # 'passthrough' result, which returns above.
+    return PreInferenceRouteResult(
+        status="refuse",
+        reason="pre_inference_route consumer(s) registered but returned no result; refusing before any provider request",
+    )
 
 
 def observer_payload(**kwargs: Any) -> dict[str, Any]:

@@ -645,6 +645,100 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+def _pre_inference_route_override(sid, session_id, key, model_override, provider_override,
+                                  cfg, platform_override):
+    """AutoRouter opt-in pre-inference route (host extension, issue #104).
+
+    Runs ONLY for ordinary sessions: an explicit per-session model or provider
+    pick is never overridden. Semantics, fail-closed:
+
+    * no registered consumer / opt-in disabled: stock behavior, byte-identical;
+    * registered+enabled consumer selects a route: that route pins this session;
+    * consumer refuses, raises, returns nothing usable, or the capability
+      probe itself fails: ``RuntimeError`` before any provider client is built —
+      no request is issued. An AutoRouter failure is NEVER widened into a
+      stock (potentially paid or unknown-cost) request.
+    * ``passthrough`` is the only provable opt-out and proceeds stock.
+    """
+    import logging
+    import os
+
+    log = logging.getLogger(__name__)
+    if model_override is not None or provider_override is not None:
+        # Explicit per-session user picks are never rewritten by AutoRouter.
+        return model_override, provider_override
+    session_key = session_id or sid or key
+    if not session_key:
+        return model_override, provider_override
+
+    def _bound(value, limit):
+        text = str(value if value is not None else "")
+        text = "".join(char for char in text if ord(char) >= 32 and ord(char) != 127)
+        return text[:limit]
+
+    try:
+        from hermes_cli.plugins import has_middleware
+        from hermes_cli.middleware import (
+            PRE_INFERENCE_ROUTE_MIDDLEWARE,
+            apply_pre_inference_route_middleware,
+        )
+        registered = has_middleware(PRE_INFERENCE_ROUTE_MIDDLEWARE)
+    except Exception as exc:
+        # Cannot even probe the routing capability. Silently skipping the gate
+        # would let a failure or an attack surface an unapproved stock route —
+        # fail closed.
+        log.warning("pre_inference_route capability probe failed; refusing", exc_info=True)
+        raise RuntimeError(
+            "AutoRouter pre-inference route refused: capability probe failed") from exc
+    if not registered:
+        # No routing consumer registered (stock Hermes, or AutoRouter opted out):
+        # byte-identical stock behavior.
+        return model_override, provider_override
+
+    model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    try:
+        platform_hint = _resolve_agent_platform(platform_override) or "tui"
+    except Exception:
+        platform_hint = "tui"
+    metadata = {
+        "session_id": _bound(session_key, 256),
+        "platform": _bound(platform_hint, 64),
+        "hermes_profile": _bound(
+            os.environ.get("HERMES_PROFILE") or os.environ.get("HERMES_ACTIVE_PROFILE") or "default", 128),
+        "requested_model": _bound(model_cfg.get("default"), 199),
+        "requested_provider": _bound(model_cfg.get("provider"), 64),
+        "explicit_model": False,
+    }
+    try:
+        route = apply_pre_inference_route_middleware(metadata, platform=platform_hint)
+    except Exception as exc:
+        # A registered consumer failed: never widen to a stock (potentially
+        # paid or unknown-cost) request.
+        log.warning("pre_inference_route middleware failed; refusing", exc_info=True)
+        raise RuntimeError(
+            f"AutoRouter pre-inference route refused: {exc}") from exc
+    if route is None:
+        # Registered consumer produced nothing usable and proved no opt-out
+        # ('passthrough' is the only opt-out). Fail closed.
+        raise RuntimeError(
+            "AutoRouter pre-inference route refused: registered consumer returned no result")
+    if route.status == "passthrough":
+        # Provable opt-out: proceed exactly as if no consumer existed.
+        return model_override, provider_override
+    if route.status == "refuse":
+        raise RuntimeError(
+            f"AutoRouter pre-inference route refused: {route.reason or 'no eligible free route'}")
+    if route.status == "route" and route.provider and route.model:
+        # status == "route": pin this session to the consumer's provider/model. The full
+        # provider/credential resolution still flows through the normal path; the consumer
+        # only ever names provider+model, never credentials.
+        return {"model": route.model, "provider": route.provider}, None
+    raise RuntimeError(
+        "AutoRouter pre-inference route refused: consumer returned an unusable route")
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
@@ -668,6 +762,8 @@ def _make_agent(
     from agent.shell_hooks import register_from_config
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
+    model_override, provider_override = _pre_inference_route_override(
+        sid, session_id, key, model_override, provider_override, cfg, platform_override)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()

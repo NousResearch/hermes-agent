@@ -2,6 +2,8 @@
 
 
 import json
+import time
+
 from persistence.sqlite._state.keys import admission_fingerprint
 
 
@@ -18,6 +20,23 @@ WORKER_PREFIX = 'gateway.terminal_worker.v1.'
 
 
 _STORED = '_stored'
+
+
+#: Sibling key recording when a settlement's result was stored (unix seconds, as text). It lives
+#: beside the result row rather than inside its payload, so the stored-result contract and its
+#: exact-equality readers stay untouched; ``prune_settled_results`` ages a LIVE session's results by
+#: it. Written once per admission (first settlement wins -- a rewrite never extends its life).
+SETTLED_PREFIX = 'gateway.admission.settled_at.v1.'
+
+
+def settled_key(admission_id):
+    return SETTLED_PREFIX + admission_id
+
+
+def stamp_settled(conn, admission_id, *, now=None):
+    """Record a settlement's time. Idempotent: an existing stamp is kept."""
+    conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING',
+                 (settled_key(admission_id), str(int(time.time() if now is None else now))))
 
 
 def encode_result(result):

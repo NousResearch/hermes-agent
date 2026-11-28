@@ -29,7 +29,7 @@ from ..conversation._store.sql_common import _non_continuation_child_sql
 from ..conversation._store.write_guards import _guarded_ids, _write_guards_reject
 from ..gateway._routes import _sql_session_last_active
 from ._portability import SessionPortability
-from ._retirement import prune_retired_tombstones
+from ._retirement import prune_retired_tombstones, trim_settled_results
 
 __all__ = ["SQLiteSessionMaintenance"]
 
@@ -267,6 +267,17 @@ class SQLiteSessionMaintenance(SessionPortability):
             holder = self._store.holder()
             count = holder._execute_write(_do)
         return PruneResult(count=count, deleted_ids=tuple(SessionId(sid) for sid in removed_ids))
+
+    def trim_settled_results(self, older_than: Optional[float] = None) -> int:
+        """Trim settled admission results past the exact-retry horizon (``RETRY_HORIZON_S`` when
+        *older_than* is None). Sessions, messages, the admissions and every result field readers use
+        (``final_response``, outcome flags, usage, accounting) are untouched: only the per-turn
+        transcript copies go, so a live session stops carrying one copy of every turn it ever ran.
+        Returns the number of rows trimmed."""
+        from ..gateway._routes import RETRY_HORIZON_S
+        horizon = RETRY_HORIZON_S if older_than is None else older_than
+        with translated():
+            return self._store.holder()._execute_write(lambda conn: trim_settled_results(conn, horizon)) or 0
 
     def prune_empty_ghost_sessions(self, *, media_root: str) -> tuple[SessionId, ...]:
         cutoff = time.time() - 86400

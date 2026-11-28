@@ -4301,14 +4301,24 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
     from hermes_cli.config import load_config as _load_full_config
     _sess_cfg = (_load_full_config().get("sessions") or {})
-    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
+    # Settled-result reclaim is not session pruning: it drops a LIVE session's per-turn replay blobs
+    # once they are past the exact-retry horizon, so it runs even with auto_prune off (opt out with
+    # sessions.trim_settled_results: false). Its own throttle lives in the retention pass.
+    _gc_results = bool(_sess_cfg.get("trim_settled_results", True))
+    if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False) or _gc_results):
         return
     from gateway.session_ingress_media import native_inputs_root
     from persistence_assembly import open_persistence, open_store_admin, profile_scope
-    from session_retention import run_auto_archive, run_auto_prune_and_vacuum
+    from session_retention import run_auto_archive, run_auto_prune_and_vacuum, run_settled_result_trim
     scope = profile_scope()
     store = open_persistence(scope, eager=True)
     try:
+        if _gc_results:
+            run_settled_result_trim(
+                store, open_store_admin(scope, read_only=False),
+                min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
+                min_vacuum_interval_days=int(_sess_cfg.get("min_vacuum_interval_days", 30)),
+                vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)))
         if _sess_cfg.get("auto_archive", False):
             run_auto_archive(
                 store, idle_days=float(_sess_cfg.get("auto_archive_days", 3)),

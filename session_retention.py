@@ -266,3 +266,67 @@ def run_auto_prune_and_vacuum(
         if maintenance_lock is not None:
             admin.release_auto_maintenance_lock(maintenance_lock)
     return result
+
+
+def run_settled_result_trim(
+    store, admin: StoreAdmin | AdminUnsupported | None, *, min_interval_hours: int = 24, vacuum: bool = True,
+    min_vacuum_interval_days: int = 30, min_vacuum_freelist_ratio: float = AUTO_VACUUM_MIN_FREELIST_RATIO,
+) -> dict[str, Any]:
+    """Idempotent, never-raising trim of settled admission results past the exact-retry horizon.
+
+    Independent of ``sessions.auto_prune``: it deletes no session, no message and no result field
+    readers use -- only the per-turn transcript copies a LIVE session would otherwise keep for as
+    long as it exists (one long-lived chat held 127 MB of a 2.3 GB store on the reference install,
+    96% of it those copies). Runs at most once per ``min_interval_hours`` (the
+    ``last_settled_result_trim`` state key); VACUUM follows the same throttle, holder and freelist
+    gates as auto-maintenance, and only when rows were trimmed. Returns ``{"skipped", "trimmed",
+    "vacuumed"}`` plus ``"freelist_ratio"`` / ``"vacuum_skipped_holders"`` when a VACUUM was
+    considered and ``"error"`` on failure.
+    """
+    result: dict[str, Any] = {"skipped": False, "trimmed": 0, "vacuumed": False}
+    if isinstance(admin, AdminUnsupported):
+        admin = None
+    maintenance_lock = None
+    if admin is not None:
+        maintenance_lock = admin.try_acquire_auto_maintenance_lock()
+        if maintenance_lock is None:
+            result["skipped"] = True
+            return result
+    try:
+        now = time.time()
+        since = _seconds_since(now, store.state_meta.get("last_settled_result_trim"))
+        if since is not None and since < min_interval_hours * 3600:
+            result["skipped"] = True
+            return result
+        report_startup_progress(900.0, phase="state_db_settled_result_trim")
+        trimmed = result["trimmed"] = store.maintenance.trim_settled_results()
+        if trimmed:
+            logger.info(
+                "state.db settled-result trim: trimmed %d stored result(s) past the exact-retry horizon",
+                trimmed)
+        since_vacuum = _seconds_since(now, store.state_meta.get("last_vacuum"))
+        vacuum_due = since_vacuum is None or since_vacuum >= min_vacuum_interval_days * 86400
+        if admin is not None and vacuum and trimmed and vacuum_due:
+            result["freelist_ratio"] = ratio = admin.freelist_ratio()
+            holders = admin.vacuum_blockers()
+            if holders:
+                result["vacuum_skipped_holders"] = len(holders)
+                logger.debug(
+                    "state.db settled-result trim: skipping VACUUM, %d other process(es) hold the store",
+                    len(holders))
+            elif ratio is None or ratio > min_vacuum_freelist_ratio:
+                try:
+                    report_startup_progress(900.0, phase="state_db_settled_result_vacuum")
+                    admin.vacuum()
+                    result["vacuumed"] = True
+                    store.state_meta.set("last_vacuum", str(now))
+                except Exception as exc:  # health: allow BLE001 -- a failed VACUUM leaves the prune result standing
+                    logger.warning("state.db VACUUM after settled-result trim failed: %s", exc)
+        store.state_meta.set("last_settled_result_trim", str(now))
+    except Exception as exc:  # health: allow BLE001 -- maintenance never blocks a turn; the error rides in the result
+        logger.warning("state.db settled-result trim failed: %s", exc)
+        result["error"] = str(exc)
+    finally:
+        if maintenance_lock is not None:
+            admin.release_auto_maintenance_lock(maintenance_lock)
+    return result

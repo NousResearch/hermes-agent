@@ -34,6 +34,7 @@ from ._runtime import (
     replacement_binding,
     retry_terminal_admission,
     settle_steer_transfers,
+    stamp_settled,
     terminal_admission,
 )
 
@@ -243,6 +244,7 @@ def settle_session_input(holder, *, epoch: int, admission_id: str, generation: i
             conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?) '
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, encoded))
+            stamp_settled(conn, admission_id)
         conn.execute("UPDATE session_admissions SET status='terminal',outcome=? WHERE admission_id=?", (outcome, admission_id))
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
@@ -428,6 +430,7 @@ def resolve_unknown_session_input(holder, *, epoch: int, admission_id: str, gene
                          'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
                          (RESULT_PREFIX + admission_id, _json(encode_result(compact_result(
                              stored, user_message=json.loads(row['payload_json']).get('text'))))))
+            stamp_settled(conn, admission_id)
         # ``notice`` says the turn was interrupted: never beside a captured result this resolution commits.
         close_discarded_turn(holder, conn, row, None if (
             _captured is not None and row['owner_epoch'] == epoch) else notice)

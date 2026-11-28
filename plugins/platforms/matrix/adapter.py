@@ -720,6 +720,10 @@ class MatrixAdapter(BasePlatformAdapter):
         # Rooms already warned for dropping encrypted events this process lifetime (#131778).
         self._warned_encrypted_drop_rooms: set[str] = set()
         self._threads = ThreadParticipationTracker("matrix")  # require_mention bypass
+        # Threads THIS bot started (synthetic-root creator / handoff seed / root authored by us).
+        # Slash/bang commands inside a thread act only on the starter or the addressed bot.
+        self._owned_threads = ThreadParticipationTracker("matrix_owned")
+        self._thread_root_owner_cache: dict[str, bool] = {}  # root event_id -> authored by this bot
         self._parked_voices = ParkedVoices()  # unmentioned voice awaiting a bare @mention
         self._require_mention: bool = self._parse_require_mention(config)
         self._thread_require_mention: bool = self._parse_thread_require_mention(config)
@@ -1293,6 +1297,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not root:
             return None
         await self._threads.mark_async(str(root))  # replies in this thread bypass require_mention, like inbound roots
+        await self._owned_threads.mark_async(str(root))  # we seeded it: we own its commands
         return str(root)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
@@ -1940,8 +1945,21 @@ class MatrixAdapter(BasePlatformAdapter):
                 return None
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
+            # Command gate: ``!cmd`` is normalized to ``/cmd`` BEFORE any mention rule so both
+            # prefixes share one policy; an unknown ``!word`` stays chat text (cmd_text is None).
+            cmd_text = self._gate_command_text(body, relates_to)
+            if cmd_text is not None:
+                gated_body = await self._command_gate(
+                    room_id, thread_id, body, cmd_text, source_content, relates_to,
+                    mention_claimed, is_free_room)
+                if gated_body is None:
+                    logger.debug(
+                        "Matrix: ignoring command %s in %s — not the thread starter nor addressed", event_id,
+                        thread_id or room_id)
+                    return None
+                body = gated_body
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+                if not is_mentioned and cmd_text is None:
                     if voice_gate is not None:  # parkable voice: a bare @mention may follow (Element X)
                         self._parked_voices.park(room_id, sender, voice_gate, event_id, source_content, relates_to)
                     logger.debug(
@@ -1976,6 +1994,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     self._matrix_session_scope != "room" and self._auto_thread)
             if synthetic:
                 thread_id = event_id
+                await self._owned_threads.mark_async(thread_id)  # we create this root: we own it
         if voice_gate is not None:  # decided (parked or passing): don't hold bare mentions any longer
             self._parked_voices.release(room_id, sender, voice_gate)
         display_name = await self._get_display_name(room_id, sender)
@@ -1992,6 +2011,129 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
+
+    def _gate_command_text(self, body: str, relates_to: dict) -> Optional[str]:
+        """The ``/command`` text the gate sees, or None when the message is not a command.
+
+        Mirrors what dispatch later does (quote fallback and ``@bot`` mentions stripped, then
+        ``!cmd`` -> ``/cmd``) so the gate and dispatch agree on what counts as a command."""
+        reply = _split_reply_fallback(body)[1] if relates_to.get("m.in_reply_to") else body
+        # Leading mentions of OTHER users (``@b !status``) still make it a command — for them.
+        # (``_strip_mention`` glues ``@x !cmd`` into ``@x!cmd``, hence ``\s*`` and no ``!`` in the token.)
+        text = re.sub(r"^(?:@[^\s!]+\s*)+(?=[/!])", "", self._strip_mention(reply))
+        text = _normalize_matrix_bang_command(text)
+        return text if text.startswith("/") else None
+
+    def _own_command_names(self) -> set[str]:
+        """Lowercase names a command's first argument may use to address this bot."""
+        names = {self._user_localpart().lower()}
+        try:
+            from hermes_constants import get_hermes_home, profile_name_for_home
+            profile = profile_name_for_home(get_hermes_home())
+            if profile and profile != "default":
+                names.add(profile.lower())
+        except Exception:
+            logger.debug("Matrix: profile name lookup failed", exc_info=True)
+        return {n for n in names if n}
+
+    @staticmethod
+    def _command_first_arg(cmd_text: str) -> str:
+        """First argument of ``/cmd arg ...`` with ``@`` / trailing punctuation removed, lowercased."""
+        parts = cmd_text.split(None, 2)
+        return parts[1].lstrip("@").rstrip(":,;.").lower() if len(parts) > 1 else ""
+
+    def _explicitly_mentioned(self, body: str, content: dict) -> bool:
+        """Explicit @mention only (m.mentions, full MXID, pill, or ``@localpart``) — NOT the bare
+        localpart word that ``_is_bot_mentioned`` accepts, which is too loose for commands."""
+        mentions = content.get("m.mentions")
+        if isinstance(mentions, dict) and self._user_id and self._user_id in (mentions.get("user_ids") or []):
+            return True
+        if self._user_id and (self._user_id in body or f"matrix.to/#/{self._user_id}" in (
+                content.get("formatted_body") or "")):
+            return True
+        localpart = self._user_localpart()
+        return bool(localpart and re.search(r"(?<![\w])@" + re.escape(localpart) + r"\b", body, re.IGNORECASE))
+
+    def _mentions_other_user(self, body: str, content: dict) -> bool:
+        """True when the message explicitly @mentions someone but not this bot."""
+        mentions = content.get("m.mentions")
+        if isinstance(mentions, dict) and any(str(u) != self._user_id for u in mentions.get("user_ids") or []):
+            return True
+        own = self._user_localpart().lower()
+        for local, server in re.findall(r"(?<![\w])@([\w.=\-/]+)(:[\w.\-]+)?", body):
+            if f"@{local}{server}" != self._user_id and not (not server and local.lower() == own):
+                return True
+        return False
+
+    async def _first_arg_names_other_member(self, room_id: str, token: str) -> bool:
+        """Best effort: does *token* equal the localpart of another joined room member?"""
+        state_store = getattr(self._client, "state_store", None) if self._client else None
+        if not state_store or not token:
+            return False
+        with suppress(Exception):
+            for member in (await state_store.get_members(room_id)) or []:
+                mxid = str(getattr(member, "user_id", member))
+                if mxid != self._user_id and mxid.startswith("@") and mxid[1:].split(":")[0].lower() == token:
+                    return True
+        return False
+
+    async def _is_thread_owner(self, room_id: str, thread_id: str) -> bool:
+        """True when this bot started *thread_id*: it created the synthetic root / handoff seed
+        (``_owned_threads``) or the root event was sent by this bot (looked up once, cached)."""
+        if thread_id in self._owned_threads:
+            return True
+        cached = self._thread_root_owner_cache.get(thread_id)
+        if cached is None:
+            cached = False
+            client = self._client
+            if client is not None and self._user_id and hasattr(client, "get_event"):
+                try:
+                    root = await asyncio.wait_for(client.get_event(RoomID(room_id), EventID(thread_id)), timeout=10)
+                    cached = str(getattr(root, "sender", "") or "") == self._user_id
+                except Exception:
+                    logger.debug("Matrix: thread root lookup failed for %s", thread_id, exc_info=True)
+                    return False  # fail closed, and don't cache a transient failure
+            if len(self._thread_root_owner_cache) > 2000:
+                self._thread_root_owner_cache.clear()
+            self._thread_root_owner_cache[thread_id] = cached
+        if cached:
+            await self._owned_threads.mark_async(thread_id)
+        return cached
+
+    async def _command_gate(
+        self, room_id: str, thread_id: Optional[str], body: str, cmd_text: str, content: dict,
+        relates_to: dict, mention_claimed: bool, is_free_room: bool) -> Optional[str]:
+        """Decide whether this bot handles a command in a non-DM room. Returns the (possibly
+        adjusted) body, or None to drop silently.
+
+        Thread: only the thread starter, or the bot addressed by @mention / profile name as the
+        first argument; a command that @mentions someone else is dropped even by the starter.
+        Room: free rooms and ``require_mention=false`` keep their rule; otherwise the bot must be
+        addressed (a bare ``/cmd`` no longer reaches every bot)."""
+        # Text checks use the reply text only: the quote fallback carries ``> <@author>`` pills of
+        # whoever was replied to, which is not an address in this message.
+        quote, reply = _split_reply_fallback(body) if relates_to.get("m.in_reply_to") else ("", body)
+        explicit = mention_claimed or self._explicitly_mentioned(reply, content)
+        token = self._command_first_arg(cmd_text)
+        by_name = bool(token) and token in self._own_command_names()
+        addressed = explicit or by_name
+        owner = False
+        if thread_id:
+            if not explicit:  # an explicit @mention needs no starter lookup (no root fetch)
+                owner = await self._is_thread_owner(room_id, thread_id)
+            if not addressed:
+                if not owner or self._mentions_other_user(reply, content):
+                    return None
+                if await self._first_arg_names_other_member(room_id, token):
+                    return None
+        elif not (addressed or is_free_room or not self._require_mention):
+            return None
+        if by_name and not explicit and not owner and (thread_id or (self._require_mention and not is_free_room)):
+            # The name was the addressing token, not a real argument: drop it from the command.
+            reply = re.sub(r"^(\s*(?:@[^\s]+\s+)?[/!]\S+)\s+@?" + re.escape(token) + r"[:,;.]?(?=\s|$)", r"\1",
+                           reply, count=1, flags=re.IGNORECASE)
+            body = quote + reply
+        return body
 
     async def _extract_reply_context(
         self, room_id: str, body: str, relates_to: dict

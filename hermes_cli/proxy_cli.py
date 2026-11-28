@@ -17,6 +17,7 @@ from agent.proxy_sources import iron_proxy as ip
 from agent.redact import mask_secret
 from hermes_cli._secrets_common import console_safe
 from hermes_cli.config import load_config, load_env, save_config
+from tools.environments.docker_egress_network import ensure_internal_network, internal_network_name
 
 
 def register_cli(parent_parser: argparse.ArgumentParser) -> None:
@@ -243,6 +244,15 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
     except RuntimeError as exc:
         audit_log_ok = False
         console.print(f"  [yellow]⚠ {exc}[/yellow]")
+    # Resolve the bind before writing anything, so a failed network check leaves proxy.yaml and
+    # mappings.json from the same run.
+    bind_port = tunnel_port
+    default_host = ip._default_http_listen(bind_port)[0].rsplit(":", 1)[0]
+    try:
+        bind_host = _tunnel_bind_host(proxy_cfg, default_host, bind_port, console)
+    except RuntimeError as exc:
+        console.print(f"  [red]✗ {console_safe(str(exc))}[/red]")
+        return None
     # ``proxy.upstream_deny_cidrs`` overrides the deny list; None yields the documented safe
     # default-deny set (loopback, IMDS, RFC1918).
     iron_cfg = ip.build_proxy_config(
@@ -253,8 +263,10 @@ def _setup_write_config(console: Console, args: argparse.Namespace, mappings, ca
         audit_log=audit_log_path,
         allowed_hosts=allowed,
         upstream_deny_cidrs=proxy_cfg.get("upstream_deny_cidrs"),
+        http_listen=[f"{bind_host}:{bind_port}"],
     )
     cfg_path = ip.write_proxy_config(iron_cfg)
+    _record_tunnel_bind(proxy_cfg, bind_host)
     mappings_path = ip.write_mappings(mappings)
     # The generated config enables a loopback management listener (used by ``egress reload``);
     # the daemon requires its bearer key env var to be non-empty at startup, so mint it now.
@@ -388,6 +400,11 @@ def cmd_start(args: argparse.Namespace) -> int:
                 "project, or switch back via `hermes egress setup --no-bitwarden`.",
             )
     try:
+        _sync_tunnel_bind(proxy_cfg, console, daemon_running=ip.get_status().pid is not None)
+    except RuntimeError as exc:
+        return _refuse(console, console_safe(str(exc)), "Fix the Docker network, or set "
+                       "`proxy.docker_internal_network: false` and run `hermes egress restart`.")
+    try:
         status = ip.start_proxy(
             install_if_missing=bool(proxy_cfg.get("auto_install", True)),
             refresh_secrets_from_bitwarden=refresh_bw,
@@ -404,6 +421,61 @@ def cmd_start(args: argparse.Namespace) -> int:
         f"[green]✓[/green] iron-proxy running  pid={status.pid}  port={status.tunnel_port}  {listening}"
     )
     return 0
+
+
+def _internal_bind_marker():
+    """Records the gateway Hermes bound for ``docker_internal_network``, so turning the key off
+    can restore the default bind even after the network itself was removed."""
+    return ip._proxy_state_dir() / "internal-network-bind"
+
+
+def _tunnel_bind_host(proxy_cfg: dict, current_host: str, port: int, console: Console) -> str:
+    """Host iron-proxy's listeners should bind. ``docker_internal_network`` on: the profile's
+    internal network gateway (network created if missing; raises when it can't be verified).
+    Off: the default bind if the current one is a gateway Hermes set, else ``current_host``."""
+    marker = _internal_bind_marker()
+    if not proxy_cfg.get("docker_internal_network"):
+        managed = marker.read_text(encoding="utf-8-sig").strip() if marker.exists() else None
+        return ip._default_http_listen(port)[0].rsplit(":", 1)[0] if current_host == managed else current_host
+    # Deferred: tools.environments.docker's import chain loads the secret backends, which every
+    # `hermes` parser build would otherwise pay for (tests/hermes_cli/test_update_secret_import_lock.py).
+    from tools.environments.docker import find_docker
+
+    network = ensure_internal_network(find_docker() or "docker")
+    console.print(f"[dim]Docker internal network {network.name}: iron-proxy binds {network.gateway}:{port}[/dim]")
+    return network.gateway
+
+
+def _record_tunnel_bind(proxy_cfg: dict, host: str) -> None:
+    marker = _internal_bind_marker()
+    if proxy_cfg.get("docker_internal_network"):
+        marker.write_text(host, encoding="utf-8")
+    else:
+        marker.unlink(missing_ok=True)
+
+
+def _sync_tunnel_bind(proxy_cfg: dict, console: Console, *, daemon_running: bool) -> None:
+    """Rewrite proxy.yaml's listeners to :func:`_tunnel_bind_host` before the daemon starts.
+    Raises when the bind must change under a running daemon: it would keep the old address."""
+    cfg_path = ip._proxy_state_dir() / "proxy.yaml"
+    if (yaml := ip._yaml()) is None or not cfg_path.exists():
+        return
+    data = yaml.safe_load(cfg_path.read_text(encoding="utf-8-sig")) or {}
+    listeners = data.get("proxy") or {}
+    current = ip._parse_listen(listeners.get("tunnel_listen") or listeners.get("http_listen") or "")
+    if current is None:
+        return
+    host, port = current
+    want = _tunnel_bind_host(proxy_cfg, host, port, console)
+    if want != host:
+        if daemon_running:
+            raise RuntimeError(
+                f"iron-proxy is running on {host}:{port} but proxy.docker_internal_network needs {want}:{port}. "
+                "Run `hermes egress restart` to rebind it.")
+        listeners["tunnel_listen"], listeners["http_listen"] = f"{want}:{port}", f"{want}:{port + 1}"
+        data["proxy"] = listeners
+        ip.write_proxy_config(data)
+    _record_tunnel_bind(proxy_cfg, want)
 
 
 def cmd_stop(args: argparse.Namespace) -> int:
@@ -639,4 +711,6 @@ def _status_rows(proxy_cfg: dict, status, *, yn, dim) -> list[tuple[str, str]]:
         ("Listening", yn(status.listening)),
         ("Credential src", str(proxy_cfg.get("credential_source", "env"))),
         ("Docker enforce", yn(bool(proxy_cfg.get("enforce_on_docker", True)))),
+        ("Docker network", internal_network_name() + " (internal; iron-proxy is the only exit)"
+         if proxy_cfg.get("docker_internal_network") else "default bridge (raw sockets bypass the proxy)"),
     ]

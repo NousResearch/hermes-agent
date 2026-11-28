@@ -57,3 +57,21 @@ def test_billing_fallback_warning_names_failing_profile_and_remedy(tmp_path, cap
     with caplog.at_level(logging.INFO, logger="agent.chat_completion_helpers"):
         _log_fallback_activated(None, FailoverReason.server_error, "a", "p", "b", "q")
     assert [r.levelno for r in caplog.records] == [logging.INFO]
+
+
+def test_non_billing_fallback_info_line_names_the_reason(caplog):
+    """An INFO switch must stay diagnosable after the fact (#158368): the FailoverReason
+    is already in hand, so record it instead of leaving rate limits, overloads and
+    content-policy refusals indistinguishable in the log."""
+    for reason in (
+        FailoverReason.rate_limit,
+        FailoverReason.overloaded,
+        FailoverReason.content_policy_blocked,
+    ):
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="agent.chat_completion_helpers"):
+            _log_fallback_activated(None, reason, "old-model", "old-provider", "new-model", "new-provider")
+        assert [r.levelno for r in caplog.records] == [logging.INFO]
+        line = caplog.records[0].getMessage()
+        assert f"reason={reason.value}" in line
+        assert "old-model" in line and "new-model" in line

@@ -45,6 +45,7 @@ import { SessionControlSections } from './session-control'
 import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
 import { SubagentSection } from './subagent-section'
+import { TodoRows } from './todo-rows'
 import { useSubagentSnapshot } from './use-subagent-snapshot'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
@@ -294,15 +295,22 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
-          {group.items.map(item => (
-            <StatusItemRow
-              item={item}
-              key={item.id}
+          {group.type === 'todo' ? (
+            <TodoRows
+              items={group.items}
               onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
-              onOpen={() => openSubagent(item)}
-              onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
             />
-          ))}
+          ) : (
+            group.items.map(item => (
+              <StatusItemRow
+                item={item}
+                key={item.id}
+                onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
+                onOpen={() => openSubagent(item)}
+                onStop={sessionId ? id => void stopBackgroundProcess(sessionId, id) : undefined}
+              />
+            ))
+          )}
         </StatusSection>
       )
     })
@@ -320,20 +328,19 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
           icon={<Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />}
           label={t.statusStack.previousTodos(done, retainedTodos.length)}
         >
-          {todoTree(retainedTodos).map(([todo, depth]) => (
-            <StatusItemRow
-              historical
-              item={{
+          <TodoRows
+            historical
+            items={todoTree(retainedTodos).map(
+              ([todo, depth]): ComposerStatusItem => ({
                 depth,
                 id: `retained-todo:${todo.id}`,
                 state: 'done',
                 title: todo.content,
                 todoStatus: todo.status,
                 type: 'todo'
-              }}
-              key={todo.id}
-            />
-          ))}
+              })
+            )}
+          />
         </StatusSection>
       )
     })

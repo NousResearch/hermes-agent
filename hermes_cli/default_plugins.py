@@ -168,9 +168,11 @@ def _entry_spellings(entry, target: Optional[Path]) -> tuple[str, ...]:
 
 def _settled(home: Path, entry) -> bool:
     """*home* already has *entry*: a plugin the user explicitly disabled, a tree the user put there
-    (enabled or not, it is theirs), or one an earlier automatic attempt left that someone has since
-    enabled or disabled. Explicit ``plugins.disabled`` is checked before any stale ``installing``
-    marker so a crashed automatic attempt never deletes or re-enables a plugin the user disabled."""
+    (enabled or not, it is theirs), or one an earlier automatic attempt left (this installer's failed
+    attempt, or the left-core migrator's refused enable) that someone has since enabled or disabled.
+    Explicit ``plugins.disabled`` is checked before any stale ``installing`` marker so a crashed
+    automatic attempt never deletes or re-enables a plugin the user disabled."""
+    from hermes_cli.left_core_migration import _placed as _left_core_placed
     from hermes_cli.left_core_migration import _plugins_listed
     from hermes_cli.memory_provider_migration import _failure_stamp
     target = _installed_dir(home, entry)
@@ -181,8 +183,8 @@ def _settled(home: Path, entry) -> bool:
         return False
     if target is None:
         return _placed(home, entry).exists()  # the tree a failed attempt left is gone: the user removed it
-    if not _failure_stamp(home, _attempt(entry)).exists():
-        return True
+    if not _failure_stamp(home, _attempt(entry)).exists() and not _left_core_placed(home, entry.name).exists():
+        return True  # neither installer left it unfinished: the user's tree
     return enabled
 
 

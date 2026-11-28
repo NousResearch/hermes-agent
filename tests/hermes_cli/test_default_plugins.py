@@ -36,6 +36,19 @@ def installs(monkeypatch):
     return calls
 
 
+def test_a_tree_the_left_core_migrator_could_not_enable_is_owed_not_settled(tmp_path, installs):
+    """The left-core migrator placed a default plugin's tree but its enable was refused (its ``left-core.placed-*``
+    marker); nobody enabled or disabled it since. The default pass retries it instead of recording that tree as
+    an install the home already has, which would stop both installers retrying and leave the plugin off."""
+    home = tmp_path / "home"
+    (home / "plugins" / "accent-picker").mkdir(parents=True)
+    lcm._placed(home, "accent-picker").parent.mkdir(parents=True)
+    lcm._placed(home, "accent-picker").touch()
+
+    assert default_plugins.install_defaults(home, entries=[_entry("accent-picker")])["installed"] == ["accent-picker"]
+    assert installs == [(home, "accent-picker")]
+
+
 def test_default_is_installed_once_and_a_removal_sticks(tmp_path, installs):
     home = tmp_path / "home"
     home.mkdir()

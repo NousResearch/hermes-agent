@@ -76,7 +76,9 @@ def scope_terminal_cwd() -> str:
 
 
 def _existing_dir(raw: str, label: str) -> Path | None:
-    p = Path(raw).expanduser()
+    # Anchor a relative value (the shipped ``terminal.cwd: ./``) to the launch dir: callers such as
+    # ``build_policy`` require an absolute path. ``absolute()``, not ``resolve()``, keeps symlinks.
+    p = Path(raw).expanduser().absolute()
     if p.is_dir():
         return p
     logger.warning("%s does not exist: %s", label, raw)

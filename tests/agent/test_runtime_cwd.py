@@ -28,6 +28,27 @@ class TestResolveAgentCwd:
 
 
 
+    def test_relative_terminal_cwd_is_anchored_to_launch_dir(self, monkeypatch, tmp_path):
+        # A relative TERMINAL_CWD (config `terminal.cwd: ./`) must come back absolute:
+        # gateway.session_policy.build_policy refuses a relative cwd, which made every
+        # hosted group-chat turn for that profile fail with a bare invalid_params.
+        (tmp_path / "work").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TERMINAL_CWD", "./")
+        assert resolve_agent_cwd() == tmp_path
+        assert resolve_agent_cwd().is_absolute()
+        monkeypatch.setenv("TERMINAL_CWD", "work")
+        assert resolve_agent_cwd() == tmp_path / "work"
+
+    def test_relative_terminal_cwd_keeps_symlink_component(self, monkeypatch, tmp_path):
+        # Anchoring must not canonicalize: a relative symlinked workspace keeps its own path.
+        real = tmp_path / "real"
+        real.mkdir()
+        (tmp_path / "link").symlink_to(real)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TERMINAL_CWD", "link")
+        assert resolve_agent_cwd() == tmp_path / "link"
+
     def test_propagates_oserror_from_getcwd(self, monkeypatch):
         # The fallback arm calls os.getcwd(), which can raise OSError (deleted cwd).
         # The resolver must NOT swallow it — build_environment_hints owns the

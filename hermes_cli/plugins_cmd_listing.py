@@ -34,14 +34,20 @@ def _entry_status(entry: tuple, enabled: set, disabled: set, active: set) -> str
     return _pc()._plugin_status(name, enabled, disabled, key, source=source, dir_path=dir_path, active=active)
 
 
-_STATUS_MARKUP = {"disabled": "[red]disabled[/red]", "enabled": "[green]enabled[/green]"}
+_STATUS_MARKUP = {
+    "disabled": "[red]disabled[/red]",
+    "enabled": "[green]enabled[/green]",
+    # A directory discovery could not read: the row exists so the plugin cannot look uninstalled.
+    "unreadable": "[red]unreadable[/red]",
+}
 
 
 def cmd_list(args: Any | None = None) -> None:
     """List all plugins (bundled + user) with enabled/disabled state."""
     console = _pc()._console()
-    entries = _pc()._discover_all_plugins()
-    if not entries:
+    skips: list = []
+    entries = _pc()._discover_all_plugins(skips)
+    if not entries and not skips:
         console.print("[dim]No plugins installed.[/dim]")
         console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
         return
@@ -64,6 +70,12 @@ def cmd_list(args: Any | None = None) -> None:
          catalog.removed_annotation(name, _dir, removed_entries))
         for name, version, description, source, _dir, key in entries
     ]
+    # Unreadable directories are not plugins, but hiding them IS the defect: one row each keeps the
+    # CLI and Desktop agreeing that the folder is there and cannot be read (#152247). ``--enabled``
+    # drops them — nothing unreadable can be on.
+    if not getattr(args, "enabled", False):
+        rows += [(row["name"], row["status"], row["version"], row["description"], row["source"], None)
+                 for row in _pc().unreadable_plugin_rows(skips)]
 
     if getattr(args, "json", False):
         keys = ("name", "status", "version", "description", "source", "removed")
@@ -75,7 +87,7 @@ def cmd_list(args: Any | None = None) -> None:
             print(f"{status:12} {source:8} {version:8} {name}")
         return
 
-    if not entries:
+    if not rows:
         console.print("[dim]No plugins matched the selected filters.[/dim]")
         return
 
@@ -97,8 +109,9 @@ def cmd_list(args: Any | None = None) -> None:
             name = f"[red]{name} ✗[/red]"
             removed_lines.append(f"[red]✗ {name}[/red] was removed from the plugin catalog: {removed}")
         table.add_row(name, status, version, description, source)
-        # class line rides the Source column for user plugins
-        if source in {"user", "git"}:
+        # class line rides the Source column for user plugins — never for a directory we could not
+        # read: the provenance scan has nothing to say about it (#152247).
+        if source in {"user", "git"} and status_name != "unreadable":
             if klass and klass != "git":
                 table.add_row(
                     "", "", "", f"[dim]provenance: {klass}[/dim]", ""

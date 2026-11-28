@@ -988,6 +988,10 @@ def register(ctx) -> None:
         setup_fn=interactive_setup, env_enablement_fn=_env_enablement, cron_deliver_env_var="LINE_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send, allowed_users_env="LINE_ALLOWED_USERS",
         allow_all_env="LINE_ALLOW_ALL_USERS",
+        # Groups and rooms are chat allowlists, not user ids. ``room`` is not a group/forum
+        # type, so ``LINE_ALLOWED_ROOMS`` cannot share ``group_allowed_chats_env``.
+        group_allowed_chats_env="LINE_ALLOWED_GROUPS",
+        room_allowed_chats_env="LINE_ALLOWED_ROOMS",
         max_message_length=LINE_SAFE_BUBBLE_CHARS,  # per-bubble cap is 5000; smart-chunker uses 4500
         emoji="💚", pii_safe=False, allow_update_command=True,
         platform_hint=(

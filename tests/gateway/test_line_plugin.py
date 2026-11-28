@@ -575,3 +575,223 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+
+# ---------------------------------------------------------------------------
+# Gateway second gate — LINE group/room chat allowlists
+# ---------------------------------------------------------------------------
+
+_LINE_AUTH_ENVS = (
+    "LINE_ALLOW_ALL_USERS",
+    "LINE_ALLOWED_USERS",
+    "LINE_ALLOWED_GROUPS",
+    "LINE_ALLOWED_ROOMS",
+    "GATEWAY_ALLOW_ALL_USERS",
+    "GATEWAY_ALLOWED_USERS",
+)
+
+
+class TestLineGatewayChatAllowlist:
+    """The adapter admits a group/room listed in ``LINE_ALLOWED_GROUPS`` /
+    ``LINE_ALLOWED_ROOMS`` even when the sender is absent from
+    ``LINE_ALLOWED_USERS``. The gateway then re-checks authorization and, without
+    those chat lists declared, default-denies the same sender
+    (``Unauthorized user: … on line``).
+
+    ``group_allowed_chats_env`` covers ``chat_type == "group"`` only.
+    ``"room"`` is not a group/forum type and lives in a different env var, so
+    rooms use ``room_allowed_chats_env``. DMs stay on ``LINE_ALLOWED_USERS``.
+    """
+
+    @pytest.fixture
+    def line_auth(self, monkeypatch):
+        for key in _LINE_AUTH_ENVS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("LINE_ALLOW_ALL_USERS", "false")
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        entry = platform_registry.get("line")
+        assert entry is not None, "LINE platform plugin did not register"
+        assert entry.allowed_users_env == "LINE_ALLOWED_USERS"
+        assert entry.allow_all_env == "LINE_ALLOW_ALL_USERS"
+        assert entry.group_allowed_chats_env == "LINE_ALLOWED_GROUPS"
+        assert entry.room_allowed_chats_env == "LINE_ALLOWED_ROOMS"
+        return entry
+
+    @staticmethod
+    def _runner():
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        return runner
+
+    @staticmethod
+    def _source(chat_type: str, chat_id: str, user_id: str):
+        from gateway.session import Platform, SessionSource
+
+        return SessionSource(
+            platform=Platform("line"),
+            chat_id=chat_id,
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_id,
+        )
+
+    def test_group_member_outside_dm_allowlist_is_authorized(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        source = self._source("group", "Callowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is True
+
+    def test_unlisted_group_is_rejected(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        source = self._source("group", "Cother", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_room_member_outside_dm_allowlist_is_authorized(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        source = self._source("room", "Rallowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is True
+
+    def test_unlisted_room_is_rejected(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        source = self._source("room", "Rother", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_group_list_does_not_authorize_a_room(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Rallowed")
+        source = self._source("room", "Rallowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_room_list_does_not_authorize_a_group(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Callowed")
+        source = self._source("group", "Callowed", "Umember")
+        assert self._runner()._is_user_authorized(source) is False
+
+    def test_dm_requires_user_allowlist(self, line_auth, monkeypatch):
+        monkeypatch.setenv("LINE_ALLOWED_USERS", "Uowner")
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        runner = self._runner()
+        assert runner._is_user_authorized(self._source("dm", "Uowner", "Uowner")) is True
+        assert runner._is_user_authorized(self._source("dm", "Umember", "Umember")) is False
+
+    def test_chat_allowlists_do_not_suppress_dm_pairing(self, line_auth, monkeypatch):
+        from gateway.session import Platform
+
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "Callowed")
+        monkeypatch.setenv("LINE_ALLOWED_ROOMS", "Rallowed")
+        assert self._runner()._get_unauthorized_dm_behavior(Platform("line")) == "pair"
+
+
+class TestLineDispatchGatewayAuth:
+    """``_dispatch_event`` builds the ``MessageEvent`` the gateway re-checks.
+
+    ``allow_adapter_delegation=False`` is the native re-check: a role flag does
+    not count. A listed group or room must still be authorized by its chat id,
+    and an unlisted group or DM never becomes that event.
+    """
+
+    @staticmethod
+    def _register_line():
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        entry = platform_registry.get("line")
+        assert entry is not None
+        assert entry.group_allowed_chats_env == "LINE_ALLOWED_GROUPS"
+        assert entry.room_allowed_chats_env == "LINE_ALLOWED_ROOMS"
+        return entry
+
+    @staticmethod
+    def _adapter(monkeypatch, **env):
+        for key in _LINE_AUTH_ENVS:
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("LINE_ALLOW_ALL_USERS", "false")
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        from gateway.config import PlatformConfig
+
+        return LineAdapter(PlatformConfig(
+            enabled=True,
+            extra={"channel_access_token": "tok", "channel_secret": "sec"},
+        ))
+
+    @staticmethod
+    def _dispatch(adapter, source: dict, webhook_id: str):
+        captured = {}
+
+        async def _capture(event):
+            captured["event"] = event
+
+        adapter.handle_message = _capture
+        asyncio.run(adapter._dispatch_event({
+            "type": "message",
+            "source": source,
+            "message": {"type": "text", "id": "m1", "text": "hi"},
+            "replyToken": "rt",
+            "webhookEventId": webhook_id,
+        }))
+        return captured.get("event")
+
+    @staticmethod
+    def _strictly_authorized(event) -> bool:
+        from types import SimpleNamespace
+
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        return runner._is_user_authorized(event.source, allow_adapter_delegation=False) is True
+
+    def test_allowlisted_group_sender_is_authorized_without_delegation(self, monkeypatch):
+        self._register_line()
+        adapter = self._adapter(
+            monkeypatch, LINE_ALLOWED_USERS="Uowner", LINE_ALLOWED_GROUPS="Callowed")
+        event = self._dispatch(
+            adapter, {"type": "group", "groupId": "Callowed", "userId": "Umember"}, "group-ok")
+        assert event is not None
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == "Callowed"
+        assert event.source.user_id == "Umember"
+        assert event.source.role_authorized is False
+        assert self._strictly_authorized(event) is True
+
+    def test_allowlisted_room_sender_is_authorized_without_delegation(self, monkeypatch):
+        self._register_line()
+        adapter = self._adapter(
+            monkeypatch, LINE_ALLOWED_USERS="Uowner", LINE_ALLOWED_ROOMS="Rallowed")
+        event = self._dispatch(
+            adapter, {"type": "room", "roomId": "Rallowed", "userId": "Umember"}, "room-ok")
+        assert event is not None
+        assert event.source.chat_type == "room"
+        assert event.source.chat_id == "Rallowed"
+        assert event.source.user_id == "Umember"
+        assert event.source.role_authorized is False
+        assert self._strictly_authorized(event) is True
+
+    def test_unlisted_group_and_dm_sender_are_rejected(self, monkeypatch):
+        self._register_line()
+        adapter = self._adapter(
+            monkeypatch,
+            LINE_ALLOWED_USERS="Uowner",
+            LINE_ALLOWED_GROUPS="Callowed",
+            LINE_ALLOWED_ROOMS="Rallowed",
+        )
+        # The adapter drops these before handle_message, so no MessageEvent
+        # reaches the gateway's strict re-check.
+        assert self._dispatch(
+            adapter, {"type": "group", "groupId": "Cother", "userId": "Umember"}, "group-no") is None
+        assert self._dispatch(
+            adapter, {"type": "user", "userId": "Umember"}, "dm-no") is None
+

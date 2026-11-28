@@ -60,7 +60,10 @@ export const BROWSER_BRIDGE_STUBS = {
   getRecentLogs: async () => ({ lines: [], path: '' }),
   // Venv/plugin receipts live on the server host; a browser tab has none of its own.
   getSyncStatus: async () => null,
-  getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
+  // A browser tab runs no Electron GPU process, so nothing was disabled and
+  // there is no remote-display condition to report; the notice belongs to the
+  // host that can actually turn acceleration off.
+  getRemoteDisplayReason: async () => null,
   windowControls: {
     custom: false,
     minimize: () => { throw browserUnsupported('Native window controls') },

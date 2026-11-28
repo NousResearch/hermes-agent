@@ -34,7 +34,7 @@ from ._store import stored_reads
 from ._store.compression import _compression_tip_on, reopen_if_explicitly_closed
 from ._store.core import is_kanban_owned_session, retag_kanban_worker_sessions
 from ._store.gateway import list_gateway_sessions
-from ._store.local import POLICY_PREFIX
+from ._store.local import LOCAL_POLICY_GLOB_LITERAL, POLICY_PREFIX, local_policy_target_expr
 from ._store.local_migration import LEGACY_PREFIX
 from ._store.model_config import session_ids_with_model_config_key, update_conversation_model_config_value
 from ._store.portability import (
@@ -1042,12 +1042,15 @@ class SQLiteSessionRepository:
         holder = self._store.holder()
         ids = json.dumps(list(session_ids))
         with refusals(holder), holder._read_ctx() as conn:
+            target_expr = local_policy_target_expr('m.value')
             rows = conn.execute(
                 "SELECT s.id, s.source, s.title, s.started_at, s.ended_at, s.message_count, s.model, s.hidden, "
                 "s.archived, s.runtime_revision, s.runtime_generation, "
-                "(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = CASE WHEN json_valid(m.value) "
-                "THEN json_extract(m.value, '$.entry.session_id') END WHERE m.key = ? || s.id) AS target_ended_at "
-                "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))", (POLICY_PREFIX, ids)).fetchall()
+                f"(SELECT t.ended_at FROM state_meta m JOIN sessions t ON t.id = {target_expr} "
+                f"WHERE m.key GLOB {LOCAL_POLICY_GLOB_LITERAL} "
+                "AND m.key >= ? || s.id AND m.key <= ? || s.id) AS target_ended_at "
+                "FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?))",
+                (POLICY_PREFIX, POLICY_PREFIX, ids)).fetchall()
             pending = conn.execute(
                 "SELECT target_session_id, admission_id, seq, status FROM session_admissions "
                 "WHERE target_session_id IN (SELECT value FROM json_each(?)) "

@@ -273,6 +273,22 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, undefined, 3, 4])
   })
 
+  it('keeps the backfilled prefix ahead of a compaction copy before its shared anchor (#139942)', () => {
+    // The backend orders this page by display_order. Compaction gave the old
+    // row a new physical id, so it precedes the shared live rows despite its
+    // larger row id.
+    const previous = [chat('earlier', 100), chat('live-prompt', 200), chat('live-reply', 300)]
+
+    const refreshed = [
+      chat('compacted-earlier-copy', 500),
+      chat('live-prompt-refetched', 200),
+      chat('live-reply-refetched', 300),
+      chat('new-reply', 400)
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([100, 500, 200, 300, 400])
+  })
+
   it('does not treat a page that opens on its own orphan tool fold as behind itself (#124311)', () => {
     const page = [chat('orphan-tools'), chat('user', 122886), chat('assistant', 122887)]
 

@@ -168,6 +168,100 @@ def test_deny_projection_preserves_data_and_path_rules(deny_config):
     for unresolved in ('${NAME}', '"${NAME}"', r'"a\cb"', r'a\qb', "'unclosed"):
         assert _split_env_string(unresolved) is None
 
+
+@pytest.mark.parametrize("command", (
+    "eval 'sudo -n id -u'", "eval sudo -n id -u", "eval -- 'sudo -n id -u'",
+    "eval 'true; /usr/bin/sudo -n id -u'", "bash -c \"eval 'sudo -n id -u'\"",
+    "env -S '${SYNTHETIC} sudo -n id -u'", "env -S 'sudo -n id -u ${SYNTHETIC}'",
+    "env -S '${SYNTHETIC}' sudo -n id -u",
+    "env -S '${SYNTHETIC}sudo -n id -u'",
+    "env -S '${SYNTHETIC}${OTHER}sudo -n id -u'",
+    # env ignores a comment word and everything after `\\c`: a bare `$` there does not stop it.
+    "env -S '${SYNTHETIC} sudo -n id -u # $IGNORED'", r"env -S '${SYNTHETIC} sudo -n id -u \c $IGNORED'",
+    "env -S 'su${SYNTHETIC}do -n id -u'",
+    'env -S \'"${SYNTHETIC}sudo" -n id -u\'',
+    # zsh and dash run the rest after a missing first command such as `-x`; bash and ksh reject `-x` (sh varies).
+    # With `--`, bash, sh, zsh, ksh and dash all ran the rest in local probes.
+    "eval '-x; sudo -n id -u'", "eval -- '-x; sudo -n id -u'",
+    "env -S '${SYNTHETIC}\"\"sudo -n id -u'",
+    # A literal NUL-digit-NUL in the payload is data: it must not index past the expansions (fail closed, deny).
+    "env -S '${SYNTHETIC} sudo \x009\x00'",
+    pytest.param("env " + "-S '${SYNTHETIC}' " * 8 + "-S 'sudo -n id -u'", id="env-split-eight-options"),
+    # Eight eval levels are still read through a shell carrier.
+    "env -S '${SYNTHETIC} bash -c \"" + "eval " * 8 + "sudo -n id -u\"'",
+))
+@pytest.mark.parametrize("guard", (mod.check_dangerous_command, mod.check_all_command_guards))
+def test_deny_descends_into_eval_and_unresolved_env_split(command, guard, deny_config, clean_env):
+    """eval code and unresolvable env -S strings still run their command: deny it."""
+    deny_config(["sudo", "sudo *"], mode="off")
+    assert approval_floors._match_user_deny_rule(command) == "sudo *", command
+    result = guard(command, "local")
+    assert result.get("user_deny") is True, (command, result)
+    assert result["approved"] is False
+
+
+def test_eval_and_dollar_projection_keep_argument_data(deny_config):
+    """Only code eval would run is projected; its arguments' data stays data."""
+    deny_config(["sudo", "sudo *"])
+    for command in ("echo eval sudo -n id", "eval 'printf %s sudo'", "eval echo sudo",
+                    "printf '%s' \"eval 'sudo -n id'\"", '"$HOME/bin/tool" sudo',
+                    r"env -S 'printf %s \${IGNORED} sudo'",
+                    # env -S splits an argv: a separator after an expansion is data.
+                    "env -S 'true ${SYNTHETIC}; sudo -n id'", "env -S '$SYNTHETIC sudo -n id'",
+                    'env -S \'"${SYNTHETIC}" sudo -n id\'',
+                    'env -S \'${SYNTHETIC}"" sudo -n id -u\'', "env -S \"''${SYNTHETIC} sudo -n id -u\"",
+                    "env -S '${SYNTHETIC}\"\"${OTHER} sudo -n id -u'"):
+        assert approval_floors._match_user_deny_rule(command) is None, command
+
+
+@pytest.mark.parametrize("command", (
+    # Nine eval levels behind a shell carrier are past the nesting limit: refuse, never "no rule matched".
+    pytest.param("env -S '${SYNTHETIC} bash -c \"" + "eval " * 9 + "sudo -n id -u\"'", id="eval-nine-levels"),
+    # A chain of unresolvable carriers rescans the whole tail per link: refuse once the work bound is spent.
+    pytest.param("env -S '${SYNTHETIC}' " * 60 + "ls", id="carrier-chain"),
+    # env -S options re-split past the splitter's nesting limit: refuse rather than read `-S` as the command.
+    pytest.param("env " + "-S '${SYNTHETIC}' " * 9 + "-S 'sudo -n id -u'", id="env-split-nine-options"),
+))
+@pytest.mark.parametrize("guard", (mod.check_dangerous_command, mod.check_all_command_guards))
+def test_deny_refuses_a_command_it_could_not_read_through(command, guard, deny_config, clean_env):
+    deny_config(["sudo", "sudo *"], mode="off")
+    assert approval_floors._match_user_deny_rule(command) == "command parser limit exceeded"
+    result = guard(command, "local")
+    assert result.get("user_deny") is True and result["approved"] is False, result
+
+
+def _carriers(depth: int, payload: str) -> str:
+    for _ in range(depth):
+        payload = "bash -c " + shlex.quote(payload)
+    return payload
+
+
+_SCRIPT_LINES = "\n".join(["printf %s " + "x" * 90 + "; true"] * 400)
+
+
+@pytest.mark.parametrize("command", (
+    pytest.param("eval " * 5 + "printf %s " + "x" * 3000, id="five-evals-3kb"),
+    # The hardline scan reads this in full; the deny walk's two reads must not share one budget and refuse it.
+    pytest.param("eval " * 5 + shlex.quote("printf %s " + "x" * 20000 + ";"), id="five-evals-20kb-separator"),
+    pytest.param(_carriers(5, "printf %s " + "x" * 3000), id="five-bash-c-carriers-3kb"),
+))
+@pytest.mark.parametrize("guard", (mod.check_dangerous_command, mod.check_all_command_guards))
+def test_deny_reads_a_benign_nested_command_through(command, guard, deny_config, clean_env):
+    """Each read of the command has its own bound, scaled to supported nesting: long benign payloads are approved."""
+    deny_config(["sudo", "sudo *"], mode="off")
+    assert approval_floors._match_user_deny_rule(command) is None
+    assert not guard(command, "local").get("user_deny")
+
+
+@pytest.mark.parametrize("command", (
+    pytest.param("eval " * 5 + shlex.quote(_SCRIPT_LINES), id="five-evals-40kb-script"),
+    pytest.param("bash <<'EOF'\n" + _SCRIPT_LINES + "\n" + _SCRIPT_LINES[:20000] + "\nEOF", id="heredoc-60kb"),
+))
+def test_deny_reads_a_long_benign_script_through(command, deny_config):
+    deny_config(["sudo", "sudo *"], mode="off")
+    assert approval_floors._match_user_deny_rule(command) is None
+
+
 class TestDenyBeatsYolo:
     def test_deny_blocks_under_yolo_env(self, deny_config, clean_env, monkeypatch):
         deny_config(["git push --force*"])

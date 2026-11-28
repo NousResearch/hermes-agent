@@ -89,7 +89,7 @@ class DurableStateMixin:
             return True
         except Exception as exc:  # health: allow BLE001 -- a durable write is best-effort: any failure reports False
             suffix = "" if isinstance(exc, (sqlite3.Error, PersistenceError)) else " (non-sqlite)"
-            logger.debug("%s persist failed%s: %s", label, suffix, exc)
+            logger.info("%s persist failed%s: %s", label, suffix, exc)
         return False
 
     def _load_durable(self, attr: str, method: str, label: str, coerce, default, *args) -> None:

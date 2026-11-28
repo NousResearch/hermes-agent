@@ -37,6 +37,8 @@ _READS = frozenset({
     "get_session_model_config_value",
 })
 # Writes the gateway already performs itself (persistence, accounting, maintenance).
+# The CLI's GatewayAgent has only a compressor view; /compress runs on the gateway.
+# Summary-model probe deadlines are written by the gateway worker's store, never here.
 _GATEWAY_OWNED = frozenset({
     "create_session", "reopen_session", "append_messages_batch", "flush_token_counts",
     "update_session_model", "patch_session_model_config", "maybe_auto_archive",

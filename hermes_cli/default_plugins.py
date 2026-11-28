@@ -176,8 +176,9 @@ def _settled(home: Path, entry) -> bool:
         return _placed(home, entry).exists()  # the tree a failed attempt left is gone: the user removed it
     if not _failure_stamp(home, _attempt(entry)).exists() and not _left_core_placed(home, entry.name).exists():
         return True  # neither installer left it unfinished: the user's tree
-    # An unfinished tree is kept when the user chose it off by its core-era key too: the retry would discard it.
-    return enabled or _plugins_listed(home, tuple(sorted(legacy_plugin_keys(entry.name))))[1]
+    # An unfinished tree is kept when the user chose it on or off by its core-era key too (the loader honours
+    # both, ``plugins_discovery.gate_manifest``): the retry would discard it.
+    return enabled or any(_plugins_listed(home, tuple(sorted(legacy_plugin_keys(entry.name)))))
 
 
 def _attempt(entry) -> str:

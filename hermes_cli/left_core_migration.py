@@ -1693,7 +1693,7 @@ def recover_for_platform(name: Optional[str]) -> None:
     """``hermes send --to <name>``, a platform a left-core plugin ships, in a home that uses it: make that one
     plugin ready in this invocation before the target resolves. Nothing waits for a plugin that is ready or
     disabled. One the default-plugin child is placing right now (its ``installing`` marker) is waited for on
-    the installer lock (bounded, :func:`startup_lock_wait`); one still owed (:func:`_pending` for this row
+    the installer lock (bounded, :func:`startup_lock_wait`), then rechecked; one still owed (:func:`_pending` for this row
     only: never over a removal) is installed through :func:`_install_one`, which takes the same lock and
     rechecks under it. Starts no adapter (the send resolves its config as before). Outcomes print to stderr."""
     from hermes_cli.default_plugins import installer_lock, installing_marker
@@ -1710,7 +1710,7 @@ def recover_for_platform(name: Optional[str]) -> None:
     if installing_marker(home, feature.plugin).exists():
         try:
             with installer_lock(startup_lock_wait(gateway_start=False)):
-                return
+                pass  # the lock only says that installer stopped: the recheck below says whether it placed it
         except TimeoutError:
             say("  ⚠ Another Hermes process is installing plugins right now; retry in a minute, once it finishes.")
             return

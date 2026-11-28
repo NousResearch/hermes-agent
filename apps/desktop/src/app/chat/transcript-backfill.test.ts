@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
+import { transcriptRowIds } from '@/app/session/hooks/use-session-actions/pending-turn-identity'
+import { assistantTextPart, type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { $transcriptTailBySessionId, recordTranscriptTail, transcriptTailState } from '@/store/transcript-tail'
 
 import {
@@ -284,6 +285,711 @@ describe('graftRefreshedTailOntoBackfill', () => {
     const refreshed = [chat('a', 1), chat('b', 2)]
 
     expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+  })
+
+  it('keeps an unpersisted stream bubble when the refresh page omits the final assistant row', () => {
+    const toolTurnRows = [
+      { id: 10, role: 'user' as const, content: 'What is the status?', timestamp: 1 },
+      {
+        id: 11,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: 2,
+        tool_calls: [
+          { id: 'call-a', type: 'function' as const, function: { name: 'terminal', arguments: '{}' } }
+        ]
+      },
+      {
+        id: 12,
+        role: 'tool' as const,
+        content: '{"output": "ok", "exit_code": 0}',
+        timestamp: 3,
+        tool_call_id: 'call-a',
+        tool_name: 'terminal'
+      }
+    ]
+
+    const partialPage = toChatMessages(toolTurnRows)
+    const liveReply = 'Live check, just now — visible while streaming'
+
+    const livePrevious: ChatMessage[] = [
+      { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'What is the status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [
+          { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' },
+          assistantTextPart(liveReply, 1)
+        ],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(partialPage, livePrevious)
+    const userIndex = merged.findIndex(message => message.rowId === 10)
+
+    const replyOnTurn = merged.find(
+      (message, index) =>
+        index > userIndex && message.role === 'assistant' && !message.hidden && chatMessageText(message).trim().length > 0
+    )
+
+    expect(replyOnTurn).toBeDefined()
+    expect(chatMessageText(replyOnTurn!).trim()).toContain('Live check')
+    expect(replyOnTurn!.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-a')).toBe(true)
+    expect(merged.filter(message => message.role === 'assistant' && chatMessageText(message).includes('Live check'))).toHaveLength(
+      1
+    )
+  })
+
+  it('keeps an unbound stream bubble without durableComplete when the page omits the final row', () => {
+    const toolTurnRows = [
+      { id: 10, role: 'user' as const, content: 'What is the status?', timestamp: 1 },
+      {
+        id: 11,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: 2,
+        tool_calls: [
+          { id: 'call-a', type: 'function' as const, function: { name: 'terminal', arguments: '{}' } }
+        ]
+      }
+    ]
+
+    const partialPage = toChatMessages(toolTurnRows)
+    const liveReply = 'Live check, just now — visible while streaming'
+
+    const livePrevious: ChatMessage[] = [
+      { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'What is the status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [{ type: 'text', text: liveReply }]
+      }
+    ]
+
+    expect(transcriptRowIds(livePrevious[1]!)).toEqual([])
+    expect(livePrevious[1]?.durableComplete).toBeUndefined()
+
+    const merged = graftRefreshedTailOntoBackfill(partialPage, livePrevious)
+    const userIndex = merged.findIndex(message => message.rowId === 10)
+
+    const replyOnTurn = merged.find(
+      (message, index) =>
+        index > userIndex && message.role === 'assistant' && !message.hidden && chatMessageText(message).trim().length > 0
+    )
+
+    expect(replyOnTurn).toBeDefined()
+    expect(chatMessageText(replyOnTurn!).trim()).toContain('Live check')
+  })
+
+  it('keeps the grafted reply on a second refresh with the same partial page', () => {
+    const toolTurnRows = [
+      { id: 10, role: 'user' as const, content: 'What is the status?', timestamp: 1 },
+      {
+        id: 11,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: 2,
+        tool_calls: [
+          { id: 'call-a', type: 'function' as const, function: { name: 'terminal', arguments: '{}' } }
+        ]
+      }
+    ]
+
+    const partialPage = toChatMessages(toolTurnRows)
+
+    const livePrevious: ChatMessage[] = [
+      { id: 'user-live', role: 'user', parts: [{ type: 'text', text: 'What is the status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart('Live check, just now', 1)],
+        durableComplete: false
+      }
+    ]
+
+    const first = graftRefreshedTailOntoBackfill(partialPage, livePrevious)
+    const second = graftRefreshedTailOntoBackfill(partialPage, first)
+    const userIndex = second.findIndex(message => message.rowId === 10)
+
+    const replyOnTurn = second.find(
+      (message, index) =>
+        index > userIndex && message.role === 'assistant' && !message.hidden && chatMessageText(message).trim().length > 0
+    )
+
+    expect(replyOnTurn).toBeDefined()
+    expect(chatMessageText(replyOnTurn!).trim()).toContain('Live check')
+    expect(replyOnTurn?.durableComplete).toBe(false)
+  })
+
+  it('re-anchors the live reply on its user turn when the page adds a later user row', () => {
+    const refreshedPage: ChatMessage[] = [
+      {
+        id: 'user-status',
+        role: 'user',
+        parts: [{ type: 'text', text: 'What is the status?' }],
+        rowId: 10
+      },
+      {
+        id: 'asst-tool',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 11
+      },
+      { id: 'user-later', role: 'user', parts: [{ type: 'text', text: 'Next prompt' }], rowId: 99 }
+    ]
+
+    const liveReply = 'Final table output for status'
+
+    const livePrevious: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'What is the status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(liveReply, 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, livePrevious)
+    const statusUserIdx = merged.findIndex(message => message.rowId === 10)
+    const laterUserIdx = merged.findIndex(message => message.rowId === 99)
+
+    const replyOnTurn = merged.find(
+      (message, index) =>
+        index > statusUserIdx &&
+        index < laterUserIdx &&
+        message.role === 'assistant' &&
+        !message.hidden &&
+        chatMessageText(message).trim().length > 0
+    )
+
+    expect(replyOnTurn).toBeDefined()
+    expect(chatMessageText(replyOnTurn!).trim()).toBe(liveReply)
+    expect(replyOnTurn!.parts.some(part => part.type === 'tool-call' && part.toolCallId === 'call-a')).toBe(true)
+    expect(merged.filter(message => message.role === 'assistant' && chatMessageText(message) === liveReply)).toHaveLength(1)
+  })
+
+  it('keeps the prior transcript on an empty refresh only while an unpersisted live reply exists', () => {
+    const livePrevious: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Hi' }], rowId: 1 },
+      { id: 'assistant-live', role: 'assistant', parts: [assistantTextPart('visible reply', 1)], durableComplete: false }
+    ]
+
+    const populatedPrevious: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Hi' }], rowId: 1 },
+      {
+        id: 'assistant-done',
+        role: 'assistant',
+        parts: [assistantTextPart('done', 1)],
+        rowId: 2,
+        durableComplete: true
+      }
+    ]
+
+    expect(graftRefreshedTailOntoBackfill([], livePrevious)).toBe(livePrevious)
+    expect(graftRefreshedTailOntoBackfill([], populatedPrevious)).toEqual([])
+  })
+
+  it('does not re-add a live reply when the refresh page already carries the final row', () => {
+    const liveReply = 'Final table output'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-final',
+        role: 'assistant',
+        parts: [assistantTextPart(liveReply, 12)],
+        rowId: 12
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(liveReply, 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+
+    expect(merged.filter(message => message.role === 'assistant' && chatMessageText(message) === liveReply)).toHaveLength(1)
+  })
+
+  it('anchors by user message id when repeated prompt text would match a later turn', () => {
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-first', role: 'user', parts: [{ type: 'text', text: 'yes' }], rowId: 1 },
+      {
+        id: 'asst-empty',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 2
+      },
+      { id: 'user-second', role: 'user', parts: [{ type: 'text', text: 'yes' }], rowId: 3 }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-first', role: 'user', parts: [{ type: 'text', text: 'yes' }], rowId: 1 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart('Reply for the first yes', 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+    const firstUserIdx = merged.findIndex(message => message.id === 'user-first')
+    const secondUserIdx = merged.findIndex(message => message.id === 'user-second')
+    const replyIdx = merged.findIndex(message => message.id === 'assistant-stream-live' || message.id === 'asst-empty')
+
+    expect(replyIdx).toBeGreaterThan(firstUserIdx)
+    expect(replyIdx).toBeLessThan(secondUserIdx)
+    expect(chatMessageText(merged[replyIdx]).trim()).toBe('Reply for the first yes')
+  })
+
+  it('does not re-graft onto a settled turn after refresh', () => {
+    const previous: ChatMessage[] = [
+      { id: 'user-a', role: 'user', parts: [{ type: 'text', text: 'First' }], rowId: 1 },
+      {
+        id: 'assistant-long',
+        role: 'assistant',
+        parts: [assistantTextPart('A long completed answer on screen.', 1)],
+        rowId: 2,
+        durableComplete: true
+      }
+    ]
+
+    const refreshed: ChatMessage[] = [
+      ...previous,
+      { id: 'user-b', role: 'user', parts: [{ type: 'text', text: 'Second' }], rowId: 3 },
+      { id: 'assistant-short', role: 'assistant', parts: [assistantTextPart('ok', 1)], rowId: 4, durableComplete: true }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshed, previous)
+
+    expect(merged.filter(message => message.rowId === 2)).toHaveLength(1)
+    expect(merged[merged.length - 1]?.rowId).toBe(4)
+  })
+
+  it('does not duplicate when the page final row is a shorter suffix of the live bubble', () => {
+    const narrationPlusFinal =
+      'Step one: checking inputs. Step two: summarizing. Final table output for status.'
+
+    const finalOnly = 'Final table output for status.'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-tool',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 11,
+        durableComplete: false
+      },
+      {
+        id: 'asst-final',
+        role: 'assistant',
+        parts: [assistantTextPart(finalOnly, 12)],
+        rowId: 12,
+        durableComplete: true
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(narrationPlusFinal, 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+    const withText = merged.filter(message => message.role === 'assistant' && chatMessageText(message).includes(finalOnly))
+
+    expect(withText).toHaveLength(1)
+    expect(chatMessageText(withText[0]!).trim()).toBe(finalOnly)
+  })
+
+  it('converges to a single reply when the final row lands after a partial graft', () => {
+    const partialPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-tool',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 11,
+        durableComplete: false
+      }
+    ]
+
+    const finalPage: ChatMessage[] = [
+      ...partialPage,
+      {
+        id: 'asst-final',
+        role: 'assistant',
+        parts: [assistantTextPart('Final table output', 12)],
+        rowId: 12,
+        durableComplete: true
+      }
+    ]
+
+    const livePrevious: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart('Narration live. Final table output', 1)],
+        durableComplete: false
+      }
+    ]
+
+    const afterPartial = graftRefreshedTailOntoBackfill(partialPage, livePrevious)
+    const afterFinal = graftRefreshedTailOntoBackfill(finalPage, afterPartial)
+
+    const replies = afterFinal.filter(
+      message => message.role === 'assistant' && chatMessageText(message).includes('Final table output')
+    )
+
+    expect(replies).toHaveLength(1)
+    expect(replies[0]?.rowId).toBe(12)
+  })
+
+  it('maps repeated prompt text to the Nth user row from the end', () => {
+    const refreshedPage: ChatMessage[] = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'go' }] },
+      { id: 'u2', role: 'user', parts: [{ type: 'text', text: 'go' }], rowId: 2 }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'orphan-user', role: 'user', parts: [{ type: 'text', text: 'go' }] },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart('orphan reply', 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+    const u2Idx = merged.findIndex(message => message.rowId === 2)
+    const replyIdx = merged.findIndex(message => chatMessageText(message).includes('orphan reply'))
+
+    expect(replyIdx).toBeGreaterThan(u2Idx)
+    expect(merged.filter(message => chatMessageText(message).includes('orphan reply'))).toHaveLength(1)
+  })
+
+  // Deliberate: we cannot tell a regenerate from a stale refresh page, so both replies may show.
+  it('still grafts when the last persisted assistant text is not the live final', () => {
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Again' }], rowId: 1 },
+      {
+        id: 'asst-old',
+        role: 'assistant',
+        parts: [assistantTextPart('Superseded answer.', 2)],
+        rowId: 2,
+        durableComplete: true
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Again' }], rowId: 1 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart('Replacement answer.', 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+
+    expect(merged.filter(message => chatMessageText(message).includes('Replacement answer.'))).toHaveLength(1)
+    expect(merged.filter(message => chatMessageText(message).includes('Superseded answer.'))).toHaveLength(1)
+  })
+
+  it('still grafts when a text-only persisted row is only a prefix of the live bubble', () => {
+    const narration = 'Checking inputs. Final table output for status.'
+    const commentary = 'Checking inputs.'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-commentary',
+        role: 'assistant',
+        parts: [assistantTextPart(commentary, 11)],
+        rowId: 11,
+        durableComplete: true
+      },
+      {
+        id: 'asst-tool',
+        role: 'assistant',
+        parts: [{ type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 12,
+        durableComplete: false
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(narration, 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+    const toolIdx = merged.findIndex(message => message.rowId === 12)
+
+    expect(toolIdx).toBeGreaterThanOrEqual(0)
+    expect(chatMessageText(merged[toolIdx]!).trim()).toContain('Final table output')
+    expect(merged.filter(message => chatMessageText(message).includes('Checking inputs.'))).toHaveLength(1)
+  })
+
+  it('does not duplicate narration on a tool row that already holds the prefix text', () => {
+    const commentary = 'Checking inputs.'
+    const finalOnly = 'Final table output for status.'
+    const liveNarration = `${commentary} ${finalOnly}`
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-narration-tool',
+        role: 'assistant',
+        parts: [assistantTextPart(commentary, 11), { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 11,
+        durableComplete: false
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(liveNarration, 1)],
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+    const narrationRows = merged.filter(message => chatMessageText(message).includes(commentary))
+
+    expect(narrationRows).toHaveLength(1)
+    expect(chatMessageText(narrationRows[0]!).trim()).toContain(commentary)
+    expect(chatMessageText(narrationRows[0]!).trim()).toContain(finalOnly)
+  })
+
+  it('keeps narration-tool graft on a second refresh with the same partial page', () => {
+    const commentary = 'Checking inputs.'
+    const finalOnly = 'Final table output for status.'
+    const liveNarration = `${commentary} ${finalOnly}`
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-narration-tool',
+        role: 'assistant',
+        parts: [assistantTextPart(commentary, 11), { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }],
+        rowId: 11,
+        durableComplete: false
+      }
+    ]
+
+    const livePrevious: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(liveNarration, 1)],
+        durableComplete: false
+      }
+    ]
+
+    const first = graftRefreshedTailOntoBackfill(refreshedPage, livePrevious)
+    const second = graftRefreshedTailOntoBackfill(refreshedPage, first)
+    const narrationRows = second.filter(message => chatMessageText(message).includes(commentary))
+
+    expect(narrationRows).toHaveLength(1)
+    expect(chatMessageText(narrationRows[0]!).trim()).toContain(finalOnly)
+  })
+
+  it('re-grafts when a same-id row is shorter than the live text', () => {
+    const liveReply = 'Checking inputs. Final table output for status.'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-narration-tool',
+        role: 'assistant',
+        parts: [
+          assistantTextPart('Checking inputs.', 11),
+          { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }
+        ],
+        rowId: 11,
+        durableComplete: false
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-narration-tool',
+        role: 'assistant',
+        parts: [
+          assistantTextPart('Checking inputs.', 11),
+          { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' },
+          assistantTextPart('Final table output for status.', 1)
+        ],
+        rowId: 11,
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+
+    expect(chatMessageText(merged.find(message => message.id === 'asst-narration-tool')!).trim()).toContain(
+      'Final table output'
+    )
+  })
+
+  it('does not treat a too-short suffix as a persisted final row', () => {
+    const liveReply = 'We left the next day'
+    const persistedSuffix = 'day'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Go' }], rowId: 1 },
+      {
+        id: 'asst-short',
+        role: 'assistant',
+        parts: [assistantTextPart(persistedSuffix, 2)],
+        rowId: 2,
+        durableComplete: true
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Go' }], rowId: 1 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(liveReply, 1)],
+        durableComplete: false
+      }
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshedPage, previous).filter(message => chatMessageText(message) === liveReply)).toHaveLength(
+      1
+    )
+  })
+
+  it('does not treat a shared in-word suffix as a persisted final row', () => {
+    const liveReply = 'Still shopping'
+    const persistedSuffix = 'ping'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Go' }], rowId: 1 },
+      {
+        id: 'asst-inword',
+        role: 'assistant',
+        parts: [assistantTextPart(persistedSuffix, 2)],
+        rowId: 2,
+        durableComplete: true
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user', role: 'user', parts: [{ type: 'text', text: 'Go' }], rowId: 1 },
+      {
+        id: 'assistant-stream-live',
+        role: 'assistant',
+        parts: [assistantTextPart(liveReply, 1)],
+        durableComplete: false
+      }
+    ]
+
+    expect(graftRefreshedTailOntoBackfill(refreshedPage, previous).filter(message => chatMessageText(message) === liveReply)).toHaveLength(
+      1
+    )
+  })
+
+  it('does not re-graft when a same-id page row already covers the live text', () => {
+    const fullReply = 'Checking inputs. Final table output for status.'
+
+    const refreshedPage: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-narration-tool',
+        role: 'assistant',
+        parts: [
+          assistantTextPart(fullReply, 11),
+          { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }
+        ],
+        rowId: 11,
+        durableComplete: true
+      }
+    ]
+
+    const previous: ChatMessage[] = [
+      { id: 'user-status', role: 'user', parts: [{ type: 'text', text: 'Status?' }], rowId: 10 },
+      {
+        id: 'asst-narration-tool',
+        role: 'assistant',
+        parts: [
+          assistantTextPart(fullReply, 11),
+          { type: 'tool-call', toolCallId: 'call-a', toolName: 'terminal', args: '{}' }
+        ],
+        rowId: 11,
+        durableComplete: false
+      }
+    ]
+
+    const merged = graftRefreshedTailOntoBackfill(refreshedPage, previous)
+
+    expect(merged[1]).toBe(refreshedPage[1])
+    expect(merged[1]?.durableComplete).toBe(true)
+  })
+
+  it('does not re-graft a hydrated tool turn when the refresh page matches', () => {
+    const finalText = 'All checks passed.'
+
+    const rows = [
+      { id: 1, role: 'user' as const, content: 'Run checks', timestamp: 1 },
+      {
+        id: 2,
+        role: 'assistant' as const,
+        content: '',
+        timestamp: 2,
+        tool_calls: [{ id: 'call-a', type: 'function' as const, function: { name: 'terminal', arguments: '{}' } }]
+      },
+      {
+        id: 3,
+        role: 'tool' as const,
+        content: '{"output": "ok", "exit_code": 0}',
+        timestamp: 3,
+        tool_call_id: 'call-a',
+        tool_name: 'terminal'
+      },
+      { id: 4, role: 'assistant' as const, content: finalText, timestamp: 4 }
+    ]
+
+    const page = toChatMessages(rows)
+
+    const previous = page.map((message, index) =>
+      index === page.length - 1 ? { ...message, durableComplete: false } : message
+    )
+
+    const merged = graftRefreshedTailOntoBackfill(page, previous)
+
+    expect(merged).toBe(page)
+    expect(merged.filter(message => message.role === 'assistant' && chatMessageText(message).includes(finalText))).toHaveLength(1)
   })
 })
 

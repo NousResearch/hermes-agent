@@ -317,7 +317,7 @@ def _db_flush_collect(agent, messages: list[dict], conversation_history: Optiona
             # Only new rows, never the cached history prefix. Keep evidence/model
             # context intact while transcript pollers omit unsolicited presentation.
             msg["display_kind"] = "hidden"
-            msg["display_metadata"] = {**(msg.get("display_metadata") or {}), "notification_category": "diagnostic"}
+            msg["display_metadata"] = {"notification_category": "diagnostic", **(msg.get("display_metadata") or {})}
         if msg.get("role") == "tool" and not msg.get(TOOL_CALL_UID):
             # A result whose call was flushed in an earlier batch: pair it with the uid that assistant row
             # minted (same-batch pairing happens inside the insert).

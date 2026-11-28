@@ -31,14 +31,11 @@ def is_diagnostic_notice(notice) -> bool:
 
 
 def diagnostic_metadata(event) -> dict:
-    """``{"notification_category": "diagnostic"}`` for a trusted diagnostic-only wake, else ``{}``.
-
-    Only internal wakes may classify a turn; human content never does.
-    """
-    if getattr(event, "internal", False) and (getattr(event, "metadata", None) or {}).get(
-            "notification_category") == "diagnostic":
-        return {"notification_category": "diagnostic"}
-    return {}
+    """Preserve trusted producer presentation categories; human content never classifies a turn."""
+    if not getattr(event, "internal", False):
+        return {}
+    category = (getattr(event, "metadata", None) or {}).get("notification_category")
+    return {"notification_category": category} if category in ("diagnostic", "delivered") else {}
 
 
 def effective_user_config() -> dict:
@@ -52,14 +49,14 @@ def effective_user_config() -> dict:
 
 
 def diagnostic_turn_muted(display_metadata, platform, user_config=None) -> bool:
-    """One admission rule for every surface: a diagnostic-category wake mutes its turn's
-    presentation only when the owning policy hides diagnostics. Human content never mutes."""
-    return ((display_metadata or {}).get("notification_category") == "diagnostic"
+    """Hide a delivered receipt's freeform presentation, or diagnostics the owner opted to hide."""
+    category = (display_metadata or {}).get("notification_category")
+    return category == "delivered" or (category == "diagnostic"
             and not warning_notifications_enabled(platform, user_config))
 
 
 def diagnostic_wake_muted(event, user_config=None) -> bool:
-    """Only trusted diagnostic-only wakes can mute a turn, never human content."""
+    """Only trusted producer wakes can mute a turn, never human content."""
     snapshot = getattr(event, "_notification_reply_muted", None)
     if isinstance(snapshot, bool):
         return snapshot

@@ -46,6 +46,7 @@ from gateway.platforms.webhook_mcp_events import (
     handle_mcp_event_control, mcp_event_delivery_id, render_mcp_event_prompt)
 from gateway.response_filters import is_autonomous_silence_response
 from gateway.webhook_targets import is_dispatchable_target, is_known_platform as _is_known_platform
+from persistence import AuthorityRefusal
 
 logger = logging.getLogger(__name__)
 
@@ -826,6 +827,10 @@ class WebhookAdapter(BasePlatformAdapter):
         from gateway.platforms.webhook_ingress import admit_producer
         try:
             receipt = await admit_producer(self, event)
+        except AuthorityRefusal as exc:
+            logger.error("[webhook] Delivery %s on route %s refused (%s)%s", delivery_id, route_name, exc.reason,
+                         f": {exc.detail}" if exc.detail else "")
+            return None
         except Exception:
             logger.exception("[webhook] Durable admission failed for %s", delivery_id)
             return None
@@ -1046,7 +1051,8 @@ class WebhookAdapter(BasePlatformAdapter):
         try:
             target_platform = Platform(platform_name)
         except ValueError:
-            return SendResult(success=False, error=f"Unknown platform: {platform_name}")
+            from hermes_cli.left_core_migration import platform_install_hint
+            return SendResult(success=False, error=f"Unknown platform: {platform_name}{platform_install_hint(platform_name)}")
         profile = delivery.get("profile")
         if not (adapter := self._find_adapter(target_platform, profile)):
             return SendResult(success=False, error=f"Platform {platform_name} not connected")

@@ -250,11 +250,14 @@ class SharedRouteAdapters:
         return bool(self._primary) and bool(self._routes)
 
     def get(self, platform, target=None, default=None):
-        if not target or self._dispatch_routes is None:
-            return default
         adapter = self._primary.get(platform)
-        if adapter is None:
-            return default
+        return adapter if adapter is not None and self.serves(platform, target) else default
+
+    def serves(self, platform, target) -> bool:
+        """True when an exact route maps *target* to this profile and dispatch would pick it too;
+        the adapter-free half of ``get``, so preflight asks the same question delivery does."""
+        if not target or self._dispatch_routes is None:
+            return False
         platform_key = str(getattr(platform, "value", platform)).lower()
         chat_id = str(target.get("chat_id") or "") or None
         thread_id = target.get("thread_id")
@@ -286,8 +289,8 @@ class SharedRouteAdapters:
             if not route.matches(str(route.platform), **matched):
                 continue
             if self._dispatch_winner(route, matched, platform_key).profile == route.profile:
-                return adapter
-        return default
+                return True
+        return False
 
     def _dispatch_winner(self, route, matched, platform_key):
         """The route dispatch would pick for the target ``route`` matched: a chat-only route matches
@@ -319,30 +322,62 @@ def has_credential_platform(adapters, owned=None) -> bool:
         getattr(platform, "value", platform) != "local" for platform in adapters or ())
 
 
+def shared_route_serves(target: dict) -> bool:
+    """The primary's bot serves *target* for the profile being served: an exact primary route maps it here
+    (``SharedRouteAdapters.serves``) and the profile has no bot of its own, so cron rides the primary's
+    adapters (``has_credential_platform`` on the configured platforms, as the ticker reads the live ones)."""
+    routes, dispatch_routes = _primary_route_tables_for_current_home()
+    if not SharedRouteAdapters({}, routes, dispatch_routes=dispatch_routes).serves(target["platform"], target):
+        return False
+    try:
+        from gateway.config import load_gateway_config
+        connected = load_gateway_config().get_connected_platforms()
+    except Exception:
+        logger.debug("shared-route check: gateway config unavailable", exc_info=True)
+        return True  # the route decides, as when nothing reads this profile's bots
+    return not has_credential_platform(connected)
+
+
 def _preflight_check_delivery(job: dict) -> Optional[str]:
-    """Check delivery targets resolve to configured platforms. ``local``/``origin``/``all`` are
-    never checked (no gateway-config load). Unknown platform always blocks; known platform blocks
+    """Check delivery targets resolve to configured platforms. Every destination (``origin`` and
+    ``all`` expanded) first goes through delivery's own ``resolve_cron_destination``, so a platform
+    that left core is blocked with the install exactly when delivery would name it, and passed when
+    a primary route serves the parsed chat. ``origin``/``all`` get no other check (no gateway-config
+    load). Unknown platform always blocks; known platform blocks
     only if the gateway config loads AND reports it unconnected; config load failures fail OPEN.
-    ``failure_deliver`` gets the same rules — a typo'd failure platform would otherwise only
-    surface when a failure occurs (NS-788)."""
+    ``failure_deliver`` gets the same platform rules — a typo'd failure platform would otherwise only
+    surface when a failure occurs (NS-788) — but a failure-only destination the resolver cannot reach
+    (its ``origin`` or a moved platform without the plugin) never blocks the run: the failure delivery
+    attempt reports it."""
     deliver_value = _delivery._normalize_deliver_value(job.get("deliver", "local"))
     failure_deliver_value = _delivery._normalize_deliver_value(
         _delivery._delivery_lane_value(job, for_failure=True))
-    lane_values = [deliver_value]
+    lane_values = [(deliver_value, False)]
     if failure_deliver_value != deliver_value:
-        lane_values.append(failure_deliver_value)
+        lane_values.append((failure_deliver_value, True))
     platform_parts: list[str] = []
-    for lane_value in lane_values:
+    for lane_value, failure_only in lane_values:
         for part in lane_value.split(","):
             part = part.strip()
-            if not part or part.lower() in {"local", "origin", "all"}:
+            if not part or part.lower() == "local":
                 continue
             # bot-chat targets deliver via a local subprocess; failures land in last_delivery_error.
             if _delivery.parse_bot_chat_deliver_token(part) is not None:
                 continue
             if _delivery.parse_room_deliver_token(part) is not None:
                 continue  # Group Chat posts write the room store directly; no adapter needed.
-            platform_parts.append(part.split(":", 1)[0].strip())
+            for token in _delivery._expand_routing_tokens(part):
+                # A dry run of delivery: the same resolver names the install exactly when delivery would.
+                target, error = _delivery.resolve_cron_destination(job, token, from_broadcast=part.lower() in _delivery._ROUTING_TOKENS)
+                if error and failure_only:
+                    # Needed only if the run fails: the failed delivery attempt reports it, the run goes ahead.
+                    logger.info("preflight: failure destination '%s' unresolved: %s", token, error)
+                    continue
+                if error:
+                    return f"delivery target '{token}': {error}"
+                if token == part and part.lower() not in {"origin", "all"} and not (
+                        target and _unloaded.moved_platform_hint(target["platform"])):
+                    platform_parts.append(part.split(":", 1)[0].strip())
     if not platform_parts:
         return None
 
@@ -498,3 +533,4 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
 # populated before ``scheduler`` re-exports from it.
 from cron import scheduler as _sched
 from cron import scheduler_delivery as _delivery
+from cron import scheduler_delivery_unloaded as _unloaded

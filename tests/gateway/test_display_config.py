@@ -182,7 +182,7 @@ class TestInstallerSeededConfigThroughGatewayResolver:
         assert_keeps_platform_display_defaults(seeded)
         # ...and through the resolver the gateway turn actually calls (same arguments as gateway/run_turn.py).
         assert _resolve_gateway_display_bool(
-            seeded, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
+            seeded, "telegram", "show_reasoning", default=False, platform=Platform.TELEGRAM,
             require_platform_override_for={Platform.MATTERMOST},
         ) is False
 
@@ -194,7 +194,7 @@ class TestInstallerSeededConfigThroughGatewayResolver:
         (tmp_path / "config.yaml").write_text("display:\n  show_reasoning: true\n")
         cfg = _load_gateway_config(tmp_path / "config.yaml")
         assert _resolve_gateway_display_bool(
-            cfg, "qqbot", "show_reasoning", default=False, platform=Platform.QQBOT,
+            cfg, "telegram", "show_reasoning", default=False, platform=Platform.TELEGRAM,
             require_platform_override_for={Platform.MATTERMOST},
         ) is True
 

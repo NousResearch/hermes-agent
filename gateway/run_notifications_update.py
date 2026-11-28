@@ -123,6 +123,12 @@ class GatewayUpdateNotificationsMixin:
             return profile_from_session_key_namespace(parts[1])
         return None
 
+    @classmethod
+    def _marker_bot_profile(cls, data: dict) -> Optional[str]:
+        """Profile whose bot answers an update marker: the receiving bot (``transport_profile``) when the
+        writer knew it, else the owning profile (``_marker_profile``)."""
+        return str(data.get("transport_profile") or "").strip() or cls._marker_profile(data)
+
     @staticmethod
     def _marker_age_seconds(data: dict) -> Optional[float]:
         """Age of a persisted update marker, from the ``timestamp`` stamped by its writer.
@@ -173,9 +179,9 @@ class GatewayUpdateNotificationsMixin:
                 if not (platform_str and chat_id):
                     continue  # BASE: an incomplete marker falls through to the next path, not "unresolved"
                 platform = Platform(platform_str)
-                # The requester's OWN profile bot (marker ``profile``, else the ``agent:<profile>:`` key
-                # lane); a bare self.adapters lookup is the default bot under multiplex.
-                profile = self._marker_profile(pending)
+                # The receiving bot, else the requester's OWN profile bot (marker ``profile``, else the
+                # ``agent:<profile>:`` key lane); a bare self.adapters lookup is the default bot under multiplex.
+                profile = self._marker_bot_profile(pending)
                 adapter = self._authorization_adapter(platform, profile)
                 if not adapter:
                     return None
@@ -371,7 +377,7 @@ class GatewayUpdateNotificationsMixin:
                 platform = Platform(platform_str)
             except ValueError:
                 platform = None
-            adapter = self._authorization_adapter(platform, self._marker_profile(pending)) if platform else None
+            adapter = self._authorization_adapter(platform, self._marker_bot_profile(pending)) if platform else None
             if chat_id and not adapter:
                 # A marker written before ``timestamp`` existed is as old as its file (a rename keeps mtime).
                 age = self._marker_age_seconds(pending)

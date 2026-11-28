@@ -38,9 +38,9 @@ import os
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,
@@ -66,6 +66,17 @@ def _read_config(home: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _layered_config(home: Path) -> dict:
+    """*home*'s config.yaml with the managed overlay applied, as the plugin loader reads it; ``{}`` when the
+    user file is malformed (the loader's own read then fails open too)."""
+    from gateway import config_loader
+    try:
+        return config_loader.read_yaml_layers(home)
+    except Exception:  # health: allow BLE001 -- malformed config.yaml: nothing the loader honours either
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        return {}
+
+
 def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     """Platform *name*'s block as the gateway loader builds it for *home* (``config_loader.platform_blocks``,
     the one normalized view: key case and aliases, every layer, the malformed-layer fallback); ``None`` when no
@@ -79,7 +90,12 @@ def platform_configured_on(home: Path, name: str) -> bool:
     (:func:`_merged_platform_block`), so the last explicit ``enabled`` wins. A stored token with no
     ``enabled`` anywhere counts too. Env credentials are the caller's to check. Read-only; works before
     the platform's plugin loads."""
-    block = _merged_platform_block(home, name)
+    return _block_on(_merged_platform_block(home, name))
+
+
+def _block_on(block: Optional[dict]) -> bool:
+    """A merged block (:func:`_merged_platform_block`) turns its platform on: ``enabled``, or a stored token
+    with no ``enabled`` anywhere."""
     if block is None:
         return False
     platform = _platform_config(block)
@@ -129,34 +145,63 @@ def homeassistant_in_use(home: Path, *, process_env: bool = False) -> bool:
         _read_config(home), frozenset({"homeassistant", "hermes-homeassistant"}), own_platform="homeassistant")
 
 
-def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
-    """What made core run Yuanbao for *home*. The adapter: unless the merged gateway config block says
-    ``enabled: false`` (core never re-enabled an explicitly disabled platform), the platform on there
-    (:func:`platform_configured_on`) or its credential gate passing as core's ``_is_connected`` read it,
-    per field: App ID from the block's ``app_id`` (``extra`` or top level), else ``YUANBAO_APP_ID``, else
-    the legacy ``YUANBAO_APP_KEY``; App Secret from the block's ``app_secret``, else ``YUANBAO_APP_SECRET``
-    (env read through :func:`_home_env`; the process env too for the launch home with *process_env*). The
-    tools: the ``yuanbao`` / ``hermes-yuanbao`` toolset selected for another platform or in the top-level
-    ``toolsets`` list. The shipped ``yuanbao: [hermes-yuanbao]`` platform_toolsets row is not use: it scoped
-    Yuanbao's own sessions, which need the platform on. Nothing counts when ``plugins.disabled`` names
-    ``platforms/yuanbao`` or core's manifest name ``yuanbao-platform``: core's loader never ran the adapter
-    there. A bare ``yuanbao`` there did not stop core's adapter, so it is still use (the notice says it
-    now turns the plugin off)."""
-    if _plugins_listed(home, ("platforms/yuanbao", "yuanbao-platform"))[1]:
-        return False
-    block = _merged_platform_block(home, "yuanbao")
-    if block is not None and "enabled" in block and not _platform_config(block).enabled:
-        return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
-    if platform_configured_on(home, "yuanbao"):
-        return True
-    extra = _platform_config(block).extra if block is not None else {}
+# A credential field: (block key, env name, legacy env names...). A credential set is a tuple of fields that
+# must ALL be present; a platform with several connection modes passes one set per mode.
+CredField = tuple[str, ...]
 
-    def field(key: str, *env_names: str) -> bool:
-        return bool(str(extra.get(key) or "").strip()) or any(
-            _home_env(home, env_name, process_env=process_env) for env_name in env_names)
-    if field("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY") and field("app_secret", "YUANBAO_APP_SECRET"):
-        return True
-    return _toolset_listed(_read_config(home), frozenset({"yuanbao", "hermes-yuanbao"}), own_platform="yuanbao")
+
+def platform_in_use(platform: str, *, plugin_keys: tuple[str, ...] = (),
+                    cred_sets: tuple[tuple[CredField, ...], ...] = (),
+                    toolsets: tuple[str, ...] = ()) -> Callable[..., bool]:
+    """The ``in_use`` predicate for a bundled platform leaving core: what made core run *platform* for a home.
+
+    The adapter: unless the merged gateway config block says ``enabled: false`` (core never re-enabled an
+    explicitly disabled platform), the platform on there (:func:`platform_configured_on`) or one of
+    *cred_sets* passing as core's ``_is_connected`` read it, per field: the block's key (``extra`` or top
+    level), else any of the field's env names (read through :func:`_home_env`; the process env too for the
+    launch home with *process_env*). The tools: a toolset in *toolsets* selected for another platform or in
+    the top-level ``toolsets`` list; the platform's own ``platform_toolsets`` row is not use (it scoped the
+    platform's own sessions, which need the platform on). Nothing counts when ``plugins.disabled`` names one
+    of *plugin_keys* (``platforms/<x>``, core's manifest name): core's loader never ran the adapter there."""
+    names = frozenset(toolsets)
+
+    def tools_selected(home: Path) -> bool:
+        return bool(names) and _toolset_listed(_read_config(home), names, own_platform=platform)
+
+    def in_use(home: Path, *, process_env: bool = False) -> bool:
+        if plugin_keys and _plugins_listed(home, plugin_keys)[1]:
+            return False
+        block = _merged_platform_block(home, platform)
+        if block is not None and "enabled" in block and not _platform_config(block).enabled:
+            return tools_selected(home)
+        if _block_on(block):
+            return True
+        extra = _platform_config(block).extra if block is not None else {}
+
+        def present(field: CredField) -> bool:
+            key, *env_names = field
+            return bool(str(extra.get(key) or "").strip()) or any(
+                _home_env(home, env_name, process_env=process_env) for env_name in env_names)
+        if any(all(present(field) for field in fields) for fields in cred_sets):
+            return True
+        return tools_selected(home)
+    return in_use
+
+
+# Yuanbao: a bare ``yuanbao`` in plugins.disabled did not stop core's adapter, so it is still use (the notice
+# says it now turns the plugin off).
+yuanbao_in_use = platform_in_use(
+    "yuanbao", plugin_keys=("platforms/yuanbao", "yuanbao-platform"),
+    cred_sets=((("app_id", "YUANBAO_APP_ID", "YUANBAO_APP_KEY"), ("app_secret", "YUANBAO_APP_SECRET")),),
+    toolsets=("yuanbao", "hermes-yuanbao"))
+
+# QQ Bot: core's is_connected took app_id + client_secret from the block's extra, else QQ_APP_ID + QQ_CLIENT_SECRET.
+# ``hermes-qqbot`` carried only core tools; selected for another platform it is still use, as hermes-homeassistant
+# was: it resolves again once the plugin registers the platform.
+qqbot_in_use = platform_in_use(
+    "qqbot", plugin_keys=("platforms/qqbot", "qqbot-platform"),
+    cred_sets=((("app_id", "QQ_APP_ID"), ("client_secret", "QQ_CLIENT_SECRET")),),
+    toolsets=("hermes-qqbot",))
 
 
 # ``gateway.config.Platform`` members in neither table above. Named, not imported: gateway.config imports
@@ -168,7 +213,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     """Every platform name core knows, minus *platform*: the ``hermes_cli.platforms`` table, the shipped
     ``plugins/platforms/<name>`` dirs (the dir is the registered name), the gateway-only ``Platform``
     members, the ``acp`` surface and *others*
-    (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
+    (platforms rows moved out, :func:`_derive_off_platforms`). Covers a platform added later too."""
     from hermes_cli.platforms import PLATFORMS
     try:
         bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
@@ -178,10 +223,6 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     return tuple(sorted({*PLATFORMS, *bundled, *_GATEWAY_ONLY_PLATFORMS, "acp", *others} - {platform}))
 
 
-# Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
-# platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
-_YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant")
-
 _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research, not supported, and likely not "
                    "maintained going forward. Fixes from the community are welcome.")
 
@@ -190,6 +231,17 @@ def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
     # Core's adapter ignored a bare ``yuanbao`` in plugins.disabled; the catalog plugin does not, and the
     # automatic install keeps the entry: its kept-off notice (_install_locked) names the enable command.
     return _YUANBAO_NOTICE
+
+
+def _qqbot_notice(home: Path, *, process_env: bool = False) -> str:
+    """An official plugin like the other official rows: no placement sentence, only what changed for *home*.
+    A bare ``qqbot`` in plugins.disabled (core's adapter ignored it) is said by the kept-off sentence."""
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    # The bundled adapter was exempt from host isolation; a catalog platform adapter cannot run in the host.
+    if isolation_mode(_layered_config(home)) == ISOLATION_HOST:  # an administrator's pin counts
+        return ("This profile sets plugins.isolation: host, where platform adapters cannot load: QQ Bot "
+                "stays off until the profile loads plugins in-process.")
+    return ""
 
 
 def _auth_store(home: Path) -> dict:
@@ -547,6 +599,10 @@ class LeftCoreFeature:
     toolsets: tuple[str, ...] = ()
     # Platforms whose core default composite (``hermes-<platform>``) never carried those toolsets.
     off_platforms: tuple[str, ...] = ()
+    # Core carried the toolsets in *platform*'s own ``hermes-<platform>`` bundle only (and ``hermes-gateway``):
+    # *off_platforms* is derived, every other platform core knows plus every platform a LEFT_CORE row moved
+    # out (:func:`_derive_off_platforms`), so the order two platform moves land in cannot leave one stale.
+    own_platform_only: bool = False
     # Core-era toolsets the plugin's toolsets replace while core keeps the name for something else
     # (core's ``browser`` is browser_exec now; Camofox's tools live in the plugin's ``camofox``). The
     # one-time scope conversion treats them as the plugin's toolsets for "did core carry it" and turns
@@ -689,11 +745,36 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
                      "YUANBAO_DM_POLICY", "YUANBAO_DM_ALLOW_FROM", "YUANBAO_GROUP_POLICY", "YUANBAO_GROUP_ALLOW_FROM",
                      "YUANBAO_ALLOWED_USERS", "YUANBAO_ALLOW_ALL_USERS", "YUANBAO_HOME_CHANNEL",
                      "YUANBAO_HOME_CHANNEL_NAME"),
-        toolsets=("yuanbao",), off_platforms=_YUANBAO_OFF_PLATFORMS,
+        toolsets=("yuanbao",), own_platform_only=True,
         legacy_toolsets=("hermes-yuanbao", "hermes-gateway"),
         platform="yuanbao", enable_env=("YUANBAO_APP_ID", "YUANBAO_APP_SECRET"), notice=_yuanbao_notice,
     ),
+    LeftCoreFeature(
+        # QQ_STT_API_KEY stays on local_env_policy's own short list, as core had it. QQ_* channel ownership
+        # stays profile_channels' ``qqbot`` alias prefix: no tool shares it.
+        plugin="qqbot", label="QQ Bot", in_use=qqbot_in_use, plugin_key="platforms/qqbot",
+        plugin_names=("qqbot-platform",),
+        unchanged="QQ_*/QQBOT_* settings, platforms.qqbot and QQBOT_HOME_CHANNEL are unchanged",
+        secret_env=("QQ_CLIENT_SECRET",),
+        private_env=("QQ_APP_ID", "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS",
+                     "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME", "QQBOT_HOME_CHANNEL_THREAD_ID",
+                     "QQ_MARKDOWN_SUPPORT", "QQ_SANDBOX", "QQ_PORTAL_HOST", "QQ_STT_BASE_URL", "QQ_STT_MODEL"),
+        platform="qqbot", enable_env=("QQ_APP_ID", "QQ_CLIENT_SECRET"), notice=_qqbot_notice,
+    ),
 )
+
+
+def _derive_off_platforms(rows: tuple[LeftCoreFeature, ...]) -> tuple[LeftCoreFeature, ...]:
+    """*rows* with each ``own_platform_only`` row's ``off_platforms`` filled in: every platform core knows and
+    every platform a row in *rows* moved out of core, minus the row's own. A third-party plugin platform core
+    never knew stays uncovered."""
+    moved = tuple(row.platform for row in rows if row.platform)
+    return tuple(replace(row, off_platforms=_core_platforms_except(row.platform, *moved))
+                 if row.own_platform_only else row for row in rows)
+
+
+LEFT_CORE = _derive_off_platforms(LEFT_CORE)
+
 
 def _install_sentence(feature: LeftCoreFeature) -> str:
     from hermes_constants import get_hermes_home
@@ -706,6 +787,23 @@ def platform_install_hint(platform: str) -> str:
     the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
     feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
     return f". {_install_sentence(feature)}" if feature else ""
+
+
+def platform_install_command(platform: str) -> str:
+    """For a platform that left core: its bare install command for the active home, else ``""``. For a
+    length-bounded message (a refusal detail) that must lead with the command, never cut it."""
+    from hermes_constants import get_hermes_home
+    feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    return _install_command(feature.plugin, Path(get_hermes_home())) if feature else ""
+
+
+def platform_home_env_var(platform: str) -> str:
+    """Cron home-channel env var (``<PLATFORM>_HOME_CHANNEL``) core read for a platform that left core, when its
+    ``private_env`` keeps it, else ``""``: a process with no registration for the platform (a profile without the
+    plugin, a managed cron worker) still reads the saved home address."""
+    feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
+    name = f"{platform.upper()}_HOME_CHANNEL"
+    return name if feature is not None and name in feature.private_env else ""
 
 
 def terminal_backend_install_hint(backend: str) -> str:
@@ -832,6 +930,12 @@ def legacy_plugin_alias(name: str) -> str:
     """The catalog plugin a bundled key that left core now names (``observability/langfuse`` ->
     ``langfuse``), else ``""``."""
     return next((f.plugin for f in LEFT_CORE if f.plugin_key and name in (f.plugin_key, *f.plugin_names)), "")
+
+
+def legacy_platform_alias(name: str) -> str:
+    """The platform a left-core row's old bundled manifest name configured (``platforms.qqbot-platform``
+    read as ``platforms.qqbot``, as core's bundled-alias scan did), else ``""``."""
+    return next((f.platform for f in LEFT_CORE if f.platform and name in f.plugin_names), "")
 
 
 def legacy_plugin_keys(plugin: str) -> set[str]:
@@ -1008,11 +1112,14 @@ def _placed(home: Path, plugin: str) -> Path:
 
 
 def _installed_for_good(home: Path, plugin: str) -> bool:
-    """*plugin* is in *home* to stay: on disk, and not just the tree a refused automatic enable left that
-    nobody enabled or disabled since (that one is owed, and the next attempt enables it in place)."""
+    """*plugin* is in *home* to stay: on disk, and not just the tree a refused or interrupted automatic install
+    (this migrator's or ``default_plugins``') left that nobody enabled or disabled since (that one is owed, and
+    the next attempt enables it in place)."""
+    from hermes_cli.default_plugins import left_unfinished
     if not plugin_present(plugin, home):
         return False
-    return not _placed(home, plugin).exists() or any(_tree_lists(home, plugin))
+    owed = _placed(home, plugin).exists() or left_unfinished(home, plugin)
+    return not owed or any(_tree_lists(home, plugin))
 
 
 def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:
@@ -1174,12 +1281,14 @@ def _stamp_created(home: Path, config: dict) -> None:
 
 
 def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = False,
-             backoff: bool = False) -> list[LeftCoreFeature]:
+             backoff: bool = False, seen: Optional[set[str]] = None) -> list[LeftCoreFeature]:
     """Rows *home* uses whose plugin it never had and that the catalog ships (a catalog miss is
     reported through *say*). Converts the toolset scope of every row *home* uses once
     (:func:`_record_migration`), installed or not; a row whose scope cannot be recorded is
     reported and skipped, never installed unscoped. A row marked installed is done for good.
-    *backoff* (startup) skips a row whose last attempt failed recently, before any network."""
+    *backoff* (startup) skips a row whose last attempt failed recently, before any network. *seen*: the
+    plugins an earlier pass of this start already handled (extended here), so a re-pass neither reports nor
+    installs one again."""
     from hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
@@ -1188,23 +1297,46 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
             continue  # one install per plugin: two rows may name the same one
         if not feature_in_use(feature, home, process_env=process_env):
             continue
+        if seen is not None:
+            if feature.plugin in seen:
+                continue
+            seen.add(feature.plugin)
         # One automatic install per plugin and home, by either installer: a default plugin
         # (``default_plugins``) the user removed after it installed stays removed. Its core-era
-        # toolset scope is still kept below, so only the install and the "not installed" notice are skipped.
+        # toolset scope is still kept below, so only the install is skipped. A home that ran the feature in
+        # core removed an idle copy, not the feature: without the plugin it is told the feature is off.
         placed_by_default = _marked(config, _DEFAULT_INSTALLED_KEY, feature)
-        if not _predates_split(home, feature):
+        predates = _predates_split(home, feature)
+        if placed_by_default and predates:
+            _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
+        if not predates:
             if not placed_by_default:
                 _say_post_split(home, feature, say=say, backoff=backoff, process_env=process_env)
             continue
         present = _installed_for_good(home, feature.plugin)
+        # Core ran the feature despite that entry; the plugin the home has honours it, so the upgrade turns
+        # it off. The disable stays.
+        kept_off = present and _tree_lists(home, feature.plugin)[1]
         try:
             _record_migration(home, feature)
         except Exception as exc:
-            say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin: its per-platform "
-                f"toolset selection could not be kept ({exc}). Check `hermes tools`"
-                + ("." if present else f" and run `{_install_command(feature.plugin, home)}`."))
+            state = "kept-off" if kept_off else "present" if present else "absent"  # a new state is said anew
+            _say_once(home, feature, f"unscoped-{state}", say, f"  ⚠ {feature.label} moved out of core into the "
+                      f"'{feature.plugin}' plugin: its per-platform toolset selection could not be kept ({exc}). "
+                      "Check `hermes tools`" + (f"; {kept_off_sentence(feature.plugin, home)}" if kept_off else
+                                                "." if present else
+                                                f" and run `{_install_command(feature.plugin, home)}`."))
             continue
+        if kept_off:  # the row is marked installed now, so the home is told once
+            say(_noticed(
+                f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this profile has, "
+                f"but {kept_off_sentence(feature.plugin, home)}", home, feature, process_env))
         if present or placed_by_default:
+            # Whoever placed the plugin, what changed for this profile (host isolation, a re-login) is said on
+            # this, the pass that marks the row installed; one the disabled line above carried is not repeated.
+            if present and not kept_off and (extra := feature.notice(home, process_env=process_env)):
+                say(f"  ⚠ {feature.label} moved out of core into the '{feature.plugin}' plugin, which this "
+                    f"profile has. {extra}")
             continue
         if backoff and _failed_recently(home, feature.plugin):
             logger.info("%s plugin install failed recently for %s; retrying later or on `hermes update`",
@@ -1220,11 +1352,33 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     return out
 
 
+def _said(home: Path, plugin: str) -> Path:
+    """The last one-time outcome :func:`_pending` reported for *plugin*: the row's config mark says it once
+    when the config write lands, this says it once when that write is what fails."""
+    return home / "cache" / f"left-core.said-{plugin}"
+
+
+def _say_once(home: Path, feature: LeftCoreFeature, outcome: str, say: Callable[[str], None], message: str) -> None:
+    marker = _said(home, feature.plugin)
+    try:
+        if marker.read_text(encoding="utf-8-sig") == outcome:
+            return
+    except OSError:
+        pass  # never said
+    say(message)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(outcome, encoding="utf-8")
+    except OSError as exc:
+        logger.debug("left-core notice marker not written for %s: %s", home, exc)
+
+
 def _say_post_split(home: Path, feature: LeftCoreFeature, *, say: Callable[[str], None], backoff: bool,
                     process_env: bool = False) -> None:
     """*home* uses *feature* while its stamp says it never ran it in core (a newer home, or a Nix-managed
-    config.yaml stamped at activation): nothing is converted or installed, but a home without the plugin is
-    told where the feature went. Starts repeat it on the install backoff (``_note_failure``)."""
+    config.yaml stamped at activation), or ran it in core and removed the idle copy the default installer
+    placed: nothing is installed, but a home without the plugin is told where the feature went. Starts
+    repeat it on the install backoff (``_note_failure``)."""
     if plugin_present(feature.plugin, home) or (backoff and _failed_recently(home, feature.plugin)):
         return
     _note_failure(home, feature.plugin)
@@ -1513,9 +1667,7 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
         deliver(message)
 
     try:
-        features = [f for f in _pending(home, say=report, process_env=True, backoff=not gateway_start)
-                    if f.plugin not in tried]
-        tried.update(f.plugin for f in features)
+        features = _pending(home, say=report, process_env=True, backoff=not gateway_start, seen=tried)
         if not features:
             return []
         from pm.install import lazy_installs_allowed

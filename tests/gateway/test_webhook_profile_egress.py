@@ -15,6 +15,7 @@ from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter, _api_request_profile
 from gateway.platforms.base import SendResult
 from gateway.platforms.webhook import WebhookAdapter
+from hermes_cli.left_core_migration import LEFT_CORE
 
 
 class _Runner(GatewayAuthorizationMixin):
@@ -219,3 +220,46 @@ async def test_shared_bot_satellite_cannot_escape_routed_chat_via_thread_id(prof
         assert (await deliver("discord", {"chat_id": "222", "thread_id": "333"})).success
         assert discord.send.await_args.kwargs["metadata"] == {"thread_id": "333"}
         assert (await deliver("telegram", {"chat_id": "-100", "message_thread_id": "42"})).success
+
+
+_MOVED_PLATFORMS = [f for f in LEFT_CORE if f.platform and f.platform not in Platform._value2member_map_]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("feature", _MOVED_PLATFORMS, ids=[f.platform for f in _MOVED_PLATFORMS])
+async def test_home_lookup_for_a_moved_platform_names_the_install_and_stays_retryable(
+        profile_homes, feature, caplog, monkeypatch):
+    """A saved ``deliver: <platform>`` route with no ``chat_id`` whose plugin is not loaded: the home-channel
+    lookup at admission refuses with the install command (logged), and the webhook answers a retryable 503."""
+    from persistence.core.errors import AuthorityRefusal
+    from gateway.platforms.webhook_delivery import snapshot_destination
+
+    adapter = _webhook(_Runner({}, {}, profile_homes))
+    with pytest.raises(AuthorityRefusal) as refused:
+        snapshot_destination(adapter, {"deliver": feature.platform, "deliver_extra": {}})
+    assert f"hermes plugins install {feature.plugin}" in (refused.value.detail or "")
+
+    async def admit(_adapter, event):
+        snapshot_destination(adapter, adapter._delivery_info[event.source.chat_id])
+    monkeypatch.setattr("gateway.platforms.webhook_ingress.admit_producer", admit)
+    outcome = await adapter._admit_agent_run({}, "prompt", "d1", 0.0, route_config={"deliver": feature.platform},
+                                             route_name="r1", profile=None, event_type="push")
+    assert outcome is None  # -> "Admission unavailable; retry this delivery", 503
+    assert f"hermes plugins install {feature.plugin}" in caplog.text
+
+
+@pytest.mark.parametrize("feature", _MOVED_PLATFORMS, ids=[f.platform for f in _MOVED_PLATFORMS])
+def test_moved_platform_refusal_keeps_the_whole_install_command_for_a_longest_profile_name(
+        profile_homes, feature, monkeypatch, tmp_path):
+    """The refusal detail is length-bounded; the bound cuts free text, never the command the operator copies."""
+    from persistence.core.errors import AuthorityRefusal
+    from gateway.platforms.webhook_delivery import snapshot_destination
+
+    name = "p" * 64  # PROFILE_ID_RE's longest id
+    long_home = tmp_path / ".hermes" / "profiles" / name
+    long_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(long_home))
+    adapter = _webhook(_Runner({}, {}, profile_homes))
+    with pytest.raises(AuthorityRefusal) as refused:
+        snapshot_destination(adapter, {"deliver": feature.platform, "deliver_extra": {}})
+    assert f"hermes -p {name} plugins install {feature.plugin}" in (refused.value.detail or "")

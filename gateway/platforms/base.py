@@ -1916,7 +1916,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     @property
     def enforces_own_access_policy(self) -> bool:
         """Whether this adapter enforces its own config-driven access policy at intake
-        (``dm_policy``/``group_policy``/``allow_from``: WeCom, Weixin, QQBot, WhatsApp…). The
+        (``dm_policy``/``group_policy``/``allow_from``: WeCom, Weixin, WhatsApp…). The
         gateway env allowlist runs *after* the adapter; without one it trusts this flag ONLY when
         the effective policy is a real ``"allowlist"`` — never ``"open"`` (the default), which would
         be a network-exposed fail-open (SECURITY.md §2.6). Open access still requires

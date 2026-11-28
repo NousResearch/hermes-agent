@@ -488,3 +488,22 @@ def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monke
     # The old key in plugins.disabled still names the plugin, so with the new key enabled both lists do.
     assert gate_manifest(manifest, {"observability/langfuse"}, {"langfuse"}).error == IN_BOTH_LISTS
     assert gate_manifest(manifest, {"observability/langfuse"}, None).error == "disabled via config"
+
+
+@pytest.mark.parametrize("watched", [False, True], ids=["gateway-start", "watched-start"])
+def test_a_start_reports_a_row_once_when_its_pass_repeats(tmp_path, monkeypatch, caplog, watched):
+    """A catalog miss stamps the row's failure marker, which changes the settings fingerprint, so the start
+    makes a second pass. That pass must not report the same row again: one line in the log and one for the user."""
+    import logging
+    import hermes_cli.memory_provider_migration as mpm
+    import pm.install
+    home = _home(tmp_path, env="HASS_TOKEN=abc\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(pm.install, "lazy_installs_allowed", lambda: True)
+    monkeypatch.setattr(mpm, "catalog_source", lambda name: None)
+    said = []
+    with caplog.at_level(logging.WARNING, logger=lcm.logger.name):
+        assert lcm.recover_at_startup(say=said.append if watched else None, gateway_start=True) == []
+    told = said if watched else lcm._claim_notices(home)
+    assert len(told) == 1 and "cannot find in the plugin catalog" in told[0]
+    assert len([r for r in caplog.records if "cannot find in the plugin catalog" in r.getMessage()]) == 1

@@ -24,7 +24,6 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
-        "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
@@ -36,7 +35,6 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOW_ALL_USERS",
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
-        "QQ_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -396,26 +394,6 @@ def test_get_unauthorized_dm_behavior_email_no_allowlist_returns_ignore(monkeypa
     runner, _adapter = _make_runner(Platform.EMAIL, config)
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.EMAIL)
-    assert behavior == "ignore"
-
-
-def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):
-    """QQBOT is included in the allowlist-aware default (QQ_ALLOWED_USERS).
-
-    Regression guard: the initial #9337 fix omitted QQBOT from the env map
-    inside _get_unauthorized_dm_behavior, even though _is_user_authorized
-    mapped it to QQ_ALLOWED_USERS.  Without QQBOT here, a QQ operator with a
-    strict user allowlist would still get pairing codes sent to strangers.
-    """
-    _clear_auth_env(monkeypatch)
-    monkeypatch.setenv("QQ_ALLOWED_USERS", "allowed-openid-1")
-
-    config = GatewayConfig(
-        platforms={Platform.QQBOT: PlatformConfig(enabled=True)},
-    )
-    runner, _adapter = _make_runner(Platform.QQBOT, config)
-
-    behavior = runner._get_unauthorized_dm_behavior(Platform.QQBOT)
     assert behavior == "ignore"
 
 

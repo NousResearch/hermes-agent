@@ -1,6 +1,6 @@
 """Tests for config-driven platform access policies at the gateway layer.
 
-Background (#34515): WeCom, Weixin, QQBot, and WhatsApp expose a
+Background (#34515): WeCom, Weixin, and WhatsApp expose a
 documented config-driven access surface (``dm_policy`` / ``group_policy`` /
 ``allow_from`` / ``group_allow_from`` in ``PlatformConfig.extra``) and enforce
 it at intake —
@@ -38,7 +38,6 @@ from gateway.session import SessionSource
 _OWN_POLICY_PLATFORMS = [
     Platform.WECOM,
     Platform.WEIXIN,
-    Platform.QQBOT,
     Platform.WHATSAPP,
 ]
 
@@ -47,15 +46,12 @@ def _clear_auth_env(monkeypatch) -> None:
     for key in (
         "WECOM_ALLOWED_USERS",
         "WEIXIN_ALLOWED_USERS",
-        "QQ_ALLOWED_USERS",
-        "QQ_GROUP_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "TELEGRAM_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
         "WECOM_ALLOW_ALL_USERS",
         "WEIXIN_ALLOW_ALL_USERS",
-        "QQ_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -107,7 +103,6 @@ def test_base_adapter_defaults_to_not_owning_access_policy():
     [
         ("plugins.platforms.wecom.adapter", "WeComAdapter"),
         ("plugins.platforms.weixin.adapter", "WeixinAdapter"),
-        ("plugins.platforms.qqbot.adapter", "QQAdapter"),
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
     ],
 )
@@ -241,7 +236,6 @@ def test_own_policy_open_group_not_authorized_without_allowlist(monkeypatch, pla
         ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_allowed"),
         ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_allowed"),
         ("plugins.platforms.weixin.adapter", "WeixinAdapter", "_is_dm_allowed"),
-        ("plugins.platforms.qqbot.adapter", "QQAdapter", "_is_dm_allowed"),
     ],
 )
 def test_pairing_dm_policy_strict_intake_auth_denies_unknown(

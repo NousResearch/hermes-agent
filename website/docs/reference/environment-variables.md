@@ -495,7 +495,7 @@ These are set automatically by the Docker terminal backend when `proxy.enabled: 
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
-| `QQ_APP_ID` | QQ Bot App ID from [q.qq.com](https://q.qq.com) |
+| `QQ_APP_ID` | QQ Bot plugin: App ID from [q.qq.com](https://q.qq.com) (from the official `qqbot` plugin, installed by default; see [QQ Bot](../user-guide/messaging/qqbot.md)) |
 | `QQ_CLIENT_SECRET` | QQ Bot App Secret from [q.qq.com](https://q.qq.com) |
 | `QQ_STT_API_KEY` | API key for external STT fallback provider (optional, used when QQ built-in ASR returns no text) |
 | `QQ_STT_BASE_URL` | Base URL for external STT provider (optional) |

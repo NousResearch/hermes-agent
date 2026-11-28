@@ -106,6 +106,8 @@ _MESSAGING_ENV_FALLBACKS: dict[str, dict[str, Any]] = {
         ("FEISHU_VERIFICATION_TOKEN", "Feishu / Lark verification token", "Verification token", {"password": True}),
         ("DINGTALK_CLIENT_ID", "DingTalk client ID (App key)", "Client ID", {}),
         ("DINGTALK_CLIENT_SECRET", "DingTalk client secret (App secret)", "Client secret", {"password": True}),
+        ("QQ_APP_ID", "QQ Bot App ID from QQ Open Platform (q.qq.com)", "QQ App ID", {"url": "https://q.qq.com"}),
+        ("QQ_CLIENT_SECRET", "QQ Bot Client Secret from QQ Open Platform", "QQ Client Secret", {"password": True}),
     )
 }
 
@@ -1276,7 +1278,7 @@ def _messaging_platform_posture(
     - pairing grants: approved users in the profile's pairing store (the gateway honors
       the store as a UNION with the allowlists)
     - adapter/config-enforced policy (``dm_policy: allowlist`` with an ``allow_from``):
-      the own-policy adapters (WeCom, Weixin, QQBot, WhatsApp) gate at intake
+      the own-policy adapters (WeCom, Weixin, WhatsApp) gate at intake
 
     Everything failing → deny-all: the connection is up but no sender can get through,
     which the Channels "Test" button must not render as a plain green "connected".

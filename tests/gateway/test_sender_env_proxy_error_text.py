@@ -93,18 +93,12 @@ def _signal(monkeypatch):
                                "+15550000001", "hi")
 
 
-def _qqbot(monkeypatch):
-    from plugins.platforms.qqbot import send as qq
-
-    return qq.send_qqbot(SimpleNamespace(token="secret", extra={"app_id": "1"}), "c2c:abc", "hi")
-
-
 async def _no_sleep(*_args, **_kwargs):
     return None
 
 
 SENDERS = {"feishu": _feishu, "google_chat": _google_chat, "teams": _teams, "weixin": _weixin, "line": _line,
-           "ntfy": _ntfy, "dingtalk": _dingtalk, "simplex": _simplex, "signal": _signal, "qqbot": _qqbot}
+           "ntfy": _ntfy, "dingtalk": _dingtalk, "simplex": _simplex, "signal": _signal}
 CASES = [pytest.param(sender, shape.format(pw=pw), pw, id=f"{sender}|{pw}|{shape.split(':')[0]}")
          for sender in SENDERS for pw in PASSWORDS for shape in SHAPES]
 

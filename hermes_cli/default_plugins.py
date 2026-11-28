@@ -155,9 +155,11 @@ def _installed_dir(home: Path, entry) -> Optional[Path]:
 
 def _settled(home: Path, entry) -> bool:
     """*home* already has *entry*: a plugin the user explicitly disabled, a tree the user put there
-    (enabled or not, it is theirs), or one an earlier automatic attempt left that someone has since
-    enabled or disabled. Explicit ``plugins.disabled`` is checked before any stale ``installing``
-    marker so a crashed automatic attempt never deletes or re-enables a plugin the user disabled."""
+    (enabled or not, it is theirs), or one an earlier automatic attempt left (this installer's failed
+    attempt, or the left-core migrator's refused enable) that someone has since enabled or disabled.
+    Explicit ``plugins.disabled`` is checked before any stale ``installing`` marker so a crashed
+    automatic attempt never deletes or re-enables a plugin the user disabled."""
+    from hermes_cli.left_core_migration import _placed as _left_core_placed
     from hermes_cli.left_core_migration import _plugins_listed
     from hermes_cli.memory_provider_migration import _failure_stamp
     from hermes_cli.plugin_identity import plugin_identity, tree_identity
@@ -172,9 +174,9 @@ def _settled(home: Path, entry) -> bool:
         return False
     if target is None:
         return _placed(home, entry).exists()  # the tree a failed attempt left is gone: the user removed it
-    if not _failure_stamp(home, _attempt(entry)).exists():
-        return True
-    return enabled
+    if not _failure_stamp(home, _attempt(entry)).exists() and not _left_core_placed(home, entry.name).exists():
+        return True  # neither installer left it unfinished: the user's tree
+    return enabled  # an unfinished tree the user turned on since: the retry would discard it
 
 
 def _attempt(entry) -> str:
@@ -192,6 +194,13 @@ def _installing(home: Path, entry) -> Path:
     it reported (ok, or a handled failure that stamped it). One left behind marks an interrupted install
     (the tree may be on disk without its dependencies admitted), which the next pass redoes."""
     return home / "cache" / f"default-plugins.installing-{entry.name}"
+
+
+def left_unfinished(home: Path, name: str) -> bool:
+    """An automatic install of *name* in *home* did not finish: its ``installing`` marker outlived it (killed),
+    or its ``placed`` marker says the tree is on disk but the enable was refused. Either tree is owed."""
+    cache = home / "cache"
+    return (cache / f"default-plugins.installing-{name}").exists() or (cache / f"default-plugins.placed-{name}").exists()
 
 
 def _phase_timer() -> tuple[Callable[[object], None], Callable[[], str]]:

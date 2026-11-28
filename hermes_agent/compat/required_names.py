@@ -163,7 +163,6 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/mattermost/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/ntfy/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/photon/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
-    "plugins/platforms/qqbot/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/raft/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/signal/__init__.py": "exists",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
     "plugins/platforms/simplex/__init__.py": "exists",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:286@v0.23.1
@@ -189,7 +188,6 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/mattermost/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/ntfy/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/photon/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
-    "plugins/platforms/qqbot/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/raft/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/signal/plugin.yaml": "copy",  # v0.22.3..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
     "plugins/platforms/simplex/plugin.yaml": "copy",  # v0.21.6..rc.4-v0.23.2: gateway/config.py:287@v0.23.1
@@ -208,7 +206,6 @@ REQUIRED_NAMES: dict[str, str] = {
     "plugins/platforms/feishu/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/matrix/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/mattermost/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
-    "plugins/platforms/qqbot/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/signal/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/slack/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1
     "plugins/platforms/sms/gateway_env.py": "by-path",  # v0.22.3..rc.4-v0.23.2: gateway/platform_env.py:198@v0.23.1

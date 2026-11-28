@@ -86,26 +86,6 @@ async def test_whatsapp_cloud_long_reason_never_pushes_the_deadline_or_deny_noti
 
 
 @pytest.mark.asyncio
-async def test_qq_card_shows_the_measured_preview_and_only_offered_buttons(pending):
-    from plugins.platforms.qqbot.adapter import QQAdapter
-
-    adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
-    cards = []
-
-    async def fake_swk(chat_id, content, keyboard, reply_to=None):
-        cards.append((content, [b["action"]["data"] for b in keyboard.to_dict()["content"]["rows"][0]["buttons"]]))
-        return SendResult(success=True, message_id="m")
-
-    adapter.send_with_keyboard = fake_swk
-    # Fits the shared 3,000-char preview: QQ used to re-cut it to 300 chars and still offer approval.
-    medium = "echo " + "B" * 1000 + " # TAIL"
-    await adapter.send_exec_approval(chat_id="u1", command=medium, session_key="sk")
-    assert "TAIL" in cards[-1][0] and cards[-1][1][0].endswith(":allow-once")
-    await adapter.send_exec_approval(chat_id="u1", command=FENCED, session_key="sk", request_id="r1")
-    assert cards[-1][1] == ["approve:sk:deny:r1"]  # Deny only, bound to its own request
-
-
-@pytest.mark.asyncio
 async def test_matrix_deny_only_prompt_drops_the_approve_instructions(pending):
     from plugins.platforms.matrix.adapter import MatrixAdapter
 
@@ -157,31 +137,6 @@ def test_a_forged_approve_tap_on_a_deny_only_request_resolves_nothing(pending):
     assert not pending.event.is_set()
     assert resolve_gateway_approval_card("sk", "deny", "r1") == 1
     assert pending.result == "deny"
-
-
-@pytest.mark.asyncio
-async def test_qq_forged_allow_once_tap_on_a_deny_only_card_resolves_nothing(pending, monkeypatch):
-    """A forged Allow carrying the request id of a Deny-only card resolves nothing; a tap by someone other
-    than the session owner is still refused before the backend is asked."""
-    from plugins.platforms.qqbot.adapter import QQAdapter
-    from plugins.platforms.qqbot.keyboards import parse_interaction_event
-    from tools.approval import restrict_gateway_approval_card_to_deny
-
-    adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
-    restrict_gateway_approval_card_to_deny("sk", "r1")
-    sk = "agent:main:qqbot:dm:u-42"
-    from tools import approval
-    monkeypatch.setitem(approval._gateway_queues, sk, [pending])
-
-    def tap(user, decision):
-        return parse_interaction_event({"id": "i", "chat_type": 2, "user_openid": user,
-                                        "data": {"resolved": {"button_data": f"approve:{sk}:{decision}:r1"}}})
-
-    await adapter._default_interaction_dispatch(tap("u-42", "allow-once"))  # forged: card offered Deny only
-    await adapter._default_interaction_dispatch(tap("intruder", "deny"))  # wrong user
-    assert not pending.event.is_set()
-    await adapter._default_interaction_dispatch(tap("u-42", "deny"))  # the legitimate tap
-    assert pending.event.is_set() and pending.result == "deny"
 
 
 @pytest.mark.asyncio

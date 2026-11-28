@@ -1,0 +1,22 @@
+name: aquaman
+repo: https://github.com/tech4242/aquaman
+sha: 99383d3c22448408b7015d969bea89c00867af7a
+subdir: packages/hermes/aquaman_hermes
+version: "0.21.1"
+title: aquaman
+description: "Credential isolation for Hermes. The aquaman proxy (a separate local daemon, installed from npm) keeps LLM provider keys in a vault you already use (macOS Keychain, 1Password, Bitwarden, HashiCorp Vault, KeePassXC) and adds them to model requests, so Hermes holds a local token and not the key. This plugin adds an `aquaman` secret source: bindings under `secrets.aquaman.env` in config.yaml, such as `GITHUB_TOKEN: aquaman://github/token`, are resolved from the vault at startup through the proxy. It also adds an `/aquaman-status` command, an `aquaman_status` tool and a health check at session start. Disclosure: the plugin makes HTTP requests to the aquaman proxy on 127.0.0.1 only (the address and a per-install token come from `AQUAMAN_LOOPBACK_URL` and `AQUAMAN_LOOPBACK_TOKEN`, which `aquaman hermes setup` writes); it reads no credential store, no `.env` file and no other tool's login, runs no shell commands, starts no process, stores nothing and sends no telemetry. Secrets resolved by the secret source are handed to Hermes like any secret source's values and so are in Hermes' environment; LLM provider keys are refused by the source and never enter the Hermes process."
+maintainer: tech4242
+tier: community
+category: tools
+docs_url: https://aquaman.sh/docs/hermes/
+platforms: [linux, macos]
+known_issues:
+  - "Needs the aquaman proxy, which is not a Hermes plugin: `npm install -g aquaman-proxy`, then `aquaman hermes setup` (enables the local listener and stores the provider base URLs and the local token with `hermes config set`; needs Hermes 0.21.4 or later) and `aquaman daemon`. Without a running proxy the plugin reports that and Hermes starts as usual."
+  - "Each secret-source binding also has to be declared to the proxy: `aquaman broker allow aquaman://<service>/<key>`. `aquaman hermes doctor` lists bindings that are not."
+  - "Project secrets resolved by the secret source are in Hermes' environment, as with any secret source. Only the LLM provider keys are kept out of the process."
+  - "A root-owned managed .env (/etc/hermes/.env) overrides the provider settings and bypasses the proxy; `aquaman hermes doctor` detects it."
+capabilities:
+  provides_tools: [aquaman_status]
+  provides_hooks: [on_session_start]
+  provides_middleware: []
+  requires_env: []

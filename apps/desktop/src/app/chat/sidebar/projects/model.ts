@@ -25,8 +25,25 @@ export const PROJECT_SESSION_PAGE = 50
 
 // Reveal `rows` a page at a time: the first `first`, then PROJECT_SESSION_PAGE
 // per `showMore()`. `more` is the next step's size (0 once everything shows).
-export function useRevealedRows<T>(rows: T[], first: number): { more: number; shown: T[]; showMore: () => void } {
+//
+// The reveal page is disposable: while `open` is false the count resets to
+// `first`, so a collapsed-then-reopened group starts back at its short first
+// page instead of restoring the list it had been drilled down to. The reset
+// watches the open STATE, not a click — every collapse source (the group's own
+// toggle, the filter menu's 全部折叠) lands here.
+export function useRevealedRows<T>(
+  rows: T[],
+  first: number,
+  open = true
+): { more: number; shown: T[]; showMore: () => void } {
   const [count, setCount] = useState(first)
+
+  useEffect(() => {
+    if (!open) {
+      setCount(first)
+    }
+  }, [open, first])
+
   const shown = rows.length > count ? rows.slice(0, count) : rows
 
   return {

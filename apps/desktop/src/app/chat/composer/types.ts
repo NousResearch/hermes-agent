@@ -45,7 +45,6 @@ export interface ChatBarProps {
   focusKey?: string | null
   /** Durable scope for the current sessionless new-chat lifecycle. */
   freshDraftKey?: string
-  maxRecordingSeconds?: number
   state: ChatBarState
   gateway?: HermesGateway | null
   queueSessionKey?: string | null

@@ -98,7 +98,6 @@ function Composer({ disabled, target }: { disabled: boolean; target: string }) {
     disabled,
     focusInput: vi.fn(),
     insertText: vi.fn(),
-    maxRecordingSeconds: 60,
     onSubmit: vi.fn(async () => true),
     onTranscribeAudio: vi.fn(async () => 'spoken text'),
     sessionId: null,

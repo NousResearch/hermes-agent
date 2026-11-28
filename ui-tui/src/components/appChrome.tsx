@@ -485,7 +485,7 @@ const effortLabel = (effort?: string, wire?: string) => {
     .trim()
     .toLowerCase()
 
-  if (!value || value === 'medium' || value === 'normal' || value === 'default') {
+  if (!value) {
     return ''
   }
 

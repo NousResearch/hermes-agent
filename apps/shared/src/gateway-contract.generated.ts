@@ -1815,8 +1815,8 @@ export interface GroupsRetryParams {
   profile?: string | null
   room_id: string
   task_id: string
-  member_id?: string | null
-  execution_generation?: number | null
+  member_id: string
+  execution_generation: number
 }
 export interface GroupsRetryResult {
   retried?: boolean

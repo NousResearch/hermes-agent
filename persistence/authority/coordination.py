@@ -532,7 +532,7 @@ class CoordinationRepository(SubagentLedger, Protocol):
         ...
 
     def record_delegation_completion(self, *, delegation_id: DelegationId, state: str, completed_at: float, event: JsonValue, result: JsonValue, delivery: Literal["pending", "delivered"] = "pending") -> None:
-        """Store the state, completion time, ``updated_at`` now, the caller-redacted event and result, and ``delivery`` (``delivered``: recorded, never offered); a missing row writes nothing. A delivery outside :data:`COMPLETION_DELIVERIES` is refused ``invalid_params`` with nothing written."""
+        """Store the state, completion time, ``updated_at`` now, the caller-redacted event and result, and ``delivery`` (``delivered``: recorded, never offered); a missing row writes nothing. A delivery outside :data:`COMPLETION_DELIVERIES` is refused ``invalid_params`` with nothing written. For a batch terminal whose row is still ``running``, children recorded by :meth:`record_unit_child` after the caller's snapshot are merged into the stored ``result`` (and ``event``'s ``results``) in the same write instead of being erased."""
         ...
 
     def record_unit_child(self, *, delegation_id: DelegationId, entry: JsonValue) -> None:

@@ -203,6 +203,11 @@ def record_unit_child(delegation_id: str, entry: dict[str, Any]) -> None:
     result at finalize); ``recover_abandoned_delegations`` replays it. Best-effort: a failed write costs recovery
     fidelity, never the live result."""
     entry = redact_child_result(entry)
+    try:  # the ceiling must hold on the durable copy too: replay and the completion merge read it as stored
+        from tools.delegate_tool_results import _apply_summary_budget
+        _apply_summary_budget([entry], None)
+    except Exception:  # noqa: BLE001 — a budget miss must not cost the record itself
+        logger.debug("Async delegation %s: child summary budgeting failed", delegation_id, exc_info=True)
     if isinstance(entry.get("task_index"), int):  # a stall or runner crash keeps it (``_keep_finished_children``)
         with _records_lock:
             if (record := _records.get(delegation_id)) is not None and record.get("status") in _ACTIVE_STATES:

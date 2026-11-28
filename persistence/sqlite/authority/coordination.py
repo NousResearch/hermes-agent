@@ -491,13 +491,59 @@ class SQLiteCoordinationRepository(DeliveryObligationVerbs, SubagentLedgerVerbs)
             raise AuthorityRefusal("invalid_params", field="delivery")
         now = time.time()
         def _do(conn):
+            merged = self._merge_durable_batch_children(conn, delegation_id, event, result)
             conn.execute("""UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
                    event_json=?, result_json=?, delivery_state=?
                    WHERE delegation_id=?""",
                 (state, completed_at, now,
-                 json.dumps(event), json.dumps(result), delivery, delegation_id))
+                 json.dumps(event), json.dumps(merged), delivery, delegation_id))
         with translated():
             self._ledger_write(_do)
+
+    # ``record_unit_child`` runs concurrently with a synthetic batch finalization (stall-monitor kill,
+    # worker crash), so the caller's snapshot can predate children that finished after it was built.
+    # Reading the partial row and writing the terminal row in this one transaction keeps the terminal
+    # write from erasing them; late durable entries win over the snapshot's ``unknown`` placeholders.
+    # No summary re-budgeting here: recorded entries were budgeted when their child published.
+    def _merge_durable_batch_children(self, conn, delegation_id: str, event: Any, result: Any) -> Any:
+        if not (isinstance(event, dict) and event.get("is_batch") and isinstance(result, dict)):
+            return result
+        row = conn.execute("SELECT state, result_json FROM async_delegations WHERE delegation_id=?",
+                           (delegation_id,)).fetchone()
+        if row is None or row[0] != "running":
+            return result
+        try:
+            partial = json.loads(row[1] or "{}") or {}
+        except (TypeError, ValueError):
+            return result
+        recorded = partial.get("results") if isinstance(partial, dict) and partial.get("partial") else None
+        if not isinstance(recorded, list) or not recorded:
+            return result
+
+        merged_by_index = {
+            entry.get("task_index"): dict(entry)
+            for entry in (result.get("results") or [])
+            if isinstance(entry, dict) and isinstance(entry.get("task_index"), int)
+        }
+        for entry in recorded:
+            if isinstance(entry, dict) and isinstance(entry.get("task_index"), int):
+                merged_by_index[entry["task_index"]] = dict(entry)
+        indexes = event.get("task_indexes") or list(range(len(event.get("goals") or [])))
+        ordered = [merged_by_index[i] for i in indexes if isinstance(i, int) and i in merged_by_index]
+        ordered.extend(merged_by_index[i] for i in sorted(i for i in merged_by_index if isinstance(i, int))
+                       if i not in indexes)
+
+        transcripts = event.get("task_transcripts") or {}
+        for entry in ordered:
+            idx = entry.get("task_index")
+            if isinstance(idx, int) and not entry.get("live_transcript"):
+                path = transcripts.get(str(idx))
+                if path:
+                    entry["live_transcript"] = path
+        event["results"] = ordered
+        if result.get("live_transcripts") is not None:
+            event["live_transcripts"] = result["live_transcripts"]
+        return {**result, "results": ordered}
 
     def record_unit_child(self, *, delegation_id: DelegationId, entry: JsonValue) -> None:
         """Merge one finished child of a still-running unit into the stored partial by ``task_index``; the caller

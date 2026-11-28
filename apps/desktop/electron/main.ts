@@ -5281,7 +5281,11 @@ function fetchJson(url, token, options: any = {}) {
 
         req.on('error', reject)
         req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+          req.destroy(
+            Object.assign(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`), {
+              code: 'ETIMEDOUT'
+            })
+          )
         })
 
         // From here the request goes on the wire: a later transport error can no
@@ -5386,7 +5390,11 @@ function fetchPublicJson(url, options: any = {}) {
 
         req.on('error', reject)
         req.setTimeout(timeoutMs, () => {
-          req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+          req.destroy(
+            Object.assign(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`), {
+              code: 'ETIMEDOUT'
+            })
+          )
         })
 
         // Past this point the request is on the wire — see fetchJson.
@@ -7172,7 +7180,11 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
           // already finished
         }
 
-        reject(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+        reject(
+          Object.assign(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`), {
+            code: 'ETIMEDOUT'
+          })
+        )
       }, timeoutMs)
 
       request.on('response', (res: Electron.IncomingMessage): void => {

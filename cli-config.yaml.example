@@ -1195,6 +1195,16 @@ hosted_rooms:
 # can discover them without manual coordination.  Caller authentication is
 # unchanged: every request still authenticates with the global API server
 # key (``extra.key`` / API_SERVER_KEY).
+#
+# Token usage on /v1/chat/completions and /v1/responses: one request is a
+# whole agent turn, so prompt_tokens / input_tokens sum every model call of
+# the turn by default ("turn"). Clients that read it as context use (context
+# gauge, auto-compaction) can ask for the last prompt's size instead:
+#
+#   platforms:
+#     api_server:
+#       extra:
+#         usage_prompt_tokens: context   # default: turn
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming

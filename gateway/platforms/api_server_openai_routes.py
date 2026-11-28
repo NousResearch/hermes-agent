@@ -26,6 +26,33 @@ except ImportError:  # pragma: no cover - mirrors api_server's optional import
 # Logger parity with the origin module (moved log records keep their name).
 logger = logging.getLogger("gateway.platforms.api_server")
 
+
+_USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
+
+
+def _usage_counts(usage: dict[str, Any], context: bool = False) -> tuple:
+    """``(input, output, total)`` from the agent's usage. A turn can call the model several
+    times, so ``input_tokens`` sums every call's prompt; with ``context`` (opt-in
+    ``usage_prompt_tokens: context``) input is the last prompt's size, which clients that
+    show context use or compact on ``prompt_tokens`` expect. Falls back to the sum when the
+    turn recorded no prompt size."""
+    last = usage.get("last_prompt_tokens") if context else None
+    if not last:
+        return tuple(usage.get(key, 0) for key in _USAGE_TOKEN_KEYS)
+    output = usage.get("output_tokens", 0) or 0
+    return last, output, last + output
+
+
+def _chat_usage_payload(usage: dict[str, Any], context: bool = False) -> dict[str, int]:
+    """OpenAI Chat Completions ``usage`` block (prompt/completion/total) from the agent's usage."""
+    values = _usage_counts(usage, context)
+    return dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), values))
+
+
+def _responses_usage_payload(usage: dict[str, Any], context: bool = False) -> dict[str, int]:
+    """OpenAI Responses ``usage`` block from the agent's usage dict."""
+    return dict(zip(_USAGE_TOKEN_KEYS, _usage_counts(usage, context)))
+
 async def _iter_stream_items(stream_q, agent_task, response):
     """Yield agent stream items until EOS, writing SSE keepalives while idle.
 
@@ -369,7 +396,8 @@ class _ResponsesStream:
         if error is not None:
             env["error"] = ({"code": "agent_error", "message": error} if self.durable_key
                             else {"message": error, "type": "server_error"})
-        env["usage"] = self._api._responses_usage_payload(self.usage)
+        env["usage"] = _responses_usage_payload(
+            self.usage, getattr(self.adapter, "_usage_context", False))
         return env
 
     def _history_with_user(self) -> list[dict[str, Any]]:
@@ -865,7 +893,7 @@ class OpenAICompatRoutesMixin:
     async def _handle_chat_completions(self, request: web.Request) -> web.Response:
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
         from gateway.platforms.api_server import (
-            ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
+            ThreadSafeAsyncQueue, _api_request_profile, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
             _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
         # Bound total in-flight agent runs (configurable; #7483).
@@ -1046,7 +1074,7 @@ class OpenAICompatRoutesMixin:
             "model": model_name,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
-            "usage": _chat_usage_payload(usage)}
+            "usage": _chat_usage_payload(usage, self._usage_context)}
         # Non-streaming twin of ``delta.reasoning_content`` (#99552).
         reasoning_text = _turn_reasoning_text(history, user_message, result)
         if reasoning_text and not presentation_muted:
@@ -1159,7 +1187,7 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _redact_api_error_text, _resolve_media_to_data_urls,
+            _abandon_agent_task, _redact_api_error_text, _resolve_media_to_data_urls,
             _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
@@ -1209,7 +1237,8 @@ class OpenAICompatRoutesMixin:
             budget_exhausted = _budget_exhausted(result)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error,
                                            budget_exhausted=budget_exhausted)
-            finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
+            finish_chunk = _chunk(
+                {}, finish_reason, usage=_chat_usage_payload(usage, self._usage_context))
             presentation_muted = (
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
@@ -1372,7 +1401,7 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _coerce_request_bool,
             _error_response, _invalid_request, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _resolve_media_to_data_urls)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1485,7 +1514,7 @@ class OpenAICompatRoutesMixin:
             "created_at": created_at, "model": response_model,
             "output": self._extract_output_items(result, start_index=output_start_index,
                 **({'response_id': response_id} if durable_key else {})),
-            "usage": _responses_usage_payload(usage)}
+            "usage": _responses_usage_payload(usage, self._usage_context)}
         response_store = self._current_response_store()  # at use time: the store can be swapped mid-turn
         if durable_key:
             response_data['output'] = await response_store.off_loop(

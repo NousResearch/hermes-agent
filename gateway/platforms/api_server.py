@@ -113,7 +113,8 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
-from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_openai_routes import (  # usage builders: moved, still importable here
+    OpenAICompatRoutesMixin, _chat_usage_payload, _responses_usage_payload)
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
 from gateway.platforms.base import (
@@ -607,20 +608,6 @@ def _request_turn_author(body: dict[str, Any]) -> Optional[dict[str, Any]]:
     return parse_turn_author(raw)
 
 
-_USAGE_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
-
-
-def _chat_usage_payload(usage: dict[str, Any]) -> dict[str, int]:
-    """OpenAI Chat Completions ``usage`` block (prompt/completion/total) from the agent's usage."""
-    values = (usage.get(key, 0) for key in _USAGE_TOKEN_KEYS)
-    return dict(zip(("prompt_tokens", "completion_tokens", "total_tokens"), values))
-
-
-def _responses_usage_payload(usage: dict[str, Any]) -> dict[str, int]:
-    """OpenAI Responses ``usage`` block from the agent's usage dict."""
-    return {key: usage.get(key, 0) for key in _USAGE_TOKEN_KEYS}
-
-
 async def _abandon_agent_task(
     agent_ref, agent_task, reason: str, *,
     reap_source: str = "api_server_sse_disconnect", await_cancel: bool = True) -> None:
@@ -1092,6 +1079,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # clients that choke on named events (#12020). Default on.
         self._tool_progress_events: bool = _coerce_request_bool(
             extra.get("tool_progress_events"), default=True)
+        # ``usage_prompt_tokens: context`` reports the last prompt's size as the OpenAI-compatible
+        # ``prompt_tokens``/``input_tokens`` instead of the turn's summed input. Default ``turn``.
+        self._usage_context: bool = str(extra.get("usage_prompt_tokens") or "").lower() == "context"
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
@@ -3599,9 +3589,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self, agent: Any, result: Any, session_id: Optional[str], *, route, requested_runtime, route_source,
         confirmed_runtime_lock: bool) -> tuple:
         """Attach usage, effective session id, ``_compressed`` and runtime metadata to a finished turn."""
+        from agent.turn_usage import last_prompt_usage
         usage = {"input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                  "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0}
+                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                 **last_prompt_usage(agent)}
         # Effective session id lets callers track compression-triggered rotations.
         # (#16938)
         _eff_sid = getattr(agent, "session_id", session_id)

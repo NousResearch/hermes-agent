@@ -1,0 +1,16 @@
+name: skmemory
+repo: https://github.com/smilinTux/hermes-skmemory
+sha: 39c92123e19ca7b4fd621b6c996c767b06d1c152
+description: "skmemory as a Hermes memory provider, with skmemory kept outside Hermes: the plugin runs the skmemory-mcp stdio server (from the skmemory package on PyPI, installed as its own tool at the tested version with `uv tool install skmemory==0.11.173`, never into Hermes's venv) as a child process and calls it over MCP. Default is a private store in HERMES_HOME on skmemory's local tier (flat JSON files plus SQLite/FTS5, offline, no Postgres or embedding server); linked mode serves an existing skcapstone agent with that node's tiers. Recall is reader-scoped per turn, non-owner turns never write, and sensitive memories are never auto-injected. Disclosure — starts one long-running `skmemory-mcp` child process per Hermes profile with your user privileges and an allowlisted environment (PATH, HOME, locale, TZ, TMPDIR plus the SK variables it sets; no provider keys); every completed owner turn is stored as a short-term memory, and on a messaging gateway turns only recall and never write; the server's error output is logged to $HERMES_HOME/logs; no network calls by the plugin itself, and none by the server in isolated mode; in linked mode the server may use the node's Postgres DSN, read from the Hermes secret SKMEMORY_PG_DSN. No telemetry."
+maintainer: smilinTux
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/smilinTux/hermes-skmemory#readme
+version: "0.2.2"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

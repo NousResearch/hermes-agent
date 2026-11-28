@@ -818,6 +818,7 @@ async function startSocket() {
           audio: AUDIO_CACHE_DIR,
         },
         lookupQuotedMedia: (quotedChatId, quotedMessageId) => quotedMediaCache.get(quotedChatId, quotedMessageId),
+        messageStore,
       });
       event.fromOwner = fromOwner;
 

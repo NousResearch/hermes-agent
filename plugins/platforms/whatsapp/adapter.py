@@ -1521,6 +1521,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 metadata["whatsapp_from_owner"] = True
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
+            reply_expected = None
+            if clips:
+                reply_expected = True  # spoken wake word addressed the bot
+            elif data.get("mediaType") == "reaction":
+                reply_expected = False  # reactions don't need an answer
             return MessageEvent(
                 text=body, message_type=msg_type, source=source, raw_message=data, message_id=data.get("messageId"),
                 media_urls=cached_urls, media_types=media_types, media_text_inlined=media_text_inlined, metadata=metadata,
@@ -1528,7 +1533,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=str(data.get("quotedText") or "").strip() or None,
                 reply_to_author_id=(self._normalize_whatsapp_id(data.get("quotedParticipant")) or None) if quoted else None,
                 reply_to_is_own_message=self._message_is_reply_to_bot(data) if quoted else False,
-                reply_expected=True if clips else None,  # a spoken wake word addressed the bot
+                reply_expected=reply_expected,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

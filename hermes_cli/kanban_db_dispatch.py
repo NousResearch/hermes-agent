@@ -1130,8 +1130,8 @@ def _classify_dead_worker_exit(
         # ``_account_crashes`` trips the breaker now instead of after ``failure_limit``.
         return _DeadWorker(
             kind, code,
-            f"pid {pid} exited on a terminal provider error (exit {code}): the provider rejected "
-            "this profile's credential or model — fix the configuration, then unblock.",
+            f"pid {pid} exited on a terminal provider error (exit {code}): check the "
+            "worker log and provider credential, model access, or billing before unblocking.",
             "crashed",
             {"pid": pid, "claimer": claimer, "exit_kind": kind, "exit_code": code, "terminal_provider": True},
             terminal_provider=True,

@@ -577,22 +577,24 @@ protocol. If the worker process exits with status 0 while the task is still
 `protocol_violation` event. A dispatcher-spawned worker whose turn failed
 therefore exits non-zero: `1` for an ordinary failure, `75`
 (`EX_TEMPFAIL`) when the provider was rate-limited, overloaded, returning
-5xx or timing out, or the account hit a billing/quota wall — the dispatcher records that run as `rate_limited` and
+5xx or timing out, or a billing report is ambiguous or lacks verification metadata —
+the dispatcher records that run as `rate_limited` and
 requeues the task without counting a failure, so a quota window is never
 booked as a protocol violation — and `78` (`EX_CONFIG`) when the provider
 rejected something a retry cannot fix: the profile's credential (401/403,
-revoked or invalid key), the model (404 / model not found) or the TLS chain.
+revoked or invalid key), the model (404 / model not found), the TLS chain, or a final
+billing failure explicitly marked `billing_unverified: false` after provider fallback
+is exhausted.
 That **terminal provider error** trips the circuit breaker on the first
 occurrence: the dispatcher records the run as `crashed` with
 `exit_kind: terminal_provider`, emits `gave_up` with `terminal_provider: true`
 and parks the card `blocked` (sticky — `recompute_ready` will not auto-resume
-it) with the provider's own words in `last_failure_error`, instead of
+it) with a generic provider diagnostic in `last_failure_error`, instead of
 re-spawning into the same wall until `kanban.failure_limit` / `max_retries`
-is spent. Both lanes get the same booking: a reviewer worker that dies on a
-revoked key parks the card exactly like an implementer. `hermes kanban show`
-surfaces it as *Provider rejected this profile's credential or model — blocked
-after one attempt*; fix the assignee profile's provider (`hermes -p <profile>
-auth` / `setup`), then `hermes kanban unblock <id>`. The worker also writes its exit code as the
+is spent. Both lanes get the same booking: a reviewer worker parks the card
+exactly like an implementer. Inspect the worker log to distinguish credential,
+model access, and billing failures; fix the assignee profile's provider problem,
+then run `hermes kanban unblock <id>`. The worker also writes its exit code as the
 last line of its own log (`[kanban-worker-exit] rc=<code>`), so a per-tick
 `hermes kanban dispatch` process — which never reaped the worker and cannot
 read its exit status — books the same death the same way the gateway-embedded

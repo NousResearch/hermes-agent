@@ -92,6 +92,14 @@ except Exception:
 if not _MCP_AVAILABLE:
     logger.debug("mcp package not installed -- MCP tool support disabled")
 
+
+def mcp_sdk_available() -> bool:
+    """Whether the optional ``mcp`` package is installed — the flag every MCP gate reads.
+    Decided once at import (a later install needs a restart); read at call time, so a
+    patched ``_MCP_AVAILABLE`` is honoured."""
+    return bool(_MCP_AVAILABLE)
+
+
 ClientSession: Any = None
 # True once the probe settled: every SDK import either loaded or is genuinely absent from this
 # SDK build. A transient failure (a concurrent import's _DeadlockError, a partially initialized

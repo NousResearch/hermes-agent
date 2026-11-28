@@ -1,0 +1,23 @@
+name: weather-cards
+title: Weather Cards
+repo: https://github.com/kenhendricks00/hermes-weather-cards
+sha: cd2613da2f5120cf7a2c027487cc4ccdc11d857f
+description: "Real Open-Meteo forecasts as responsive inline HTML cards: current conditions, hourly forecasts with chronological sunrise/sunset (hover arrows on desktop, swipe on phones), selectable days, common-scale daily temperature bars, local F/C and wind conversion, and 5-to-10/14-day expansion. Portable Agent Plugins v1 package (skills only, stdlib Python runtime). Disclosure: a skill instructs the agent to fetch and show ::preview HTML; this is not a native Hermes-enforced weather tool. Explicit fetches send city queries to geocoding-api.open-meteo.com and coordinates to api.open-meteo.com; the services see network metadata. Reads its bundled template and explicitly selected saved JSON, writes chosen HTML and optional raw JSON; no credential stores, telemetry, uploads, shell children, polling or automatic refresh. Offline controls make no network calls; attribution links navigate to Open-Meteo only when clicked. Original SVG artwork, not Apple artwork or Apple Weather data. Footer shows when the forecast was fetched; model-run update time is unavailable. The only frame message is the standard Hermes inline preview size report. Missing values stay missing and failures show an error, never silently reused stale data. No-key API use is non-commercial and subject to Open-Meteo terms and rate limits, not an unlimited or free commercial-service promise. Forecasts are not guarantees or severe-weather alerts."
+maintainer: kenhendricks00
+tier: community
+category: tools
+version: "1.0.0"
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/kenhendricks00/hermes-weather-cards#readme
+image: https://raw.githubusercontent.com/kenhendricks00/hermes-weather-cards/cd2613da2f5120cf7a2c027487cc4ccdc11d857f/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-weather-cards/cd2613da2f5120cf7a2c027487cc4ccdc11d857f/docs/desktop-dark.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-weather-cards/cd2613da2f5120cf7a2c027487cc4ccdc11d857f/docs/phone-dark.png
+  - https://raw.githubusercontent.com/kenhendricks00/hermes-weather-cards/cd2613da2f5120cf7a2c027487cc4ccdc11d857f/docs/phone-light.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

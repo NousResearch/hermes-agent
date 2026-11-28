@@ -66,6 +66,12 @@ def _select(description: str, *options: str, **extra: Any) -> dict[str, Any]:
 
 # Manual overrides for fields that need select options or custom types.
 _SCHEMA_OVERRIDES: dict[str, dict[str, Any]] = {
+    "hosted_rooms.discussion.max_members": {
+        "type": "number",
+        "description": "Maximum members in new native group chats (2–24; default 6). "
+                       "Edit the room-owning home and restart its gateway after saving. "
+                       "Existing larger rooms remain readable.",
+    },
     "timezone": _select(
         "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
         *_timezone_options(), searchable=True, clearable=True,

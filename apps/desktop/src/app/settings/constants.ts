@@ -863,6 +863,7 @@ export const SECTIONS: DesktopConfigSection[] = [
       'agent.max_turns',
       'agent.api_max_retries',
       'agent.service_tier',
+      'hosted_rooms.discussion.max_members',
       'agent.tool_use_enforcement',
       'updates.non_interactive_local_changes'
     ]

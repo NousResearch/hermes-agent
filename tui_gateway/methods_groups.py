@@ -246,6 +246,7 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
     if (forwarded := _owner(rid, "groups.capabilities", params)) is not None:
         return forwarded
     from gateway.hosted_rooms import MAX_LOG_LIMIT, PROTOCOL_VERSION, local_authority_gateway_id
+    from gateway.hosted_room_discussion import DEFAULT_DISCUSSION_MEMBERS
     service = get_hosted_room_service()
     driver_ready = bool(service and service.runtime.status()["running"])
     # The first missing piece, named as gateway/session_group_peers.py::room_link names it: an
@@ -275,7 +276,8 @@ def _(rid, params: dict, _catalog=_local_catalog, _methods=_METHODS, _owner=_for
             "authority_epoch", "coordinator_fencing", "room_identity", "monotonic_log",
             "idempotent_send", "replayable_disband", "typed_events", "actor_identity",
             "log_replication", "authority_takeover"],
-        "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT})
+        "methods": list(_methods), "max_log_limit": MAX_LOG_LIMIT,
+        "max_members": service.discussion_limits.max_members if service else DEFAULT_DISCUSSION_MEMBERS})
 
 
 @_room_method("groups.peer.invite", code=4120, store=True)

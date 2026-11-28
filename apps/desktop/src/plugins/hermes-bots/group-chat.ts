@@ -14,7 +14,7 @@ import { atom, host, randomUuid } from '@hermes/plugin-sdk'
 import { $botMeta, $lastRoster, botRosterKey } from './data'
 import { durableGroupChatRoom } from './group-chat-record'
 import type { GroupEngine } from './group-engine'
-import { gatewayGroupEngine, gatewayGroupIdentityConflicts, stickyGroupEngine } from './group-engine'
+import { gatewayGroupEngine, gatewayGroupIdentityConflicts, GROUP_CHAT_MEMBER_CEILING, stickyGroupEngine } from './group-engine'
 import { groupMemberReferencesConnection, markOrphanedGroupMemberDescriptor } from './hygiene'
 import { displayName } from './labels'
 import { botRosterMeta } from './routing'
@@ -367,7 +367,7 @@ export function groupChatSyncSnapshot(
       ...stickyGroupEngine(room),
       holdDetection: room.holdDetection !== false,
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
-      members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
+      members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MEMBER_CEILING).map(member => ({
         name: String(member?.name || '').slice(0, 128),
         ...(member?.handle
           ? {
@@ -1437,7 +1437,6 @@ export const GROUP_CHAT_LOG_RETAIN = GROUP_CHAT_HISTORY_LIMIT * 2
 // ordinary traffic never hits it and a room of back-to-back pastes stays
 // well under a tenth of the quota.
 export const GROUP_CHAT_LOG_RETAIN_CHARS = GROUP_CHAT_HISTORY_CHARS * 8
-export const GROUP_CHAT_MAX_MEMBERS = 6
 
 /** Transcript form of a room speaker's identity. Friendly identity wins:
  *  a Bot Mode title or a core profile display_name (e.g. default renamed to

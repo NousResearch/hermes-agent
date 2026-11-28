@@ -50,6 +50,7 @@ import {
   botOnConnection,
   connectionName,
   groupCreationEngine,
+  groupMemberCapacity,
   groupSeatsPeers,
   revalidateGroupCreation,
   seatableGroupBots,
@@ -63,7 +64,7 @@ import { canonicalGroupCreateError, canonicalGroupCreateNotice, createCanonicalG
 import type { GroupCreationIntent } from './canonical-groups'
 import { $botMeta, $lastRoster, botHandle, botRosterKey, filterBots, ROSTER_KEY, saveBotMeta } from './data'
 import { labeled, ResizableFrame } from './dialog-parts'
-import { GROUP_CHAT_MAX_MEMBERS, uniqueGroupChatName } from './group-chat'
+import { uniqueGroupChatName } from './group-chat'
 import { memberMachineOffline, setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
@@ -1414,13 +1415,14 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
 
   const spansConnections = selectableRoster.some(bot => !botOnConnection(bot, connectionId))
   const visible: RosterRow[] = filterBots(selectableRoster, allMeta, query)
-  const atCap = selected.length >= GROUP_CHAT_MAX_MEMBERS
+  const maxMembers = groupMemberCapacity(capability?.snapshot)
+  const atCap = selected.length >= maxMembers
 
   const placeholder = selected.length
     ? selected.map(bot => displayName(bot, botRosterMeta(bot, allMeta))).join(', ')
     : b.group.nameLabel
 
-  const canCreate = selected.length >= 2 && Boolean(name.trim() || selected.length) &&
+  const canCreate = selected.length >= 2 && selected.length <= maxMembers && Boolean(name.trim() || selected.length) &&
     ['gateway', 'gateway-peer'].includes(engine)
 
   const select = (bot: RosterRow, value: boolean) => {
@@ -1464,9 +1466,9 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
     const fallback = placeholder.slice(0, 64)
 
     const created = fresh.engine === 'gateway-peer'
-      ? await createGroupAcrossConnections(route, entered, members, freshTargets, intent.current, typed => typed || fallback)
+      ? await createGroupAcrossConnections(route, entered, members, freshTargets, intent.current, typed => typed || fallback, maxMembers)
       : { ...await createCanonicalGroup(route, entered, members, intent.current,
-        typed => uniqueGroupChatName(typed || fallback, new Set(liveGroupChatNames()))), unjoined: [] }
+        typed => uniqueGroupChatName(typed || fallback, new Set(liveGroupChatNames())), maxMembers), unjoined: [] }
 
     // Creation already succeeded; leave it on its owner without adopting a stale result.
     if (!sourceCurrent()) {return}
@@ -1505,7 +1507,7 @@ export function CreateGroupChatDialog({ open, roster, onClose, onCreated, seed }
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{b.group.newTitle}</DialogTitle>
-          <DialogDescription>{b.crossGateway.pickBots(GROUP_CHAT_MAX_MEMBERS)} {b.crossGateway.gatewayMembership}</DialogDescription>
+          <DialogDescription>{b.crossGateway.pickBots(maxMembers)} {b.crossGateway.gatewayMembership}</DialogDescription>
         </DialogHeader>
         {mode === 'unavailable' && <p role="status">{b.canonical.driverUnavailable}</p>}
         <GroupPlanNote connectionId={connectionId} owner={owner} plan={plan} selected={selected} />

@@ -27,7 +27,8 @@ from gateway.hosted_rooms_common import compact_json
 from persistence.gateway.hosted_rooms import HostedTaskIdentity
 
 
-MAX_DISCUSSION_MEMBERS = 6
+DEFAULT_DISCUSSION_MEMBERS = 6
+MAX_DISCUSSION_MEMBERS = 24
 MIN_DISCUSSION_MEMBERS = 2
 MAX_DISCUSSION_ROUNDS = 3
 MAX_DISCUSSION_MESSAGES = 10
@@ -53,7 +54,7 @@ _MEMBER_CONTROL_FRAME_RE = re.compile(
 _MEMBER_CONTROL_FRAME_RELABEL = "[member-quoted "
 _TURN_ID_RE = re.compile(
     r"^d(?P<source>[1-9][0-9]*)\.r(?P<round>0|[1-9][0-9]*)\."
-    r"p(?P<position>[0-5])\.s(?P<seen>[1-9][0-9]*)\."
+    r"p(?P<position>[0-9]|1[0-9]|2[0-3])\.s(?P<seen>[1-9][0-9]*)\."
     r"m(?P<member>[0-9a-f]{24})$")
 
 
@@ -104,10 +105,13 @@ class DiscussionLimits:
 
     max_rounds: int = MAX_DISCUSSION_ROUNDS
     max_messages: int = MAX_DISCUSSION_MESSAGES
+    max_members: int = DEFAULT_DISCUSSION_MEMBERS
 
     def __post_init__(self) -> None:
         _positive_int(self.max_rounds, label="hosted_rooms.discussion.max_rounds")
         _positive_int(self.max_messages, label="hosted_rooms.discussion.max_messages")
+        _bounded_int(self.max_members, low=MIN_DISCUSSION_MEMBERS, high=MAX_DISCUSSION_MEMBERS,
+                     message="hosted_rooms.discussion.max_members must be an integer between 2 and 24")
 
 
 @dataclass(frozen=True)
@@ -295,13 +299,14 @@ def _validate_member(raw: Any, index: int, known_profiles: set[str]) -> Discussi
     return DiscussionMember(member_id, profile, handle, display_name, target)
 
 
-def validate_roster(value: Any, *, local_profiles: Iterable[str]) -> tuple[DiscussionMember, ...]:
-    """Validate a frozen 2-6 member roster of profiles on this gateway."""
+def validate_roster(value: Any, *, local_profiles: Iterable[str],
+                    max_members: int = DEFAULT_DISCUSSION_MEMBERS) -> tuple[DiscussionMember, ...]:
+    """Validate a frozen roster against the owner's admission capacity."""
     if not isinstance(value, list):
         raise DiscussionValidationError("members must be a list")
-    if not MIN_DISCUSSION_MEMBERS <= len(value) <= MAX_DISCUSSION_MEMBERS:
+    if not MIN_DISCUSSION_MEMBERS <= len(value) <= max_members:
         raise DiscussionValidationError(
-            f"members must contain between {MIN_DISCUSSION_MEMBERS} and {MAX_DISCUSSION_MEMBERS} entries")
+            f"members must contain between {MIN_DISCUSSION_MEMBERS} and {max_members} entries")
     known_profiles = {_identifier(profile, label="local profile") for profile in local_profiles}
     members: list[DiscussionMember] = []
     targets: set[str] = set()
@@ -334,7 +339,8 @@ def validate_room(value: Any, *, local_profiles: Iterable[str]) -> DiscussionRoo
         raise DiscussionValidationError("room name is too long")
     gateway_id = _identifier(value.get("authority_gateway_id"), label="authority_gateway_id")
     authority_epoch = _positive_int(value.get("authority_epoch"), label="authority_epoch")
-    members = validate_roster(value.get("members"), local_profiles=local_profiles)
+    members = validate_roster(value.get("members"), local_profiles=local_profiles,
+                              max_members=MAX_DISCUSSION_MEMBERS)
     return DiscussionRoom(room_id, name, members, gateway_id, authority_epoch)
 
 

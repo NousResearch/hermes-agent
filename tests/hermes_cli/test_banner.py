@@ -81,3 +81,31 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def test_banner_version_label_marks_a_calver_fallback_base(monkeypatch):
+    """A base resolved by the CalVer describe (no SemVer release tag reachable at
+    all) is a guess that flips once release tags are fetched — one checkout
+    truthfully printed 0.21.0+32768 before and 0.22.5+1710 after a single
+    `hermes update` (#140329). The label must say so instead of presenting the
+    fallback in the same shape as a real release-based identity."""
+    from hermes_cli.version_info import VersionInfo
+
+    def _live(source_flag):
+        return VersionInfo(
+            base_version="0.21.0", derived_version="0.21.0+32768.g0591b66", distance=32768,
+            commit="0" * 40, branch=None, source="git", dirty=False, commit_date=None,
+            distribution=None, base_version_source=source_flag,
+        )
+
+    monkeypatch.setattr("hermes_cli.steward.read_install_stamp", lambda root: {})
+    monkeypatch.setattr("hermes_cli.update_channel.resolve_update_channel", lambda config, root: "main")
+    monkeypatch.setattr(banner, "get_git_banner_state", lambda: None)
+
+    monkeypatch.setattr(banner, "get_version_info", lambda: _live("calver-fallback"))
+    label = banner.format_banner_version_label()
+    assert "0.21.0+32768.g0591b66" in label
+    assert "(calver-fallback; release tags not fetched)" in label
+
+    monkeypatch.setattr(banner, "get_version_info", lambda: _live("release-tag"))
+    assert "calver-fallback" not in banner.format_banner_version_label()

@@ -56,7 +56,7 @@ def code_views(lines: list) -> tuple | None:
                 a = min(c0 if r == r0 - 1 else 0, b)
                 in_text[r][a:b] = b"\x01" * (b - a)
                 row[a:b] = [" " if tok.type == tokenize.COMMENT or ch in "()" else ch for ch in row[a:b]]
-    except (tokenize.TokenError, SyntaxError):
+    except (tokenize.TokenError, SyntaxError, UnicodeError):  # UnicodeError: a lone surrogate on 3.12+
         return None
     return ["".join(v) for v in view], in_text
 

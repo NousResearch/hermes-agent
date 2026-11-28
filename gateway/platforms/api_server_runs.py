@@ -1130,8 +1130,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 
             with observe_api_controls(run.admission, _control_cb):
                 result, usage = await observe_api_turn(
-                    run.admission, stream_delta_callback=_text_cb,
-                    tool_start_callback=_tool_start, tool_complete_callback=_tool_complete)
+                    run.admission,
+                    stream_delta_callback=_text_cb,
+                    tool_progress_callback=tool_cb,
+                    tool_start_callback=_tool_start,
+                    tool_complete_callback=_tool_complete,
+                )
             # The canonical turn has no agent object here; the served pair rides on the
             # committed usage/result runtime metadata when the turn recorded one.
             served_runtime = ((usage or {}).get("runtime") if isinstance(usage, dict) else None) or (

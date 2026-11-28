@@ -100,7 +100,10 @@ def _latest_message_preview(persistence, session_id):
         content = persistence.messages.latest_dialogue_message(session_id)
     except Exception:
         return ""
-    text = " ".join(str(content or "").split()).strip()
+    text = str(content or "")
+    # Flatten markdown before truncating so the cut cannot orphan a closing marker.
+    text = _try(lambda: _lazy("gateway.platforms.helpers", "strip_markdown")(text), text)
+    text = " ".join(text.split()).strip()
     return text[:80] + "..." if len(text) > 80 else text
 
 

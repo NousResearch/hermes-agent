@@ -139,6 +139,9 @@ export function stripPreviewMarkdown(text: unknown) {
     .replace(/(\*\*|__)(.*?)\1/g, '$2')
     .replace(/(^|\s)[*_](\S(?:.*?\S)?)[*_](?=\s|$|[.,;:!?])/g, '$1$2')
     .replace(/~~(.*?)~~/g, '$1')
+    // Previews arrive truncated, so a cut inside a span leaves an opener with no
+    // closer ("**Yes. Your credits can..."). Pairs are gone by now: drop orphans.
+    .replace(/\*\*|__|~~|`/g, '')
     .replace(/^\s{0,3}#{1,6}\s+/gm, '')
     .replace(/^\s{0,3}>\s?/gm, '')
     .replace(/\s+/g, ' ')

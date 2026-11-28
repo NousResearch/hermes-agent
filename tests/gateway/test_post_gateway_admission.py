@@ -138,7 +138,8 @@ async def test_under_an_authority_the_hook_fires_once_at_ingress_never_at_execut
     runner = _runner()
     admitted = []
 
-    async def _admit(_authority, event):
+    async def _admit(_authority, event, *, startup=None):
+        assert startup is None
         admitted.append(event.text)
         return "admitted"
 

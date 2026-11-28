@@ -86,7 +86,8 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
     key = runner.session_store._generate_session_key(source)
     await async_wait_until(agent_ready.is_set, what="the running agent")
     if fail_admit:
-        async def deny(authority, event):
+        async def deny(authority, event, *, startup=None):
+            assert startup is None
             from persistence.core.errors import AuthorityRefusal
             raise AuthorityRefusal("admission_conflict")
 

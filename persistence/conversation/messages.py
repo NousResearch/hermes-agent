@@ -1030,8 +1030,8 @@ class MessageRepository(Protocol):
         """Stamp ``api_content`` on the newest active ``user`` row when its content equals ``content``; False otherwise. Only safe when the caller knows that row is the message it sent; ``set_message_api_content`` addresses a row by id."""
         ...
 
-    def set_message_api_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue, api_content: str) -> bool:
-        """Stamp ``api_content`` on one active ``user`` row of the session whose content equals ``content``; False otherwise."""
+    def set_message_api_content(self, session_id: SessionId, message_id: MessageId, content: JsonValue, api_content: str, *, new_content: Optional[JsonValue] = None) -> bool:
+        """Stamp ``api_content`` on one active matching user row; optionally replace its visible content in the same write."""
         ...
 
     def record_compression_cooldown(self, session_id: SessionId, until: float, error: Optional[str] = None) -> None:

@@ -42,7 +42,7 @@ ALREADY_ADMITTED_REPLY = ('⚠️ Hermes already received a different message un
                           'version was not saved. Send it again as a new message to continue.')
 
 
-async def admit_message(authority, event):
+async def admit_message(authority, event, *, startup=None):
     from gateway.session_authority import messaging_admission
     accepted, committed = busy_acceptance.get(), busy_commit.get()
     busy_acceptance.set(None)  # the drain task this schedules must not inherit the busy caller's future
@@ -80,6 +80,12 @@ async def admit_message(authority, event):
         return QUEUE_FULL_REPLY
     finally:
         messaging_admission.reset(ingress)
+    if startup is not None and receipt.status == 'queued':
+        from gateway.startup_followups import transfer
+        try:
+            await transfer(authority, receipt, event, startup)
+        except Exception:
+            logger.warning('Startup follow-up transfer failed; retaining its admission', exc_info=True)
     if receipt.status == 'terminal':
         return None
     # Only the delivery waiter is process-local; execution reads the committed snapshot.

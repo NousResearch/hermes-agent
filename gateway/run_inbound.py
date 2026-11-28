@@ -700,9 +700,9 @@ class GatewayInboundMixin(
     async def _hm_stop_owner_turn(self, _quick_key: str) -> None:
         """Messaging /stop and /new (busy, idle or confirmed) act on the authority's turn, as main
         cancelled the adapter task that ran it and dropped its pending slot. Cancels the still-queued
-        ``messaging:*`` rows of this route's logical owner first (automation wakes, LOCAL/API input
-        and ``unknown`` rows are untouched; settled silently, no pause notice), then interrupts the
-        claimed generation: a turn still constructing its agent latches the Stop for adopt_agent."""
+        ``messaging:*`` rows of this route's logical owner (automation wakes, LOCAL/API input and
+        ``unknown`` rows are untouched; settled silently, no pause notice) and interrupts the claimed
+        generation: a turn still constructing its agent latches the Stop for adopt_agent."""
         from gateway.session_authorities import active_authority
         authority = active_authority(self)
         sid = authority.logical_owner(self.session_store.peek_session_id(_quick_key)) if authority else None
@@ -723,27 +723,35 @@ class GatewayInboundMixin(
         # A FIFO paused on a lost (``unknown``) turn is the operator's to resume: its pause notice
         # promised the queued followers stay saved, so a /new from the chat leaves them queued.
         paused = any(row.status == 'unknown' for row in rows)
-        if not paused:
-            # Input (and a command's turn) that arrived before this and is not committed yet never
-            # commits after it; one that committed before the fence is in the second listing and
-            # cancelled below. A paused FIFO keeps both, like its queued followers.
-            authority.fence_route(_quick_key)
-            if (ordered := getattr(authority, '_ordered_writes', None)) is not None:
-                # An input that passed the fence before it moved commits before the listing, which cancels it.
-                async with ordered:
-                    pass
-            rows = await asyncio.to_thread(store.admissions.list, session_id=sid)
-        for row in [] if paused else rows:
-            if row.status == 'queued' and row.principal_id.startswith('messaging:'):
-                # Claimed meanwhile (stale_generation): it runs as main's post-claim race does.
+        if paused:
+            handle = authority._handle(ref)
+            if handle.execution_state == 'running':
                 with suppress(AuthorityRefusal):
-                    await authority.cancel_queued(actor, ref, row.admission_id)
-        handle = authority._handle(ref)
-        if handle.execution_state == 'running':
-            # Settled meanwhile (stale_generation): there is no claimed turn left to stop.
-            with suppress(AuthorityRefusal):
-                await authority.interrupt(actor, ref, handle.execution_generation)
-
+                    await authority.interrupt(actor, ref, handle.execution_generation)
+            return
+        # Input still capturing under the old epoch cannot commit after this fence. Signal Stop
+        # before waiting on a transfer write, while holding the claim gate against a successor.
+        authority.fence_route(_quick_key)
+        live = authority.sessions[sid]
+        from gateway.startup_followups import cancel_unread
+        cancel_unread(authority, sid, live)
+        async with live.mutation_lock:
+            handle = authority._handle(ref)
+            if handle.execution_state == 'running':
+                with suppress(AuthorityRefusal):
+                    await authority.interrupt(actor, ref, handle.execution_generation)
+            async with live.startup_transfer_lock:
+                cancel_unread(authority, sid, live)
+                if (ordered := getattr(authority, '_ordered_writes', None)) is not None:
+                    # An input that passed the fence before it moved commits before the listing.
+                    async with ordered:
+                        pass
+                rows = await asyncio.to_thread(store.admissions.list, session_id=sid)
+                for row in rows:
+                    if row.status == 'queued' and row.principal_id.startswith('messaging:'):
+                        # Claimed meanwhile: it runs as main's post-claim race does.
+                        with suppress(AuthorityRefusal):
+                            await authority.cancel_queued(actor, ref, row.admission_id)
     def _hm_in_telegram_grace(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
         """A Telegram text or voice follow-up inside the post-start grace window (it waits, never interrupts).
         Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0 via ``_float_env``."""
@@ -1329,8 +1337,11 @@ class GatewayInboundMixin(
         # A bare "yes"/"no" to a blocking dangerous-command approval answers it (#46866):
         # never an interrupt (read as deny) nor a queued turn (auto-deny deadlock).
         # A turn a slash command produced (``/queue yes``) is never live typing.
-        if busy and (await self._route_plaintext_approval_while_busy(event, _quick_key)
-                     or await self._hm_busy_preempt(event, source, _quick_key)):
+        if busy and await self._route_plaintext_approval_while_busy(event, _quick_key):
+            return True, None
+        from gateway.startup_followups import candidate
+        startup = candidate(self, event, source, _quick_key) if busy else None
+        if busy and startup is None and await self._hm_busy_preempt(event, source, _quick_key):
             return True, None
         _consumed, _consumer_reply = await self._hm_post_admission_consume(event, source, _quick_key)
         if _consumed:
@@ -1347,7 +1358,7 @@ class GatewayInboundMixin(
         notice = pending_setup_busy_notice(self, _quick_key, source) if busy else None
         if notice is not None:  # sent now: the admission below waits until this follow-up has run
             await self._send_busy_ack_reply(event, self._delivery_adapter_for(source), notice)
-        return True, await admit_message(authority, event)
+        return True, await admit_message(authority, event, startup=startup)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """Handle an incoming message from any platform: auth → command check → running-agent

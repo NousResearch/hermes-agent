@@ -271,7 +271,7 @@ class AdmissionRepository(Protocol):
         """
         ...
 
-    def settle(self, *, epoch: int, admission_id: str, generation: int, outcome: Literal['completed', 'interrupted', 'rejected', 'failed'], result: Mapping[str, Any] | None = None, transfers: Mapping[str, bool] | None = None, boundary: TurnBoundary | None = None) -> AdmissionRecord:
+    def settle(self, *, epoch: int, admission_id: str, generation: int, outcome: Literal['completed', 'interrupted', 'rejected', 'failed'], result: Mapping[str, Any] | None = None, transfers: Mapping[str, bool | Literal['cancelled']] | None = None, boundary: TurnBoundary | None = None) -> AdmissionRecord:
         """Settle a started admission.
 
         Order: outcome (``invalid_params``); epoch; the row (``not_found``); its session (``not_found``); the composite fence (started, owned by ``epoch``, at ``generation``, the session at ``generation``; else ``stale_generation``); then: its workers retire, ``boundary`` closes the turn on the current physical transcript, ``result`` is stored compacted and encoded, the row goes terminal, the steering ``transfers`` settle (delivered ones ``steered`` on ``completed`` else ``interrupted``, undelivered ones queued again), the session revision bumps.
@@ -290,7 +290,7 @@ class AdmissionRepository(Protocol):
         """Queue a transfer whose text never reached the claim's agent again at its original ``seq``; False when the claim's settlement already decided it."""
         ...
 
-    def mark_unknown(self, *, epoch: int, admission_id: str, generation: int, transfers: Mapping[str, bool] | None = None) -> Literal['unknown', 'terminal']:
+    def mark_unknown(self, *, epoch: int, admission_id: str, generation: int, transfers: Mapping[str, bool | Literal['cancelled']] | None = None) -> Literal['unknown', 'terminal']:
         """Mark this owner's started admission ``unknown`` after its settlement failed: another owner or generation refuses ``stale_generation``; a terminal or unknown row answers its status; a queued row refuses ``stale_generation``; else the row goes ``unknown``, its transfers settle (delivered ones ``interrupted``, others queued again) and the session revision bumps."""
         ...
 

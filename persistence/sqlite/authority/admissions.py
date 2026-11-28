@@ -85,7 +85,7 @@ class SQLiteAdmissionRepository:
 
     def settle(self, *, epoch: int, admission_id: str, generation: int,
                outcome: Literal["completed", "interrupted", "rejected", "failed"],
-               result: Mapping[str, Any] | None = None, transfers: Mapping[str, bool] | None = None,
+               result: Mapping[str, Any] | None = None, transfers: Mapping[str, bool | Literal['cancelled']] | None = None,
                boundary: TurnBoundary | None = None) -> AdmissionRecord:
         with refused():
             return _record(store.settle_session_input(
@@ -108,7 +108,7 @@ class SQLiteAdmissionRepository:
                                             generation=generation)
 
     def mark_unknown(self, *, epoch: int, admission_id: str, generation: int,
-                     transfers: Mapping[str, bool] | None = None) -> Literal["unknown", "terminal"]:
+                     transfers: Mapping[str, bool | Literal['cancelled']] | None = None) -> Literal["unknown", "terminal"]:
         with refused():
             return owner._mark_unknown(self._store.holder(), epoch=epoch, admission_id=admission_id,
                                        generation=generation, transfers=transfers)

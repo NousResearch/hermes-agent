@@ -66,6 +66,7 @@ class LiveSession:
     # Failed-delegation wakes run in a row with no viewer (session_completion_notes.UNATTENDED_WAKE_LIMIT).
     unattended_wakes: int = 0
     mutation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    startup_transfer_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Held by the FIFO claim and by compress across its summarization (which runs outside
     # ``mutation_lock``, so admissions are not parked behind an LLM call): no turn is claimed
     # under a compression that is still preparing its replacement transcript.
@@ -176,6 +177,8 @@ class SessionAuthority:
         # session -> (generation, {admission_id: delivered}): queued admissions prompt.steer_queued handed
         # to that running claim (gateway/session_queued_controls.py); its settlement decides each one.
         self.steer_transfers = {}
+        # Native follow-up transfers waiting for this claim to adopt its agent.
+        self.startup_pending = {}
         self.launch_sources = {}  # session -> its frozen launch source (session_queued_controls)
         # Closed local conversations ``session_retirement`` let go (a restored one may linger here until
         # it is deleted or retired again): their source and frozen policy stay on the local adapter.
@@ -1076,6 +1079,8 @@ class SessionAuthority:
             latched, steers = self.pending_steers.pop(session_id, (None, ()))
             for text in steers if latched == generation else ():
                 agent.steer(text)
+            from gateway.startup_followups import deliver_adopted
+            deliver_adopted(self, session_id, generation)
 
     def check_approval_generation(self, session_id, generation):
         handle = self._handle(SessionRef(self.profile_id, session_id))

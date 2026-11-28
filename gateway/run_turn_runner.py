@@ -606,8 +606,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             agent.clarify_context_callback = None
             agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support
+        agent._gateway_startup_followups = None  # a reused agent must not keep an older turn's handoff
         if self._approval_owner is not None:
             authority, owner_id, generation = self._approval_owner
+            from agent.startup_followups import StartupFollowups
+            from gateway.startup_followups import note_sent
+            stop_epoch = authority.route_epoch(ctx.session_key)
+            agent._gateway_startup_followups = StartupFollowups(
+                lambda entries: note_sent(runner, ctx, agent, authority, owner_id, generation, entries),
+                lambda: (authority.executing.get(owner_id) == generation
+                         and authority.route_epoch(ctx.session_key) == stop_epoch and ctx._run_still_current()),
+            )
             authority.adopt_agent(owner_id, generation, agent)
         # The titler fires from the turn prologue, so attach the rename lane before the run.
         self._attach_session_title_callback(agent, ctx)

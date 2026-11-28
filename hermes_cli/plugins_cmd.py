@@ -573,8 +573,8 @@ def _plugin_aliases(key: str, entries: Optional[list] = None) -> set:
     The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
     (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins").
     Pass *entries* to reuse one :func:`_discover_all_plugins` scan across several keys."""
-    from hermes_cli.left_core_migration import legacy_plugin_keys
-    names = {key, key.split("/")[-1], *legacy_plugin_keys(key)}
+    from hermes_cli.plugin_identity import plugin_identity
+    names = {key.split("/")[-1], *plugin_identity(key)}
     names.update(e[0] for e in (_discover_all_plugins() if entries is None else entries) if e[5] == key)
     return names
 
@@ -944,10 +944,11 @@ def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, sou
     disable wins, then the allow-list, then the activations that need no list entry — bundled
     backends/platforms and model providers from any source (*source* + *dir_path*) and category-selected providers
     (*active*, see :func:`_category_active_names`)."""
-    names = {name, key}
-    if names & disabled:
+    from hermes_cli.plugin_identity import plugin_identity, plugin_listed
+    names = plugin_identity(key or name, name)  # the loader's rule (``gate_manifest``)
+    if plugin_listed(names, disabled):
         return "disabled"
-    if names & enabled or names & active:
+    if plugin_listed(names, enabled) or names & active:
         return "enabled"
     if dir_path is not None and _default_on(dir_path, source):
         return "enabled"

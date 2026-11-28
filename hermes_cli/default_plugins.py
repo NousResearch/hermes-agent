@@ -153,19 +153,6 @@ def _installed_dir(home: Path, entry) -> Optional[Path]:
     return plugins / entry.name if (plugins / entry.name).is_dir() else None
 
 
-def _entry_spellings(entry, target: Optional[Path]) -> tuple[str, ...]:
-    """Every config-list spelling that may name *entry* (catalog key, installed dir name, manifest name)."""
-    names = {entry.name}
-    if target is not None:
-        names.add(target.name)
-        try:
-            from hermes_yaml import safe_load
-            names.add(str((safe_load((target / "plugin.yaml").read_text(encoding="utf-8-sig")) or {}).get("name") or ""))
-        except (OSError, ValueError, AttributeError):  # no or malformed manifest: the dir names count
-            pass
-    return tuple(sorted(names - {""}))
-
-
 def _settled(home: Path, entry) -> bool:
     """*home* already has *entry*: a plugin the user explicitly disabled, a tree the user put there
     (enabled or not, it is theirs), or one an earlier automatic attempt left that someone has since
@@ -173,8 +160,12 @@ def _settled(home: Path, entry) -> bool:
     marker so a crashed automatic attempt never deletes or re-enables a plugin the user disabled."""
     from hermes_cli.left_core_migration import _plugins_listed
     from hermes_cli.memory_provider_migration import _failure_stamp
+    from hermes_cli.plugin_identity import plugin_identity, tree_identity
     target = _installed_dir(home, entry)
-    enabled, disabled = _plugins_listed(home, _entry_spellings(entry, target))
+    # Judged by the names the loader gives the tree (its core-era keys too), else the catalog name's.
+    identity = plugin_identity(entry.name) if target is None else tree_identity(home / "plugins", target,
+                                                                                 default=entry.name)
+    enabled, disabled = _plugins_listed(home, identity)
     if disabled:
         return True
     if _installing(home, entry).exists():

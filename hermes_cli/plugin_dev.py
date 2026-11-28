@@ -256,7 +256,7 @@ _STAGING_SKIPPED_DIRS = (".git", "__pycache__", ".pytest_cache")
 
 def _candidate_dirs(path: Path) -> list[Path]:
     """Subdirectories of *path* that could be plugins: not skipped by discovery or the staging copy."""
-    from hermes_cli.plugins_discovery import is_skipped_plugin_dir
+    from hermes_cli.plugin_identity import is_skipped_plugin_dir
 
     try:
         return sorted(

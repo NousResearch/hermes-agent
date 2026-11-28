@@ -362,6 +362,16 @@ output budget.
 | `agent.reasoning_effort.clamp_effort(effort, supported, overrides=None)` | Clamps an effort onto a declared level tuple: unchanged when supported, else the nearest weaker level (the weakest one when nothing is weaker). |
 | `agent.reasoning_effort.bare_gemini_model_id(model)` | The model id the native Gemini client sends (`gemini/` and `google/` prefixes stripped). `gemini_thinking_config` already applies it; it imports no HTTP stack. |
 
+### Public helpers for native Gemini audio
+
+A provider on the native Gemini wire that carries Hermes audio content blocks turns each one into a
+request part with the published helper, so every Gemini-wire transport validates and names audio the
+same way.
+
+| Helper | What it does |
+|---|---|
+| `agent.native_audio.gemini_audio_part(item)` | The native `inlineData` part for a Hermes `input_audio` content block, or a `ValueError` when the block has no nonempty base64 data or an unsupported `format`. `agent.native_audio.GEMINI_AUDIO_MIMES` holds the accepted formats and their MIME types. |
+
 ## Account usage
 
 Model-provider plugins can provide account or plan usage to `/usage` by

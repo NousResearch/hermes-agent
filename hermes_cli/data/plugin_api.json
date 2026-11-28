@@ -309,6 +309,12 @@
         "hermes_cli.config_providers:get_custom_provider_tls_settings",
         "tools.schema_sanitizer:normalize_type_array"
       ]
+    },
+    {
+      "source": "model-provider-plugin.md § Public helpers for native Gemini audio",
+      "entries": [
+        "agent.native_audio"
+      ]
     }
   ]
 }

@@ -293,7 +293,15 @@ class GatewayBusySessionMixin:
             pending_slot = getattr(adapter, "_pending_messages", None)
             if not isinstance(pending_slot, dict) or pending_slot.get(session_key):
                 return None  # slot occupied (busy) or no slot storage — promotion owns this
-            head = overflow.pop(0)
+            # Rescue selects a different turn after inbound admission. Reject stale Goal
+            # work before promoting a successor, while the selection is still synchronous.
+            while overflow:
+                head = overflow.pop(0)
+                if not ((head.internal or head.metadata.get("gateway_session_strict"))
+                        and self._stale_goal_continuation(head, head.metadata.get("gateway_session_id") or "")):
+                    break
+            else:
+                return None
             # Keep the slot occupied so the drain promotes in order and a mid-chain arrival routes
             # to overflow instead of jumping the queue (same invariant as _promote_queued_event).
             if overflow:

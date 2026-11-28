@@ -308,6 +308,62 @@ async def test_adapter_slot_continuation_never_runs_for_a_replaced_goal(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["replaced", "replaced_with_queue", "current"])
+async def test_orphaned_overflow_only_runs_current_goal_work(tmp_path, monkeypatch, case):
+    """An idle classic route rescues real queued work, but not a replaced Goal's continuation."""
+    from hermes_cli import goals
+    from tests.waiting import async_wait_until
+
+    runner, _, adapter, db, sent = await _telegram_gateway(tmp_path, monkeypatch)
+    source = adapter.build_source(chat_id="42", chat_type="dm", user_id="42")
+    route = runner._session_key_for_source(source)
+    entry = runner.session_store.get_or_create_session(source)
+    manager = goals.GoalManager(entry.session_id)
+    manager.set("finish release A")
+    calls = []
+
+    async def respond(**kw):
+        calls.append(kw["message"])
+        return _reply(f"overflow reply {len(calls)}")
+
+    monkeypatch.setattr(runner, "_run_agent", respond)
+    verdicts = iter([("continue", "more remains", False, None, False)])
+    monkeypatch.setattr(goals, "judge_goal", lambda *a, **k: next(verdicts, ("done", "done", False, None, False)))
+    blocker = MessageEvent(text="previous slot", source=source, message_id="slot")
+    runner._enqueue_fifo(route, blocker, adapter)
+    try:
+        await runner._post_turn_goal_continuation(session_entry=entry, source=source, final_response="first step")
+        overflow = runner._overflow_queue(route)
+        assert overflow and len(overflow) == 1
+        wake = overflow[0]
+        assert wake.text.startswith(MARKER) and wake.metadata["gateway_session_id"] == entry.session_id
+        assert wake.metadata["goal_generation"] == manager.state.continuation_generation
+        if case == "replaced_with_queue":
+            cmd = MessageEvent(text="/queue queued work", source=source, message_id="queue")
+            await runner._busy_queue_command(cmd, route, source)
+            assert len(overflow) == 2 and overflow[1].text == "queued work"
+        # Model the slot being consumed without the overflow promotion after an early exit.
+        assert adapter._pending_messages.pop(route) is blocker
+        if case != "current":
+            manager.set("finish release B")
+            assert manager.state.continuation_generation != wake.metadata["goal_generation"]
+        assert not runner._is_session_running(route)
+        await adapter.handle_message(MessageEvent(text="fresh question", source=source, message_id="fresh"))
+        await async_wait_until(lambda: not adapter._background_tasks, what="the rescued FIFO chain settled")
+        expected = {"replaced": [], "replaced_with_queue": ["queued work"], "current": [wake.text]}[case]
+        assert calls == [*expected, "fresh question"], calls
+        assert [text for _, text in sent if text.startswith("overflow reply")] == [
+            f"overflow reply {i + 1}" for i in range(len(calls))
+        ]
+        assert not runner._is_session_running(route)
+        assert runner._session_state(route).turn.lease is None
+        assert route not in adapter._active_sessions and route not in adapter._pending_messages
+        assert not runner._overflow_queue(route)
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["tagged", "legacy", "legacy_clear_same", "legacy_unchanged"])
 async def test_new_goal_judged_while_the_old_continuation_waits_still_continues(tmp_path, monkeypatch, case):
     """An untagged durable row cannot run or stand in for a freshly judged continuation."""

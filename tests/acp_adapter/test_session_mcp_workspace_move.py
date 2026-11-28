@@ -34,3 +34,35 @@ def test_workspace_move_respawns_held_stdio_servers_in_the_new_folder(server_spe
     finally:
         live.subscribers.clear()
         release_editor_mcp(authority, ['moved'])
+
+
+def test_remote_backend_cwd_never_reaches_a_host_stdio_server(server_spec, tmp_path, monkeypatch):
+    """An editor's stdio server runs on this host, so an ssh session's remote-only cwd must not be its
+    cwd (the spawn would fail with FileNotFoundError): it inherits the daemon's directory instead."""
+    import json
+    import os
+
+    from gateway.session_policy import bind_launch_key, build_policy
+    from gateway.session_local_mcp import release_editor_mcp
+    from tools.registry import registry
+    script = tmp_path / 'owned_mcp.py'
+    script.write_text(script.read_text().replace("os.environ['BORROWED_CREDENTIAL']", 'os.getcwd()'))
+    home = tmp_path / 'home'
+    home.mkdir()
+    (home / 'config.yaml').write_text(json.dumps({'terminal': {'backend': 'ssh'}}))
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    remote = '/srv/remote/project'
+    assert not os.path.exists(remote)
+    authority = owner()
+    private = {}
+    built = build_policy({'source': 'acp', 'cwd': remote, 'cwd_explicit': True, 'model': 'local', 'toolsets': [],
+                          'editor': {'mcp_servers': [server_spec]}}, {}, private_secrets=private)
+    authority.sessions = {'remote': SimpleNamespace(subscribers={'editor': object()})}
+    try:
+        remote_policy = bind_launch_key(authority, 'remote', built, None, config_secrets=private)
+        with policy_scope(remote_policy, authority=authority):
+            name = next(n for n in registry.get_all_tool_names() if n.startswith('mcp__'))
+            assert str(os.path.realpath(os.getcwd())) in registry.dispatch(name, {})
+        assert remote_policy.cwd == remote
+    finally:
+        release_editor_mcp(authority, ['remote'])

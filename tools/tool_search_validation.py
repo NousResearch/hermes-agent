@@ -258,9 +258,16 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
     suffix = f"__{name}"
     try:
         from tools.registry import registry
-        candidates = sorted(n for n in registry.get_all_tool_names() if n.endswith(suffix))
+        names = registry.get_all_tool_names()
+        candidates = sorted(n for n in names if n.endswith(suffix))
     except Exception:
-        candidates = []
+        names, candidates = [], []
+    if not candidates:
+        # A mistyped name (dropped letter, swapped server segment) is only SUGGESTED, never resolved:
+        # a close name can be a sibling with the opposite effect, so the model must re-issue the call.
+        from difflib import get_close_matches
+        deferred = [n for n in names if n not in _core_tool_names() and n not in BRIDGE_TOOL_NAMES]
+        candidates = get_close_matches(name, deferred, n=3, cutoff=0.8)
     hint = (f" Did you mean {', '.join(repr(c) for c in candidates)}?" if candidates
             else " Use tool_search to find the exact name.")
     return (f"'{name}' is not a known tool name. Deferred tools must be invoked through tool_call "

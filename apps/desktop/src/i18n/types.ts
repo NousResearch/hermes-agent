@@ -1383,6 +1383,11 @@ export interface Translations extends NoticeTranslations {
       downloadPausedLabel: string
       downloadPauseAction: string
       downloadResumeAction: string
+      downloadCancelAction: string
+      downloadCancelTitle: string
+      downloadCancelBody: (model: string) => string
+      downloadCancelConfirm: string
+      downloadCancelKeep: string
       downloadDoneToast: (model: string) => string
       installDoneToast: string
       quickstartTitle: string
@@ -1428,6 +1433,7 @@ export interface Translations extends NoticeTranslations {
       downloadFailed: (model: string) => string
       downloadPauseFailed: (model: string) => string
       downloadResumeFailed: (model: string) => string
+      downloadCancelFailed: (model: string) => string
       pillFitsGpu: string
       pillUsesRam: string
       pillTooBig: string

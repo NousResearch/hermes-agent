@@ -378,6 +378,12 @@ export function useLocalRuntimeJobs<T>(
 }
 
 function notifySettled(owner: LocalModelsOwner, job: LocalRuntimeJob): void {
+  // The user asked for this outcome (and confirmed it) — a toast would only
+  // echo it back, and the error branch below would misreport it as a failure.
+  if (job.status === 'cancelled') {
+    return
+  }
+
   if (job.status === 'done') {
     notify({
       durationMs: 6_000,

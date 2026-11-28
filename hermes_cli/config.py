@@ -3423,6 +3423,13 @@ def _cmd_config_get(args):
 
 def _cmd_config_set(args):
     key, value = getattr(args, 'key', None), getattr(args, 'value', None)
+    # `hermes config set memory provider holographic` arrives as key="memory",
+    # value="provider", extra=["holographic"]. Fold the trailing words back into
+    # the dotted key so the documented space-separated form works.
+    extra = list(getattr(args, 'extra', None) or [])
+    if extra and key is not None and value is not None:
+        key = ".".join([key, value, *extra[:-1]])
+        value = extra[-1]
     if not key or value is None:
         _usage_exit(*_USAGE_SET)
     from hermes_cli.gateway_platform_live import set_config_value_live  # a running gateway applies it now

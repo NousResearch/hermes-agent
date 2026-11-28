@@ -181,6 +181,50 @@ class TestFalsyValues:
         assert "model" in config
 
 
+class TestSpaceSeparatedKey:
+    """`config set memory provider holographic` must behave like the dotted form.
+
+    The docs show space-separated keys; argparse used to reject the trailing
+    words with "unrecognized arguments".
+    """
+
+    def test_three_word_key_folds_to_dotted(self, _isolated_hermes_home):
+        args = argparse.Namespace(
+            config_command="set", key="memory", value="provider",
+            extra=["holographic"], force=False)
+        config_command(args)
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["memory"]["provider"] == "holographic"
+
+    def test_dotted_form_is_unchanged(self, _isolated_hermes_home):
+        args = argparse.Namespace(
+            config_command="set", key="memory.provider", value="holographic",
+            extra=[], force=False)
+        config_command(args)
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["memory"]["provider"] == "holographic"
+
+    def test_four_word_key_folds_to_dotted(self, _isolated_hermes_home):
+        args = argparse.Namespace(
+            config_command="set", key="terminal", value="docker_env",
+            extra=["FOO", "bar"], force=False)
+        config_command(args)
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["terminal"]["docker_env"]["FOO"] == "bar"
+
+    def test_parser_accepts_space_separated_key(self):
+        from hermes_cli.subcommands.config import build_config_parser
+
+        parser = argparse.ArgumentParser(prog="hermes")
+        sub = parser.add_subparsers(dest="command")
+        build_config_parser(sub, cmd_config=lambda a: None)
+
+        args = parser.parse_args(
+            ["config", "set", "memory", "provider", "holographic"])
+        assert (args.key, args.value, args.extra) == (
+            "memory", "provider", ["holographic"])
+
+
 class TestConfigGetUnset:
     """config get/unset should mirror config set for scriptable workflows."""
 

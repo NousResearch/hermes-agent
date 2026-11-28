@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_json_flag
@@ -28,6 +29,10 @@ def build_config_parser(subparsers, *, cmd_config: Callable) -> None:
     config_set.add_argument(
         "key", nargs="?", help="Configuration key (e.g., model, terminal.backend)")
     config_set.add_argument("value", nargs="?", help="Value to set")
+    # Trailing words of a space-separated key, e.g. `config set memory provider
+    # holographic` -> key="memory", value="provider", extra=["holographic"].
+    # Folded back into the dotted key by _cmd_config_set.
+    config_set.add_argument("extra", nargs="*", help=argparse.SUPPRESS)
     config_set.add_argument(
         "--force", action="store_true",
         help="Write a key the running version doesn't recognize: an unknown path under a known "

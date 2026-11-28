@@ -718,8 +718,6 @@ DANGEROUS_PATTERNS = [
     # Removing a container or volume is strictly more destructive than stopping it, and the canonical
     # `container` spelling and the prunes (every stopped container, unused volume/image data) are the same
     # verbs (#132483). `docker image rm`/`rmi`/`network rm` stay ungated: a pull or a recreate restores them.
-    # Descriptions must name a word `hermes approvals suggest` treats as destructive (`rm`, `delete`), or
-    # it offers the class for the permanent allowlist.
     (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'(?:rm|container\s+(?:rm|remove))\b', "docker/podman rm (container destruction)"),
     (r'\bdocker(?:-compose|\s+compose)\s+' + _GLOBAL_FLAGS + r'rm\b', "docker compose rm (container destruction)"),
     (r'\b(?:docker|podman)\s+' + _GLOBAL_FLAGS + r'volume\s+(?:rm|remove|prune)\b', "docker/podman volume rm/prune (volume data destruction)"),

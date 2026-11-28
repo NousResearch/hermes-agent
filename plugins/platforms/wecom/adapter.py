@@ -10,6 +10,7 @@ from pm import install_hint
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -706,14 +707,35 @@ def qr_scan_for_bot_info(*, timeout_seconds: int = _QR_POLL_TIMEOUT) -> Optional
     return None
 
 
-async def _send_via(adapter, chat_id, message, *, live: bool):
+async def _send_via(adapter, chat_id, message, *, live: bool, media_files=None, force_document=False):
+    """Send the text, then each MEDIA attachment through its native adapter method.
+
+    The generic send path hands the plugin ``media_files`` (``(path, is_voice)``) and
+    ``force_document``; dropping them reported success while the attachment vanished (#153045)."""
+    label = "WeCom live adapter" if live else "WeCom"
     try:
-        result = await adapter.send(chat_id, message)
+        result = None
+        if (message or "").strip():
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return send_error(f"{label} send failed: {result.error}")
+            if not media_files:
+                return {"success": True, "platform": "wecom", "chat_id": chat_id,
+                        "message_id": result.message_id}
+        from tools.send_message_senders import _adapter_media_method
+        for media_path, is_voice in media_files or ():
+            ext = os.path.splitext(str(media_path))[1].lower()
+            method, _kind = _adapter_media_method(ext, bool(is_voice), force_document=force_document)
+            result = await getattr(adapter, method)(chat_id, media_path)
+            if not result.success:
+                return send_error(f"{label} media send failed: {result.error}")
     except Exception as e:
-        return send_error(f"WeCom{' live adapter' if live else ''} send failed: {describe_proxy_error(e, env_proxy_for_redaction(adapter._ws_url, trust_env=gateway_trust_env())) or e}")
+        return send_error(f"{label} send failed: {describe_proxy_error(e, env_proxy_for_redaction(adapter._ws_url, trust_env=gateway_trust_env())) or e}")
+    if result is None:
+        return send_error(f"{label} send failed: no deliverable text or media")
     if result.success:
         return {"success": True, "platform": "wecom", "chat_id": chat_id, "message_id": result.message_id}
-    return send_error(f"WeCom send failed: {result.error}")
+    return send_error(f"{label} send failed: {result.error}")
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
@@ -729,7 +751,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except Exception:
         adapter = None
     if adapter is not None:
-        return await _send_via(adapter, chat_id, message, live=True)
+        return await _send_via(adapter, chat_id, message, live=True,
+                               media_files=media_files, force_document=force_document)
     if not check_wecom_requirements():
         return send_error("WeCom requirements not met. Need aiohttp + WECOM_BOT_ID/SECRET.")
     try:
@@ -737,7 +760,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         if not await adapter.connect():
             return send_error(f"WeCom: failed to connect - {getattr(adapter, 'fatal_error_message', None) or 'unknown error'}")
         try:
-            return await _send_via(adapter, chat_id, message, live=False)
+            return await _send_via(adapter, chat_id, message, live=False,
+                                   media_files=media_files, force_document=force_document)
         finally:
             await adapter.disconnect()
     except Exception as e:

@@ -189,13 +189,17 @@ def cron_list(show_all: bool = False):
             if job.get("enabled", True) or effective_job_state(job) == "paused"
         ]
 
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_cli.profiles import get_active_profile_name, profile_matches_home
+    profile = get_active_profile_name()
     if not jobs:
-        print(color(f"No scheduled jobs in profile '{get_active_profile_name()}'.\n"
-                    "Create one with 'hermes cron create ...' or the /cron command in chat.", Colors.DIM))
+        if profile != "default" and profile_matches_home(profile):
+            hint = "To list jobs in the default profile, run 'hermes -p default cron list'."
+        else:
+            hint = "Create one with 'hermes cron create ...' or the /cron command in chat."
+        print(color(f"No scheduled jobs in profile '{profile}'.\n{hint}", Colors.DIM))
         return
 
-    _print_banner(f"Scheduled Jobs (profile: {get_active_profile_name()})")
+    _print_banner(f"Scheduled Jobs (profile: {profile})")
 
     for job in jobs:
         # effective_job_state honours the scheduler flag — never [paused] when enabled=true.

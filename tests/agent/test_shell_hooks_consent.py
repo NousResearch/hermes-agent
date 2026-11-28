@@ -318,3 +318,68 @@ class TestHooksAutoAcceptParsing:
         ) is False
 
 
+
+
+# ── approval covers the script bytes it saw ──────────────────────────────
+
+
+def _fire(script: Path, *, fail_closed: bool = False):
+    spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script), fail_closed=fail_closed)
+    return shell_hooks._make_callback(spec)(tool_name="terminal", args={}, session_id="s", task_id="t")
+
+
+def _marker_script(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "guard.sh"
+    script.write_text(f"#!/usr/bin/env bash\necho {body} >> {tmp_path / 'ran.log'}\nprintf '{{}}\\n'\n", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+@pytest.mark.platforms("posix")
+def test_changed_script_does_not_run_until_approved_again(tmp_path):
+    """An approved hook whose script changed afterwards never runs the new bytes: skipped, or a block when
+    fail_closed; approving it again (hash refreshed) lets it run."""
+    script = _marker_script(tmp_path, "approved")
+    shell_hooks._record_approval("pre_tool_call", str(script))
+    assert _fire(script) is None
+    _marker_script(tmp_path, "tampered")  # same path, new bytes (an update, a pull, an edit)
+
+    assert _fire(script) is None
+    blocked = _fire(script, fail_closed=True)
+    assert blocked["action"] == "block" and "changed since approval" in blocked["message"]
+    assert (tmp_path / "ran.log").read_text().split() == ["approved"]
+
+    from hermes_cli import plugins
+    plugins._plugin_manager = plugins.PluginManager()
+    cfg = {"hooks": {"pre_tool_call": [{"command": str(script), "fail_closed": True}]}}
+    with patch("sys.stdin") as stdin, patch("builtins.input", return_value="n"):
+        stdin.isatty.return_value = True  # declining the re-ask keeps the guard wired, still refusing
+        assert len(shell_hooks.register_from_config(cfg, interactive=True)) == 1
+    verdicts = plugins._plugin_manager.invoke_hook("pre_tool_call", tool_name="terminal", args={}, session_id="s", task_id="t")
+    assert any(isinstance(v, dict) and v.get("action") == "block" for v in verdicts)
+
+    shell_hooks.reset_for_tests()  # a fresh worker process registering with --accept-hooks re-pins
+    shell_hooks.register_from_config(cfg, accept_hooks=True)
+    _fire(script)
+    assert (tmp_path / "ran.log").read_text().split() == ["approved", "tampered"]
+
+
+@pytest.mark.platforms("posix")
+def test_approval_from_before_pinning_is_pinned_while_unchanged(tmp_path):
+    """An allowlist entry written before content pinning keeps working while its recorded mtime still
+    matches, gets its hash pinned at that run, and a later edit is then refused; one whose mtime moved
+    since approval is refused at once."""
+    script = _marker_script(tmp_path, "v1")
+    legacy = {"event": "pre_tool_call", "command": str(script), "approved_at": "2026-01-01T00:00:00Z",
+              "script_mtime_at_approval": shell_hooks.script_mtime_iso(str(script))}
+    shell_hooks.save_allowlist({"approvals": [legacy]})
+
+    _fire(script)
+    pinned = shell_hooks.allowlist_entry_for("pre_tool_call", str(script))
+    assert pinned["script_hash_at_approval"] == shell_hooks.script_content_hash(str(script))
+    _marker_script(tmp_path, "v2")
+    _fire(script)
+    assert (tmp_path / "ran.log").read_text().split() == ["v1"]
+
+    shell_hooks.save_allowlist({"approvals": [{**legacy, "script_mtime_at_approval": "2000-01-01T00:00:00Z"}]})
+    assert _fire(script, fail_closed=True)["action"] == "block"

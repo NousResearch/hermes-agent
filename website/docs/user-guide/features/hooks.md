@@ -2265,7 +2265,7 @@ Three escape hatches bypass the interactive prompt — any one is sufficient:
 
 Only a foreground `hermes chat` (or `hermes rl`) ever asks. The gateway, cron, `hermes mcp-serve --tools` (the mcp-serve plugin), `hermes acp` and CI never prompt, even when stdin looks like a terminal (a hidden console from a Windows login-item launcher does), so they need one of these three or an allowlist entry. Otherwise a newly-added hook stays un-registered and a warning names the profile's allowlist file it is missing from (`profiles/<name>/shell-hooks-allowlist.json` for a non-default profile). `hermes gateway run --accept-hooks` (like `HERMES_ACCEPT_HOOKS=1` on the gateway) approves the hooks of every profile that gateway serves, including hooks added after it started.
 
-**Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
+**An approval covers the script bytes it saw.** Approving a hook records the SHA-256 of its script beside the command. If the file changes afterwards (a plugin or dotfiles update, a `git pull`, an edit), the hook does not run the new bytes until you approve it again: a foreground `hermes` asks once more, `--accept-hooks` / `HERMES_ACCEPT_HOOKS=1` / `hooks_auto_accept: true` re-approve it automatically, and everywhere else (gateway, cron, Desktop sessions) it is skipped with a warning, or, for a `fail_closed` hook, its tool call is blocked. An approval saved before Hermes recorded hashes keeps working while the script's modification time still matches the one it recorded and is pinned at its next run; one whose script was modified since is treated as changed. `hermes hooks list` and `hermes hooks doctor` show which hooks changed.
 
 #### Manual allowlisting
 
@@ -2291,7 +2291,7 @@ The command string must match the configured hook command exactly. A path-keyed 
 | `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
 | `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
 | `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (a running gateway stops running it within about 30 seconds) |
-| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
+| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, whether the script changed since approval, JSON output validity, and rough execution time |
 
 ### Security
 

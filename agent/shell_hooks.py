@@ -7,10 +7,12 @@ Exit code 2 blocks a ``pre_tool_call`` even without JSON (Claude-Code / Cursor).
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -321,6 +323,10 @@ def _consented(spec: ShellHookSpec, accept: bool, allowed: set[tuple[str, str]],
     caches one read."""
     pair = (spec.event, spec.command)
     if pair in allowed:
+        if (accept or prompt) and (changed := script_change_since_approval(allowlist_entry_for(*pair), spec.command)):
+            # An opt-in or a yes refreshes the pin; a no keeps the hook wired, and its callback refuses the
+            # changed bytes (a fail_closed guard blocks instead of vanishing).
+            _prompt_and_record(spec.event, spec.command, accept_hooks=accept, changed=changed)
         return True
     if not (accept or prompt):
         return False
@@ -552,6 +558,10 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
+        # The approval covers the script bytes it saw (sha256 pinned in the allowlist): bytes changed
+        # since, by an update, a pull or an edit, run only once approved again.
+        if changed := _unapproved_change(spec):
+            return _fail_closed_block(spec, changed) if spec.fail_closed and spec.event in _BLOCKING_EVENTS else None
         return _evaluate_result(spec, _spawn(spec, _serialize_payload(spec.event, kwargs)))
 
     _callback.__name__ = _callback.__qualname__ = f"shell_hook[{spec.event}:{spec.command}]"
@@ -766,16 +776,19 @@ def _flock_unlock(lock_fh: Any) -> None:
         fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
-def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
-    """Approve an unseen ``(event, command)`` pair; True iff granted and recorded."""
+def _prompt_and_record(event: str, command: str, *, accept_hooks: bool, changed: Optional[str] = None) -> bool:
+    """Approve an unseen ``(event, command)`` pair, or one whose script ``changed`` since its approval;
+    True iff granted and recorded."""
     if accept_hooks:
         _record_approval(event, command)
         logger.info("shell hook auto-approved via --accept-hooks / env / config: %s -> %s", event, command)
         return True
     if not sys.stdin.isatty():
         return False
+    header = (f"\n⚠ A shell hook you approved earlier changed ({changed}).\n\n" if changed else
+              "\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n")
     print(
-        f"\n⚠ Hermes is about to register a shell hook that will run a\n  command on your behalf.\n\n"
+        header +
         f"    Event:   {event}\n    Command: {command}\n\n"
         f"  Commands run with your full user credentials.  Only approve\n  commands you trust."
     )
@@ -790,7 +803,8 @@ def _prompt_and_record(event: str, command: str, *, accept_hooks: bool) -> bool:
 
 
 def _record_approval(event: str, command: str) -> None:
-    entry = {"event": event, "command": command, "approved_at": _utc_now_iso(), "script_mtime_at_approval": script_mtime_iso(command)}
+    entry = {"event": event, "command": command, "approved_at": _utc_now_iso(),
+             "script_mtime_at_approval": script_mtime_iso(command), "script_hash_at_approval": script_content_hash(command)}
     with _locked_update_approvals() as data:
         data["approvals"] = [e for e in data.get("approvals", []) if not _entry_matches(e, event, command)] + [entry]
 
@@ -843,6 +857,79 @@ def script_mtime_iso(command: str) -> Optional[str]:
     except OSError:
         return None
     return None if mtime is None else datetime.fromtimestamp(mtime, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def script_content_hash(command: str) -> Optional[str]:
+    """SHA-256 hex digest of the script file ``command`` runs, or ``None`` if missing or unreadable. A bare
+    first token (``guard.sh``) that is not a file here is looked up on PATH, as ``Popen`` runs it."""
+    path = _command_script_path(command)
+    if not path:
+        return None
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded) and os.sep not in path and "/" not in path:
+        with suppress(ValueError):
+            argv = split_command_line(command)
+            expanded = (shutil.which(path) or expanded) if argv and argv[0] == path else expanded
+    try:
+        with open(expanded, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def script_change_since_approval(entry: Optional[dict[str, Any]], command: str) -> Optional[str]:
+    """Why the script ``command`` runs no longer matches what ``entry`` approved, or ``None``. An entry
+    with no hash key (approved before pinning) counts as changed only when the mtime it recorded moved;
+    a ``None`` hash (approved while unreadable) counts as changed once the script reads."""
+    if not isinstance(entry, dict):
+        return None
+    if "script_hash_at_approval" not in entry:
+        mtime_at, mtime_now = entry.get("script_mtime_at_approval"), script_mtime_iso(command)
+        moved = isinstance(mtime_at, str) and mtime_now is not None and mtime_now != mtime_at
+        return "script modified since approval" if moved else None
+    pinned, current = entry.get("script_hash_at_approval"), script_content_hash(command)
+    if current == pinned:
+        return None
+    return "script unreadable since approval" if current is None else "script content changed since approval"
+
+
+def _unapproved_change(spec: ShellHookSpec) -> Optional[str]:
+    """Fire-time check: the reason this hook's script is not the approved one, else ``None``. Consent held
+    without an allowlist entry (an opt-in, a launch's --accept-hooks) has no bytes to compare."""
+    entry = allowlist_entry_for(spec.event, spec.command)
+    if entry is None:
+        return None
+    reason = script_change_since_approval(entry, spec.command)
+    if reason is None:
+        if "script_hash_at_approval" not in entry:
+            _pin_hash(spec.event, spec.command)  # an approval from before pinning, unchanged since: pin it now
+        return None
+    if _opt_in_in_force():  # hooks_auto_accept / --accept-hooks approve every hook, the changed one too
+        _record_approval(spec.event, spec.command)
+        return None
+    once = (_home_key(), spec.event, spec.command, reason)
+    if once not in _skip_logged:
+        _skip_logged.add(once)
+        logger.warning("shell hook %s -> %s: %s — not run until approved again (`hermes hooks doctor`; "
+                       "`hermes hooks revoke` then approve at a CLI prompt, or --accept-hooks).",
+                       spec.event, spec.command, reason)
+    return reason
+
+
+def _pin_hash(event: str, command: str) -> None:
+    digest = script_content_hash(command)
+    if digest is None:
+        return
+    with _locked_update_approvals() as data:
+        for e in data.get("approvals", []):
+            if _entry_matches(e, event, command) and "script_hash_at_approval" not in e:
+                e["script_hash_at_approval"] = digest
+
+
+def _opt_in_in_force() -> bool:
+    from hermes_cli.config import load_config  # lazy: avoids import cycle
+    cfg = load_config()
+    return _resolve_effective_accept(cfg if isinstance(cfg, dict) else {}, False)
 
 
 def script_is_executable(command: str) -> bool:

@@ -308,6 +308,33 @@ rejected), and Hermes's bundled `github/*` skills driving the `gh` CLI are a
 more capable integration. On Desktop, GitHub mentions instead offer the
 `github-auth` skill when `gh` isn't signed in yet.
 
+## Custom servers and chat setup
+
+The catalog is not a prerequisite for using an MCP server. For a server
+outside the catalog, the operator CLI supports `hermes mcp add` with a
+stdio command or an HTTP URL; see the [CLI reference](../../reference/cli-commands.md#hermes-mcp).
+
+This is different from asking the agent to install a server in chat.
+`manage_connections` accepts catalog names for `install`, and already
+configured server names for `enable` and `authorize`. It does not accept
+arbitrary commands, URLs, or credentials in its targets. An unknown catalog
+name therefore does not mean that Hermes cannot use a custom server.
+
+The operator CLI documentation does not override the agent's connection
+instructions or approval requirements. If the agent cannot register a custom
+server through its permitted setup flow, it can explain the limitation and
+provide the CLI procedure for you to run, rather than hand-editing
+`mcp_servers` or bypassing the setup flow through another tool.
+
+Before running it, select the intended profile with `hermes --profile <name>`
+and review the command or endpoint, authentication, and exposed tools. Keep
+secrets out of chat and shell history; keep API keys in the selected profile's
+`.env` and use [environment-variable references](#runtime-env_var-substitution)
+in configuration. Complete
+the CLI's confirmation and tool-selection prompts. Registration and tool
+availability in an existing session are separate; see [runtime behavior](#runtime-behavior)
+before deciding whether a reload is needed.
+
 ## Two kinds of MCP servers
 
 ### Stdio servers

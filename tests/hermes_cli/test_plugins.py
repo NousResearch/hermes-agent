@@ -2714,3 +2714,208 @@ class TestAsyncHookOnCallerLoop:
             results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
         assert "async plugin blew up" in caplog.text
+
+
+class TestAinvokeHookBoundsSyncCallbacks:
+    """A plain ``def`` on a bounded hook must not run inline inside ``ainvoke_hook``.
+
+    ``post_gateway_admission`` is timeout-bounded and the gateway awaits this method.
+    ``asyncio.wait_for`` only covers awaitables, so a sync callback used to finish on
+    the gateway loop and its late handled result was still accepted.
+    Unbounded hooks (``pre_gateway_dispatch``) stay inline.
+    """
+
+    def test_bounded_sync_callback_times_out_and_the_loop_keeps_running(self, monkeypatch):
+        import asyncio
+        import time
+        from concurrent.futures import ThreadPoolExecutor
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05)
+        ran_on = {}
+
+        def hung(**_kwargs):
+            ran_on["thread"] = threading.current_thread().name
+            time.sleep(0.4)
+            return {"action": "handled"}
+
+        mgr = PluginManager()
+        mgr._hooks["post_gateway_admission"] = [hung]
+
+        class SharedExecutor(ThreadPoolExecutor):
+            def submit(self, *_a, **_k):
+                raise AssertionError("bounded sync hook used the loop's shared executor")
+
+        async def driver():
+            asyncio.get_running_loop().set_default_executor(SharedExecutor(1))
+            ticks = 0
+
+            async def ticker():
+                nonlocal ticks
+                while True:
+                    await asyncio.sleep(0.005)
+                    ticks += 1
+
+            task = asyncio.create_task(ticker())
+            await asyncio.sleep(0)
+            ticks = 0
+            t0 = time.monotonic()
+            results = await mgr.ainvoke_hook(
+                "post_gateway_admission", session_key="s", platform="telegram", text="hi",
+            )
+            elapsed = time.monotonic() - t0
+            task.cancel()
+            return elapsed, ticks, results
+
+        elapsed, ticks, results = asyncio.run(driver())
+        assert elapsed < 0.25, f"caller blocked for {elapsed:.2f}s"
+        assert ticks > 0, "event loop did not run while the sync callback blocked"
+        assert results == []
+        assert "hook" in ran_on["thread"]
+
+    def test_bounded_sync_callback_result_is_kept_when_it_finishes(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5)
+
+        def consume(text):
+            return {"action": "handled", "reply": text}
+
+        mgr = PluginManager()
+        mgr._hooks["post_gateway_admission"] = [consume]
+        results = asyncio.run(mgr.ainvoke_hook("post_gateway_admission", text="hi"))
+        assert results == [{"action": "handled", "reply": "hi"}]
+
+    def test_bounded_sync_callback_sees_the_caller_context(self, monkeypatch):
+        import asyncio
+        import contextvars
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5)
+        scope = contextvars.ContextVar("hook_scope", default="default")
+
+        def consume(**_kwargs):
+            return scope.get()
+
+        mgr = PluginManager()
+        mgr._hooks["post_gateway_admission"] = [consume]
+
+        async def driver():
+            scope.set("profile-b")
+            return await mgr.ainvoke_hook("post_gateway_admission")
+
+        assert asyncio.run(driver()) == ["profile-b"]
+
+    def test_bounded_async_callback_still_runs_on_the_caller_loop(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5)
+        mgr = PluginManager()
+
+        async def consume():
+            return asyncio.get_running_loop()
+
+        mgr._hooks["post_gateway_admission"] = [consume]
+
+        async def driver():
+            loop = asyncio.get_running_loop()
+            return loop, await mgr.ainvoke_hook("post_gateway_admission")
+
+        loop, results = asyncio.run(driver())
+        assert results == [loop]
+
+    def test_partial_async_callback_stays_on_the_caller_loop(self, monkeypatch):
+        import asyncio
+        from functools import partial
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5)
+        mgr = PluginManager()
+
+        async def consume(tag):
+            return tag, asyncio.get_running_loop()
+
+        mgr._hooks["post_gateway_admission"] = [partial(consume, "p")]
+
+        async def driver():
+            loop = asyncio.get_running_loop()
+            return loop, await mgr.ainvoke_hook("post_gateway_admission")
+
+        loop, results = asyncio.run(driver())
+        assert results == [("p", loop)]
+
+    def test_unbounded_sync_callback_still_runs_inline(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05)
+        ran_on = {}
+
+        def consume():
+            ran_on["thread"] = threading.current_thread()
+            return {"action": "handled"}
+
+        mgr = PluginManager()
+        mgr._hooks["pre_gateway_dispatch"] = [consume]
+        results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch"))
+        assert results == [{"action": "handled"}]
+        assert ran_on["thread"] is threading.current_thread()
+
+    def test_bounded_sync_exception_stays_isolated(self, monkeypatch, caplog):
+        import asyncio
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5)
+
+        def boom(**_kwargs):
+            raise RuntimeError("sync plugin blew up")
+
+        mgr = PluginManager()
+        mgr._hooks["post_gateway_admission"] = [boom, lambda **_kw: "survived"]
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            results = asyncio.run(mgr.ainvoke_hook("post_gateway_admission", text="hi"))
+        assert results == ["survived"]
+        assert "sync plugin blew up" in caplog.text
+
+    def test_bounded_sync_pre_tool_call_timeout_fails_closed(self, monkeypatch):
+        import asyncio
+        import time
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.05)
+
+        def hung(**_kwargs):
+            time.sleep(0.4)
+            return {"action": "approve"}
+
+        mgr = PluginManager()
+        mgr._hooks["pre_tool_call"] = [hung]
+        t0 = time.monotonic()
+        results = asyncio.run(
+            mgr.ainvoke_hook("pre_tool_call", tool_name="terminal", args={}))
+        assert time.monotonic() - t0 < 0.25
+        assert [item.get("action") for item in results] == ["block"]
+
+    def test_in_flight_admission_does_not_skip_another_session(self, monkeypatch):
+        import asyncio
+
+        monkeypatch.setattr("hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.5)
+        entered, release = threading.Event(), threading.Event()
+
+        def consume(session_key, **_kwargs):
+            if session_key == "a":
+                entered.set()
+                release.wait(2)
+            return {"action": "handled", "reply": session_key}
+
+        mgr = PluginManager()
+        mgr._hooks["post_gateway_admission"] = [consume]
+
+        async def driver():
+            first = asyncio.create_task(
+                mgr.ainvoke_hook("post_gateway_admission", session_key="a", text="a"))
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+            second = await mgr.ainvoke_hook(
+                "post_gateway_admission", session_key="b", text="b")
+            release.set()
+            return await first, second
+
+        first, second = asyncio.run(driver())
+        assert second == [{"action": "handled", "reply": "b"}]
+        assert first == [{"action": "handled", "reply": "a"}]
+

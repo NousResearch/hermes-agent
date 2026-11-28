@@ -175,3 +175,55 @@ def test_sleep_before_watchdog_thread_starts(monkeypatch):
     finally:
         finish.set()
     assert interrupted_at and min(interrupted_at) >= 600.0
+
+
+def test_unreadable_activity_summary_cannot_hide_stale_cron_run(monkeypatch):
+    """#156160: a hung agent must time out even when its diagnostics fail.
+
+    Keep the real default 600-second inactivity limit; age the agent's actual
+    activity stamp instead of shortening the policy. Only polling is sped up.
+    """
+    from cron import scheduler
+
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+    monitor = scheduler._inactivity_watchdog_loop
+
+    def quick_poll(**kwargs):
+        kwargs["poll_s"] = 0.01
+        return monitor(**kwargs)
+
+    monkeypatch.setattr(scheduler, "_inactivity_watchdog_loop", quick_poll)
+    real_wait = scheduler.concurrent.futures._base.wait
+    monkeypatch.setattr(
+        scheduler.concurrent.futures, "wait",
+        lambda futures, timeout=None: real_wait(futures, timeout=0.01),
+    )
+    release = threading.Event()
+
+    class Agent:
+        def __init__(self):
+            self._last_activity_ts = time.time() - 605.0
+            self._last_activity_desc = "terminal tool stopped replying"
+            self.interrupted = False
+
+        def get_activity_summary(self):
+            raise RuntimeError("diagnostic summary unavailable")
+
+        def run_conversation(self, *args, **kwargs):
+            release.wait(3.0)
+            return {"final_response": "unexpected success"}
+
+        def interrupt(self, *args, **kwargs):
+            self.interrupted = True
+            release.set()
+
+    agent = Agent()
+    try:
+        with pytest.raises(TimeoutError, match=r"limit 600s"):
+            scheduler._run_agent_with_watchdog(
+                agent, "prompt", {"schedule": {"kind": "every"}},
+                "job-stall", "job-stall", "task", None,
+            )
+    finally:
+        release.set()
+    assert agent.interrupted

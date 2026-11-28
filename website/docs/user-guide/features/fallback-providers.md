@@ -49,6 +49,10 @@ fallback:
 | Key | Default | Effect |
 |-----|---------|--------|
 | `fallback.min_switch_reset_seconds` | `0` (off) | A rate-limited primary whose declared reset is sooner than this many seconds is not swapped for a fallback; the retry backoff waits out the window instead. |
+| `fallback.reprobe_per_call` | `0` (off) | While a provider failover is active, probe the primary every N API-call iterations; a successful probe restores it mid-turn. |
+| `fallback.reprobe_cooldown_sec` | `300` | Minimum seconds between primary probes, to avoid probe traffic and rapid route flapping. |
+
+Mid-turn re-probing is supported for standard chat-completions and Anthropic Messages routes with a static API key. Other auth/API modes are not probed; Hermes stays on the fallback and retries the primary at the next turn start. The probe sends only a tiny `ping`, uses the route's TLS settings, and restores the primary only on HTTP 200.
 
 Gemini fallback entries accept `gemini`, `google`, `google-gemini`, and
 `google-ai-studio`. On Google's native API endpoint, all use the native Gemini

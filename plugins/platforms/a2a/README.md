@@ -11,23 +11,33 @@ no `a2a-sdk` dependency.
 hermes gateway setup      # pick A2A, or:
 ```
 
+```dotenv
+# $HERMES_HOME/.env (for example ~/.hermes/profiles/research/.env)
+A2A_RESEARCHER_TOKEN=replace-with-peer-token
+```
+
 ```yaml
 # ~/.hermes/config.yaml
-gateway:
-  platforms:
-    a2a:
-      enabled: true
-      extra:
-        port: 9900
+platforms:
+  a2a:
+    enabled: true
+    extra:
+      port: 9900
 
 # peers you want to call (outbound):
 a2a_agents:
   researcher:
     url: "http://localhost:9999"
-    auth: { type: bearer, token: "sk-..." }
+    auth: { type: bearer, token_env: A2A_RESEARCHER_TOKEN }
     timeout: 120
     capabilities: [web_search, research]
 ```
+
+`token_env` resolves through the active profile's secret scope, so each profile
+can use its own credential without putting it in `config.yaml`. If both fields
+are present, `token_env` takes precedence and a missing environment secret fails
+closed instead of falling back to `token`. Literal `token` values remain
+supported for compatibility, but are not recommended.
 
 ## Outbound — call other agents
 

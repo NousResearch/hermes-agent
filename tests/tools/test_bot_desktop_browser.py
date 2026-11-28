@@ -251,6 +251,7 @@ def test_root_dock_browser_starts_with_the_same_sandbox_args_as_the_agents_brows
     docker_flags = _agent_sandbox_flags("/opt/chrome")
     assert docker_flags and docker_flags <= set(browser.dock_argv("/opt/chrome", "/p/dir"))
     monkeypatch.setattr(launcher, "running_in_docker", lambda: False)
+    monkeypatch.setattr("hermes_platform.host.runtime.is_container", lambda: False)  # also when CI runs in a container
     monkeypatch.setattr(launcher, "apparmor_restricts_unprivileged_userns", lambda: False)
     assert "--no-sandbox" not in browser.dock_argv("/opt/chrome", "/p/dir")  # seated non-root host: sandboxed
 

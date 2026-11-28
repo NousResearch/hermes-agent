@@ -486,6 +486,26 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
     return result
 
 
+@router.delete("/api/skills")
+async def delete_skill(name: str, profile: Optional[str] = None):
+    """Delete a LOCAL skill through the agent's ``skill_manage`` delete path.
+
+    Hub skills have ``POST /api/skills/hub/uninstall``; this is the REST twin of
+    ``skill_manage(action="delete")`` so a client that created a skill over ``POST /api/skills`` can
+    remove it again, with the same guards (bundled/pinned/locked refusals, profile scoping) and the
+    same 404/400 shapes as the sibling routes (#158947).
+    """
+    from tools.skill_manager_tool import _delete_skill
+
+    result = await scoped_to_thread(profile, lambda: _delete_skill(name))
+    if not result.get("success"):
+        err = result.get("error", "Failed to delete skill.")
+        status = 404 if "not found" in str(err).lower() else 400
+        raise HTTPException(status_code=status, detail=err)
+    _clear_skills_prompt_cache()
+    return result
+
+
 @router.put("/api/skills/content")
 async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] = None):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""

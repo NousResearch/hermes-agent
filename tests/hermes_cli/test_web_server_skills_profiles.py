@@ -278,3 +278,49 @@ class TestProfileScopedHubActions:
         # ambient one it would inherit from a selector-less argv.
         env = _web_server_gateway._profile_action_environment(calls[0])
         assert env["HERMES_HOME"] == str(isolated_profiles["default"])
+
+
+class TestDeleteSkillRoute:
+    """``DELETE /api/skills`` is the REST twin of ``skill_manage(action="delete")`` (#158947): a client
+    that created a skill with ``POST /api/skills`` had no way to remove it again."""
+
+    def test_delete_removes_the_skill(self, client, isolated_profiles):
+        target = isolated_profiles["default"] / "skills" / "dashboard-skill"
+        assert target.exists()
+
+        resp = client.delete("/api/skills", params={"name": "dashboard-skill"})
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["success"] is True
+        assert "deleted" in resp.json()["message"]
+        assert not target.exists()
+
+    def test_delete_unknown_skill_is_404(self, client, isolated_profiles):
+        resp = client.delete("/api/skills", params={"name": "no-such-skill"})
+
+        assert resp.status_code == 404
+        assert "not found" in resp.json()["detail"].lower()
+
+    def test_delete_is_scoped_to_the_requested_profile(self, client, isolated_profiles):
+        """Same name in both profiles: only the requested profile's copy may go."""
+        for home in isolated_profiles.values():
+            _write_skill(home / "skills", "shared-delete")
+
+        resp = client.delete("/api/skills", params={"name": "shared-delete", "profile": "worker_alpha"})
+
+        assert resp.status_code == 200, resp.text
+        assert not (isolated_profiles["worker_alpha"] / "skills" / "shared-delete").exists()
+        assert (isolated_profiles["default"] / "skills" / "shared-delete").exists()
+
+    def test_delete_refuses_a_bundled_skill(self, client, isolated_profiles, monkeypatch):
+        """A bundled skill lives in the checkout, not the profile; the guard must refuse it as a client
+        error instead of rmtree'ing the installed tree."""
+        from tools import skill_manager_tool
+
+        monkeypatch.setattr(skill_manager_tool, "_pinned_guard", lambda name: f"'{name}' is bundled.")
+
+        resp = client.delete("/api/skills", params={"name": "dashboard-skill"})
+
+        assert resp.status_code == 400
+        assert "bundled" in resp.json()["detail"]
+        assert (isolated_profiles["default"] / "skills" / "dashboard-skill").exists()

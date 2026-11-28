@@ -382,11 +382,27 @@ def _discard_failed_zip_members(zf: zipfile.ZipFile, filelist_len: int) -> None:
     zf.NameToInfo.update((info.filename, info) for info in zf.filelist)
 
 
+_ZIP_DOS_EPOCH = 315532800
+
+
 def _write_zip_file(zf: zipfile.ZipFile, path: Path, arcname: str) -> None:
-    """Write one member while keeping a failed partial write out of the central directory."""
+    """Write one member while keeping a failed partial write out of the central directory.
+
+    ZIP's DOS timestamp starts at 1980-01-01. For older filesystem mtimes we store
+    that floor timestamp; the original mtime is not preserved in an extended field.
+    """
     filelist_len = len(zf.filelist)
     try:
-        zf.write(path, arcname=arcname)
+        if path.stat().st_mtime < _ZIP_DOS_EPOCH:
+            # ZipFile.write() builds its own ZipInfo, so construct the member here to
+            # clamp only pre-1980 dates without changing normal timestamp handling.
+            info = zipfile.ZipInfo.from_file(path, arcname, strict_timestamps=False)
+            info.compress_type = zf.compression
+            info._compresslevel = zf.compresslevel  # type: ignore[reportAttributeAccessIssue]
+            with path.open("rb") as source, zf.open(info, "w") as destination:
+                shutil.copyfileobj(source, destination, 8192)
+        else:
+            zf.write(path, arcname=arcname)
     except Exception:
         _discard_failed_zip_members(zf, filelist_len)
         raise

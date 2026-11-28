@@ -135,14 +135,33 @@ def _is_within(root: Path, path: Path) -> bool:
 
 
 def _store_blob(data: bytes) -> str:
-    """Write *data* keyed by sha256 (existing blob left alone). Returns the hash."""
+    """Write *data* keyed by sha256 (existing blob left alone). Returns the hash.
+
+    The blob is created with mode 0600 and the blobs directory with 0700. A blob
+    can hold a secret (a skill file may embed a live credential), and the
+    default umask (0022) would otherwise leave every blob world-readable.
+    ``write_bytes`` applies the umask at create time, so the mode is set
+    explicitly on the fd rather than with a later chmod — a later chmod has a
+    window in which another local account can read the file.
+    """
     digest = hashlib.sha256(data).hexdigest()
     dest = blobs_dir() / digest
     if not dest.exists():
         dest.parent.mkdir(parents=True, exist_ok=True)
+        with suppress(OSError):
+            os.chmod(dest.parent, 0o700)
         tmp = dest.with_name(f".tmp-{uuid.uuid4().hex[:8]}-{digest}")
-        tmp.write_bytes(data)
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            with suppress(OSError):
+                tmp.unlink()
+            raise
         os.replace(tmp, dest)
+        with suppress(OSError):
+            os.chmod(dest, 0o600)
     return digest
 
 

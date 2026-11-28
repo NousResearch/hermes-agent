@@ -1,0 +1,159 @@
+"""The local Desktop opens its own unrouted conversation: adoption's not_found falls through.
+
+``resolve_local_target`` adopted legacy rows as writable conversations, but a row legacy adoption
+refuses (a foreign owner's stamp, or a caller that is not the owner's native legacy transport) is
+refused exactly ``not_found`` — and the machine's own Desktop could not open its chat. The refusal
+now falls through to the desktop recovery floor, mapping a compression tip to its lineage root
+first (a child mount would fork the FIFO). Upstream #140183 F1 governs whose rows the floor mounts:
+UNSTAMPED desktop rows fall through and mount; a stranger-stamped desktop row stays unmounted with
+its stamp intact, at BOTH call sites (this path and the ``authorize`` chain's). A stamped
+NON-desktop lineage keeps refusing identically.
+"""
+import threading
+from types import SimpleNamespace
+
+import pytest
+
+from persistence.core.errors import AuthorityRefusal as RuntimeStoreError
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
+
+# A stamp legacy adoption refuses (not the host's own login, not a Nous account label, not a
+# bundled login-provider label): the desktop floor must refuse it too and keep the row's stamp.
+FOREIGN_STAMP = 'telegram:42'
+
+
+def _desktop_lineage(db, root, child_ids):
+    """A desktop root closed by compression with continuation children; the tip resumes it."""
+    seed_session(db, root, 'desktop', profile_name='default')
+    prev = root
+    for child in child_ids:
+        seed_session(db, child, 'desktop', profile_name='default', parent_session_id=prev)
+        db.sessions.end(prev, 'compression')
+        prev = child
+    tip = child_ids[-1]
+    lineage = list(db.lineage.lineage(tip))
+    assert lineage[0] == root and lineage[-1] == tip
+    return tip
+
+
+@pytest.fixture
+def authority(tmp_path, monkeypatch):
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    from gateway.session_authority import SessionAuthority
+
+    db = storage_handle(tmp_path)
+    epoch = db.runtime.begin_epoch(instance_id='owner')
+
+    class _Store:
+        def __init__(self):
+            self._lock = threading.RLock()
+            self._entries = {}
+
+        def _ensure_loaded_locked(self):
+            pass
+
+        def _generate_session_key(self, source):
+            from gateway.session import build_session_key
+            return build_session_key(source)
+
+    runner = SimpleNamespace(_draining=False, session_store=_Store())
+    authority = SessionAuthority(runner, profile_id='p', instance_id='owner', epoch=epoch, persistence=db)
+    adapter = SimpleNamespace(gateway_runner=runner)
+    runner._adapter_for_source = lambda source: adapter
+    # the post-restart local native peer: authenticated subject is the host owner's, NOT the row's login stamp
+    from gateway.owner_identity import host_owner_subject
+    native = SimpleNamespace(profile_id=authority.profile_id, subject=host_owner_subject(),
+                             transport_id='native-1',
+                             capabilities=frozenset({'session:create', 'session:read',
+                                                     'session:control', 'session:operator'}))
+    from gateway.session_local_migration import bind_native_transport
+    bind_native_transport(authority, native,
+                          {'provider': 'local', 'profile_id': authority.profile_id,
+                           'instance_id': authority.instance_id, 'actor': native})
+    authority._native_legacy_transports[native.transport_id] = native
+    yield authority
+    db.close()
+
+
+@pytest.mark.asyncio
+async def test_an_unstamped_desktop_tip_resolves_to_its_lineage_root(authority):
+    """resolve_local_target on an unstamped desktop tip (legacy adoption refuses for a caller that
+    is not the owner's native legacy transport) mounts the ROOT as an API-family source, keeping
+    the row's ownership stamps untouched; the routing entry still executes on the physical tip."""
+    from gateway.config import Platform
+    from gateway.session_authority import LiveSession
+    from gateway.session_contract import SessionRef
+    from gateway.session_local_migration import resolve_local_target
+
+    root = '20261030_080000_droot00'
+    tip = _desktop_lineage(authority.persistence, root, ['20261030_090000_dchild1',
+                                               '20261030_100000_dchild2'])
+
+    ref = resolve_local_target(authority, actor_of(authority), tip)
+    assert isinstance(ref, SessionRef) and ref.session_id == root
+
+    live = authority.sessions[root]
+    assert isinstance(live, LiveSession)
+    assert live.source.platform == Platform.API_SERVER
+    assert live.source.chat_id == root
+    assert live.source.user_id is None  # unstamped row mounts unstamped: no receipt, no policy commit
+    entry = authority.runner.session_store._entries['agent:main:api_server:dm:' + root]
+    assert entry.session_id == tip  # the root mount executes on the physical tip
+
+
+@pytest.mark.asyncio
+async def test_a_stranger_stamped_desktop_row_stays_unmounted(authority):
+    """Upstream #140183 F1: a desktop row stamped for someone other than the host owner must stay
+    unmounted with its stamp intact — at BOTH fall-through call sites, resolve_local_target and
+    the authorize chain."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_local_migration import resolve_local_target
+
+    db = authority.persistence
+    for sid in ('20261030_130000_froot00', '20261030_140000_ftip000'):
+        seed_session(db, sid, 'desktop', user_id=FOREIGN_STAMP, profile_name='default')
+    db.sessions.end('20261030_130000_froot00', 'compression')
+
+    # (a) resolve_local_target: legacy adoption refuses the stranger stamp, and the desktop
+    # floor's ownership gate refuses the fall-through too.
+    with pytest.raises(RuntimeStoreError, match='not_found'):
+        resolve_local_target(authority, actor_of(authority), '20261030_140000_ftip000')
+    # (b) the authorize chain: restore_api_session refuses the cold row, the gate refuses the family.
+    viewer = SimpleNamespace(profile_id=authority.profile_id,
+                             capabilities=frozenset({'session:read'}))
+    with pytest.raises(RuntimeStoreError, match='not_found'):
+        authority.authorize(viewer, SessionRef(authority.profile_id, '20261030_140000_ftip000'),
+                            'session:read')
+    for sid in ('20261030_130000_froot00', '20261030_140000_ftip000'):
+        assert sid not in authority.sessions
+        assert db.sessions.get(sid).user_id == FOREIGN_STAMP  # stamp intact
+    assert not list(authority.runner.session_store._entries)
+
+
+@pytest.mark.asyncio
+async def test_a_stamped_non_desktop_lineage_still_refuses(authority):
+    """The fall-through is desktop-only: the same stranger-stamped shape on a gui lineage answers
+    bare not_found and mounts nothing."""
+    from gateway.session_local_migration import resolve_local_target
+
+    root = '20261030_110000_groot00'
+    db = authority.persistence
+    seed_session(db, root, 'gui', user_id=FOREIGN_STAMP, profile_name='default')
+    seed_session(db, '20261030_120000_gchild1', 'gui', user_id=FOREIGN_STAMP, profile_name='default',
+                 parent_session_id=root)
+    db.sessions.end(root, 'compression')
+    tip = '20261030_120000_gchild1'
+
+    with pytest.raises(RuntimeStoreError, match='not_found'):
+        resolve_local_target(authority, actor_of(authority), tip)
+    assert root not in authority.sessions and tip not in authority.sessions
+    assert not list(authority.runner.session_store._entries)
+
+
+def actor_of(authority):
+    """A local viewer that is NOT the owner's native legacy transport: legacy adoption refuses its
+    request bare ``not_found``, which is what routes it to the desktop recovery floor."""
+    return SimpleNamespace(profile_id=authority.profile_id,
+                           subject='local:someone-else', transport_id='viewer-1',
+                           capabilities=frozenset({'session:read'}))

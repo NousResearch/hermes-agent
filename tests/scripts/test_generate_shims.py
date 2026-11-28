@@ -148,6 +148,17 @@ def test_exists_row_writes_a_marker_that_refuses_to_load(repo):
     assert old_name.stdout.split() == ["7", "True"], old_name.stderr
 
 
+def test_files_the_check_compares_as_text_check_out_with_lf():
+    # --check compares bytes with the LF text it writes; a file git checks out with CRLF (text=auto on Windows)
+    # would always differ, and --check would fail on every Windows checkout.
+    block = (REPO / ".gitattributes").read_text(encoding="utf-8").split("# BEGIN shims")[1].split("# END shims")[0]
+    paths = [".gitattributes"] + [line.split()[0].lstrip("/") for line in block.splitlines()
+                                  if line.startswith("/") and line.split()[0].endswith(".py")]
+    listed = subprocess.run(["git", "check-attr", "eol", "--", *paths], cwd=REPO, capture_output=True, text=True,
+                            timeout=60, check=True).stdout
+    assert listed.splitlines() == [f"{path}: eol: lf" for path in paths]
+
+
 def test_platform_folders_a_release_scans_keep_their_marker_and_manifest():
     # Released code accepts plugins/platforms/<name>/ only with __init__.py and plugin.yaml, and only then
     # loads <name>/gateway_env.py. A gateway_env.py row without the other two does nothing.

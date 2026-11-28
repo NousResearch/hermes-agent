@@ -40,6 +40,8 @@ docker/entrypoint.sh text eol=lf
 *.html  text eol=lf
 *.svg   text eol=lf
 *.ps1   text eol=crlf
+# generate_shims.py --check compares this file byte for byte with the LF text it writes.
+.gitattributes text eol=lf
 
 # scripts/ci/prompt_surface.py renders this snapshot with LF on every host and compares bytes.
 tests/fixtures/prompt_surface/** text eol=lf

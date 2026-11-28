@@ -920,10 +920,8 @@ def _cleanup_invalid_pid_path(
 def _try_acquire_file_lock(handle) -> bool:
     try:
         if _IS_WINDOWS:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write("\n")
-                handle.flush()
+            # Write nothing: Windows locks a byte past EOF, and a probe's placeholder used to land
+            # on the record the holder had just written.
             handle.seek(_WINDOWS_LOCK_OFFSET)
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         else:

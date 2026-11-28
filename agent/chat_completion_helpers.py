@@ -3114,11 +3114,11 @@ class _StreamingCall(StreamingWaitMonitor):
                         # A shim cannot follow text already released to the display, so the
                         # whole-content re-join runs only until the first emitted delta.
                         or (not self.deltas_were_sent["yes"] and router_timeout_shim_may_follow("".join(content_parts)))):
+                    # No ``continue``: this chunk can also open a tool call (#158731).
                     pending_text_parts.append(delta_content)
                     pending = "".join(pending_text_parts)
                     if not (_provider_stream_text_may_be_sse(pending) or router_timeout_shim_may_follow(pending)):
                         _flush_pending_stream_text()
-                    continue
                 else:
                     self._emit_text(delta_content)
 

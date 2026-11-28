@@ -19,7 +19,7 @@ from typing import Any, Dict, Optional, cast
 
 from agent.i18n import t
 from agent.retry_utils import jittered_backoff
-from gateway.config import Platform, _BUILTIN_PLATFORM_VALUES
+from gateway.config import STARTUP_NOTICE_ALWAYS, STARTUP_NOTICE_OFF, Platform, _BUILTIN_PLATFORM_VALUES
 from gateway.platforms.base import BasePlatformAdapter, _mark_notify_metadata
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, SessionStore
@@ -42,6 +42,16 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
     """
     return _notice_target_key(
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
+
+
+def _startup_notice_wanted(platform_cfg, *, planned: bool) -> bool:
+    """Whether a home channel gets "Gateway online" on this boot: ``gateway_restart_notification``
+    is the master switch, ``home_channel_startup_notification`` picks planned restarts only
+    (``restart_only``), every boot (``always``) or never (``off``)."""
+    if not platform_cfg.gateway_restart_notification:
+        return False
+    mode = platform_cfg.home_channel_startup_notification
+    return mode != STARTUP_NOTICE_OFF and (planned or mode == STARTUP_NOTICE_ALWAYS)
 
 
 def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):
@@ -489,6 +499,60 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             return False
 
     _planned_restart_notice_lock: Optional[asyncio.Lock] = None
+    # ``always`` homes this boot owes "Gateway online" when it found no planned-restart marker, and
+    # the ones already reached. In memory only: an unplanned boot is a property of this process.
+    _unplanned_startup_notice_lock: Optional[asyncio.Lock] = None
+    _unplanned_startup_notice_owed: Optional[set] = None
+    _unplanned_startup_notice_delivered: Optional[set] = None
+
+    def _startup_notice_owed_targets(self, *, planned: bool) -> set:
+        """Served-target keys of every home channel owed "Gateway online" on this boot, from config
+        (not live transports), so a platform down at boot is still owed its notice."""
+        return {
+            _served_notice_target_key(profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+            for profile, platform, cfg in self._served_home_channel_configs()
+            if cfg.home_channel and cfg.home_channel.chat_id and _startup_notice_wanted(cfg, planned=planned)
+        }
+
+    def _restart_requester_chats(self) -> set:
+        """Delivery key of the chat that sent ``/restart`` (the requester marker the boot pass read).
+
+        That chat gets its own "restarted" reply, now or from the reconnect replay, so a home channel
+        on the same chat/topic must not also get "Gateway online"."""
+        raw = self._restart_notice_claimed
+        try:
+            data = json.loads(raw) if raw else None
+        except ValueError:
+            return set()
+        if not isinstance(data, dict) or not data.get("platform") or not data.get("chat_id"):
+            return set()
+        return {_delivery_target_key(
+            str(data["platform"]), data["chat_id"], data.get("thread_id"), profile=self._marker_profile(data))}
+
+    def _arm_unplanned_startup_notice(self) -> None:
+        """Boot without a planned-restart marker (crash, OOM, supervisor respawn, cold start): owe
+        "Gateway online" to every ``home_channel_startup_notification: always`` home, once."""
+        self._unplanned_startup_notice_owed = self._startup_notice_owed_targets(planned=False) or None
+        self._unplanned_startup_notice_delivered = set()
+
+    async def _send_unplanned_startup_notifications(self) -> None:
+        """Send the owed ``always`` notices to every home with a live transport. Runs from the boot pass
+        and again from the reconnect replay, so a home whose platform was down at boot gets exactly one
+        notice when it comes back. Disarms once every owed home was reached."""
+        if not self._unplanned_startup_notice_owed:
+            return
+        if self._unplanned_startup_notice_lock is None:
+            self._unplanned_startup_notice_lock = asyncio.Lock()
+        async with self._unplanned_startup_notice_lock:
+            owed = self._unplanned_startup_notice_owed
+            if not owed:
+                return
+            delivered = set(self._unplanned_startup_notice_delivered or ())
+            delivered |= await self._send_home_channel_startup_notifications(
+                skip_targets=delivered, planned=False, skip_chats=self._restart_requester_chats())
+            self._unplanned_startup_notice_delivered = delivered
+            if owed <= delivered:
+                self._unplanned_startup_notice_owed = None
 
     async def _replay_pending_planned_restart_notification(self) -> None:
         """Send the planned-restart online notice to every home channel still owed one; clear
@@ -514,13 +578,9 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
-                # (gateway_restart_notification=false) must not keep the marker alive forever.
-                owed = {
-                    _served_notice_target_key(
-                        profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
-                    for profile, platform, cfg in self._served_home_channel_configs()
-                    if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
-                }
+                # (gateway_restart_notification=false, home_channel_startup_notification=off) must
+                # not keep the marker alive forever.
+                owed = self._startup_notice_owed_targets(planned=True)
                 delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
                 if owed <= delivered:
                     path.unlink(missing_ok=True)
@@ -531,7 +591,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.warning("Planned-restart notification remains pending", exc_info=True)
 
     async def _send_home_channel_startup_notifications(
-        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
+        self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None, planned: bool = True,
+        skip_chats: Optional[set[tuple]] = None,
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify EVERY served profile's configured home channels that the gateway is back online.
 
@@ -539,14 +600,16 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         Telegram group for the whole host), and one host process restarting once owes that chat
         one notice. Accounting stays per profile so the marker's owed set still discharges.
         ``skip_targets`` lets startup avoid duplicate messages when a more specific restart
-        notification is queued for the same chat.
+        notification is queued for the same chat; ``skip_chats`` (delivery keys) marks chats that get
+        one anyway, which counts as delivered. ``planned`` is False on a boot without the
+        planned-restart marker: only ``home_channel_startup_notification: always`` homes are sent to.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
         message = t("gateway.startup.online")
         targets = list(self._served_home_channel_transports())
         # A chat already notified for ANOTHER profile is not notified again.
-        notified_chats = {
+        notified_chats = set(skip_chats or ()) | {
             _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             for profile, platform, _cfg, home, _transport in targets
             if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
@@ -556,6 +619,12 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
+                )
+                continue
+            if not _startup_notice_wanted(platform_cfg, planned=planned):
+                logger.info(
+                    "Home-channel startup notification skipped: %s has home_channel_startup_notification=%s",
+                    platform.value, platform_cfg.home_channel_startup_notification,
                 )
                 continue
             target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)

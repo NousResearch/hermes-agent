@@ -172,10 +172,12 @@ async function providerErrorText(response: Response): Promise<string> {
 /**
  * Normalize an OpenAI-compatible transcription HTTP body to spoken text.
  *
- * Groq and OpenAI honor `response_format=text` and return a bare string.
- * Mistral Voxtral ignores that flag and returns JSON
- * `{ text, model, usage, ... }` — dumping that object into the Desktop
- * composer is the dictation regression (plain speech becomes raw JSON).
+ * The direct request asks for `response_format=json` — OpenRouter rejects
+ * `text` (HTTP 400, "Only json and verbose_json are supported") and every
+ * OpenAI-compatible endpoint accepts `json`. OpenAI/Groq answer
+ * `{ text }`; an endpoint that ignores the flag and returns a bare string is
+ * kept as-is; Mistral Voxtral's JSON `{ text, model, usage, ... }` is
+ * unwrapped instead of dumped into the Desktop composer as raw JSON.
  */
 export function transcriptFromOpenAiMultipartBody(body: string): string {
   const trimmed = String(body || '').trim()
@@ -309,7 +311,10 @@ export async function transcribeAudioClientDirect(audio: Blob, owner?: ResolvedO
       form.set('model', stt.model)
     }
 
-    form.set('response_format', 'text')
+    // `json`, never `text`: OpenRouter 400s on "text" and every OpenAI-compatible
+    // endpoint accepts json (the parser unwraps `{ text }` and still tolerates a
+    // bare-string body). A hardcoded format is a 400 on every dictation elsewhere.
+    form.set('response_format', 'json')
 
     if (stt.language) {
       form.set('language', stt.language)

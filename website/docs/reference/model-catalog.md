@@ -1,12 +1,17 @@
 ---
 sidebar_position: 11
 title: Model Catalog
-description: Remotely-hosted manifest driving curated model picker lists for OpenRouter and Nous Portal.
+description: Remotely-hosted manifest that keeps curated model picker lists current between releases.
 ---
 
 # Model Catalog
 
-Hermes fetches curated model lists for **OpenRouter** and **Nous Portal** from a JSON manifest hosted alongside the docs site. This lets maintainers update picker lists without shipping a new `hermes-agent` release.
+Hermes fetches curated model lists from a JSON manifest hosted alongside the docs site. This lets maintainers update picker lists without shipping a new `hermes-agent` release.
+
+The manifest is read in two ways:
+
+- **OpenRouter and Nous Portal** take their whole curated list from it.
+- **Every other built-in provider** (Anthropic, OpenAI API, Bedrock, Gemini, OpenCode Zen and the rest) gets *added* rows. A model published after your release shows up in the picker; nothing your install already lists is removed.
 
 When the manifest is unreachable (offline, network blocked, hosting failure), Hermes silently falls back to the in-repo snapshot that ships with the CLI. The manifest never breaks the picker — worst case you see whatever list was bundled with your installed version.
 
@@ -41,6 +46,12 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
         {"id": "anthropic/claude-opus-4.7"},
         {"id": "moonshotai/kimi-k3"}
       ]
+    },
+    "anthropic": {
+      "models": [
+        {"id": "claude-opus-5-5"},
+        {"id": "claude-sonnet-5-5"}
+      ]
     }
   }
 }
@@ -51,8 +62,70 @@ Field notes:
 - **`version`** — integer schema version. Future schemas bump this; Hermes refuses manifests with versions it doesn't understand and falls back to the hardcoded snapshot.
 - **`metadata`** — free-form dict at the manifest, provider, and model level. Any keys. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
 - **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this.
-- **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship.
-- **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
+- **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship. Only the OpenRouter and Nous Portal blocks carry the label; on any other block it is ignored.
+- **`requires`** — optional list on a model entry, for the added-row providers. It names request handling the model depends on. A build that does not have that handling skips the entry, so an older release never lists a model it cannot drive. No build satisfies any requirement yet, so an entry carrying the field is skipped everywhere.
+- **Pricing** is not supplied by the model catalog manifest.
+- **Context length and capabilities** still come from live provider APIs and models.dev first. The manifest's `context_lengths` and `model_metadata` tables extend the last fallback; see below for how context keys match and which entry wins.
+
+## Providers other than OpenRouter and Nous Portal
+
+Each built-in provider row in `_PROVIDER_MODELS` is published as a `{"models": [{"id": ...}]}` block under the provider's Hermes id. On the client the block only adds to the row the install ships: the ids the install does not have come first, in manifest order, then the shipped row exactly as it is. The manifest does not reorder or respell a shipped id.
+
+The merge feeds the places that *list* models: the `/model` picker on every surface, `hermes model`, and the validation that decides whether a typed model id is known. An added id is accepted on a provider whose picker offers it, and not on one whose live listing stands alone.
+
+It deliberately does not feed anything that *chooses* a model for you:
+
+- The default model for a provider with no model configured and the short aliases (`sonnet`, `opus`) read the built-in list.
+- The Desktop onboarding recommendation chooses from the list the picker would have had without the manifest's rows, in that order, for the requested profile.
+- Provider auto-detection for a bare model name (`/model some-model`) treats an added row as something to offer, not as proof the current provider serves it. The provider's model cache records which of its ids are there only because of the manifest, as of the last listing the provider answered, so a discovery outage does not change where a name goes either.
+
+So a manifest edit can never change what an unconfigured install runs, what it costs, or which provider a typed name lands on.
+
+Other rules:
+
+- The manifest only extends a list. A provider with no built-in row gets nothing from it, which keeps third-party provider plugins on their own lists, including a plugin whose name matches a published block.
+- `openai-codex`, `xai`, `xai-oauth` and `moa` are not published and are not read: their rows come from the account or from another source. On `openai` and `openai-api`, an id that only the account's own `/models` listing may advertise (`gpt-6-astra`) is never taken from the manifest.
+- Vercel AI Gateway shows an added id once the gateway's live catalog serves it, after the shipped rows.
+- These rows are read from the disk cache only and never trigger a fetch of their own. The fetch points in the table below keep the cache warm.
+- Per-provider override URLs (below) apply to OpenRouter and Nous Portal only.
+- Six providers (`zai`, `nvidia`, `moonshot`, `deepseek`, `opencode-zen`, `huggingface`) show their plugin's own fallback list while their live `/models` probe is unavailable. The manifest rows join once the probe answers.
+
+Not published, on purpose: `openai-codex` (only the account's live Codex catalog may advertise a model), `xai` and `xai-oauth` (their rows come from the models.dev cache) and `moa` (a preset name, not a model list).
+
+## Metadata and context windows for new models
+
+Two top-level tables publish what the built-in tables hold on `main`:
+
+```json
+{
+  "context_lengths": {
+    "default":     {"gpt-6.2-sol": 1050000},
+    "bedrock":     {"anthropic.claude-opus-5": 1000000},
+    "codex_oauth": {"gpt-6.2-sol": 500000}
+  },
+  "model_metadata": {
+    "openai": {
+      "gpt-6.2-sol": {
+        "limit": {"context": 1050000, "output": 128000},
+        "modalities": {"input": ["text", "image"], "output": ["text"]},
+        "tool_call": true,
+        "reasoning": true
+      }
+    }
+  }
+}
+```
+
+- **`context_lengths`** mirrors the three hardcoded context-window tables (the general one, Bedrock's, and the Codex OAuth fallback). Keys match the way the built-in tables do: a key is a substring of the model id and the longest matching key wins.
+- **`model_metadata`** mirrors the built-in metadata entries, keyed by models.dev provider id and lowercased model id, in the models.dev entry shape.
+
+Both only fill gaps. A context-table key or a provider/model metadata entry your install ships keeps its own value, under any casing, even when the manifest disagrees. What the manifest adds is the row for a model the install has never heard of.
+
+One consequence is worth spelling out. Context keys match as substrings and the longest key wins, so a new, more specific key (`glm-9-preview`) does take over from a shipped family catch-all (`glm`) for the models it names. That is the gap being filled: the catch-all was only a guess for that model. A model no key matches still gets the generic 256K window, and a model no metadata source knows stays "unknown" for vision and reasoning.
+
+A malformed row is dropped rather than half-used: a context value that is not a positive integer, a blank key, or a metadata entry without a valid `limit.context`. A `cost` field in a metadata entry is ignored; prices never come from this table.
+
+The order of sources is unchanged: an explicit `model.context_length`, live provider endpoints and models.dev all still come first. These tables sit where the hardcoded tables already sat, at the end.
 
 ## Fetch behavior
 
@@ -116,7 +189,7 @@ Maintainers:
 
 ```bash
 # Re-generate from the in-repo hardcoded lists (keeps manifest in sync after
-# editing OPENROUTER_MODELS or _PROVIDER_MODELS["nous"] in hermes_cli/models.py).
+# editing OPENROUTER_MODELS or any _PROVIDER_MODELS row in hermes_cli/models_catalog_static.py).
 python scripts/build_model_catalog.py
 ```
 

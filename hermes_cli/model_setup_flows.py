@@ -13,6 +13,8 @@ import argparse
 import os
 
 from hermes_cli.config import clear_model_endpoint_credentials
+from hermes_cli.model_catalog import merge_remote_models
+from hermes_cli.models_detect import relay_lists_live_only
 from hermes_cli.model_setup_flows_common import (
     _HTTP, _activate_provider_model, _ask, _commit_model_config, _curses_choice,
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
@@ -471,7 +473,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         return
 
     from hermes_cli.models import _PROVIDER_MODELS
-    model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
+    model_ids = merge_remote_models("minimax-oauth", _PROVIDER_MODELS.get("minimax-oauth", []))
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
 
@@ -502,7 +504,8 @@ def _model_flow_kimi(config, current_model=""):
         save_env_value(base_url_env, "")
     print()
 
-    model_list = _PROVIDER_MODELS.get("kimi-coding" if is_coding_plan else "moonshot", [])
+    row = "kimi-coding" if is_coding_plan else "moonshot"
+    model_list = merge_remote_models(row, _PROVIDER_MODELS.get(row, []))
     selected = _pick_model_or_prompt(
         model_list, "Enter model name: ", current_model=current_model, confirm_provider=provider_id,
         confirm_base_url=effective_base, confirm_api_key=existing_key)
@@ -552,7 +555,7 @@ def _model_flow_stepfun(config, current_model=""):
     if model_list:
         print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
     else:
-        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        model_list = merge_remote_models(provider_id, _PROVIDER_MODELS.get(provider_id, []))
         if model_list:
             print(f"  Could not auto-detect models from {pconfig.name} API — showing Step Plan fallback catalog.")
 
@@ -606,7 +609,8 @@ def _model_flow_vertex(config, current_model=""):
     region = region_input or current_region
 
     # 4. Model selection (curated list — Vertex has no /models listing route).
-    model_list = _PROVIDER_MODELS.get("vertex", []) or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"]
+    model_list = (merge_remote_models("vertex", _PROVIDER_MODELS.get("vertex", []))
+                  or ["google/gemini-3-pro-preview", "google/gemini-3-flash-preview"])
     host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     base_url_preview = f"https://{host}/v1beta1/projects/<project>/locations/{region}/endpoints/openapi"
     selected = _prompt_model_selection(model_list, current_model=current_model, confirm_provider="vertex", confirm_base_url=base_url_preview)
@@ -701,7 +705,10 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
     from hermes_cli.config import get_env_value
     from hermes_cli.models import fetch_api_models, probe_profile_catalog, static_catalog
-    curated = static_catalog(provider_id)
+    shipped = static_catalog(provider_id)
+    # A configured relay lists its live ids alone, as the picker and validation do: no manifest rows.
+    relay = relay_lists_live_only(provider_id, effective_base)
+    curated = list(shipped) if relay else merge_remote_models(provider_id, shipped)
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
     special = _SPECIAL_MODEL_LISTS.get(provider_id)
@@ -713,7 +720,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     if model_list:
         _report_live_models(model_list, "models.dev registry")
         return model_list
-    if curated and len(curated) >= 8:
+    if len(shipped) >= 8:  # counted without the manifest's rows: they must not turn the probe off
         # Substantial curated list — use it directly, skip live probe
         _show_curated(curated)
         return curated
@@ -730,7 +737,7 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
         _show_curated(curated)
         return list(curated)
     live_models = fetch_api_models(api_key_for_probe, effective_base)
-    if live_models and len(live_models) >= len(curated):
+    if live_models and len(live_models) >= len(shipped):
         _report_live_models(live_models, f"{pconfig.name} API")
         return live_models
     _show_curated(curated)  # may be empty: falls through to raw input
@@ -887,8 +894,8 @@ def _model_flow_anthropic(config, current_model=""):
     print()
 
     selected = _pick_model_or_prompt(
-        _PROVIDER_MODELS.get("anthropic", []), "Model name (e.g., claude-sonnet-4-20250514): ",
-        current_model=current_model, confirm_provider="anthropic")
+        merge_remote_models("anthropic", _PROVIDER_MODELS.get("anthropic", [])),
+        "Model name (e.g., claude-sonnet-4-20250514): ", current_model=current_model, confirm_provider="anthropic")
     # Clear base_url: resolve_runtime_provider() always hardcodes Anthropic's URL, and a
     # stale value can contaminate other providers on a later switch.
     _finish_model(selected, "anthropic", f"Default model set to: {selected} (via Anthropic)", drop_base_url=True, drop_api_mode=True)

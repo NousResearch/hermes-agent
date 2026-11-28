@@ -15,7 +15,8 @@ from hermes_cli.config import get_config_path, read_raw_config
 from hermes_cli.web_deps import late
 from hermes_cli.web_routers._common import corrupt_store_as_status, http_failure
 from hermes_cli.web_server_profiles import (
-    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
+    _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _config_profile_scope,
+    _hermes_home_scope, _is_other_profile, _merge_aux_into_by_model,
 )
 from hermes_cli.web_models import RawConfigUpdate
 
@@ -308,15 +309,18 @@ def _get_models_analytics(days: int = 30, profile: Optional[str] = None):
             reverse=True,
         )
 
-        models = [
-            {
-                "model": row["model"],
-                "provider": row.get("billing_provider") or "",
-                **{key: row[key] for key in _MODEL_CARD_KEYS},
-                "capabilities": _model_capabilities(row.get("billing_provider") or "", row["model"]),
-            }
-            for row in rows
-        ]
+        # Capabilities can come from a profile's model catalog: read the one of the usage store this
+        # opened. The storage and config helpers interpret selectors (`Default`, `current`) differently.
+        with _hermes_home_scope(persistence.scope.profile_dir), _config_profile_scope(None):
+            models = [
+                {
+                    "model": row["model"],
+                    "provider": row.get("billing_provider") or "",
+                    **{key: row[key] for key in _MODEL_CARD_KEYS},
+                    "capabilities": _model_capabilities(row.get("billing_provider") or "", row["model"]),
+                }
+                for row in rows
+            ]
 
         totals = analytics.session_usage_totals(started_after=cutoff, model_rows_only=True)
         # Counted over the same merged row set the cards come from, so a model

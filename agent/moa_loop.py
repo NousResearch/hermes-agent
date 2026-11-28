@@ -463,7 +463,13 @@ def _run_reference(
                 timeout=reference_timeout, reasoning_config=_slot_reasoning_config(slot),
                 extra_headers=initiator_headers, **runtime,
             )
-        output_text = _extract_text(response) or "(empty response)"
+        output_text = _extract_text(response)
+        if not output_text:
+            # Refusals and content-filter stops arrive as HTTP 200 with no text: a failed reference, not
+            # advice the aggregator should weigh. The call is still priced below — the provider billed it.
+            finish_reason = getattr((getattr(response, "choices", None) or [None])[0], "finish_reason", None)
+            logger.warning("MoA reference model %s returned no text (finish_reason=%s)", label, finish_reason)
+            output_text = f"[failed: empty response (finish_reason={finish_reason})]"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
     except Exception as exc:

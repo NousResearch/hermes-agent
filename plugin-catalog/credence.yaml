@@ -1,0 +1,34 @@
+name: credence
+repo: https://github.com/landenjackson/hermes-credence-plugin
+sha: 91eb04b25b7914d507e8f6979bce1704b0370ae9
+description: >-
+  Per-human trust for multi-user Hermes deployments. Every platform user starts as a
+  Stranger whose tool calls are limited to read-only lookups; capability is granted to a
+  verified human identity by the Owner, level by level (Stranger < Acquaintance <
+  Verified < Owner) — never to a route, a feature, or a model. Owner level itself is
+  configuration-only, so a trust system cannot promote itself. Identity is resolved
+  without touching core: post_gateway_admission records which platform user owns each
+  gateway session_key, and pre_tool_call resolves the calling session through that map
+  and gates on level — unknown tools sit at an Acquaintance floor, effect-capable tools
+  (write, edit, delete, exec, publish prefixes) and anything running cron need Verified.
+  Two denied approvals drop one level, never below Stranger. Platform adapters that
+  populate neither user_id nor chat_id fail closed to Stranger. Built after the
+  November 2026 OpenRouter/MiniMax prompt-routing leak, in which client financial data
+  was exposed on a route the deployment trusted.
+  Disclosure — two hooks and three tools. post_gateway_admission is a fail-open
+  observer that records a session_key to platform-identity map; pre_tool_call is a gate
+  that can block (Hermes policy makes pre_tool_call fail-closed, so an internal credence
+  error blocks the call with an explicit message rather than allowing it). credence_status
+  is a read; credence_promote and credence_demote are Owner-only, and the Owner's caller
+  identity is resolved through the same session map the gate uses, so a Stranger cannot
+  promote themselves by asking. Local SQLite under plugin-data/credence: identity levels,
+  strike counts and a session_key-to-user_key map — no network I/O, no LLM calls, no
+  telemetry, and no prompt content stored (only platform user keys, levels and counts).
+  Reads config.yaml solely for credence.owner_platform_user, via ctx.get_config with a
+  raw-yaml fallback. Local-platform sessions are always Owner (the machine's own keyboard).
+maintainer: landenjackson
+tier: community
+category: security
+docs_url: https://github.com/landenjackson/hermes-credence-plugin#readme
+requires_hermes: ">=0.23.0"
+version: "0.1.0"

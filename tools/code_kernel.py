@@ -144,6 +144,30 @@ _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
 _SPILL_CAP = {_RUNNER_SPILL_CHARS}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 
+# Anything a cell spawns inherits this process's env, and pip treats a site-packages
+# directory on PYTHONPATH as an environment it may uninstall from — so one
+# `other-env/bin/pip install "pydantic<2.10"` inside a cell could strip the gateway's
+# own pin out of the runtime venv and crash-loop it on the next restart (#155952).
+# sys.path was fixed from PYTHONPATH at startup, so the kernel keeps importing normally and
+# only the inherited env changes. An operator-supplied entry (a project venv, a user lib
+# directory) is left alone: the parent names exactly the tree it injected.
+_STRIP_PP = os.environ.pop("HERMES_CHILD_STRIP_PYTHONPATH", "")
+if _STRIP_PP:
+    _norm = os.path.normcase(os.path.realpath(_STRIP_PP))
+    # An empty PYTHONPATH component is load-bearing — CPython resolves it to the current
+    # working directory — so only the entry the parent named is removed, never a blank one.
+    _pp = [
+        entry for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if not (entry and os.path.normcase(os.path.realpath(entry)) == _norm)
+    ]
+    if any(_pp):
+        os.environ["PYTHONPATH"] = os.pathsep.join(_pp)
+    else:
+        os.environ.pop("PYTHONPATH", None)
+# PYTHONHOME re-roots the whole stdlib for a child and stops a cell's venv from being the
+# one pip computes; nothing in a cell needs it.
+os.environ.pop("PYTHONHOME", None)
+
 
 def _start_parent_process_watchdog():
     """Exit when the exact Windows parent process object is signaled.

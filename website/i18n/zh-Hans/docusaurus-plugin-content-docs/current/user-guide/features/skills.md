@@ -564,6 +564,7 @@ hermes skills install skills-sh/anthropics/skills/pdf --force
 重要行为：
 - `--force` 可以覆盖谨慎/警告类发现的策略阻止。
 - `--force` **不能**覆盖 `dangerous` 扫描结论。
+- 如果安装目标目录中已有一个并非从 hub 安装的 skill（你自己的 skill，或你编辑过的、原为内置的 skill 副本），安装会被拒绝且该目录保持不变；`--force` 会替换它。
 - 官方可选 skills（`official/...`）被视为内置信任，不显示第三方警告面板。
 
 ### 信任级别

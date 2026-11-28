@@ -805,3 +805,40 @@ def test_built_in_restore_into_a_leftover_dir_never_writes_through_links_or_over
     (dest / "SKILL.md").write_text("---\nname: my-own-thing\ndescription: x\n---\nmine\n")
     assert ensure_bundled_skill("arxiv")["action"] == "not_restored"
     assert "my-own-thing" in (dest / "SKILL.md").read_text()
+
+
+def test_install_keeps_a_skill_the_hub_does_not_own(hub_env, monkeypatch, tmp_path):
+    """The lock-file check sees only hub installs; an edited copy of a formerly bundled skill
+    (now an official optional one) sits at the install path with no lock entry. Installing
+    over it without --force must leave it intact; --force still replaces it."""
+    import hermes_cli.skills_hub as cli_hub
+    from tools.skills_hub import HubLockFile
+    from tools.skills_hub_official import OptionalSkillSource
+
+    official = tmp_path / "optional-skills" / "notes" / "note-taker"
+    official.mkdir(parents=True)
+    (official / "SKILL.md").write_text(
+        "---\nname: note-taker\ndescription: Take notes.\n---\n# upstream\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_OPTIONAL_SKILLS", str(tmp_path / "optional-skills"))
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [OptionalSkillSource()])
+    mine = tmp_path / "skills" / "notes" / "note-taker"
+    (mine / "references").mkdir(parents=True)
+    edited = "---\nname: note-taker\ndescription: My notes.\n---\n# weeks of edits\n"
+    (mine / "SKILL.md").write_text(edited, encoding="utf-8")
+    (mine / "references" / "deck.md").write_text("mine\n", encoding="utf-8")
+
+    def install(**kw):
+        sink = StringIO()
+        do_install("official/notes/note-taker", skip_confirm=True, invalidate_cache=False,
+                   console=Console(file=sink, width=300, color_system=None), **kw)
+        return sink.getvalue()
+
+    out = install()
+    assert (mine / "SKILL.md").read_text(encoding="utf-8") == edited
+    assert (mine / "references" / "deck.md").is_file()
+    assert HubLockFile().get_installed("note-taker") is None
+    assert "Installed:" not in out and "--force" in out
+
+    install(force=True)
+    assert "# upstream" in (mine / "SKILL.md").read_text(encoding="utf-8")
+    assert HubLockFile().get_installed("note-taker")["install_path"] == "notes/note-taker"

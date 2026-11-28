@@ -112,3 +112,40 @@ def test_retry_buffer_classification_survives_terminal_flush(policy, shape, monk
     agent.printed.clear()
     agent._emit_status("ordinary compaction progress")
     assert agent.printed == ["ordinary compaction progress"]
+
+
+def _acp_agent(tmp_path, monkeypatch):
+    """An agent whose ``_print_fn`` is the ACP stderr sink (acp_adapter.session), presentation on."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    (tmp_path / "config.yaml").write_text(json.dumps({"display": {"suppress_warning_notifications": False}}))
+    agent = Agent()
+    agent.platform = "acp"
+    return agent
+
+
+def test_recovery_prints_never_bypass_the_agent_print_sink(tmp_path, monkeypatch, capsys):
+    """ACP reserves stdout for JSON-RPC and hands the agent a stderr ``_print_fn``; a producer that
+    calls builtin ``print`` writes prose into the protocol channel the client parses (#151241)."""
+    from agent.turn_recovery import _plines
+
+    agent = _acp_agent(tmp_path, monkeypatch)
+
+    def _capture_stdout(*args, **kwargs):
+        raise AssertionError(f"recovery diagnostic bypassed the print sink: {args!r}")
+
+    monkeypatch.setattr("builtins.print", _capture_stdout)
+    _plines(agent, "🔐 Anthropic 401 — authentication failed.")
+    assert agent.printed == ["🔐 Anthropic 401 — authentication failed."]
+
+
+def test_401_diagnostics_keep_the_acp_stdout_channel_clean(tmp_path, monkeypatch, capsys):
+    """The reported producer end to end: the whole 401 block belongs on the sink, not on stdout."""
+    from agent.turn_recovery import _print_anthropic_401_diagnostics
+
+    agent = _acp_agent(tmp_path, monkeypatch)
+    _print_anthropic_401_diagnostics(agent, "sk-ant-api03-abcdefghijklmnop")
+
+    assert capsys.readouterr().out == ""
+    assert any("Anthropic 401 — authentication failed." in line for line in agent.printed)
+    assert any("Troubleshooting:" in line for line in agent.printed)

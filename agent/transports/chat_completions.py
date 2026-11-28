@@ -651,6 +651,10 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Fields some SDKs park in pydantic ``model_extra`` rather than as attributes.
         reasoning_content = _attr_or_model_extra(msg, "reasoning_content")
+        # Ollama/native-compatible replies may use "thinking" instead. Normalize
+        # it before the shared empty-response ladder receives NormalizedResponse.
+        if not reasoning_content:
+            reasoning_content = _attr_or_model_extra(msg, "thinking")
         provider_data: dict[str, Any] = {}
         if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content

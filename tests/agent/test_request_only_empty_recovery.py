@@ -169,6 +169,100 @@ def test_recovery_is_request_only(tmp_path, monkeypatch, after_tool, parts, stre
             assert not stages
         finally:
             agent.client.close()
-            agent._session_db.close()
+            agent.persistence.close()
+            server.shutdown()
+            thread.join(timeout=5)
+
+
+def test_post_tool_model_extra_thinking_reaches_completion_reminder(tmp_path, monkeypatch):
+    """A second thinking-only reply after a tool nudge must enter prefill, not empty retry.
+
+    Regression for #21847's maintainer review: OpenAI-compatible providers may
+    return a provider-specific "thinking" key under the SDK's model_extra.
+    Exercise the real agent, request builder, SDK, and local HTTP transport.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  supports_vision: true\n  context_length: 128000\n"
+        "auxiliary:\n  title_generation:\n    enabled: false\n"
+    )
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _EMPTY_TOOL_RESPONSE_NUDGE
+    from run_agent import AIAgent
+
+    requests = []
+
+    class Provider(BaseHTTPRequestHandler):
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert self.path == "/v1/chat/completions"
+            requests.append(request["messages"])
+            stage = ("tool", "thinking", "thinking", "answer")[len(requests) - 1]
+            message = {"role": "assistant", "content": None}
+            finish_reason = "stop"
+            if stage == "tool":
+                message["tool_calls"] = [{
+                    "id": "lookup-1", "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }]
+                finish_reason = "tool_calls"
+            elif stage == "thinking":
+                # Unknown OpenAI SDK fields survive as model_extra.
+                message["thinking"] = "Working through the tool result."
+            else:
+                message["content"] = "The answer is 42."
+            response = {
+                "id": "thinking-prefill", "model": "test-model", "created": 0,
+                "choices": [{
+                    "index": 0, "message": message, "finish_reason": finish_reason,
+                }],
+                "usage": {
+                    "prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                },
+            }
+            body = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    with HTTPServer(("127.0.0.1", 0), Provider) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        agent = AIAgent(
+            model="test-model", provider="openai-compat", api_key="test-key",
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            enabled_toolsets=[], quiet_mode=True, skip_context_files=True,
+            skip_memory=True, save_trajectories=False,
+        )
+        agent._disable_streaming = True
+        agent._use_prompt_caching = False
+        agent.compression_enabled = False
+        agent.tool_delay = 0
+        agent.session_id = "post-tool-thinking-prefill"
+        from persistence_assembly import open_persistence, profile_scope
+        agent._session_db = agent.persistence = open_persistence(profile_scope(home=tmp_path))
+        agent.tools = [{"type": "function", "function": {
+            "name": "lookup", "description": "Look up a number",
+            "parameters": {"type": "object", "properties": {}},
+        }}]
+        agent.valid_tool_names = {"lookup"}
+        monkeypatch.setattr("model_tools.handle_function_call", lambda *a, **kw: "42")
+        try:
+            result = agent.run_conversation("Look up the answer.")
+            assert result["final_response"] == "The answer is 42."
+            assert len(requests) == 4
+            # First empty post-tool result: normal one-time nudge.
+            assert _EMPTY_TOOL_RESPONSE_NUDGE in json.dumps(requests[2][-1])
+            # Second reasoning-only result: the model_extra channel must
+            # select the completion reminder, not generic empty retry.
+            assert _CODEX_INCOMPLETE_NUDGE in json.dumps(requests[3][-1])
+            assert _CODEX_INCOMPLETE_NUDGE not in json.dumps(result["messages"])
+        finally:
+            agent.client.close()
+            agent.persistence.close()
             server.shutdown()
             thread.join(timeout=5)

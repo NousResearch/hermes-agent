@@ -90,6 +90,25 @@ async def test_delivery_fails_closed_instead_of_crossing_profiles(profile_homes)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("plugins, says", [
+    ("disabled", "hermes -p sec plugins enable dingtalk"),
+    ("enabled", "hermes -p sec logs"),
+])
+async def test_a_moved_platform_hint_names_the_routed_profiles_command(profile_homes, tmp_path, plugins, says):
+    """A ``/p/sec/`` deliver_only route to DingTalk, which left core, where ``sec`` has the plugin installed but
+    disabled (or enabled and not loaded): the error names sec's own command, never the launch profile's."""
+    sec = tmp_path / ".hermes" / "profiles" / "sec"
+    (sec / "plugins" / "dingtalk").mkdir(parents=True)
+    (sec / "config.yaml").write_text(f"plugins:\n  {plugins}: [dingtalk]\n")
+    adapter = _webhook(_Runner({}, {"sec": {}}, profile_homes))
+
+    res = await adapter._deliver_cross_platform(
+        "dingtalk", "hi", {"deliver": "dingtalk", "deliver_extra": {"chat_id": "cid"}, "profile": "sec"})
+
+    assert not res.success and says in res.error and "plugins install" not in res.error, res.error
+
+
+@pytest.mark.asyncio
 async def test_github_comment_authenticates_with_routed_profile_token(profile_homes, monkeypatch):
     seen = {}
 

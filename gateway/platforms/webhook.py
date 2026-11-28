@@ -1043,12 +1043,14 @@ class WebhookAdapter(BasePlatformAdapter):
         """Route response to another platform (telegram, discord, etc.)."""
         if not self.gateway_runner:
             return SendResult(success=False, error="No gateway runner for cross-platform delivery")
+        profile = delivery.get("profile")
         try:
             target_platform = Platform(platform_name)
         except ValueError:
             from hermes_cli.left_core_migration import platform_install_hint
-            return SendResult(success=False, error=f"Unknown platform: {platform_name}{platform_install_hint(platform_name)}")
-        profile = delivery.get("profile")
+            with self._profile_scope(profile):  # the routed profile's plugin state and commands
+                hint = platform_install_hint(platform_name)
+            return SendResult(success=False, error=f"Unknown platform: {platform_name}{hint}")
         if not (adapter := self._find_adapter(target_platform, profile)):
             return SendResult(success=False, error=f"Platform {platform_name} not connected")
         extra = delivery.get("deliver_extra", {})

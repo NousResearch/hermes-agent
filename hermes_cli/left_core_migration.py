@@ -816,11 +816,12 @@ def platform_install_hint(platform: str) -> str:
     home = Path(get_hermes_home())
     if feature is None or not plugin_present(feature.plugin, home):
         return f". {_install_sentence(feature)}" if feature else ""
+    install = _install_command(feature.plugin, home)
     enabled, disabled = _plugin_lists(home, feature.plugin)
     if enabled and not disabled:
         return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin, which is enabled but "
-                "did not load: see `hermes logs` for the cause")
-    enable = _install_command(feature.plugin, home).replace(" install ", " enable ")
+                f"did not load: see `{install.replace(f' plugins install {feature.plugin}', ' logs')}` for the cause")
+    enable = install.replace(" install ", " enable ")
     return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but "
             f"off: run `{enable}`")
 

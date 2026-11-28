@@ -2476,6 +2476,14 @@ cli:
     bell_context: "clarify"
     label: "Clarify"
     timed_out_locked_answers: "(clarify timed out after {timeout}s — locked answers returned)"
+    # Spoken answers (CLI voice mode): the panel is read aloud and answered by voice.
+    speech_question: "Question {index} of {total}."
+    speech_choice: "{index}. {text}"
+    speech_other: "You can also name your own answer."
+    speech_free_text: "Or just say your own answer."
+    speech_open: "Say your answer."
+    speech_unmatched: "Sorry, I didn't catch an option there — say it again, or use the keyboard."
+    speech_own_answer: "What would you like instead?"
   connect:
     bell_context: "connection setup"
     cannot_restart: "This connection cannot be started again. Cancel and ask the agent again."

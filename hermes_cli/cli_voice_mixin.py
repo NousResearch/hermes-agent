@@ -13,10 +13,19 @@ import re
 import tempfile
 import threading
 import time
+from contextlib import suppress
 
 from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from typing import Optional
+
+#: Hard cap on the between-turns off-phrase capture. Protects against a recorder whose
+#: silence callback never fires (noisy room, muted mic) leaving the listener holding the mic.
+_IDLE_OFF_PHRASE_MAX_SECONDS = 30.0
+
+#: How long the idle listener waits for the wake-turn capture to release the mic before it
+#: gives up and lets the watchdog re-arm. Bounded so a stuck capture cannot wedge it.
+_IDLE_OFF_PHRASE_START_GRACE_SECONDS = 30.0
 
 
 def _config_section(name: str) -> dict:
@@ -54,10 +63,35 @@ def _unlink_quietly(path) -> None:
 class CLIVoiceMixin:
     """Voice mode (recording, STT, TTS, full-duplex barge-in) and wake-word listener handlers for the interactive CLI"""
 
-    def _voice_invalidate(self) -> None:
-        """Repaint the TUI (audio level indicator / status) when the app is live."""
+    def _voice_invalidate(self, *, immediate: bool = False) -> None:
+        """Repaint the TUI (audio level indicator / status) when the app is live.
+
+        ``immediate`` paints synchronously instead of asking for a throttled invalidate. Rows a
+        user must see *now* — the recording banner, the silence notice — need it: a skipped tick
+        leaves the row for the next forced repaint to draw over, and the clarify panel paints
+        unthrottled.
+        """
+        if immediate:
+            paint_now = getattr(self, '_paint_now', None)
+            if paint_now is not None:
+                paint_now()
+                return
         if hasattr(self, '_app') and self._app:
             self._app.invalidate()
+
+    def _clarify_voice_notice(self, text: str) -> None:
+        """Print a voice notice, then repaint the clarify panel.
+
+        The panel repaints itself every second from ``_poll_modal_queue`` via ``_paint_now``, while
+        ``_cprint`` erases the renderer, prints, then redraws at an absolute cursor position.
+        Whichever lands second wins, so a notice near a tick left the panel half-drawn. Printing
+        first and repainting explicitly settles the order.
+        """
+        from cli import _DIM, _RST, _cprint
+        _cprint(f"\n{_DIM}{text}{_RST}")
+        paint_now = getattr(self, '_paint_now', None)
+        if paint_now is not None:
+            paint_now()
 
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
@@ -113,7 +147,7 @@ class CLIVoiceMixin:
                 if not self._voice_recording:
                     return
             _cprint(f"\n{_DIM}{t('cli.voice.silence_autostop')}{_RST}")
-            self._voice_invalidate()
+            self._voice_invalidate(immediate=True)
             self._voice_stop_and_transcribe()
 
         # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
@@ -133,6 +167,9 @@ class CLIVoiceMixin:
         else:
             _recording_hint = t("cli.voice.hint_stop", shortcut=_label)
         _cprint(f"\n{_ACCENT}{t('cli.voice.recording')}{_RST} {_DIM}({_recording_hint}){_RST}")
+        # The banner is a row the user must see now: a skipped tick leaves it for the next forced
+        # repaint (the clarify panel paints unthrottled) to draw over.
+        self._voice_invalidate(immediate=True)
 
         # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
@@ -702,20 +739,147 @@ class CLIVoiceMixin:
             except Exception:
                 pass
 
+        # "hey hermes" ALWAYS opens; a separate off phrase ends the conversation. There is no
+        # toggle here: reusing the wake phrase to close would fight the engine (the model is
+        # trained on the phrase at the start of an utterance, not as a recognised command).
         if getattr(self, "_wake_start_new_session", True):
             try:
                 self.new_session(silent=True)
             except Exception as e:
                 logger.debug("wake word new_session failed: %s", e)
 
-        # Single-utterance capture; VAD auto-stop transcribes and queues for process_loop.
+        # Hands-free conversation: enable voice mode the way /voice on does, so the reply is
+        # spoken (voice.auto_tts) and the mic re-arms after the turn until the spoken stop
+        # phrase ends it. The single-utterance path below never set _voice_tts, which is why
+        # wake-initiated turns answered silently.
+        from utils import is_truthy_value
+        auto_tts = is_truthy_value(_config_section("voice").get("auto_tts"), default=False)
         with self._voice_lock:
+            enable_tts = auto_tts and not self._voice_tts
             self._voice_mode = True
-        self._voice_continuous = False
+            self._voice_continuous = True
+            if enable_tts:
+                self._voice_tts = True
+        if enable_tts:
+            self._tts_lease_async(True)
         try:
             self._voice_start_recording()
         except Exception as e:
+            # Capture never started: roll the flags back, or voice mode stays on with no
+            # mic (typed stop phrases get swallowed, the status bar lies) and the TTS lease
+            # keeps a resident engine loaded for a conversation that does not exist.
+            with self._voice_lock:
+                self._voice_mode = False
+                self._voice_continuous = False
+                if enable_tts:
+                    self._voice_tts = False
+            if enable_tts:
+                self._tts_lease_async(False)
             _cprint(f"{_DIM}{t('cli.voice.wake_capture_failed', error=e)}{_RST}")
+            return
+        # Wake-opened conversations idle between turns with the wake listener paused, so the
+        # off phrase needs its own listener to stay reachable.
+        self._voice_listen_for_off_phrase()
+
+    def _clarify_voice_start(self, state) -> None:
+        """Give the open clarify panel a voice side when voice mode is on (voice first, or "hey
+        orbis"). Keyboard answering is untouched: no voice mode, no listener. The stop phrase
+        cancels the whole request — settled rule — rather than being scored as an option."""
+        if not getattr(self, "_voice_mode", False) or state.get("voice") is not None:
+            return
+        from hermes_cli.cli_clarify_voice import SpokenClarifyPanel
+        panel = SpokenClarifyPanel(
+            self,
+            speak=self._voice_speak_response_async,
+            on_answer=lambda value, own_text=False, picks=None: self._clarify_voice_answer(
+                state, value, own_text=own_text, picks=picks),
+            on_cancel=lambda: self._clarify_voice_cancel(state),
+            on_reject=self._clarify_voice_reject)
+        state["voice"] = panel
+        panel.start()
+
+    def _clarify_voice_stop(self, state, *, cancel: bool = False) -> None:
+        """Hand the mic back when the panel ends (answered, timed out, merged batch question).
+        Safe from any thread: the recorder is cancelled here and shut down off-thread, so a
+        teardown on the gateway connection's thread never blocks on the audio backend.
+        ``cancel`` names the withdrawing path for callers; teardown is the same either way."""
+        panel = state.get("voice")
+        if panel is None:
+            return
+        state["voice"] = None
+        panel.stop()
+
+    def _clarify_voice_answer(self, state, value, *, own_text: bool = False,
+                              picks: list | None = None) -> None:
+        """A spoken answer locks exactly what the Enter binding would (listener thread, so no
+        painting): ``own_text`` (the "Other" prompt's reply) lands as kind "other", multi-select
+        locks the merged label list. ``picks`` are labels spoken in the same breath as "other"
+        ("teal, other") — the keyboard's ``_clarify_multi_base`` equivalent, so they are merged
+        rather than replaced.
+        """
+        from hermes_cli.cli_clarify_voice import active_question
+        if self._clarify_state is not state:
+            return
+        entry = active_question(state)
+        if entry is None:
+            return
+        if value is not None and not isinstance(value, str) and not own_text:
+            # _clarify_batch_lock awaits a lock manager; a wrong type here dies silently.
+            value = json.dumps(value, ensure_ascii=False)
+        if own_text or getattr(self, "_clarify_freetext", False):
+            base = list(picks) if picks else getattr(self, "_clarify_multi_base", None)
+            if base:
+                answer = json.dumps(list(base) + [value], ensure_ascii=False)
+                meta = {"kind": "multi", "choices": list(base), "other_text": value}
+                self._clarify_multi_base = None
+            else:
+                answer = value
+                meta = {"kind": "other", "other_text": value}
+            self._clarify_freetext = False
+            self._clarify_prefill = ""
+            self._clarify_batch_lock(state, answer, meta=meta)
+            return
+        if picks:
+            # Labels picked while answering "other" that the Other route did not take (the CLI's
+            # freetext flag was already off): lock them as a plain multi-selection.
+            self._clarify_batch_lock(
+                state, json.dumps(list(picks), ensure_ascii=False),
+                meta={"kind": "multi", "choices": list(picks), "other_text": ""})
+            return
+        if entry.get("multi_select") and value.startswith("["):
+            try:
+                choices = [str(c) for c in json.loads(value)]
+            except (TypeError, ValueError):
+                choices = []
+            self._clarify_batch_lock(state, value, meta={"kind": "multi", "choices": choices, "other_text": ""})
+            return
+        self._clarify_batch_lock(state, value, meta={"kind": "choice"})
+
+    def _clarify_voice_answered(self, state) -> None:
+        """The keyboard locked an answer while the voice side was capturing: the next question is
+        read aloud and the stale prefill dropped, exactly as after a spoken answer."""
+        panel = state.get("voice")
+        if panel is None:
+            return
+        self._clarify_prefill = ""
+        self._clarify_multi_base = None
+
+    def _clarify_voice_cancel(self, state) -> None:
+        """The stop phrase spoken at an open question: withdraw the clarify, then leave voice mode."""
+        from cli import _DIM, _RST, _cprint
+        if self._clarify_state is not state:
+            return
+        self._clarify_voice_stop(state)
+        self._clarify_teardown()
+        state["response_queue"].put(None)
+        _cprint(f"\n{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
+        self._disable_voice_mode()
+
+    def _clarify_voice_reject(self, reason) -> None:
+        """A transcript that matched no option: say so once and keep the question open. A
+        selection-shaped reply means the words were heard but do not name an option; prose means
+        nothing matched — the wording stays generic in both cases, and the keyboard still works."""
+        self._clarify_voice_notice(t('cli.clarify.speech_unmatched'))
 
     def _start_wake_watchdog(self):
         """Resume the paused detector when the CLI returns to a stable idle."""
@@ -757,6 +921,118 @@ class CLIVoiceMixin:
                 self._wake_watchdog_started = False
 
         threading.Thread(target=_loop, daemon=True, name="wake-watchdog").start()
+
+    def _voice_listen_for_off_phrase(self) -> None:
+        """While a wake-opened conversation idles between turns, listen for the off phrase.
+
+        Between turns the mic is idle and the wake listener is paused, so a spoken
+        ``voice.stop_phrases`` entry would otherwise reach nobody. One utterance per pass:
+        the off phrase ends the conversation, anything else is queued as the next turn.
+        Returns without touching anything while the agent is mid-turn, a reply is still
+        speaking, or another capture owns the mic — the turn path owns voice then.
+        """
+        from cli import _DIM, _RST, _cprint, logger
+
+        def _busy() -> bool:
+            tts_done = getattr(self, "_voice_tts_done", None)
+            return bool(
+                getattr(self, "_agent_running", False)
+                or getattr(self, "_voice_recording", False)
+                or getattr(self, "_voice_processing", False)
+                or (tts_done is not None and not tts_done.is_set())
+                or not getattr(self, "_pending_input", None) or not self._pending_input.empty()
+            )
+
+        def _loop():
+            try:
+                from tools.voice_mode import create_audio_recorder, transcribe_recording
+                from tools.voice_mode_transcript import is_voice_stop_phrase
+                from tools.wake_word import pause_listening
+            except ImportError:
+                logger.exception("off-phrase listener unavailable: voice/language-model extras missing")
+                return
+            # Started right after the wake capture begins, so the first passes must wait for
+            # it to finish: grabbing the mic now would race the turn path's own recorder.
+            try:
+                if not pause_listening(owner=self):
+                    return
+                # Wait for the wake capture of this turn to finish. Do NOT return the detector
+                # to listening on the way out: this thread starts a couple of milliseconds
+                # after the turn's recorder opens the mic, so a resume here opens a SECOND
+                # input stream, CoreAudio starves the live capture (a 34s recording captured
+                # 0.16s of audio) and PortAudio reports the failure as
+                # `PaMacCore (AUHAL)|| Error on line 2523: err='-50'`. Re-arming belongs to
+                # `_start_wake_watchdog`, which waits for the CLI to be idle first.
+                deadline = time.monotonic() + _IDLE_OFF_PHRASE_START_GRACE_SECONDS
+                while getattr(self, "_voice_recording", False):
+                    if (
+                        not getattr(self, "_voice_mode", False)
+                        or getattr(self, "_agent_running", False)
+                        or time.monotonic() > deadline
+                    ):
+                        return
+                    time.sleep(0.1)
+                if _busy() or not getattr(self, "_voice_mode", False):
+                    return
+                with self._voice_lock:
+                    if self._voice_recording or not self._voice_mode:
+                        return
+                    self._voice_recording = True
+                recorder = create_audio_recorder()
+                try:
+                    # Recorder.start() takes a silence callback, not a blocking stop():
+                    # AudioRecorder.stop() returns immediately with nothing captured. Arm
+                    # the callback and wait for the silence auto-stop (or the hard cap).
+                    done = threading.Event()
+                    started = time.monotonic()
+
+                    def _on_silence():
+                        done.set()
+
+                    self._voice_recorder = recorder
+                    try:
+                        recorder.start(on_silence_stop=_on_silence)
+                    except TypeError:
+                        recorder.start()
+                    except Exception:
+                        raise
+                    while not done.wait(0.25):
+                        if (
+                            not getattr(self, "_voice_mode", False)
+                            or not getattr(self, "_voice_recording", False)
+                            or getattr(self, "_should_exit", False)
+                        ):
+                            return
+                        if time.monotonic() - started > _IDLE_OFF_PHRASE_MAX_SECONDS:
+                            break
+                    wav_path = recorder.stop()
+                finally:
+                    with self._voice_lock:
+                        self._voice_recording = False
+                    with suppress(Exception):
+                        recorder.shutdown()
+                    # Only release ownership if the turn path hasn't installed its own
+                    # recorder in the meantime — clearing theirs would strand a live capture.
+                    if getattr(self, "_voice_recorder", None) is recorder:
+                        self._voice_recorder = None
+                if not wav_path or not getattr(self, "_voice_mode", False):
+                    return
+                result = transcribe_recording(wav_path, model=self._voice_stt_model())
+                transcript = (result.get("transcript") or "").strip() if result.get("success") else ""
+                if not transcript:
+                    return
+                if is_voice_stop_phrase(transcript):
+                    _cprint(f"\n{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
+                    self._disable_voice_mode()
+                    return
+                from cli import _VoiceInputMessage
+                self._pending_input.put(_VoiceInputMessage(transcript))
+            # health: allow BLE001 -- one idle listening pass must never kill the off-phrase listener; logged with its traceback
+            except Exception:
+                logger.exception("off-phrase listener pass failed")
+
+        from agent.memory_provider import spawn_context_thread
+        spawn_context_thread(_loop, name="voice-off-phrase").start()
 
     def _show_wake_word_status(self):
         """Show current wake-word listener status."""

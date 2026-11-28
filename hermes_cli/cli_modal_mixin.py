@@ -967,6 +967,7 @@ class CLIModalMixin:
         """Enter in batch choice mode: lock the active selection. Multi-select locks a JSON array of
         checked labels (parsed by the tool core); "Other" switches to freetext, prefilled with an
         earlier typed answer so Enter on an answered Other edits instead of retyping."""
+        self._clarify_voice_answered(state)
         choices = state.get("choices") or []
         selected = state.get("selected", 0)
         entry = state["questions"][state["active"]]
@@ -1012,14 +1013,18 @@ class CLIModalMixin:
             "choices": [],
             "selected": 0,
             "multi_select": False,
-            "selected_indices": None}
+            "selected_indices": None,
+            # Spoken answers (voice mode only); stopped by _clarify_voice_stop on every exit path.
+            "voice": None}
         self._clarify_state = state
         self._clarify_batch_set_active(state, 0)
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         self._ring_bell(prompt=True, context=t("cli.clarify.bell_context"))
         self._paint_now()
+        self._clarify_voice_start(state)
 
         result = self._poll_modal_queue(response_queue, "_clarify_deadline")
+        self._clarify_voice_stop(state)
         if result is not _TIMED_OUT:
             self._clarify_deadline = None
             outcome = "cancelled" if result is None else "submitted"
@@ -1036,6 +1041,7 @@ class CLIModalMixin:
         # Each modal's response queue is an unbounded queue.Queue: put() never blocks or raises.
         if method == "clarify" and self._clarify_state:
             state = self._clarify_state
+            self._clarify_voice_stop(state, cancel=True)
             self._clarify_teardown()
             state["response_queue"].put(None)
         elif method in ("sudo", "vault.unlock_prompt", "vault.save_login", "vault.code") and self._sudo_state:

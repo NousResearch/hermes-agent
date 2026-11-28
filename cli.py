@@ -1156,6 +1156,10 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
     def process_command(self, command: str, *, redispatch: bool = False) -> bool:
         """Dispatch a slash command; returns False to exit the REPL. ``redispatch`` marks an internal
         re-entry (quick-command alias, prefix expansion) so the user's command is counted once."""
+        # Arguments can carry a collapsed long-paste placeholder (collapsed while the composer was
+        # empty, or recalled from history): hand handlers the content, not a local paste path.
+        if _PASTE_REF_RE.search(command):
+            command = self._expand_paste_references(command)
         cmd_lower = command.lower().strip()  # lowercase only for matching; args keep their case
         cmd_original = command.strip()
 

@@ -31,7 +31,8 @@ from agent.skill_utils import (
 from tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
-    _validate_delete_target, _is_background_review, _refusal as _err)
+    _validate_delete_target, _is_background_review, _refusal as _err, _batch_binding_error,
+    _note_batch_create, _note_batch_write)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
@@ -399,6 +400,8 @@ def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
+    if binding := _batch_binding_error(name, skill_dir):  # a batch op acts only in the folder it checked
+        return None, binding
     guard = _background_review_delete_guard(name, skill_dir) if action == "delete" else None
     return (None, guard) if guard else (skill_dir, None)
 
@@ -419,6 +422,7 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
     if scan_error:
         return _err(scan_error)
     from hermes_constants import mkdir_under_hermes_home
+    _note_batch_write(skill_dir, target)  # before the attempt: a failed write may still have changed the folder
     mkdir_under_hermes_home(target.parent)
     atomic_write_text(target, content, preserve_mode=True, create_mode=0o644)
     scan_error = _security_scan_skill(skill_dir, baseline, scope)
@@ -475,10 +479,13 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
+    if binding := _batch_binding_error(name, skill_dir):  # a batch create makes only the folder planned
+        return binding
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir.parent)
     try:
         skill_dir.mkdir(exist_ok=False)
+        _note_batch_create(skill_dir, adopted=False)
     except FileExistsError:
         # mkdir raised EEXIST for a file, symlink (live or dangling) or dir alike; only an EMPTY
         # real directory (leftover of an earlier create whose SKILL.md write failed) may be used.
@@ -491,6 +498,7 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
         if not usable:
             return _err(f"Cannot create skill '{name}': {skill_dir} already exists (not an empty "
                         "directory, or unreadable). Choose another name, or move/remove that path and retry.")
+        _note_batch_create(skill_dir, adopted=True)
     skill_md = skill_dir / "SKILL.md"
     if guard := _guarded_write(name, skill_dir, skill_md, "create", "SKILL.md", content):
         with suppress(OSError):  # rmdir, not rmtree: only an empty dir goes, anything foreign stays
@@ -598,6 +606,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
     # Curator consolidations must be RECOVERABLE (`hermes curator restore`): archive instead
     # of rmtree. Foreground deletes keep hard-delete semantics.
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
+    _note_batch_write(skill_dir)
     if _is_background_review():
         try:
             from tools.skill_usage import archive_skill
@@ -660,6 +669,7 @@ def _remove_file(name: str, file_path: str) -> dict[str, Any]:
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):
         return read_guard
+    _note_batch_write(skill_dir, target)
     target.unlink()
     _rmdir_if_empty(target.parent, skill_dir)
     return {"success": True, "message": f"File '{file_path}' removed from skill '{name}'."}

@@ -17,6 +17,68 @@ def _refusal(message: str, **extra: Any) -> dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
 
+# An atomic batch binds each op to the folder it checked, or for a create the folder it planned
+# (``skill_manager_batch``): while the op runs, its name must still resolve to that folder, or the handler
+# refuses before writing. A folder found
+# again by the handler can differ when another writer, holding a different name's lock, changes which
+# skill the name finds in between. ``_BOUND_NOTHING``: the name found no skill when it was checked.
+_BOUND_NOTHING = object()
+_batch_bound_folder: _ctxvars.ContextVar[Optional[tuple]] = _ctxvars.ContextVar(
+    "skill_batch_bound_folder", default=None)
+
+
+# What the running batch's own execution did, recorded at the mutation (never inferred from an op's result
+# or from comparing files afterwards, which another writer can change at the same moment): each write
+# sink notes its resolved folder and file just before it attempts the write, and a create notes the
+# folder it made (or adopted) right after making it. That covers the batch's ops, a failed or raising
+# op's partial work, and a lifecycle hook's nested skill_manage call in the same context. Another thread's
+# writer is not in this context and is never recorded.
+class _BatchJournal:
+    def __init__(self):
+        self.writes: dict = {}   # resolved folder -> {relative file written}
+        self.created: dict = {}  # resolved folder a create made -> True if it adopted an empty leftover dir
+
+    def merge_into(self, outer: "_BatchJournal") -> None:
+        for folder, files in self.writes.items():
+            outer.writes.setdefault(folder, set()).update(files)
+        for folder, adopted in self.created.items():
+            outer.created.setdefault(folder, adopted)
+
+
+_batch_journal: _ctxvars.ContextVar[Optional[_BatchJournal]] = _ctxvars.ContextVar(
+    "skill_batch_journal", default=None)
+
+
+def _note_batch_write(skill_dir: Any, target: Any = None) -> None:
+    """Record, for a running batch, that ``skill_dir`` (and ``target`` inside it) is about to change."""
+    journal = _batch_journal.get()
+    if journal is None:
+        return
+    files = journal.writes.setdefault(Path(skill_dir).resolve(), set())
+    if target is not None:
+        with suppress(ValueError):
+            files.add(Path(target).relative_to(skill_dir).as_posix())
+
+
+def _note_batch_create(skill_dir: Any, adopted: bool) -> None:
+    """Record, for a running batch, that a create just made ``skill_dir`` (or adopted it, empty)."""
+    journal = _batch_journal.get()
+    if journal is not None:
+        journal.created.setdefault(Path(skill_dir).resolve(), adopted)
+
+
+def _batch_binding_error(name: str, skill_dir: Any) -> Optional[dict[str, Any]]:
+    """Refusal when a batch op's name resolves to another folder than the batch checked, else None.
+    Applies only to the op's own name (a hook writing another skill from inside the op is not bound)."""
+    bound = _batch_bound_folder.get()
+    if bound is None or bound[0] != name:
+        return None
+    if bound[1] is not _BOUND_NOTHING and Path(skill_dir).resolve() == bound[1]:
+        return None
+    return _refusal(f"'{name}' now resolves to {skill_dir}, not the folder this batch checked: the skill "
+                    f"the name finds changed while the batch ran. Nothing was written.")
+
+
 def _is_background_review() -> bool:
     """True inside the autonomous curator review fork, and on any lookup failure: every guard keyed
     on this is stricter for the fork, so an unknown origin gets the fork's guards."""

@@ -98,7 +98,15 @@ def _activate_root_inline(
         return False
     run_id = kb._synthesize_ended_run(conn, root_id, outcome="completed", summary=summary, metadata=metadata)
     kb._append_event(
-        conn, root_id, "completed", {"result_len": 0, "summary": summary[:400] or None}, run_id=run_id,
+        conn, root_id, "completed",
+        {
+            "result_len": 0, "summary": summary[:400] or None,
+            # Same two identity facts as kb.complete_task's payload: the run's
+            # profile stays on the run row, the caller rides beside it.
+            "closer_profile": kb._closer_identity(),
+            "run_profile": kb._run_profile(conn, run_id, root_id),
+        },
+        run_id=run_id,
     )
     return True
 

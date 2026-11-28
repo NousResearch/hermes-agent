@@ -9,6 +9,7 @@ import logging
 import re
 from collections import deque
 from hashlib import sha1
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 try:
@@ -119,6 +120,13 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._allowed_source_networks = _parse_allowed_source_cidrs(extra.get("allowed_source_cidrs"))
         self._runner = None
         self._notification_scheduler: Optional[NotificationScheduler] = None
+        # The owning profile's home, taken at connect (in that profile's scope). While no pipeline is bound,
+        # a notification is checked against its CURRENT plugin selection: a profile that enables the Teams
+        # meeting pipeline expects its notifications there, never as agent turns, even while the plugin is
+        # not bound (install pending, failed load, refused by ``plugins.isolation: host``).
+        self._profile_home: Optional[Path] = None
+        self._pipeline_selected = False  # the last selection read cleanly; a broken edit keeps it
+        self._unbound_pipeline_warned = False
         self._seen_receipts: set[str] = set()
         self._seen_receipt_order: deque[str] = deque()
         self._accepted_count = self._duplicate_count = 0
@@ -140,6 +148,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                          "Configure the Microsoft Graph source CIDRs or bind to loopback (127.0.0.1/::1) behind a "
                          "tunnel or reverse proxy.", self._host)
             return False
+        from hermes_constants import get_hermes_home
+        self._profile_home = Path(get_hermes_home())
+        self._pipeline_expected()
         app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
@@ -312,7 +323,23 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             if asyncio.iscoroutine(result):
                 await result
             return  # Plugin-owned pipeline; never also start a gateway inference.
+        if self._pipeline_expected():
+            if not self._unbound_pipeline_warned:
+                self._unbound_pipeline_warned = True
+                logger.warning("[msgraph_webhook] The Teams meeting pipeline is enabled for this profile but is not "
+                               "loaded, so Graph notifications are acknowledged and not processed (never sent to "
+                               "the agent). `hermes plugins list` shows why; under plugins.isolation: host it "
+                               "needs plugins.isolation: in_process.")
+            return
         await self._admit_notification(event)
+
+    def _pipeline_expected(self) -> bool:
+        from hermes_cli.left_core_migration import teams_pipeline_selected
+        if self._profile_home is not None:
+            selected = teams_pipeline_selected(self._profile_home)
+            if selected is not None:
+                self._pipeline_selected = selected
+        return self._pipeline_selected
 
     @property
     def token(self):

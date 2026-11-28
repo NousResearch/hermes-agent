@@ -213,3 +213,71 @@ def test_read_parses_config_once_per_home(homes, monkeypatch):
     monkeypatch.setattr(utils, "fast_safe_load", counting)
     pstate.enabled_plugins_ordered()
     assert len(calls) == 2  # one per home, not one per query
+
+
+def test_a_bundled_key_that_left_core_keeps_its_catalog_plugin_a_member(homes):
+    """``plugins.enabled: [google_meet]`` (core's key, kept as an alias) still selects ``plugins/google-meet``,
+    so a sync keeps Playwright for the plugin the loader loads under that key."""
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    plugin = home / "plugins" / "google-meet"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text('[project]\ndependencies = ["playwright==1.64.0"]\n')
+    _write_config(home, ["google_meet"])
+    assert enabled_member_dirs() == [plugin]
+
+
+def test_an_install_in_flight_under_the_catalog_name_counts_for_the_old_key(homes):
+    """First install with only ``google_meet`` saved: the pending ``plugins/google-meet`` is the member."""
+    from pm.workspace import selected_plugin_dir
+    home, _ = homes
+    pending = home / "plugins" / "google-meet"
+    assert selected_plugin_dir(home / "plugins", "google_meet", installing=pending) == pending
+
+
+@pytest.mark.parametrize(("enabled", "disabled"), [
+    (["google_meet"], ["google-meet"]),   # core's key enabled, the catalog name disabled
+    (["google-meet"], ["google_meet"]),   # and the other way round: the loader honours both spellings
+])
+def test_a_left_core_plugin_disabled_under_either_name_adds_no_dependencies(homes, enabled, disabled):
+    """The loader keeps the plugin off, so its pins (Playwright) must not join the union where they could
+    block an unrelated install."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    plugin = home / "plugins" / "google-meet"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text('[project]\ndependencies = ["playwright==1.64.0"]\n')
+    with (home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"plugins": {"enabled": enabled, "disabled": disabled}}, f)
+    assert enabled_member_dirs() == []
+
+
+def test_a_local_plugin_under_an_old_bundled_key_keeps_its_own_dependencies(homes):
+    """A home's own ``plugins/google_meet`` is its own plugin to the loader: a disable of the catalog name
+    ``google-meet`` does not turn it off, so PM keeps its dependencies too."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_member_dirs
+    home, _ = homes
+    local = home / "plugins" / "google_meet"
+    local.mkdir(parents=True)
+    (local / "pyproject.toml").write_text('[project]\ndependencies = ["requests==2.32.3"]\n')
+    with (home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"plugins": {"enabled": ["google_meet"], "disabled": ["google-meet"]}}, f)
+    assert enabled_member_dirs() == [local]
+
+
+def test_a_staged_catalog_update_never_replaces_a_local_plugin_under_the_old_key(homes):
+    """A staged ``plugins/google-meet`` replaces the tree at its own path. While the home's own
+    ``plugins/google_meet`` is what ``google_meet`` selects, the union keeps the local plugin, not the
+    staged catalog copy, whether or not ``google-meet`` is disabled."""
+    import hermes_yaml as yaml
+    from pm.workspace import enabled_plugin_entries, selected_plugin_dir
+    home, _ = homes
+    local = home / "plugins" / "google_meet"
+    local.mkdir(parents=True)
+    staged = home / "plugins" / "google-meet"
+    assert selected_plugin_dir(home / "plugins", "google_meet", installing=staged) == local
+    with (home / "config.yaml").open("w", encoding="utf-8") as f:
+        yaml.safe_dump({"plugins": {"enabled": ["google_meet"], "disabled": ["google-meet"]}}, f)
+    assert [tree for _d, _n, tree in enabled_plugin_entries(installing=staged)] == [local]

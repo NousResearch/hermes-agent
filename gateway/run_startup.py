@@ -1721,7 +1721,6 @@ class GatewayStartupMixin:
         if await self._abort_startup_if_shutdown_requested():
             return True
         self.delivery_router.adapters = self.adapters
-        self._wire_teams_pipeline_runtime()
         self._running = True
         self._install_plugin_message_injector()
         # A boot that could not start every configured platform is not a normal run: stamp ``degraded``

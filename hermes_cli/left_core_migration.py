@@ -57,6 +57,38 @@ logger = logging.getLogger(__name__)
 LEFT_CORE_TERMINAL_KEYS = {"terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE"}
 
 
+def _host_isolated(home: Path) -> bool:
+    """*home*'s effective ``plugins.isolation`` (managed overlay applied, as the loader reads it) is ``host``."""
+    from gateway import config_loader
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    try:
+        config = config_loader.read_yaml_layers(home)
+    except Exception:  # malformed config.yaml: the loader still applies the administrator's overlay
+        logger.debug("left-core: unreadable config for %s", home, exc_info=True)
+        from hermes_cli.managed_scope import apply_managed_overlay
+        config = apply_managed_overlay({})
+    return isolation_mode(config) == ISOLATION_HOST
+
+
+def _isolation_remedy() -> str:
+    """What restores in-process loading: the user's own setting, or the administrator's when it is pinned."""
+    from hermes_cli.managed_scope import is_key_managed
+    if is_key_managed("plugins.isolation"):
+        return "your administrator pins plugins.isolation: host (managed config), so ask them to allow in_process"
+    return "set plugins.isolation: in_process to keep it"
+
+
+def _isolation_notice(lost: str) -> Callable[..., str]:
+    """Core ran its bundled plugins in-process under ``plugins.isolation: host``; a catalog plugin runs in the
+    profile's plugin host, where *lost* is not available. Said on every migration outcome, never weakened
+    away: the profile chose to keep non-bundled code out of the Hermes process."""
+    def notice(home: Path, *, process_env: bool = False) -> str:
+        if not _host_isolated(home):
+            return ""
+        return f"This profile runs with plugins.isolation: host, where {lost}; {_isolation_remedy()}."
+    return notice
+
+
 def _read_config(home: Path) -> dict:
     from hermes_cli.config_backend import read_config_doc
     try:
@@ -277,6 +309,33 @@ def langfuse_in_use(home: Path, *, process_env: bool = False) -> bool:
     """What made core trace to Langfuse for *home*: the bundled ``observability/langfuse`` selected
     (:func:`_bundled_plugin_selected`). The plugin was opt-in, so keys in ``.env`` alone are not use."""
     return _bundled_plugin_selected(home, "langfuse")
+
+
+def google_meet_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run Google Meet for *home*: ``google_meet`` (the bundled key and manifest name, the
+    only spellings core's loader matched) in ``plugins.enabled``, with no spelling of it in
+    ``plugins.disabled``. The plugin was opt-in, so its keys or a saved login alone are not use."""
+    return _plugins_listed(home, ("google_meet",))[0] and not _plugin_lists(home, "google-meet")[1]
+
+
+def teams_pipeline_selected(home: Path) -> Optional[bool]:
+    """Whether *home* enables the Teams meeting pipeline (:func:`teams_pipeline_in_use`), or ``None`` when its
+    config does not read cleanly right now (a half-saved edit): the caller keeps its last answer, as the
+    gateway keeps its last good config."""
+    from gateway import config_loader
+    try:
+        config_loader.read_yaml_layers(home)
+    except Exception:  # whatever the reader raises on a bad file: this answer is "unknown", not "off"
+        logger.debug("left-core: unreadable config for %s; keeping the last pipeline decision", home, exc_info=True)
+        return None
+    return teams_pipeline_in_use(home)
+
+
+def teams_pipeline_in_use(home: Path, *, process_env: bool = False) -> bool:
+    """What made core run the Teams meeting pipeline for *home*: the bundled ``teams_pipeline`` selected
+    (:func:`_bundled_plugin_selected`; core's gateway wiring also accepted ``teams-pipeline``). The plugin was
+    opt-in, so ``MSGRAPH_*`` credentials or a ``meeting_pipeline`` block alone are not use."""
+    return _bundled_plugin_selected(home, "teams-pipeline")
 
 
 def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
@@ -665,6 +724,24 @@ LEFT_CORE: tuple[LeftCoreFeature, ...] = (
         plugin_key="observability/langfuse",
     ),
     LeftCoreFeature(
+        # HERMES_MEET_REALTIME_KEY stays on local_env_policy's static secret list, as core had it.
+        plugin="google-meet", label="Google Meet", in_use=google_meet_in_use, plugin_key="google_meet",
+        unchanged="the meet_* tools, `hermes meet`, HERMES_MEET_* settings and your meeting files are unchanged; "
+                  "the plugin is now `google-meet` (was google_meet)",
+        command="meet", notice=_isolation_notice("the meet_* tools work but `hermes meet` is not available"),
+    ),
+    LeftCoreFeature(
+        # MSGRAPH_CLIENT_SECRET / MSGRAPH_WEBHOOK_CLIENT_STATE stay on local_env_policy's static secret list.
+        plugin="teams-pipeline", label="Teams meeting pipeline", in_use=teams_pipeline_in_use,
+        plugin_key="teams_pipeline",
+        unchanged="`hermes teams-pipeline`, MSGRAPH_* settings, platforms.teams.extra.meeting_pipeline and "
+                  "teams_pipeline_store.json are unchanged; the plugin is now `teams-pipeline` (was teams_pipeline)",
+        command="teams-pipeline",
+        notice=_isolation_notice("the plugin cannot attach to the msgraph_webhook platform (platform handlers "
+                                 "run only in-process), so Teams meeting notifications are not processed and "
+                                 "`hermes teams-pipeline` is not available"),
+    ),
+    LeftCoreFeature(
         # MCP clients that launch `hermes mcp serve` are configured outside Hermes, so no home shows the
         # feature in use: nothing installs automatically, and the old spelling prints where it went.
         plugin="mcp-serve", label="Hermes as an MCP server", in_use=lambda home, **_: False,
@@ -897,6 +974,10 @@ def moved_command_hint(prog: str, value: str, action: str = "") -> str:
         return (f"{feature.label} moved out of core into the '{feature.plugin}' plugin: `{old}` is now "
                 f"`hermes {value} {action or 'login'}`.{get}")
     label = f"`hermes {value}`" if value in feature.old_cli else feature.label
+    if plugin_present(feature.plugin, home) and _host_isolated(home):
+        # The plugin loads in the plugin host, which registers no CLI commands: enabling changes nothing.
+        return (f"{label} moved out of core into the '{feature.plugin}' plugin, whose commands are not available "
+                f"with plugins.isolation: host; {_isolation_remedy()}.")
     return f"{label} moved out of core into the '{feature.plugin}' plugin, which is not loaded.{get}"
 
 

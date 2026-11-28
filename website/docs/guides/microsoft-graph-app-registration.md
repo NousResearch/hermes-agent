@@ -137,20 +137,14 @@ chmod 600 ~/.hermes/.env
 
 ## Step 6: Verify the Token Flow
 
-Hermes ships a Graph auth smoke-test. From your Hermes install:
+The Graph auth smoke-test ships with the official [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) catalog plugin. Install it, then force a token acquisition:
 
-```python
-python -c "
-import asyncio
-from plugins.teams_pipeline.graph_auth import MicrosoftGraphTokenProvider
-provider = MicrosoftGraphTokenProvider.from_env()
-token = asyncio.run(provider.get_access_token())
-print('Token acquired, length:', len(token))
-print(provider.inspect_token_health())
-"
+```bash
+hermes plugins install teams-pipeline --enable
+hermes teams-pipeline token-health --force-refresh
 ```
 
-A successful run prints a long token string and a health dict showing `cached: True` and an `expires_in_seconds` value near 3600. Failures produce a `MicrosoftGraphTokenError` with the Azure error code — the most common are:
+A successful run prints a JSON health payload with `last_refresh_succeeded: true`, an `access_token_length`, and `expires_in_seconds` near 3600. On failure `last_refresh_succeeded` is `false` and `refresh_error` carries the Azure error code — the most common are:
 
 | Azure error | Meaning | Fix |
 |-------------|---------|-----|
@@ -173,8 +167,8 @@ Azure client secrets have a hard expiry. Before yours expires:
 
 Once credentials verify cleanly, continue with:
 
-- **Webhook listener setup** — stand up the `msgraph_webhook` gateway platform that receives Graph change notifications.
-- **Pipeline configuration** — configure the Teams meeting pipeline runtime and operator CLI.
-- **Outbound delivery** — wire summaries back into a Teams channel or chat.
+- **Webhook listener setup** — stand up the `msgraph_webhook` gateway platform that receives Graph change notifications: [Microsoft Graph Webhook Listener](../user-guide/messaging/msgraph-webhook.md).
+- **Pipeline configuration** — install the `teams-pipeline` plugin and configure the meeting pipeline and operator CLI: [Teams Meetings](../user-guide/messaging/teams-meetings.md).
+- **Outbound delivery** — wire summaries back into a Teams channel or chat: [Microsoft Teams → Meeting Summary Delivery](../user-guide/messaging/teams.md#meeting-summary-delivery-teams-meeting-pipeline).
 
-Those pages land alongside the PRs that add the corresponding runtime. This credentials setup is a standalone prerequisite and is safe to complete in advance.
+This credentials setup is a standalone prerequisite and is safe to complete in advance.

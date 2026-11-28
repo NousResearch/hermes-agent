@@ -149,9 +149,6 @@ class GatewayRuntimeInitMixin:
         self._primary_profile_name = (
             "default" if getattr(self.config, "multiplex_profiles", False) else launch
         )
-        # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
-        self._teams_pipeline_runtime = None
-        self._teams_pipeline_runtime_error: Optional[str] = None
         # Failed-to-connect platforms for background reconnection: Platform -> {config, attempts, next_retry}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
         # Strong refs to detached fatal-error handler tasks so the loop can't GC them mid-run.

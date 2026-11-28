@@ -456,7 +456,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
                 # default would look correct while it shipped a second
                 # runtime to anyone who customises theirs. The group must be
                 # one the default package does not already ship.
-                extraDependencyGroups = [ "google-meet" ];
+                extraDependencyGroups = [ "mistral" ];
                 backend = {
                   mode = "serve";
                   port = 9231;
@@ -1381,7 +1381,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
         extras-extend-package = let
           testPkg = pythonLock.interpreter.pkgs.pyfiglet;
           # Not in the default package's groups, so adding it must show.
-          newGroup = "google-meet";
+          newGroup = "mistral";
           path = drv: builtins.unsafeDiscardStringContext drv.drvPath;
           modulePackage = settings:
             (evalHomeModule ({ enable = true; } // settings)).config.programs.hermes-agent.package;

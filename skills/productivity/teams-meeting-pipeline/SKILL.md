@@ -44,7 +44,13 @@ Multilingual trigger examples (not exhaustive):
 
 ## Prerequisites
 
-Before using the pipeline, verify these are set in `${HERMES_HOME:-~/.hermes}/.env`:
+The `hermes teams-pipeline` CLI comes from the official `teams-pipeline` catalog plugin, which is opt-in and not installed by default. If `hermes teams-pipeline --help` fails with an unknown command, install it (profiles that had the old bundled `teams_pipeline` plugin enabled get it automatically on `hermes update`):
+
+```bash
+hermes plugins install teams-pipeline --enable
+```
+
+Then verify these are set in `${HERMES_HOME:-~/.hermes}/.env`:
 
 ```bash
 MSGRAPH_TENANT_ID=...
@@ -71,7 +77,7 @@ hermes teams-pipeline subscriptions         # current Graph webhook subscription
 ### Re-running / debugging
 
 ```bash
-hermes teams-pipeline run <job-id>          # replay a stored job (re-summarize, re-deliver)
+hermes teams-pipeline run <job-id>          # re-fetch + re-summarize a stored job (delivers nowhere)
 hermes teams-pipeline fetch --meeting-id <id>   # dry-run: resolve meeting + transcript without persisting
 hermes teams-pipeline fetch --join-web-url "<url>"   # dry-run by join URL
 hermes teams-pipeline fetch --join-web-url "<url>" --organizer-user-id <id>   # organizer-scoped lookup (required for /meet/ short URLs)
@@ -95,7 +101,7 @@ hermes teams-pipeline maintain-subscriptions --dry-run  # show what would be ren
 
 - User asks "why didn't I get a summary for today's meeting?" → start with `list --status failed`, then `show <job-id>` on the relevant row. If the job doesn't exist at all, check `subscriptions` — the webhook may have expired (see pitfall below).
 - User asks "is setup working?" → `validate`, then `token-health`, then `subscriptions`. If all three pass, request a test meeting and check `list` for a fresh row.
-- User asks "re-run summary for meeting X" → `list` to find the job ID, `run <job-id>` to replay. If it fails again, `show <job-id>` to inspect the error and `fetch --meeting-id` to dry-run the artifact resolution.
+- User asks "re-run summary for meeting X" → `list` to find the job ID, `run <job-id>` to re-summarize (it does not re-send the summary: read it with `show <job-id>` and deliver it yourself). If it fails again, `show <job-id>` to inspect the error and `fetch --meeting-id` to dry-run the artifact resolution.
 - User asks "add meeting X to the pipeline" → usually you don't — the pipeline is subscription-driven, not per-meeting. If they want a specific past meeting summarized, use `fetch` to pull transcript + `run` after a job is created.
 
 ## Critical pitfall: Graph subscriptions expire in 72 hours

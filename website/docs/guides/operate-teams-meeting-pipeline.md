@@ -5,7 +5,7 @@ description: "Runbook, go-live checklist, and operator worksheet for the Microso
 
 # Operate the Teams Meeting Pipeline
 
-Use this guide after you have already enabled the feature from [Teams Meetings](../user-guide/messaging/teams-meetings.md).
+Use this guide after you have already installed the `teams-pipeline` catalog plugin (`hermes plugins install teams-pipeline --enable`) and enabled the feature from [Teams Meetings](../user-guide/messaging/teams-meetings.md).
 
 This page covers:
 - operator CLI flows
@@ -153,6 +153,11 @@ hermes teams-pipeline show <job-id>
 ```bash
 hermes teams-pipeline run <job-id>
 ```
+
+`run` re-fetches the meeting artifacts and re-summarizes the stored job into
+the job store, with an empty pipeline config and no sinks: it does not deliver
+the summary anywhere. It has no automated test and has not been run against a
+real tenant.
 
 ### Dry-run meeting artifact fetches
 

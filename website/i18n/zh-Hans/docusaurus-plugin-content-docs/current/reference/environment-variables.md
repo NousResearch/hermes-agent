@@ -418,7 +418,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 
 ### Microsoft Graph（Teams 会议）
 
-用于即将推出的 Teams 会议摘要流水线的 Microsoft Graph REST 客户端的仅应用凭证。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](../guides/microsoft-graph-app-registration.md)。
+Microsoft Graph REST 客户端的仅应用凭证，由官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline)（原内置的 `teams_pipeline`）读取。在这些变量生效之前，必须先安装该插件（`hermes plugins install teams-pipeline --enable`）。Azure 门户操作步骤和所需 API 权限详见[注册 Microsoft Graph 应用程序](../guides/microsoft-graph-app-registration.md)。
 
 | 变量 | 描述 |
 |----------|-------------|
@@ -442,7 +442,7 @@ Graph 事件（Teams 会议、日历、聊天等）的入站变更通知监听�
 
 ### Teams 会议摘要投递
 
-仅在启用 [`teams_pipeline` 插件](../user-guide/messaging/msgraph-webhook.md)时使用。设置也可在 `config.yaml` 的 `platforms.teams.extra` 下配置——两者都设置时环境变量优先。参见 [Microsoft Teams → 会议摘要投递](../user-guide/messaging/teams.md#会议摘要投递teams-会议-pipeline)。
+由官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 读取（通过 `hermes plugins install teams-pipeline --enable` 安装）；未安装时不生效。设置也可在 `config.yaml` 的 `platforms.teams.extra` 下配置——两者都设置时环境变量优先。参见 [Microsoft Teams → 会议摘要投递](../user-guide/messaging/teams.md#会议摘要投递teams-会议-pipeline)。
 
 | 变量 | 描述 |
 |----------|-------------|

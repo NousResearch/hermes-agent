@@ -174,13 +174,13 @@ PROFILE_CREDENTIAL_PATHS = frozenset({
     "honcho.json",                  # Honcho apiKey + OAuth grant (oauth.refreshToken)
     "mem0.json",                    # Mem0 api_key (self-hosted server key) next to its settings
     "webhook_subscriptions.json",   # per-route HMAC secrets
-    "teams_pipeline_store.json",    # Graph subscription client_state (webhook shared secret)
+    "teams_pipeline_store.json",    # teams-pipeline catalog plugin: Graph subscription client_state (webhook shared secret)
     *CREDENTIAL_STORE_DIRS,         # MCP OAuth tokens, vault, pairing, messaging sessions (both layouts)
     "browser-profile", "browser_auth", "bot-desktop", "webapp",  # browser cookies / logins, Webapp sign-in
     "browser-profiles", "browser_profiles",  # live CDP profiles, Browser Use CLI dir (Cookies, Login Data)
     "feishu_comment_pairing.json",
     *SECRET_CACHE_STORES,           # Bitwarden / 1Password value caches, Photon sidecar token
-    "workspace/meetings/node_token.json",  # google_meet node RPC secret
+    "workspace/meetings/node_token.json",  # google-meet catalog plugin: node RPC secret
     "weixin/accounts",              # WeChat bot tokens + per-peer context tokens
     ".copilot_jwt.json",            # exchanged Copilot API token
     "proxy",                        # iron-proxy CA key + proxy tokens

@@ -164,7 +164,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
     def test_teams_summary_writer_import_does_not_load_cwd_dotenv(
         self, tmp_path, monkeypatch
     ):
-        """teams_pipeline/runtime.py imports TeamsSummaryWriter directly."""
+        """The teams-pipeline plugin imports TeamsSummaryWriter directly."""
         _plant_cwd_dotenv(tmp_path, monkeypatch)
         _install_fake_teams_sdk(monkeypatch)
         _purge_teams_adapter_modules()

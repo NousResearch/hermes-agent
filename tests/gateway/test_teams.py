@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -360,8 +359,9 @@ class TestTeamsConnect:
 
 
 def _make_summary_payload():
-    return TeamsMeetingSummaryPayload(
-        meeting_ref=TeamsMeetingRef(meeting_id="meeting-123"),
+    # The writer reads the payload by attribute; the teams-pipeline plugin owns the real model.
+    return SimpleNamespace(
+        meeting_ref=SimpleNamespace(meeting_id="meeting-123"),
         title="Weekly Sync",
         summary="Discussed launch readiness.",
         key_decisions=["Proceed with staged rollout."],
@@ -371,6 +371,23 @@ def _make_summary_payload():
 
 
 class TestTeamsSummaryWriter:
+
+    @pytest.mark.anyio
+    async def test_graph_delivery_without_a_graph_client_names_the_plugin(self):
+        """With no teams-pipeline plugin (no client, no factory) Graph mode fails with the fix, not an ImportError."""
+        writer = TeamsSummaryWriter()
+        with pytest.raises(ValueError, match="teams-pipeline"):
+            await writer.write_summary(_make_summary_payload(),
+                                       {"delivery_mode": "graph", "team_id": "t", "channel_id": "c"})
+
+    @pytest.mark.anyio
+    async def test_graph_client_factory_gets_the_resolved_access_token(self):
+        tokens = []
+        client = SimpleNamespace(post_json=AsyncMock(return_value={"id": "m1"}))
+        writer = TeamsSummaryWriter(graph_client_factory=lambda token: tokens.append(token) or client)
+        result = await writer.write_summary(_make_summary_payload(),
+                                            {"delivery_mode": "graph", "chat_id": "chat-1", "access_token": "tok"})
+        assert tokens == ["tok"] and result["message_id"] == "m1"
 
     @pytest.mark.anyio
     async def test_graph_delivery_posts_to_channel(self):

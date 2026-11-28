@@ -362,16 +362,18 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
 
 def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None = None) -> Path | None:
     """The tree a home's selection key names: its own plugins dir first, then core's, else None."""
-    from pm.plugins_state import _is_directory
+    from pm.plugins_state import _is_directory, selected_home_tree
 
     relative = Path(name)
     if relative.is_absolute() or ".." in relative.parts:
         raise InstallError("venv", f"invalid plugin key: {name}")
-    plugin_dir = plugins_dir / relative
-    if installing is not None and plugin_dir.resolve() == installing.resolve():
-        return plugin_dir
-    if not _is_directory(plugin_dir):
-        plugin_dir = paths.repo_root() / "plugins" / relative
+    # A bundled key that left core (``google_meet``) still selects its catalog plugin's tree
+    # (``google-meet``), as the loader's gate reads it, so the sync keeps that plugin's dependencies; an
+    # install in flight counts before core's tree because it does not exist on disk yet.
+    tree = selected_home_tree(plugins_dir, name, installing=installing)
+    if tree is not None:
+        return tree
+    plugin_dir = paths.repo_root() / "plugins" / relative
     return plugin_dir if _is_directory(plugin_dir) else None
 
 

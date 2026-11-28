@@ -479,10 +479,10 @@ let
           (`minimal`, `messaging`) or override its defaultDependencyGroups.
 
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "google-meet").
+          pyproject.toml (e.g. "mistral").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "google-meet" ];
+        example = [ "mistral" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────

@@ -109,7 +109,8 @@ class RemotePluginContext:
         if name in HOST_UNSUPPORTED_CTX_METHODS:
             def unsupported(*_args: Any, **_kwargs: Any) -> Any:
                 raise PluginHostUnsupported(
-                    f"ctx.{name}() cannot run in the plugin host: {HOST_UNSUPPORTED_CTX_METHODS[name]}")
+                    f"ctx.{name}() cannot run in the plugin host: {HOST_UNSUPPORTED_CTX_METHODS[name]}; "
+                    "the plugin loads only with plugins.isolation: in_process")
             return unsupported
         if name in HOST_SKIPPED_CTX_METHODS:
             def skipped(*_args: Any, **_kwargs: Any) -> None:

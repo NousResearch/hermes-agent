@@ -8,7 +8,7 @@ description: "在 Hermes 中接收 Microsoft Graph 变更通知（会议、日�
 
 `msgraph_webhook` gateway 平台是一个入站事件监听器。它是 Hermes 接收来自 Microsoft Graph 的**变更通知**的方式——"一个 Teams 会议已结束"、"此聊天中收到了一条新消息"、"此日历事件已更新"。与 `teams` 平台（用户向其发送消息的聊天机器人）不同——此平台是 M365 告知 Hermes 某事已发生，而非来自用户的消息。
 
-目前主要的消费者是 Teams 会议摘要流水线：Graph 在会议产生转录文本时发出通知，流水线获取该内容，Hermes 将摘要发回 Teams。其他 Graph 资源（`/chats/.../messages`、`/users/.../events`）使用同一监听器——流水线消费者通过各自的 PR 接入。
+目前主要的消费者是 Teams 会议摘要流水线，它作为官方目录插件 [`teams-pipeline`](https://github.com/NousResearch/hermes-official-plugins/tree/main/teams-pipeline) 提供（`hermes plugins install teams-pipeline --enable`）：Graph 在会议产生转录文本时发出通知，流水线获取该内容，Hermes 将摘要发回 Teams。监听器本身保留在核心中；插件通过插件平台处理器 API（`ctx.register_platform_handler("msgraph_webhook", ...)`）绑定到它。其他 Graph 资源（`/chats/.../messages`、`/users/.../events`）使用同一监听器——流水线消费者通过各自的 PR 接入。
 
 ## 前提条件
 
@@ -126,7 +126,7 @@ MSGRAPH_WEBHOOK_ALLOWED_SOURCE_CIDRS="52.96.0.0/14,52.104.0.0/14"
 |------|--------|
 | Graph 订阅验证失败 | 公开 URL 可访问，`/msgraph/webhook` 路径匹配，带 `validationToken` 的 GET 在 10 秒内以 `text/plain` 原样回传 token。 |
 | 通知 POST 成功但无内容被摄取 | `client_state` 与订阅时注册的值一致。如值已漂移，重新运行 `openssl rand -hex 32` 并创建新订阅。检查 `accepted_resources` 是否包含 Graph 发送的资源路径。 |
-| 每条通知均返回 403 | `clientState` 不匹配（伪造，或订阅时使用了不同的值）。使用 `hermes teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` 重新创建订阅（随流水线运行时 PR 一同发布）。 |
+| 每条通知均返回 403 | `clientState` 不匹配（伪造，或订阅时使用了不同的值）。使用 `hermes teams-pipeline subscribe --client-state "$MSGRAPH_WEBHOOK_CLIENT_STATE" ...` 重新创建订阅（需要安装 `teams-pipeline` 插件）。 |
 | 监听器已启动，但 `curl http://localhost:8646/health` 挂起 | 端口绑定冲突。检查 `ss -tlnp \| grep 8646`，如有需要更改 `port:`。 |
 | 来自 Microsoft 的真实 Graph 请求返回 403 | 源 IP 白名单范围过窄。临时移除 `allowed_source_cidrs`，确认流量正常后，将列表扩展至包含当前 Microsoft 出口范围。 |
 

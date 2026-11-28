@@ -2576,6 +2576,7 @@ export interface Translations extends NoticeTranslations {
     color: string
     colorFor: string
     openInNewWindow: string
+    openInNewWindowHint: string
     setAsDefault: string
     defaultProfile: string
     defaultSet: (name: string) => string

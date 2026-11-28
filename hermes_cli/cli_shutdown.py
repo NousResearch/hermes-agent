@@ -333,6 +333,24 @@ def _wait_for_oneshot_background_completions(cli) -> None:
         )
 
 
+def _wait_for_oneshot_background_review(cli) -> None:
+    """Bounded join of the turn's in-flight background review (daemon thread) before exit.
+
+    Without it a one-shot run (every Kanban worker) exits while the review fork is still in
+    its provider call and interpreter exit kills it silently: no memory/skill writes, no
+    "Background review complete" line. Bound: ``auxiliary.background_review.exit_wait_s``.
+    """
+    import cli as cli_module
+    from agent.background_review import wait_for_background_review
+
+    # Same resolution as the memory shutdown in _finalize_single_query: a failed goal-loop
+    # re-init leaves cli.agent None while the agent that ran the turns (and owns the review
+    # thread) is still the module's active ref.
+    agent = getattr(cli, "agent", None) or cli_module._active_agent_ref
+    if agent is not None:
+        wait_for_background_review(agent)
+
+
 def _finalize_single_query(cli) -> None:
     """Settle the session, then release its lease, then linger as a bystander.
 
@@ -360,7 +378,9 @@ def _finalize_single_query(cli) -> None:
        had ended (#118826 / #122770).
     3. **Process-only work, lease-free** — the bounded linger for
        notify_on_complete children (pipe drain, the boundary the one-shot path
-       itself declares "NOT part of the spawner's delivery", #113608) and
+       itself declares "NOT part of the spawner's delivery", #113608), the
+       bounded join of the in-flight background review (its fork never writes
+       session rows, but interpreter exit would kill it mid-request), and
        resource teardown. ``_run_cleanup``'s memory-shutdown call is idempotent
        (``_memory_provider_shutdown``), so its post-release repeat is a no-op;
        neither it nor the linger touches session rows.
@@ -370,7 +390,7 @@ def _finalize_single_query(cli) -> None:
     process's stale ``cli_close`` end-stamp, because phase 1 has already run it.
     """
     import cli as cli_module
-    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions
+    from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _shutdown_agent_memory_provider, _wait_for_oneshot_background_completions, _wait_for_oneshot_background_review
     # A non-quiet -q turn reported done/error on the terminal, which outlives the process under
     # OSC 7501: clear it like /quit does, before the linger keeps the process around.
     clear_status = getattr(cli, "_clear_program_status", None)
@@ -396,4 +416,10 @@ def _finalize_single_query(cli) -> None:
         _wait_for_oneshot_background_completions(cli)
     except Exception:
         logger.debug("one-shot background completion wait failed", exc_info=True)
+    try:
+        # Lease-free: the review fork is persistence-isolated (no session DB, skip_memory), but
+        # it still uses the MCP/aux clients that _run_cleanup tears down.
+        _wait_for_oneshot_background_review(cli)
+    except Exception:  # health: allow BLE001 -- exit must survive any review-wait failure; no traceback (config values may hold credentials)
+        logger.debug("one-shot background review wait failed; exception details omitted")
     _run_cleanup(notify_session_finalize=False)

@@ -31,7 +31,7 @@ import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
 import { backendProfileArg } from './profile-id-guard'
 import { REMOTE_MARKER_GATE_PY } from './remote-update-marker-programs'
-import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
+import { assertBootstrapNotSuperseded, singleLinePythonCommand, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
 // Bumped when the desktop<->dashboard reuse contract changes in a way that makes
@@ -1355,7 +1355,7 @@ async function spawnRemoteDashboard(
     'finally:os.close(dd)'
 
   try {
-    await ssh.exec(`python3 -c ${shq(tokenUploadPy)}`, { stdinData: token })
+    await ssh.exec(singleLinePythonCommand(tokenUploadPy), { stdinData: token })
   } catch (error) {
     try {
       await ssh.exec(`rm -f ${expandRemotePath(tokenFilePath)}`)

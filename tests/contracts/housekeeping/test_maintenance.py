@@ -343,6 +343,34 @@ def test_prune_criteria_pinned_archived_and_message_bounds(backend, scope_a):
     assert store_a.sessions.get(SessionId("pf-pinned")) is not None
 
 
+@pytest.mark.parametrize("ordinal,active", [(2, 4), (0, 0)])
+def test_prune_message_bounds_include_rewound_rows(backend, scope_a, ordinal, active):
+    store = backend.open(scope_a)
+    sid = SessionId("rewound")
+    messages = [_msg(role, f"turn {i}", i) for i, role in enumerate(["user", "assistant"] * 3)]
+    _seed(backend, scope_a, _payload(sid, messages=messages))
+    store.messages.rewind_user_turn(sid, ordinal)
+    store.sessions.end(sid, "done")
+    assert store.sessions.get(sid).message_count == active
+
+    visible = PruneCriteria(max_messages=active, active_messages_only=True)
+    # The bounds measure the side ``count_basis`` names; the dataclass default is the prune basis.
+    assert (visible.count_basis, PruneCriteria().count_basis) == ("visible", "stored")
+    assert store.maintenance.list_prune_candidates(criteria=visible)[0].message_count == active
+    with pytest.raises(ValueError, match="all stored messages"):
+        store.maintenance.prune_sessions(None, criteria=visible, media_root=MEDIA_ROOT)
+    for limit in (active, 5):
+        criteria = PruneCriteria(max_messages=limit)
+        assert store.maintenance.list_prune_candidates(criteria=criteria, whole_lineages=True) == ()
+        assert store.maintenance.prune_sessions(None, criteria=criteria, media_root=MEDIA_ROOT).count == 0
+
+    exact = PruneCriteria(min_messages=6, max_messages=6)
+    rows = store.maintenance.list_prune_candidates(criteria=exact, whole_lineages=True)
+    assert [(r.session_id, r.message_count) for r in rows] == [(sid, 6)]
+    assert store.maintenance.count_prune_matches(criteria=exact) == 1
+    assert store.maintenance.prune_sessions(None, criteria=exact, media_root=MEDIA_ROOT).deleted_ids == (sid,)
+
+
 def test_prune_last_active_before_ages_swept_rows_from_their_sweep(backend, scope_a):
     store_a = backend.open(scope_a)
     _seed(backend, scope_a, _payload("pa-swept"))

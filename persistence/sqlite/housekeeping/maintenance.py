@@ -35,6 +35,7 @@ __all__ = ["SQLiteSessionMaintenance"]
 
 # The prune and archive selection SQL.
 _LAST_ACTIVE_SQL = _sql_session_last_active("s")
+_STORED_MESSAGES_SQL = "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id)"
 _TOKENS_SQL = "(COALESCE(s.input_tokens, 0) + COALESCE(s.output_tokens, 0))"
 _COST_SQL = "COALESCE(s.actual_cost_usd, s.estimated_cost_usd, 0)"
 
@@ -88,8 +89,6 @@ _PRUNE_FILTERS = (
     ("title_like", "truthy", _one("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'", _like)),
     ("end_reason", "truthy", _one("s.end_reason = ?")),
     ("cwd_prefix", "truthy", _cwd_prefix_filter),
-    ("min_messages", "notnone", _one("s.message_count >= ?")),
-    ("max_messages", "notnone", _one("s.message_count <= ?")),
     ("model_like", "truthy", _one("LOWER(COALESCE(s.model, '')) LIKE ? ESCAPE '\\'", _like)),
     ("provider", "truthy", _one("LOWER(COALESCE(s.billing_provider, '')) = ?", str.lower)),
     ("user_id", "truthy", _one("s.user_id = ?")),
@@ -136,11 +135,16 @@ def _not_pinned_sql(alias: str = "s") -> str:
     return f"COALESCE({alias}.pinned, 0) = 0 AND {alias}.id NOT IN ({_PINNED_TAIL_SQL})"
 
 
-_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
+# ``min_messages``/``max_messages`` live here but deliberately NOT in ``_PRUNE_FILTERS``: their clause is
+# appended by ``_prune_filter_where`` itself because it depends on ``active_messages_only`` (the stored vs
+# visible count) and must run before the generic loop. They stay accepted names so the kwargs the verbs
+# pass keep validating — re-adding either to ``_PRUNE_FILTERS`` would silently append its bound twice.
+_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"min_messages", "max_messages", "archived", "include_pinned", "lineage_tips_only"}
 
 
 def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
                         lineage_tips_only: bool = False, include_open: bool = False,
+                        active_messages_only: bool = False, min_messages: Optional[int] = None, max_messages: Optional[int] = None,
                         **filters) -> tuple[str, list]:
     """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
     AND together, only ended sessions are ever candidates, ``archived`` is tri-state
@@ -160,6 +164,11 @@ def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool
         # onto a visible continuation tip.
         clauses.append("COALESCE(s.title, '') <> 'Bot Chat'")
     params: list = []
+    count = "s.message_count" if active_messages_only else _STORED_MESSAGES_SQL
+    for bound, operator in ((min_messages, ">="), (max_messages, "<=")):
+        if bound is not None:
+            clauses.append(f"{count} {operator} ?")
+            params.append(bound)
     for name, applies, build in _PRUNE_FILTERS:
         value = filters.get(name)
         if (value is not None) if applies == "notnone" else bool(value):
@@ -239,6 +248,8 @@ class SQLiteSessionMaintenance(SessionPortability):
                        criteria: PruneCriteria = PruneCriteria(), exclude_active_write_guards: bool = False,
                        media_root: str) -> PruneResult:
         filters = asdict(criteria)
+        if criteria.active_messages_only:
+            raise ValueError("prune_sessions() counts all stored messages")
         if filters.get("include_open"):
             # Deletion is not reversible, so the ended-session guard is structural here: the
             # archive-only escape hatch must never reach the delete path.
@@ -339,11 +350,12 @@ class SQLiteSessionMaintenance(SessionPortability):
                               criteria: PruneCriteria = PruneCriteria(), whole_lineages: bool = False,
                               ) -> tuple[PruneCandidate, ...]:
         where, params = _prune_where(older_than_days, source, asdict(criteria), whole_lineages=whole_lineages)
+        count = "s.message_count" if criteria.active_messages_only else _STORED_MESSAGES_SQL
         with translated():
             rows = self._store.holder()._read_all(
                 f"""SELECT s.id, s.source, s.title, s.model, s.started_at,
                            {_LAST_ACTIVE_SQL} AS last_active,
-                           s.ended_at, s.message_count, s.archived
+                           s.ended_at, {count} AS message_count, s.archived
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)
         return tuple(PruneCandidate(

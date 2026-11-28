@@ -291,6 +291,9 @@ class InMemoryMaintenance:
             if not c.include_open and (row["ended_at"] is None) != open_rows:
                 continue
             record = self._record(row)
+            if not c.active_messages_only:
+                transcript = _messages_namespace(self._backend, self._scope)["transcripts"].get(record.session_id)
+                record = dataclasses.replace(record, message_count=len(transcript.rows) if transcript else 0)
             last_active = self._recency(row)
             if (
                 (c.lineage_tips_only and (record.end_reason == END_REASON_COMPRESSION or record.title == CANONICAL_BOT_CHAT_TITLE))
@@ -362,6 +365,8 @@ class InMemoryMaintenance:
     def prune_sessions(self, older_than_days: Optional[float] = 90, source: Optional[str] = None, *, criteria: PruneCriteria = PruneCriteria(), exclude_active_write_guards: bool = False, media_root: str) -> PruneResult:
         if criteria.include_open:
             raise ValueError("prune_sessions() never deletes open sessions: include_open is archive-only")
+        if criteria.active_messages_only:
+            raise ValueError("prune_sessions() counts all stored messages")
         selected = self._whole_lineages(self._selected(self._resolved(older_than_days, criteria), source))
         scope = self._scope
         sessions = self._backend.sessions

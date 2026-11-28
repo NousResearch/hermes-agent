@@ -108,6 +108,18 @@ class PruneCriteria:
     include_pinned: bool = False
     lineage_tips_only: bool = False
     include_open: bool = False
+    # Which message count ``min_messages``/``max_messages`` are evaluated against: the visible
+    # transcript (``True``) or every row stored for the session (``False``). Reversible bulk
+    # operations filter on the visible transcript, and ``archive_sessions()`` sets it itself; prune
+    # must count every row it deletes, so ``prune_sessions()`` refuses ``True``. The default is the
+    # prune basis — a caller constructing this for archive must pass ``True`` explicitly or its
+    # message bounds measure the wrong side. See ``count_basis`` for the same fact as a word.
+    active_messages_only: bool = False
+
+    @property
+    def count_basis(self) -> str:
+        """``"visible"`` (reversible archive) or ``"stored"`` (prune): the count the bounds use."""
+        return "visible" if self.active_messages_only else "stored"
 
 
 @dataclass(frozen=True, slots=True)

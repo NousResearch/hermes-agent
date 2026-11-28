@@ -596,10 +596,32 @@
 .hermes-kanban-drawer-comment-row {
   display: flex;
   gap: 0.4rem;
+  align-items: flex-end;
   padding: 0.55rem 0.75rem;
   /* Keep the comment input clear of the mobile browser nav bar / home
      indicator by extending the bottom padding with the safe-area inset. */
   padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
+}
+
+/* Agent comments can span Markdown paragraphs; keep the native textarea
+   readable and vertically resizable without burying the send button. */
+.hermes-kanban-comment-input {
+  box-sizing: border-box;
+  min-width: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.5rem 0.6rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+.hermes-kanban-comment-input:focus {
+  outline: none;
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ring) 30%, transparent);
 }
 
 .hermes-kanban-count {

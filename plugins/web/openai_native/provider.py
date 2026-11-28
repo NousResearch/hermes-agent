@@ -67,6 +67,13 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
 
     NAME = "openai-native"
     DISPLAY_NAME = "OpenAI Native Web Search (Codex Responses)"
+    # has_codex_credentials() probes the *chat* OAuth grant, not a search credential, so
+    # availability here never means "the user configured this for web search". Left
+    # auto-selectable it became the sole eligible provider on a keyless default install
+    # with Codex signed in, and the Codex backend's hosted web_search tool then failed
+    # every searching turn server-side (#135684) — while the client-side web_search
+    # tool kept working. Explicit ``web.search_backend: openai-native`` still selects it.
+    AUTO_SELECTABLE = False
 
     def is_available(self) -> bool:
         return has_codex_credentials()

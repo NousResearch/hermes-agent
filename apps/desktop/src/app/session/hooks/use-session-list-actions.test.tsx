@@ -24,6 +24,7 @@ import {
   $sessions,
   $sessionsLoadError,
   $sessionsLoading,
+  MESSAGING_SECTION_LIMIT,
   setCronSessions,
   setMessagingPlatformTotals,
   setMessagingSessions,
@@ -1385,5 +1386,40 @@ describe('refreshSessions lowers a loading flag it did not raise', () => {
     } finally {
       endGatewaySwitch(token)
     }
+  })
+})
+
+describe('a sidebar refresh keeps messaging rows paged in with Load more', () => {
+  it('a capped messaging seed does not collapse a platform the user paged deeper', async () => {
+    // One recency page across platforms: Telegram traffic fills it, so only
+    // the 3 newest Signal rows make the seed.
+    const signal = Array.from({ length: 13 }, (_, i) => row(`signal-${i}`, { last_active: 2000 - i, source: 'signal' }))
+
+    const telegram = Array.from({ length: MESSAGING_SECTION_LIMIT - 3 }, (_, i) =>
+      row(`tg-${i}`, { last_active: 3000 - i, source: 'telegram' })
+    )
+
+    listAllProfileSessions.mockResolvedValueOnce({ limit: 113, offset: 0, sessions: signal, total: 13 })
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }, [], [...telegram, ...signal.slice(0, 3)]))
+    setMessagingSessions(signal.slice(0, 3))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('signal')
+    })
+    expect($messagingSessions.get().filter(s => s.source === 'signal')).toHaveLength(13)
+
+    // Every finished turn re-reads the sidebar.
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect(
+      $messagingSessions
+        .get()
+        .filter(s => s.source === 'signal')
+        .map(s => s.id)
+    ).toEqual(signal.map(s => s.id))
+    expect($messagingSessions.get().filter(s => s.source === 'telegram')).toHaveLength(telegram.length)
   })
 })

@@ -1,10 +1,24 @@
 """Hermes CLI - Unified command-line interface for Hermes Agent."""
 
 import sys
+from datetime import datetime, timezone
 
-__release_date__ = "2026.9.24"
 # Declared for type checkers and the old-updater surface audit; served lazily by __getattr__.
 __version__: str
+__release_date__: str
+
+
+def _compute_release_date() -> str:
+    """Derive the release date from the install stamp or git commit date."""
+    try:
+        from hermes_cli.version_info import get_version_info
+        info = get_version_info()
+        if info.commit_date is not None:
+            return datetime.fromtimestamp(info.commit_date, tz=timezone.utc).strftime("%Y.%m.%d")
+    except Exception:
+        pass
+    # Fallback for unknown provenance
+    return "unknown"
 
 
 def __getattr__(name: str) -> str:
@@ -20,23 +34,25 @@ def __getattr__(name: str) -> str:
     at install time, and the repo root reaches ``sys.path`` only once
     ``hermes_bootstrap`` runs -- after this ``__init__``, from ``hermes_cli.main``.
     """
-    if name != "__version__":
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    from hermes_cli.steward import read_install_stamp
-    try:
-        from pm.paths import repo_root
-    except ModuleNotFoundError as exc:
-        if exc.name != "pm.paths" and not "pm.paths".startswith(f"{exc.name}."):
-            raise
-        # The old editable finder may not know the new pm package yet.
-        import json
-        from pathlib import Path
+    if name == "__version__":
+        from hermes_cli.steward import read_install_stamp
         try:
-            stamp = json.loads((Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(encoding="utf-8-sig"))
-            return str(stamp.get("baseVersion") or "0.0.0")
-        except (OSError, ValueError, AttributeError):
-            return "0.0.0"
-    return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
+            from pm.paths import repo_root
+        except ModuleNotFoundError as exc:
+            if exc.name != "pm.paths" and not "pm.paths".startswith(f"{exc.name}."):
+                raise
+            # The old editable finder may not know the new pm package yet.
+            import json
+            from pathlib import Path
+            try:
+                stamp = json.loads((Path(__file__).resolve().parents[1] / "install-stamp.json").read_text(encoding="utf-8-sig"))
+                return str(stamp.get("baseVersion") or "0.0.0")
+            except (OSError, ValueError, AttributeError):
+                return "0.0.0"
+        return str(read_install_stamp(repo_root()).get("baseVersion") or "0.0.0")
+    if name == "__release_date__":
+        return _compute_release_date()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _ensure_utf8() -> bool:

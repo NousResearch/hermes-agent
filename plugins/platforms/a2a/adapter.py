@@ -711,7 +711,7 @@ class A2AAdapter(BasePlatformAdapter):
         if task is None:
             state, reply = self._finalize_task(pending, *self._await_reply(pending))
             task = protocol.build_task(pending["task_id"], pending["context_id"], state, reply, created_at=pending["created_iso"])
-        return _ok(req_id, protocol.send_message_response(task) if v1_response else task)
+        return _ok(req_id, protocol.send_message_response(task) if v1_response else protocol.to_v03_task(task))
 
     @staticmethod
     def _sse_headers(handler) -> None:

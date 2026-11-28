@@ -206,6 +206,31 @@ def build_task(task_id: str, context_id: str, state: str, agent_text: str = "", 
     return task
 
 
+_V03_STATES = {STATE_SUBMITTED: "submitted", STATE_WORKING: "working", STATE_INPUT_REQUIRED: "input-required",
+               STATE_COMPLETED: "completed", STATE_FAILED: "failed", STATE_CANCELED: "canceled", STATE_REJECTED: "rejected"}
+
+
+def _v03_parts(parts: Any) -> list:
+    return [dict(p, kind="text") if isinstance(p, dict) and "text" in p else p for p in (parts or [])]
+
+
+def to_v03_task(task: dict) -> dict:
+    """Render a v1.0 Task in the A2A v0.3 wire shape for peers that called a legacy slash
+    method (``message/send``): ``kind`` discriminators, lowercase states and roles.
+    Some clients (e.g. Telnyx AI Assistants) only parse v0.3 replies."""
+    out = {"kind": "task", "id": task.get("id"), "contextId": task.get("contextId")}
+    status = dict(task.get("status") or {})
+    status["state"] = _V03_STATES.get(status.get("state"), status.get("state"))
+    msg = status.get("message")
+    if isinstance(msg, dict):
+        role = {ROLE_AGENT: "agent", ROLE_USER: "user"}.get(msg.get("role"), msg.get("role"))
+        status["message"] = dict(msg, kind="message", role=role, parts=_v03_parts(msg.get("parts")))
+    out["status"] = status
+    if task.get("artifacts"):
+        out["artifacts"] = [dict(a, parts=_v03_parts(a.get("parts"))) for a in task["artifacts"]]
+    return out
+
+
 def status_update(task_id: str, context_id: str, state: str, text: str = "") -> dict:
     """v1.0 StreamResponse with a statusUpdate member."""
     status: dict[str, Any] = {"state": state, "timestamp": now_iso()}

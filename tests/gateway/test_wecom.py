@@ -316,6 +316,11 @@ class TestMediaUpload:
         ):
             monkeypatch.delenv(proxy_var, raising=False)
 
+        # macOS also discovers proxies from System Configuration, independently of env vars:
+        # a system proxy makes httpx dial the proxy instead of the rebound address, so the
+        # connect-time guard never runs and this test fails on such a host.
+        monkeypatch.setattr("httpx._utils.getproxies", lambda: {})
+
         answers = iter(("93.184.216.34", "169.254.169.254"))
 
         def fake_getaddrinfo(_host, port, *_args, **_kwargs):
@@ -347,6 +352,62 @@ class TestMediaUpload:
             )
 
         assert connect_attempts == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("step", ["download", "decrypt"])
+    async def test_media_failures_are_visible_without_signed_url_secrets(self, step, monkeypatch, caplog):
+        """A dropped attachment must leave a warning, and the warning must not carry the
+        CDN's signed URL: the WeCom media URL embeds userinfo and a signature query."""
+        import logging
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        url = "https://user:password@example.com/file.bin?signature=private-signature#private-fragment"
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        download = AsyncMock(return_value=(b"encrypted", {}))
+        if step == "download":
+            download.side_effect = ValueError(url)
+        monkeypatch.setattr(adapter, "_download_remote_bytes", download)
+        monkeypatch.setattr(adapter, "_decrypt_file_bytes", MagicMock(side_effect=ValueError(url)))
+
+        with caplog.at_level(logging.WARNING):
+            assert await adapter._cache_media("file", {"url": url, "aeskey": "key"}) is None
+
+        assert f"Failed to {step} file" in caplog.text
+        assert "https://example.com/.../file.bin" in caplog.text
+        assert "ValueError" in caplog.text
+        assert all(secret not in caplog.text for secret in ("password", "private-signature", "private-fragment"))
+
+    @pytest.mark.asyncio
+    async def test_blocked_download_error_omits_url_credentials(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        url = "https://user:password@169.254.169.254/file.bin?signature=private-signature#private-fragment"
+        with pytest.raises(ValueError, match="SSRF protection") as error:
+            await adapter._download_remote_bytes(url, max_bytes=1024)
+        assert "https://169.254.169.254/.../file.bin" in str(error.value)
+        assert all(secret not in str(error.value) for secret in ("password", "private-signature", "private-fragment"))
+
+    @pytest.mark.asyncio
+    async def test_image_rejection_warning_omits_signed_url_secrets(self, monkeypatch, caplog):
+        """The sibling ``_store_media`` path logs the same URL when downloaded bytes are not an
+        image (an HTML error page from the CDN, say) — it must redact identically."""
+        import logging
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        url = "https://user:password@example.com/photo.jpg?signature=private-signature#private-fragment"
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(
+            adapter, "_download_remote_bytes",
+            AsyncMock(return_value=(b"<html>upstream error</html>", {"content-type": "application/octet-stream"})),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            assert await adapter._cache_media("image", {"url": url}) is None
+
+        assert "Rejected non-image bytes" in caplog.text
+        assert "https://example.com/.../photo.jpg" in caplog.text
+        assert all(secret not in caplog.text for secret in ("password", "private-signature", "private-fragment"))
 
 
 class TestSend:

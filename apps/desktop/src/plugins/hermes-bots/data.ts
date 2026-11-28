@@ -775,6 +775,8 @@ interface UnionAgentRow {
   connectionId?: string
   connectionKind?: string
   connectionLabel?: string
+  /** Cloud-gateway name for a `hermes cloud` row (Electron's RosterAgent). */
+  gatewayName?: string
   handle?: string
   profile?: string
   /** Credential-free metadata Electron enumerates alongside the name — the
@@ -903,6 +905,7 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
         ...merged,
         profiles,
         sources,
+        ...(union?.primaryConnectionId ? { primaryConnectionId: union.primaryConnectionId } : {}),
         fetchedAt: issuedAt
       }
     } catch {
@@ -1140,6 +1143,13 @@ export function mergeMultiSourceRoster(
       row.connectionKind = agent.connectionKind
       row.connectionLabel = agent.connectionLabel
       row.targetProfile = agent.targetProfile || profile
+
+      if (agent.gatewayName) {
+        row.gatewayName = agent.gatewayName
+      } else {
+        delete row.gatewayName
+      }
+
       row.route = {
         connectionId,
         mode: agent.connectionKind === 'local' ? 'local' : 'remote',
@@ -1168,6 +1178,7 @@ export function mergeMultiSourceRoster(
       connectionId,
       connectionKind: agent.connectionKind,
       connectionLabel: agent.connectionLabel,
+      ...(agent.gatewayName ? { gatewayName: agent.gatewayName } : {}),
       targetProfile: agent.targetProfile || profile,
       route: {
         connectionId,
@@ -1613,6 +1624,10 @@ export function annotateBotSource(bot: RosterRow, sources: GatewaySource[] | nul
     ...bot,
     connectionKind: bot.connectionKind || source.kind,
     connectionLabel: bot.connectionLabel || source.label,
+    // The source knows its cloud identity even for a retained (last-good) row
+    // the union omitted this poll — re-stamp it so a dropped poll cannot
+    // strip the gateway badge.
+    ...(source.cloud?.bot ? { gatewayName: source.cloud.bot } : {}),
     ...(source.installId ? { installId: source.installId } : {}),
     sourceError: source.error || null,
     sourceMissing: false,
@@ -1694,6 +1709,91 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
   }
 }
 
+/** The backend a roster row belongs to. `installId` when its source reported
+ *  one — it survives renaming a connection and is what the union roster uses to
+ *  collapse two addresses of one machine; `connectionId` otherwise (per-Desktop
+ *  unique). Empty for a row that carries no source at all. */
+export function rosterGatewayIdentity(bot: Partial<RosterRow> | null | undefined): string {
+  const installId = String(bot?.installId || '').trim()
+
+  if (installId) {
+    return `install:${installId}`
+  }
+
+  const connectionId = String(bot?.connectionId || '').trim()
+
+  return connectionId ? `conn:${connectionId}` : ''
+}
+
+/** Loopback endpoint: the shape of a forward this machine holds open (the
+ *  pre-migration local row and a `hermes cloud` Desktop URL both look like
+ *  this). Not evidence of a distinct machine on its own. */
+export function isLoopbackUrl(url?: null | string): boolean {
+  const raw = String(url || '').trim()
+
+  if (!raw) {
+    return false
+  }
+
+  try {
+    const host = new URL(raw).hostname.toLowerCase()
+
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/** The source facts the same-name rule needs. A full `GatewaySource` qualifies;
+ *  so does the roster's own picker option, whose `reachable` is widened. */
+export interface GatewayIdentitySource {
+  cloud?: null | { bot?: string }
+  connectionId?: string
+  name?: string
+  url?: string
+}
+
+/** Whether an unreachable row is the SAME bot as the reachable same-name row
+ *  that would replace it, i.e. this device under an old address (#92286). That
+ *  is true for a second address of one backend (`installId`, `connectionId`) and
+ *  for the pre-migration local-forward row: an UNNAMED loopback remote — no
+ *  gateway name, no cloud identity. A *named* gateway is a different machine's
+ *  bot that happens to share the profile name (`default` on `cloud-123` beside
+ *  `default` on This device), so it is never collapsed away. */
+function isSameBackendTwin(
+  bot: RosterRow,
+  reachable: { connections: Map<string, Set<string>>; identities: Map<string, Set<string>> },
+  byConnection: Map<string, GatewayIdentitySource>
+): boolean {
+  const name = String(bot?.name || '')
+  const identity = rosterGatewayIdentity(bot)
+  const connectionId = String(bot?.connectionId || '').trim()
+
+  if (identity && reachable.identities.get(name)?.has(identity)) {
+    return true
+  }
+
+  if (connectionId && reachable.connections.get(name)?.has(connectionId)) {
+    return true
+  }
+
+  // #92286: the pre-migration loopback descriptor was never a gateway of its
+  // own, so its rows are this device seen twice. Anything that carries a
+  // gateway name (a registry `name`, incl. every `hermes cloud` entry) is a
+  // distinct machine and stays visible while it is down (§6.3).
+  if (bot?.gatewayName) {
+    return false
+  }
+
+  const source = byConnection.get(connectionId)
+
+  if (source?.cloud?.bot || String(source?.name || '').trim()) {
+    return false
+  }
+
+  return isLoopbackUrl(source?.url)
+}
+
 /** Drop unreachable same-name copies from the top-level agent list.
  *
  *  Group rooms persist source-qualified members. After Desktop moves to the
@@ -1703,20 +1803,62 @@ export function botSourceStatus(bot: BotSourceFields | null | undefined): BotSou
  *  tiles. $lastRoster, group members, and @-mentions still see every
  *  (connectionId, profile) row.
  *
+ *  Only the same backend's twin is dropped. A row owned by a DIFFERENT gateway
+ *  keeps its tile: an unreachable gateway degrades exactly its section and the
+ *  row is never removed by a failed poll (§6.3) — a `hermes cloud` bot whose
+ *  `default` profile shares its name with the local `default` is the normal
+ *  case, not a duplicate.
+ *
  *  Ghosts stay: a selected-but-offline owner must remain visible rather than
  *  being replaced by a same-named twin on another gateway. A name with no
  *  reachable copy is kept, so a genuinely down source still has a row. */
-export function preferReachableSameNameRows(bots: RosterRow[] | null | undefined): RosterRow[] {
+export function preferReachableSameNameRows(
+  bots: RosterRow[] | null | undefined,
+  sources: GatewayIdentitySource[] | null | undefined = []
+): RosterRow[] {
   const rows = Array.isArray(bots) ? bots : []
-  const reachableNames = new Set<string>()
+  const byConnection = new Map<string, GatewayIdentitySource>()
 
-  for (const bot of rows) {
-    if (botSourceStatus(bot).available) {
-      reachableNames.add(bot?.name)
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const id = String(source?.connectionId || '').trim()
+
+    if (id) {
+      byConnection.set(id, source)
     }
   }
 
-  return rows.filter(bot => botSourceStatus(bot).available || bot?.ghost || !reachableNames.has(bot?.name))
+  const reachable: { connections: Map<string, Set<string>>; identities: Map<string, Set<string>> } = {
+    connections: new Map<string, Set<string>>(),
+    identities: new Map<string, Set<string>>()
+  }
+
+  const remember = (into: Map<string, Set<string>>, name: string, value: string) => {
+    if (!name || !value) {
+      return
+    }
+
+    const set = into.get(name) || new Set<string>()
+    set.add(value)
+    into.set(name, set)
+  }
+
+  for (const bot of rows) {
+    if (!botSourceStatus(bot).available) {
+      continue
+    }
+
+    const name = String(bot?.name || '')
+    remember(reachable.identities, name, rosterGatewayIdentity(bot))
+    remember(reachable.connections, name, String(bot?.connectionId || '').trim())
+  }
+
+  return rows.filter(bot => {
+    if (botSourceStatus(bot).available || bot?.ghost) {
+      return true
+    }
+
+    return !isSameBackendTwin(bot, reachable, byConnection)
+  })
 }
 
 /** Filter by the two stable identities rendered in every roster row: the

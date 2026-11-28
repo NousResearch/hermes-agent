@@ -7,7 +7,7 @@ lookup: skill rows sort by fuzzy score first, then usage, then name.
 
 import math
 
-from tui_gateway.command_discovery import _rank_slash_completions
+from tui_gateway.command_discovery import _rank_slash_completions, slash_completions
 from tui_gateway.slash_fuzzy import (
     fuzzy_rank_slash_items,
     normalize_slash_search_query,
@@ -60,6 +60,25 @@ def test_fuzzy_rank_is_stable_within_a_tier():
 def test_fuzzy_rank_drops_non_matching_prefix_rows():
     ranked, _ = fuzzy_rank_slash_items([_item("/other")], [], "model")
     assert ranked == []
+
+
+def test_slash_completions_list_each_fuzzy_match_once(monkeypatch):
+    """The CLI completer merges substring/description hits itself and ``slash_completions`` runs the
+    same merge on top: every match must still appear exactly once, in score order."""
+    monkeypatch.setattr("agent.skill_commands.get_interactive_skill_commands", lambda: {
+        "/ledger": {"description": "Audit the books"},
+        "/artifact-audit": {"description": "Check artifacts"},
+        "/audit-log": {"description": "Show the log"},
+    })
+    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", dict)
+    monkeypatch.setattr(
+        "tui_gateway.command_discovery._skill_usage_lookup", lambda: (lambda _n: 0, lambda _n: "local"))
+
+    skills = [i["text"].strip() for i in slash_completions("/audit")["items"] if i["kind"] == "skill"]
+    commands = [i["text"].strip() for i in slash_completions("/mcp")["items"]]
+
+    assert skills == ["artifact-audit", "audit-log", "ledger"]
+    assert commands.count("reload-mcp") == 1
 
 
 def test_rank_slash_completions_uses_score_before_usage():

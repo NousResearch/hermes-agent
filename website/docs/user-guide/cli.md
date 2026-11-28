@@ -305,7 +305,7 @@ Shell mode is CLI-only. Gateway platforms (Discord, Telegram, Slack) and cron ru
 
 ## Slash Commands
 
-Type `/` to see the autocomplete dropdown. Hermes supports a large set of CLI slash commands, dynamic skill commands, and user-defined quick commands.
+Type `/` to see the autocomplete dropdown. Hermes supports a large set of CLI slash commands, dynamic skill commands, and user-defined quick commands. Typing after the `/` narrows the dropdown to commands and skills whose name contains the text anywhere (`/audit` finds `/artifact-audit`) or whose description mentions it; name matches are listed before description matches. Ghost text only continues a name from its start.
 
 Common examples:
 

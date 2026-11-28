@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
+from tools.environments.fd_wait import open_fd_waiter
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +513,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
         if IS_WINDOWS:
             argv = _windows_script_argv(argv)
         proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, encoding='utf-8', errors='replace', shell=False,
+                                shell=False,  # bytes: _communicate_until_exit reads the raw fds and decodes
                                 env=build_subprocess_env(scrub_secrets=is_multiplex_active()), **popen_kwargs)
     except Exception as exc:
         for cls, msg in _POPEN_ERRORS:
@@ -524,20 +525,110 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
             return failed(f"{argv[0]!r} {_NOT_DIRECTLY_EXECUTABLE}")
         return failed(str(exc))
     try:
-        stdout, stderr = proc.communicate(input=stdin_json, timeout=spec.timeout)
+        stdout, stderr = _communicate_until_exit(proc, stdin_json, spec.timeout)
     except BaseException as exc:
         # BaseException: the hook leads its own process group, so Ctrl+C's SIGINT never reaches it — only we can.
         kill_process_tree(proc)  # the whole tree — forked helpers holding the pipes would stall the drain
         with suppress(Exception):
-            proc.communicate(timeout=1)
+            proc.wait(timeout=1)
         if not isinstance(exc, Exception):
             raise
-        if not isinstance(exc, subprocess.TimeoutExpired):  # pragma: no cover — defensive
+        if not isinstance(exc, subprocess.TimeoutExpired):  # runaway output, or defensive
             return failed(str(exc))
         result.update(timed_out=True, elapsed_seconds=round(time.monotonic() - t0, 3))
         return result
     result.update(returncode=proc.returncode, stdout=stdout or "", stderr=stderr or "", elapsed_seconds=round(time.monotonic() - t0, 3))
     return result
+
+
+# How long to keep draining stdout/stderr after the hook process itself has exited. A helper the hook
+# left running (``some-daemon &``) still holds the pipes, so EOF may never come; its later output is
+# not the hook's answer.
+_PIPE_DRAIN_GRACE_SECONDS = 0.5
+# A hook's answer is one small JSON object. Past this many bytes on either pipe the hook is runaway
+# (``yes``, a log tail, a debug dump): it is killed instead of buffered, since an unbounded drain
+# grew the agent process by tens of GB within one default timeout.
+_MAX_HOOK_STREAM_BYTES = 1 << 20
+# Hook text that reaches the model (injected context, a block reason) is shortened past this.
+_MAX_HOOK_TEXT_CHARS = 50_000
+
+
+class _HookOutputOverflow(Exception):
+    """The hook printed more than ``_MAX_HOOK_STREAM_BYTES`` on one pipe and was killed."""
+
+
+def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: int) -> tuple[str, str]:
+    """Feed ``stdin_json``, drain both pipes on reader threads and return once the hook's OWN process
+    has exited (``subprocess.TimeoutExpired`` when it has not within ``timeout``).
+
+    ``Popen.communicate()`` instead waits for pipe EOF, so a hook that starts a background helper
+    without redirecting its stdio (``some-daemon &``) "hung" for the whole timeout, lost its verdict
+    and had the helper it meant to leave running killed with the tree. The helper keeps the pipes;
+    its reader threads end with it."""
+    chunks: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+    overflowed: list[str] = []
+    stop = threading.Event()
+    stdin = proc.stdin
+    assert stdin is not None  # Popen(stdin=PIPE)
+
+    failures: list[str] = []
+
+    def _drain(name: str) -> None:
+        stream, size, waiter = getattr(proc, name), 0, None
+        try:
+            fd = stream.fileno()
+            # POSIX: wait in short slices so a reader can notice ``stop`` while a quiet background helper
+            # still holds the pipe. The shared waiter has no FD_SETSIZE ceiling and falls back to poll()
+            # at the fd limit. Windows pipes cannot be selected, so a read there blocks until EOF.
+            if not IS_WINDOWS:
+                if (waiter := open_fd_waiter(fd)) is None:
+                    return  # already closed: nothing to drain
+            while not stop.is_set():
+                if waiter is not None and not waiter.wait(0.1):
+                    continue
+                if not (chunk := os.read(fd, 65536)):
+                    return
+                size += len(chunk)
+                if size > _MAX_HOOK_STREAM_BYTES:
+                    overflowed.append(name)
+                    kill_process_tree(proc)  # ends proc.wait() below now, not at the timeout
+                    return
+                chunks[name].append(chunk)
+        except (OSError, ValueError) as exc:
+            if not stop.is_set():  # a lost answer (setup included) must not read as an empty, successful one
+                failures.append(f"{name}: {type(exc).__name__}: {exc}")
+        finally:
+            if waiter is not None:
+                waiter.close()
+
+    def _feed() -> None:
+        with suppress(OSError, ValueError):  # the hook may exit without reading stdin
+            stdin.write(stdin_json.encode("utf-8"))
+            stdin.close()
+
+    readers = [threading.Thread(target=_drain, args=(name,), daemon=True, name=f"hook-{name}") for name in chunks]
+    threads = [*readers, threading.Thread(target=_feed, daemon=True, name="hook-stdin")]
+    for thread in threads:
+        thread.start()
+    proc.wait(timeout=timeout)
+    deadline = time.monotonic() + _PIPE_DRAIN_GRACE_SECONDS  # one grace budget shared by all three threads
+    for thread in threads:
+        thread.join(timeout=max(0.0, deadline - time.monotonic()))
+    # A helper the hook left running may keep the pipes open: release the readers, then the pipes, so
+    # repeated hook runs do not pile up blocked threads and open descriptors for the helper's lifetime.
+    stop.set()
+    for name, reader in zip(chunks, readers):
+        reader.join(timeout=0.5)
+        if not reader.is_alive():
+            with suppress(OSError, ValueError):
+                getattr(proc, name).close()
+    if overflowed:  # checked after the drain: output that crossed the cap during the grace still counts
+        raise _HookOutputOverflow(f"printed more than {_MAX_HOOK_STREAM_BYTES // (1 << 20)} MiB on "
+                                  f"{overflowed[0]} and was stopped; a hook answers with one JSON object")
+    if failures:
+        raise OSError(f"could not read hook output ({failures[0]})")
+    stdout, stderr = (b"".join(chunks[name]).decode("utf-8", errors="replace") for name in ("stdout", "stderr"))
+    return stdout, stderr
 
 
 def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]]]:
@@ -636,7 +727,7 @@ def _serialize_payload(event: str, kwargs: dict[str, Any]) -> str:
 def _block_message(primary: Any, secondary: Any) -> str:
     """Validated string block message (primary wins), falling back to the default."""
     raw = primary or secondary
-    return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
+    return _shorten_hook_text(raw) if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
 
 
 # pre_tool_call dialects in check order — Hermes ``action`` then Claude-Code ``decision`` — as (verb key,
@@ -668,13 +759,21 @@ def _parse_pre_verify(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     action = str(data.get("action") or data.get("decision") or "").strip().lower()
     message = data.get("message") or data.get("reason")
     if action in {"continue", "block"} and isinstance(message, str) and message.strip():
-        return {"action": "continue", "message": message.strip()}
+        return {"action": "continue", "message": _shorten_hook_text(message.strip())}
     return None
 
 
 def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     context = data.get("context")
-    return {"context": context} if isinstance(context, str) and context.strip() else None
+    return {"context": _shorten_hook_text(context)} if isinstance(context, str) and context.strip() else None
+
+
+def _shorten_hook_text(text: str) -> str:
+    """Hook text bound for the model, cut to ``_MAX_HOOK_TEXT_CHARS`` with a note saying so: a hook
+    pasting a whole log would otherwise overflow the context on every turn it fires."""
+    if len(text) <= _MAX_HOOK_TEXT_CHARS:
+        return text
+    return f"{text[:_MAX_HOOK_TEXT_CHARS]}\n[hook output shortened: {len(text):,} characters, first {_MAX_HOOK_TEXT_CHARS:,} kept]"
 
 
 def _parse_pre_llm_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:

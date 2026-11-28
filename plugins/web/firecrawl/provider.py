@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -126,12 +127,37 @@ class _KeylessFirecrawlClient:
         return response.json()
 
     search = lambda self, *, query, limit=5: self._post("/v2/search", {"query": query, "limit": limit})
-    def scrape(self, *, url, formats, timeout=None):
-        # _scrape_one passes the SDK's server-side ``timeout`` (ms); the v2 REST payload takes the same field.
+    def scrape(self, *, url, formats, timeout=None, max_age=None):
+        # _scrape_one passes the SDK's server-side ``timeout`` and ``max_age`` (both ms); the v2 REST
+        # payload names them ``timeout`` and ``maxAge``.
         payload = {"url": url, "formats": formats}
         if timeout is not None:
             payload["timeout"] = timeout
+        if max_age is not None:
+            payload["maxAge"] = max_age
         return self._post("/v2/scrape", payload)
+
+
+_MS_PER_HOUR = 3_600_000
+
+
+def _max_age_kwargs() -> dict[str, int]:
+    """``{"max_age": <ms>}`` from ``web.firecrawl_max_age_hours``, or ``{}`` when unset so Firecrawl's
+    default stands. Firecrawl serves its own cached copy of a page by default, and Hermes' cache
+    settings do not reach that copy. Raises ValueError naming the key for anything but a finite
+    number of hours >= 0."""
+    raw = _wt()._load_web_config().get("firecrawl_max_age_hours")
+    if raw is None:
+        return {}
+    try:
+        hours = math.nan if isinstance(raw, bool) else float(raw)
+    except (TypeError, ValueError):
+        hours = math.nan
+    if not math.isfinite(hours) or hours < 0:
+        raise ValueError(
+            f"web.firecrawl_max_age_hours must be a number of hours >= 0 (0 = always fetch the page live), got {raw!r}"
+        )
+    return {"max_age": int(hours * _MS_PER_HOUR)}
 
 
 def _get_firecrawl_gateway_url() -> str:
@@ -296,6 +322,7 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
         return _error_entry(url, blocked["message"], blocked=blocked)
     try:
         logger.info("Firecrawl scraping: %s", url)
+        freshness = _max_age_kwargs()
         try:
             # Pass timeout (ms) to Firecrawl so the server-side deadline
             # matches our asyncio deadline. Without this the API uses its
@@ -307,6 +334,7 @@ async def _scrape_one(url: str, formats: list[str], format: Optional[str]) -> di
                     url=url,
                     formats=formats,
                     timeout=60_000,
+                    **freshness,
                 ),
                 timeout=60,
             )

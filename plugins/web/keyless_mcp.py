@@ -303,12 +303,16 @@ def firecrawl_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 
 def firecrawl_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     from plugins.web.firecrawl.provider import (
-        _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _with_scrape_status,
+        _KeylessFirecrawlClient, _extract_scrape_payload, _final_url, _max_age_kwargs, _with_scrape_status,
     )
+    try:
+        freshness = _max_age_kwargs()
+    except ValueError as exc:
+        return [_page_error(u, str(exc)) for u in urls]
     client = _KeylessFirecrawlClient()
 
     def _fetch(url: str) -> dict[str, Any]:
-        payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"])) or {}
+        payload = _extract_scrape_payload(client.scrape(url=url, formats=["markdown"], **freshness)) or {}
         metadata = payload.get("metadata")
         metadata = metadata if isinstance(metadata, dict) else {}
         content = payload.get("markdown") or payload.get("html") or ""

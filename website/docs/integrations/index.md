@@ -112,6 +112,7 @@ Each platform's setup page walks through what to do once you're there.
 
 ## Collaboration Workspaces
 
+- **[Kylon](../user-guide/features/acp.md#kylon)** — Connect an existing Hermes installation to Kylon Rooms and threads through ACP. Kylon manages the workspace conversations while Hermes runs on your connected computer with its configured model provider and local tools.
 - **[Buzz](./buzz.md)** — Block's Nostr-based human+agent workspace. Three integration paths: Buzz Desktop spawns Hermes as a managed ACP runtime, the `buzz-acp` relay bridge hosts a Hermes identity server-side, or the native gateway platform joins Buzz channels with full Hermes memory/skills/approvals/cron. The overview page compares all three.
 
 ## Home Automation

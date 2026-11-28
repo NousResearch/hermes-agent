@@ -7,6 +7,7 @@ import { fetchVoiceClientConfigFor } from '@/lib/voice-client-direct'
 import { type DictationStreamSession, openDictationStream } from '@/lib/voice-stream'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notify, notifyError } from '@/store/notifications'
+import { $sttEnabled } from '@/store/voice-prefs'
 
 import { useComposerScope } from '../scope'
 import type { VoiceActivityState, VoiceStatus } from '../types'
@@ -170,6 +171,17 @@ export function useVoiceRecorder({
   const start = async () => {
     if (!onTranscribeAudio) {
       notify({ kind: 'warning', title: voiceCopy.unavailable, message: voiceCopy.transcriptionUnavailable })
+
+      return
+    }
+
+    // stt.enabled is off: the backend answers the transcription with "STT is
+    // disabled in config.yaml", so a take recorded here could never become
+    // text. Refused at the mic-open, not only on the button, so the
+    // composer.dictate keybind and every tile that mirrors the composer obey
+    // the same gate instead of burning a take.
+    if (!$sttEnabled.get()) {
+      notify({ kind: 'warning', title: voiceCopy.unavailable, message: t.desktop.sttDisabled })
 
       return
     }

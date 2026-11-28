@@ -1,3 +1,5 @@
+import { useStore } from '@nanostores/react'
+
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
@@ -6,6 +8,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, ChevronDown, iconSize } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { recordAction } from '@/store/desktop-metrics'
+import { $sttEnabled } from '@/store/voice-prefs'
 
 import { GHOST_ICON_BTN, PRIMARY_ICON_BTN } from './control-classes'
 import { useVoiceEngineName, VoiceEngineRows } from './voice-engine-rows'
@@ -31,14 +34,18 @@ export function StartVoiceButton({
 }) {
   const { t } = useI18n()
   const engine = useVoiceEngineName()
+  const sttOn = useStore($sttEnabled)
+  // A voice conversation is speech-to-text on the way in, so STT off disables
+  // this too — and says why instead of opening a mic that cannot be read.
+  const tip = sttOn ? (engine ? `${label} — ${engine}` : label) : `${label} — ${t.desktop.sttDisabled}`
 
   return (
     <span className="flex items-center">
-      <Tip label={engine ? `${label} — ${engine}` : label} placement="control">
+      <Tip label={tip} placement="control">
         <Button
           aria-label={label}
           className={cn(PRIMARY_ICON_BTN, engine && 'rounded-r-none')}
-          disabled={disabled}
+          disabled={disabled || !sttOn}
           onClick={() => {
             triggerHaptic('open')
             recordAction('composer.voice', 'click')
@@ -57,7 +64,7 @@ export function StartVoiceButton({
               <Button
                 aria-label={t.composer.voiceEngine}
                 className={cn(GHOST_ICON_BTN, 'w-(--composer-voice-menu-size) rounded-l-none p-0')}
-                disabled={disabled}
+                disabled={disabled || !sttOn}
                 size="icon"
                 type="button"
                 variant="ghost"
@@ -67,7 +74,7 @@ export function StartVoiceButton({
             </DropdownMenuTrigger>
           </Tip>
           <DropdownMenuContent align="end" className="min-w-52">
-            <VoiceEngineRows disabled={disabled} />
+            <VoiceEngineRows disabled={disabled || !sttOn} />
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}

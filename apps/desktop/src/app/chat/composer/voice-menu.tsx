@@ -16,6 +16,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Ear, EarOff, iconSize, Loader2, Square, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $sttEnabled } from '@/store/voice-prefs'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
 import { ACTIVE_ICON_BTN, GHOST_ICON_BTN } from './control-classes'
@@ -59,6 +60,7 @@ export function VoiceMenu({
   const { t } = useI18n()
   const c = t.composer
   const wake = useStore($wakeWord)
+  const sttOn = useStore($sttEnabled)
 
   const phrase = wake.phrase || 'hey hermes'
   const dictating = state.voice.active || voiceStatus !== 'idle'
@@ -76,10 +78,13 @@ export function VoiceMenu({
 
   const wakeLabel = wakeListening ? c.wakeWordListening(phrase) : c.wakeWordOff(phrase)
   const triggerLabel = dictating ? dictationLabel : wakeListening ? wakeLabel : c.voiceControls
+  // With STT off the dictation row is disabled, so the reason rides in the
+  // trigger's tooltip: a folded menu must never look broken.
+  const triggerTip = sttOn ? triggerLabel : `${triggerLabel} — ${t.desktop.sttDisabled}`
 
   return (
     <DropdownMenu>
-      <Tip label={wake.notice && !dictating ? `${triggerLabel} — ${wake.notice}` : triggerLabel} placement="control">
+      <Tip label={wake.notice && !dictating ? `${triggerTip} — ${wake.notice}` : triggerTip} placement="control">
         <DropdownMenuTrigger asChild>
           <Button
             aria-label={triggerLabel}
@@ -122,7 +127,7 @@ export function VoiceMenu({
         <DropdownMenuCheckboxItem
           checked={dictating}
           className={dropdownMenuRow}
-          disabled={disabled || !state.voice.enabled || voiceStatus === 'transcribing'}
+          disabled={disabled || !state.voice.enabled || !sttOn || voiceStatus === 'transcribing'}
           onSelect={event => {
             // Keep the menu open: dictation is a mode you watch, and closing
             // on select hides the recording state the trigger just entered.

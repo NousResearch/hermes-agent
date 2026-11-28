@@ -231,6 +231,19 @@ code { font-size: 0.875rem; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* The design system's ConfirmDialog centres a Radix AlertDialog with no height
+   cap, and Radix locks page scroll while it is open: a long description (a
+   catalog entry's install summary) pushed Cancel and Install below the window
+   with no way to reach them. Cap every alert dialog at the viewport, with the
+   same 1rem margin the DS keeps at the sides, and scroll it inside. In the
+   components layer, so a utility class on the dialog still wins. */
+@layer components {
+  [role="alertdialog"] {
+    max-height: calc(100dvh - 2rem);
+    overflow-y: auto;
+  }
+}
+
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */
 .scrollbar-none {
   -ms-overflow-style: none;

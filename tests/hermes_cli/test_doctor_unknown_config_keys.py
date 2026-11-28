@@ -1,65 +1,65 @@
-"""`collect_unknown_config_keys` — doctor warns on config.yaml typos.
+"""`hermes doctor` warns on config.yaml keys the runtime never reads (#91876, salvage of #94860).
 
-Walks the raw (on-disk) user config and reports dotted paths for keys that
-do not exist anywhere in DEFAULT_CONFIG. Known keys (present at any depth)
-are never reported; underscore-prefixed internal keys are skipped.
+The walk asks ``hermes config set``'s validator about every on-disk path, so doctor and the
+write path share one schema. Two invariants: a typo is reported once with a did-you-mean and an
+unknown section is not descended into; every key in the documented configuration reference
+validates (zero false positives on the documented surface — a new documented key must be seeded
+in DEFAULT_CONFIG or registered in ``hermes_cli.config_runtime_keys``).
 """
+
+import re
+from pathlib import Path
+
+import hermes_yaml as yaml
 
 from hermes_cli.doctor_config import collect_unknown_config_keys
 
-
-def test_known_keys_not_reported():
-    # Every key here exists in DEFAULT_CONFIG (verified against defaults).
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-
-    raw = {}
-    for section, value in DEFAULT_CONFIG.items():
-        if isinstance(value, dict) and not section.startswith("_"):
-            raw[section] = {}
-            for k, v in list(value.items())[:2]:
-                if not k.startswith("_"):
-                    raw[section][k] = v
-        elif not section.startswith("_"):
-            raw[section] = value
-    assert collect_unknown_config_keys(raw) == []
+REPO = Path(__file__).resolve().parents[2]
+DOC_CORPUS = (REPO / "website/docs/user-guide/configuration.md", REPO / "cli-config.yaml.example")
 
 
-def test_unknown_top_level_key_reported():
-    raw = {"tui_compact": True}
-    assert collect_unknown_config_keys(raw) == ["tui_compact"]
+def _documented_config() -> dict:
+    """Deep-merge of every YAML block in the configuration docs plus the shipped example file."""
+    merged: dict = {}
+
+    def deep(dst: dict, src: dict) -> None:
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                deep(dst[k], v)
+            else:
+                dst[k] = v
+
+    for path in DOC_CORPUS:
+        text = path.read_text(encoding="utf-8-sig")
+        blocks = re.findall(r"```ya?ml\n(.*?)```", text, re.DOTALL) if path.suffix == ".md" else [text]
+        for block in blocks:
+            try:
+                data = yaml.safe_load(block)
+            except Exception:  # a prose block that is not a whole YAML document
+                continue
+            if isinstance(data, dict):
+                deep(merged, data)
+    return merged
 
 
-def test_unknown_nested_key_reported_with_dotted_path():
-    raw = {"display": {"tui_statusbar": "off"}}
-    assert collect_unknown_config_keys(raw) == ["display.tui_statusbar"]
-
-
-def test_known_section_with_unknown_child_reports_only_child():
-    raw = {"display": {"compact": True, "definitely_not_a_real_key": 1}}
-    findings = collect_unknown_config_keys(raw)
-    assert findings == ["display.definitely_not_a_real_key"]
-
-
-def test_underscore_keys_skipped():
-    raw = {"_internal": 1, "display": {"_private": 2}}
-    assert collect_unknown_config_keys(raw) == []
-
-
-def test_non_dict_input_returns_empty():
-    assert collect_unknown_config_keys(None) == []
-    assert collect_unknown_config_keys([1, 2]) == []
-    assert collect_unknown_config_keys("nope") == []
-
-
-def test_empty_config_no_findings():
-    assert collect_unknown_config_keys({}) == []
-
-
-def test_multiple_unknown_keys_all_found():
+def test_typos_reported_once_with_suggestion_and_unknown_sections_not_descended():
     raw = {
-        "modle": {"default": "x"},      # typo'd section reported as a whole
-        "display": {"compct": True},    # typo'd key in known section
+        "modle": {"default": "x", "provider": "y"},   # typo'd section: one finding, no children
+        "display": {"compact": True, "tool_progress_comand": False},  # typo'd leaf in a known section
+        "compression": {"model_thresholds": {"gpt-9.1": 1}},  # open mapping, dotted model id accepted
+        "auxiliary": {"compression": {"max_concurrency": 2}},  # registered runtime leaf under any task
+        "stt": {"prompt": {"ignored_child": 1}},       # a mapping below a scalar runtime leaf is never read
+        "_internal": {"anything": 1},                  # intentionally non-schema
     }
-    found = set(collect_unknown_config_keys(raw))
-    # Unknown sections are reported at the section level, not descended into.
-    assert found == {"modle", "display.compct"}
+    findings = collect_unknown_config_keys(raw)
+    assert sorted(path for path, _ in findings) == [
+        "display.tool_progress_comand", "modle", "stt.prompt.ignored_child"]
+    assert dict(findings)["modle"] == "model"
+    assert dict(findings)["display.tool_progress_comand"] == "display.tool_progress_command"
+    assert collect_unknown_config_keys(None) == [] and collect_unknown_config_keys({}) == []
+
+
+def test_every_documented_config_key_validates():
+    documented = _documented_config()
+    assert len(documented) > 30, "docs corpus did not parse — the ratchet would be vacuous"
+    assert collect_unknown_config_keys(documented) == []

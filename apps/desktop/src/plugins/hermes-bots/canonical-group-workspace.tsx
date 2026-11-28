@@ -723,7 +723,15 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         onSubmit={send}
         sendLabel={pending ? labels.retry : labels.send}
         status={<CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />}>
-        <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => member.handle}
+        <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked}
+          handleFor={member => {
+            // Insert the name the user typed and sees in the popover. A name
+            // with spaces or punctuation cannot survive the @-token, so those
+            // (and unnamed members) keep the handle the board is keyed by.
+            const name = String(member.display_name || '').trim()
+
+            return /^[\p{L}\p{N}._-]+$/u.test(name) ? name : member.handle
+          }}
           members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} ref={composerInput} value={draft} />
       </RoomComposer>
       </div>

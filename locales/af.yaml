@@ -3461,6 +3461,11 @@ display:
     tool_call: "'n gereedskapsoproep"
     tool_search: "'n gereedskapsoektog"
     tool_describe: "gereedskapbesonderhede"
+  bridge_label:
+    search: "Soek na nutsprogramme"
+    describe: "Lees besonderhede"
+    count_one: "{count} nutsprogram"
+    count_many: "{count} nutsprogramme"
   status_phrase:
     verb: "is besig met {verb}"
     using_tool: "gebruik {tool}"

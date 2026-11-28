@@ -3461,6 +3461,11 @@ display:
     tool_call: "una llamada a herramienta"
     tool_search: "una búsqueda de herramientas"
     tool_describe: "detalles de herramienta"
+  bridge_label:
+    search: "Buscando herramientas"
+    describe: "Leyendo detalles"
+    count_one: "{count} herramienta"
+    count_many: "{count} herramientas"
   status_phrase:
     verb: "está {verb}"
     using_tool: "está usando {tool}"

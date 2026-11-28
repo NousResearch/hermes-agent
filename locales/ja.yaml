@@ -3461,6 +3461,11 @@ display:
     tool_call: "ツール呼び出し"
     tool_search: "ツール検索"
     tool_describe: "ツールの詳細"
+  bridge_label:
+    search: "ツールを検索中"
+    describe: "ツールの詳細を読み取り中"
+    count_one: "ツール {count} 件"
+    count_many: "ツール {count} 件"
   status_phrase:
     verb: "は {verb}"
     using_tool: "は {tool} を使用中"

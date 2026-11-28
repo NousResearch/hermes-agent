@@ -2,6 +2,8 @@
 
 import pytest
 
+from agent.display import build_tool_preview
+from agent.i18n import SUPPORTED_LANGUAGES, t
 from gateway.stream_events import ToolCallChunk
 from tests.gateway.test_run_progress_topics import ProgressCaptureAdapter, _run_with_agent
 from tests.waiting import wait_until
@@ -57,3 +59,37 @@ def test_streamed_verbose_args_share_the_code_block_and_skip_it_for_embedded_fen
     assert out.endswith('```\n{"code": "a\nb"}\n```'), out
     nested = adapter.format_tool_event(ToolCallChunk("execute_code", args={"code": "see ```**k**``` x"}), mode="verbose")
     assert nested.endswith('\n{"code": "see ```**k**``` x"}'), nested
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "args", "expected"),
+    [
+        ("tool_search", {"queries": ["日历"]}, "正在搜索工具 · 日历"),
+        ("tool_describe", {"names": ["calendar", "tasks"]}, "正在读取工具详情 · 2 个工具"),
+    ],
+)
+def test_streamed_bridge_progress_uses_localized_preview(monkeypatch, tool_name, args, expected):
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    adapter = object.__new__(ProgressCaptureAdapter)
+    preview = build_tool_preview(tool_name, args, max_len=80)
+    event = ToolCallChunk(tool_name, preview=preview, args=args)
+    assert expected in adapter.format_tool_event(event, mode="all")
+
+
+@pytest.mark.parametrize(
+    ("language", "expected_language"),
+    [(lang, lang) for lang in SUPPORTED_LANGUAGES] + [pytest.param("unsupported", "en", id="fallback-en")],
+)
+@pytest.mark.parametrize("count", [0, 1, 2, 10])
+def test_streamed_bridge_progress_keeps_full_description(monkeypatch, language, expected_language, count):
+    monkeypatch.setenv("HERMES_LANGUAGE", language)
+    adapter = object.__new__(ProgressCaptureAdapter)
+    args = {"names": [f"tool_{index}" for index in range(count)]}
+    preview = build_tool_preview("tool_describe", args)
+    event = ToolCallChunk("tool_describe", preview=preview, args=args)
+
+    title = t("display.bridge_label.describe", lang=expected_language)
+    count_key = "display.bridge_label.count_one" if count == 1 else "display.bridge_label.count_many"
+    count_text = t(count_key, lang=expected_language, count=count)
+    assert str(count) in count_text
+    assert f"{title} · {count_text}" in adapter.format_tool_event(event)

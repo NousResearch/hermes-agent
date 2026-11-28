@@ -3775,6 +3775,11 @@ display:
     tool_call: "un appel d'outil"
     tool_search: "une recherche d'outil"
     tool_describe: "les détails de l'outil"
+  bridge_label:
+    search: "Recherche d’outils"
+    describe: "Lecture des détails"
+    count_one: "{count} outil"
+    count_many: "{count} outils"
   status_phrase:
     verb: "{verb} en cours"
     using_tool: "utilise {tool}"

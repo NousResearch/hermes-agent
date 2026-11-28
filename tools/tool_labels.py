@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.i18n import t
 from tools.connectors.gateway.names import parse_connector_name
 from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
 
@@ -135,13 +136,14 @@ def _bridge_labels(function_name: str, args: dict[str, Any]) -> list[ToolLabel]:
         queries = args.get("queries")
         queries = [queries] if isinstance(queries, str) else queries
         first = next((str(q) for q in queries if str(q or "").strip()), "") if isinstance(queries, list) else ""
-        return [ToolLabel(kind="tool", app="Searching tools", action=first,
+        return [ToolLabel(kind="tool", app=t("display.bridge_label.search"), action=first,
                           emoji=SEARCH_EMOJI, name=function_name)]
     names = args.get("names")
     names = [names] if isinstance(names, str) else names
     count = len(names) if isinstance(names, list) else 0
-    return [ToolLabel(kind="tool", app="Reading tool details",
-                      action=f"{count} tool" if count == 1 else f"{count} tools",
+    count_key = "display.bridge_label.count_one" if count == 1 else "display.bridge_label.count_many"
+    return [ToolLabel(kind="tool", app=t("display.bridge_label.describe"),
+                      action=t(count_key, count=count),
                       emoji=DESCRIBE_EMOJI, name=function_name)]
 
 

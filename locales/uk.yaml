@@ -3461,6 +3461,11 @@ display:
     tool_call: "виклик інструмента"
     tool_search: "пошук інструментів"
     tool_describe: "деталі інструмента"
+  bridge_label:
+    search: "Пошук інструментів"
+    describe: "Читання відомостей"
+    count_one: "Інструментів: {count}"
+    count_many: "Інструментів: {count}"
   status_phrase:
     verb: "{verb}"
     using_tool: "використовує {tool}"

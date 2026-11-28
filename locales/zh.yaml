@@ -3461,6 +3461,11 @@ display:
     tool_call: "工具调用"
     tool_search: "工具搜索"
     tool_describe: "工具详情"
+  bridge_label:
+    search: "正在搜索工具"
+    describe: "正在读取工具详情"
+    count_one: "{count} 个工具"
+    count_many: "{count} 个工具"
   status_phrase:
     verb: "正在{verb}"
     using_tool: "正在使用 {tool}"

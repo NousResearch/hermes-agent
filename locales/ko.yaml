@@ -3461,6 +3461,11 @@ display:
     tool_call: "도구 호출"
     tool_search: "도구 검색"
     tool_describe: "도구 세부 정보"
+  bridge_label:
+    search: "도구 검색 중"
+    describe: "도구 세부 정보 읽는 중"
+    count_one: "도구 {count}개"
+    count_many: "도구 {count}개"
   status_phrase:
     verb: "{verb}이에요"
     using_tool: "{tool} 사용 중이에요"

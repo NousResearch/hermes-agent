@@ -223,3 +223,57 @@ def test_running_app_gets_bell_and_osc9_on_its_loop_never_a_second_tty_writer(mo
     assert len(_Loop.queued) == 1
     _Loop.queued[0]()
     assert _Output.raw == ["\a\x1b]9;Hermes: turn complete\x07", "<flush>"]
+
+
+_SPEC_TOKEN = "dummy-token-replace-me"
+_SPEC_TIME = 1795543200
+_SPEC_PID = 74877
+
+
+def test_program_resume_spec_vectors():
+    """Official OSC 7577 rev 0.5 test vectors match byte-for-byte."""
+    assert (
+        terminal_notify.program_resume_sequence(
+            ["nvim", "-S", "/home/user/.local/state/nvim/sessions/8f2c1d.vim"],
+            token=_SPEC_TOKEN, pid=_SPEC_PID, now=_SPEC_TIME,
+        )
+        == "\x1b]7577;pid=74877:time=1795543200:"
+           "argv=bnZpbQ==,LVM=,L2hvbWUvdXNlci8ubG9jYWwvc3RhdGUvbnZpbS9zZXNzaW9ucy84ZjJjMWQudmlt:"
+           "mac=9dbb99bfb856749a87563839d7ce9062818d78cf25909db93f309e0cd3b1909b\x1b\\"
+    )
+    assert (
+        terminal_notify.program_resume_clear_sequence(
+            token=_SPEC_TOKEN, pid=_SPEC_PID, now=_SPEC_TIME,
+        )
+        == "\x1b]7577;pid=74877:time=1795543200:clear=1:"
+           "mac=c30603369f98fef581a4098be889175b0c74f0641e49f8b25f4326cb38f97c93\x1b\\"
+    )
+    assert (
+        terminal_notify.program_resume_sequence(
+            ["lazygit"], cwd="/home/user/src/project",
+            token=_SPEC_TOKEN, pid=_SPEC_PID, now=_SPEC_TIME,
+        )
+        == "\x1b]7577;pid=74877:time=1795543200:argv=bGF6eWdpdA==:"
+           "cwd=L2hvbWUvdXNlci9zcmMvcHJvamVjdA==:"
+           "mac=35cb909805c380336efd3689a125acc774a9dec8422a1d21492ebec06ca758e1\x1b\\"
+    )
+
+
+def test_program_resume_validation_rejects_malformed_inputs(monkeypatch):
+    monkeypatch.delenv("OSC7577_TOKEN", raising=False)
+    assert terminal_notify.osc7577_token() is None
+
+    for bad_token in ("", "short", "a" * 65, f"{_SPEC_TOKEN}\n", f" {_SPEC_TOKEN}", "bad$token_123456789012"):
+        assert terminal_notify.osc7577_token({"OSC7577_TOKEN": bad_token}) is None
+        with pytest.raises(ValueError):
+            terminal_notify.program_resume_sequence(["hermes"], token=bad_token, pid=1, now=1)
+
+    for bad_argv in ([], ["./hermes"], ["bin/hermes"], ["-hermes"], [""], ["hermes", "ok\n"], ["hermes", "x\x85"], ["a"] * 65):
+        with pytest.raises(ValueError):
+            terminal_notify.program_resume_sequence(bad_argv, token=_SPEC_TOKEN, pid=1, now=1)
+
+    with pytest.raises(ValueError):
+        terminal_notify.program_resume_sequence(["hermes"], cwd="relative/dir", token=_SPEC_TOKEN, pid=1, now=1)
+
+    with pytest.raises(ValueError):
+        terminal_notify.program_resume_sequence(["hermes", "--resume", "s" * 2000], token=_SPEC_TOKEN, pid=1, now=1)

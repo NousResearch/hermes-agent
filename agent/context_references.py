@@ -26,7 +26,7 @@ from hermes_cli._subprocess_compat import (
 )
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.sizefmt import format_bytes
-from hermes_platform.resolver.git import resolve_usable_git
+from hermes_platform.resolver.git import inspect_git
 
 # ── Plugin context-reference provider API ────────────────────────────────────
 
@@ -475,7 +475,7 @@ def _run_quiet(cmd: list[str], cwd: Path, timeout: int, env: dict | None = None)
 
 
 def _expand_git_reference(ref: ContextReference, cwd: Path, args: list[str], label: str) -> Expansion:
-    if resolve_usable_git() is None:
+    if not inspect_git(cwd=cwd).usable:
         return f"{ref.raw}: git is not available", None
     # The repository's named clean/smudge/process filters run during `diff` on a stat-dirty file:
     # their commands are emptied, and git is not spawned when they cannot be discovered.

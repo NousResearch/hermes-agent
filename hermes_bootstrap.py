@@ -1,7 +1,7 @@
 """Process bootstrap for Hermes entry points: Windows UTF-8 stdio and ANSI console, import-path
 hardening, durable lazy-install target, and dual-stack (Happy Eyeballs) connects.
 
-Windows binds stdio to the console code page (cp1252), so ``print("café")`` raises
+Windows binds stdio to the console code page (cp1252), so ``print("✓")`` raises
 ``UnicodeEncodeError``, and Python children inherit the same default unless
 ``PYTHONUTF8``/``PYTHONIOENCODING`` are set. Import this module first in every entry
 point (``hermes``, ``hermes-agent``, ``hermes-acp``, ``gateway.run``, ``batch_runner``,

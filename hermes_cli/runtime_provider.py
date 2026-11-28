@@ -238,6 +238,22 @@ def _same_registered_provider(provider: str, configured_provider: str) -> bool:
         return True
     pconfig = PROVIDER_REGISTRY.get(provider)
     configured = PROVIDER_REGISTRY.get(configured_provider)
+    if pconfig and configured:
+        return pconfig.id == configured.id
+    # ``model.provider`` may hold a documented alias (``github-copilot``, ``moonshot`` — anything
+    # ``auth.resolve_provider`` normalizes at selection time) that never appears as a registry key.
+    # Resolve both sides through the same alias table before declaring the routes distinct, or the
+    # profile's own ``api_mode`` / ``base_url`` are dropped for the provider the runtime actually
+    # routes to (#145475).
+    from hermes_cli.auth import _plugin_aliases
+
+    aliases = _plugin_aliases()
+    provider = aliases.get(provider, provider)
+    configured_provider = aliases.get(configured_provider, configured_provider)
+    if provider == configured_provider:
+        return True
+    pconfig = PROVIDER_REGISTRY.get(provider)
+    configured = PROVIDER_REGISTRY.get(configured_provider)
     return bool(pconfig and configured and pconfig.id == configured.id)
 
 

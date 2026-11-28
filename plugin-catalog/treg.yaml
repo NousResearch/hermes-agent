@@ -1,0 +1,23 @@
+name: treg
+title: Treg
+repo: https://github.com/superdesigndev/treg
+sha: b3ddfd3a0d93e03f5233a87052af4a831ccfc34c
+subdir: plugins/copilot
+version: "0.31.0"
+maintainer: superdesigndev
+tier: community
+category: tools
+requires_hermes: ">=0.23.3"
+description: >-
+  Treg is OpenRouter for agent tools. Hermes users can access 4,200+ tools through one Treg connection, alongside their team’s own tools. Ask Hermes to check search rankings and backlinks, enrich a company profile, publish a post through a connected account, or generate an image, video or voiceover. Hermes can compare providers and inspect each tool’s inputs and price before calling it.
+  Connect your Treg account in the Hermes MCP settings. Hermes sends authorized requests to https://treg.to/mcp/. Catalog lookups are free. Executing a tool can send your inputs to a provider, publish through a connected account or spend the team’s prepaid balance.
+docs_url: https://treg.to/agents/hermes
+image: https://raw.githubusercontent.com/superdesigndev/treg/4b4d16db49f4138552022771994600f4daf21a2b/src/treg/web/media/brand/logo-400.png
+readme: false
+known_issues:
+  - "Configure OAuth or a scoped team token for the treg MCP server in Hermes. The shared skill includes Copilot-specific setup notes. Use the linked Hermes guide for setup."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

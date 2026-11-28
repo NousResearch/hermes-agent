@@ -160,47 +160,65 @@ class TestDoctorToolAvailabilitySummary:
         assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
         assert any("hermes setup" in issue for issue in f.issues)
 
+    @staticmethod
+    def _route_web(monkeypatch, backend, registered, fallback=None):
+        """Point both doctor rows at *backend*, resolved through the dispatch chokepoint: the
+        ``tools.web_tools`` backend getters and the registry lookups the shared resolvers use."""
+        monkeypatch.setattr("tools.web_tools._ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr("tools.web_tools._get_search_backend", lambda: backend)
+        monkeypatch.setattr("tools.web_tools._get_extract_backend", lambda: backend)
+        monkeypatch.setattr("tools.web_tools.selection_exists", lambda _kind: False)
+        monkeypatch.setattr("tools.web_tools_extract.selection_exists", lambda _kind: False)
+        monkeypatch.setattr("tools.tool_backend_helpers.selection_exists", lambda _kind: False)
+        monkeypatch.setattr("agent.web_search_registry.get_provider", lambda name: registered.get(name))
+        monkeypatch.setattr("agent.web_search_registry.get_active_search_provider", lambda: fallback)
+        monkeypatch.setattr("agent.web_search_registry.get_active_extract_provider", lambda: fallback)
+
+    @staticmethod
+    def _provider(name, *, available=True, search=True, extract=True):
+        return SimpleNamespace(
+            name=name, display_name=name, is_available=lambda: available,
+            is_keyless_available=lambda: False, supports_search=lambda: search, supports_extract=lambda: extract,
+        )
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
-        class _Unavailable:
-            name = "firecrawl"
-
-            def is_available(self):
-                return False
-
-        unavailable = _Unavailable()
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
-            lambda: unavailable,
-        )
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_extract_provider",
-            lambda: unavailable,
-        )
+        unavailable = self._provider("firecrawl", available=False)
+        self._route_web(monkeypatch, "firecrawl", {"firecrawl": unavailable})
 
         rows = doctor_tools._doctor_web_capability_rows()
         assert rows
         assert all(status == "warn" for status, _, _ in rows)
 
     def test_web_capability_rows_ok_when_provider_ready(self, monkeypatch):
-        class _Ready:
-            name = "ddgs"
-
-            def is_available(self):
-                return True
-
-        ready = _Ready()
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
-            lambda: ready,
-        )
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_extract_provider",
-            lambda: ready,
-        )
+        ready = self._provider("ddgs")
+        self._route_web(monkeypatch, "ddgs", {"ddgs": ready})
 
         rows = doctor_tools._doctor_web_capability_rows()
         assert rows and all(status == "ok" for status, _, _ in rows)
+
+    def test_web_capability_rows_name_the_backend_dispatch_resolves(self, monkeypatch):
+        """Doctor must name the backend ``_get_search_backend()`` / ``_get_extract_backend()`` resolve,
+        not a separate registry walk: with openai-native resolved (Codex login, no web keys) it printed
+        "web search (firecrawl)" / "web extract (firecrawl)" while every extract call failed."""
+        native = self._provider("openai-native", extract=False)
+        registry_guess = self._provider("firecrawl")
+        self._route_web(monkeypatch, "openai-native", {"openai-native": native}, fallback=registry_guess)
+
+        rows = {label: (status, detail) for status, label, detail in doctor_tools._doctor_web_capability_rows()}
+        assert rows["web search"] == ("ok", "(openai-native)")
+        assert rows["web extract"] == ("warn", "(openai-native selected; does not support extract)")
+        assert not any("firecrawl" in detail for _, detail in rows.values())
+
+    def test_web_capability_rows_follow_registry_fallback_like_dispatch(self, monkeypatch):
+        """An unregistered autodetected name with no stored selection falls through to the registry
+        walk in dispatch, so doctor reports that walk's provider."""
+        keyless = self._provider("exa", available=False)
+        keyless.is_keyless_available = lambda: True
+        self._route_web(monkeypatch, "firecrawl", {}, fallback=keyless)
+
+        rows = doctor_tools._doctor_web_capability_rows()
+        assert rows == [("ok", "web search", "(exa)"), ("ok", "web extract", "(exa)")]
 
 
 class TestDoctorEnvFileEncoding:

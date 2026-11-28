@@ -115,24 +115,43 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
 def _doctor_web_capability_rows() -> list[tuple[str, str, str]]:
     """Return ``(status, label, detail)`` rows (status ``ok``/``warn``) for web search/extract readiness.
 
-    Uses the same active-provider resolvers as the tools but reports ``is_available()``
-    readiness, so an explicitly selected but unconfigured backend does not look healthy.
+    Resolves through the same chokepoint the tools dispatch through (``_get_search_backend`` /
+    ``_get_extract_backend`` -> the shared ``_resolve_*_provider``), so the row names the backend a call
+    actually reaches, not a separate registry guess. Reports ``is_available()`` readiness, so an explicitly
+    selected but unconfigured backend does not look healthy, and a resolved backend that cannot serve the
+    capability (a search-only backend for extract) warns instead of passing.
 
     See #78412.
     """
     rows: list[tuple[str, str, str]] = []
     try:
-        from agent.web_search_registry import get_active_extract_provider, get_active_search_provider
-        from tools.web_tools import _ensure_web_plugins_loaded, _provider_is_ready
+        from agent.web_search_registry import get_provider
+        from tools.tool_backend_helpers import selection_exists
+        from tools.web_tools import (
+            _ensure_web_plugins_loaded, _get_extract_backend, _get_search_backend, _provider_is_ready,
+            _resolve_search_provider,
+        )
+        from tools.web_tools_extract import _resolve_extract_provider
         # Fresh process: bundled web providers only register during plugin discovery (idempotent, cheap).
         _ensure_web_plugins_loaded()
     except Exception:
         return rows
-    for capability, getter in (("web search", get_active_search_provider), ("web extract", get_active_extract_provider)):
+    for capability, verb, resolve_backend, resolve_provider in (
+        ("web search", "search", _get_search_backend, _resolve_search_provider),
+        ("web extract", "extract", _get_extract_backend, _resolve_extract_provider),
+    ):
+        backend, provider, error = "", None, None
         try:
-            provider = getter()
+            backend = resolve_backend()
+            provider, error = resolve_provider(backend)
         except Exception:
-            provider = None
+            provider, error = None, None
+        if error is not None and backend and get_provider(backend) is not None:
+            rows.append(("warn", capability, f"({backend} selected; does not support {verb})"))
+            continue
+        if error is not None and backend and selection_exists("web"):
+            rows.append(("warn", capability, f"({backend} selected; provider not registered)"))
+            continue
         if provider is None:
             rows.append(("warn", capability, "(no provider selected or registered)"))
             continue

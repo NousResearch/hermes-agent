@@ -337,6 +337,13 @@ class MicroCompactionMixin:
         end = body.find(cc._SUMMARY_END_MARKER)
         return (body[:end] if end != -1 else body).strip()
 
+    @staticmethod
+    def _micro_marker_outdates_cache(messages: list[dict[str, Any]], summary_hits: list[tuple[int, str]]) -> bool:
+        """True when a transcript handoff is a micro marker. A micro pass rewrites the transcript
+        summary and never ``_previous_summary``, so the batch scan must then rehydrate from the
+        transcript, as a resumed session does, or what the pass folded in is lost."""
+        return any(_is_micro_marker(messages[idx]) for idx, _ in summary_hits)
+
     def _cursor_after_splice(self, result: list[dict[str, Any]], fallback: int) -> int:
         """Cursor position just past the summary marker in *result*. Must derive from the SPLICED
         list: a splice collapses several rows into one marker (and may drop a superseded one), so

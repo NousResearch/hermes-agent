@@ -92,6 +92,23 @@ async def _webhook_head(authority, _actor, _ref):
     return row.admission_id
 
 
+def _native_head(*, is_bot):
+    async def admit(authority, _actor, _ref):
+        # A native platform message (e.g. a monitoring integration's comment): a messaging
+        # principal and a native envelope whose source carries the adapter's bot flag.
+        row, _created = authority.persistence.admissions.admit(
+            epoch=authority.epoch, principal_id='messaging:[null,"basecamp","r",null,"53422646"]', session_id='s',
+            request_id='comment-1', payload={'text': 'HEAD', 'native_text_v1': {
+                'event': {'message_id': 'comment-1'},
+                'source': {'platform': 'basecamp', 'chat_id': 'gw10', 'user_id': '53422646', 'is_bot': is_bot}}})
+        return row.admission_id
+    return admit
+
+
+_bot_head = _native_head(is_bot=True)
+_native_person_head = _native_head(is_bot=False)
+
+
 async def _person_head(authority, actor, ref):
     receipt = await authority.submit(actor, Submission('head', ref, {'text': 'HEAD'}, 'queue'))
     return receipt.admission_id
@@ -102,8 +119,8 @@ def _statuses(db):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('admit_head', [_automation_head, _cron_head, _webhook_head],
-                         ids=['local_automation_v1', 'cron', 'webhook_delivery'])
+@pytest.mark.parametrize('admit_head', [_automation_head, _cron_head, _webhook_head, _bot_head],
+                         ids=['local_automation_v1', 'cron', 'webhook_delivery', 'bot_authored'])
 async def test_unknown_automation_settles_interrupted_and_fifo_moves_on(tmp_path, monkeypatch, admit_head):
     executed = []
     store, authority, head_id, follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, admit_head)
@@ -125,9 +142,10 @@ async def test_unknown_automation_settles_interrupted_and_fifo_moves_on(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_a_persons_unknown_turn_still_pauses_the_fifo(tmp_path, monkeypatch):
+@pytest.mark.parametrize('admit_head', [_person_head, _native_person_head], ids=['submitted', 'native_not_bot'])
+async def test_a_persons_unknown_turn_still_pauses_the_fifo(tmp_path, monkeypatch, admit_head):
     executed = []
-    store, authority, head_id, follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, _person_head)
+    store, authority, head_id, follower_id = await _lost_head_then_restart(tmp_path, monkeypatch, executed, admit_head)
     try:
         assert _statuses(authority.persistence)[head_id] == ('unknown', None)
         authority._schedule(SessionRef('p', 's'))

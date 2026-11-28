@@ -30,8 +30,13 @@ def is_unattended(row) -> bool:
     # A webhook delivery: the provider already got its 202 and nobody can be asked to resend it.
     # A Kanban card attempt (#134889 KB-8): the dispatcher's marker, committed only by
     # ``SessionAuthority.submit(_kanban_card=...)``; a card row main minted without it still pauses.
+    # A message authored by a bot (the adapter's own bot flag, or a ``bot_users`` opt-in): a
+    # monitoring/integration post has no person to ask either, and every later post from it
+    # would otherwise queue behind the paused head until someone types /discard.
+    source = native.get('source')
     return ('local_automation_v1' in payload or 'kanban_card_v1' in payload
-            or 'automation' in native or 'webhook_delivery' in native)
+            or 'automation' in native or 'webhook_delivery' in native
+            or (isinstance(source, dict) and source.get('is_bot') is True))
 
 
 def _unattended_unknown(records):

@@ -4,6 +4,8 @@ import type { GatewayHostTranslations } from './types_gateway_host'
 export const enGatewayHost: GatewayHostTranslations = {
   unavailableTitle: 'Gateway settings unavailable',
   unavailableDesc: 'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
+  clientLabel: 'Desktop client label',
+  clientLabelHelp: 'Optional. Supporting gateways save this nickname with each turn and share it with the model. Leave blank to stop sharing. Use A–Z, 0–9, spaces, hyphens or underscores.',
   webappHostTitle: 'Hermes host',
   webappHostDesc:
     'The Webapp always runs on the Hermes host that serves it. The saved connections below are this machine\'s list, shared with the Hermes Desktop app; other gateways are reached through this host.',

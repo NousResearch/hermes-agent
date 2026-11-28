@@ -92,6 +92,23 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  it('lets this device opt in with a nickname and revoke it by saving an empty label', () => {
+    const key = 'hermes.desktop.clientLabel.v1'
+    localStorage.removeItem(key)
+    render(<GatewaySettings subpage="devices" />)
+    const field = screen.getByRole('textbox', { name: 'Desktop client label' })
+    const save = screen.getByRole('button', { name: en.common.save })
+    expect((field as HTMLInputElement).value).toBe('')
+    fireEvent.change(field, { target: { value: '/private/path' } })
+    expect((save as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.change(field, { target: { value: 'Kitchen laptop' } })
+    fireEvent.click(save)
+    expect(localStorage.getItem(key)).toBe('Kitchen laptop')
+    fireEvent.change(field, { target: { value: '' } })
+    fireEvent.click(save)
+    expect(localStorage.getItem(key)).toBeNull()
+  })
+
   it('releases a pending save after a late probe invalidates its response', async () => {
     const saved = { ...localConnection, mode: 'remote', remoteUrl: 'https://a.example', remoteTokenSet: true }
     getConnectionConfig.mockResolvedValue(saved)

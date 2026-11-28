@@ -12028,6 +12028,18 @@
             "default": null,
             "title": "Voice Context"
           },
+          "desktop_client_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Desktop Client Label"
+          },
           "interrupted": {
             "default": false,
             "title": "Interrupted",
@@ -12746,6 +12758,11 @@
           "canonical_clarify_batch": {
             "default": false,
             "title": "Canonical Clarify Batch",
+            "type": "boolean"
+          },
+          "desktop_client_label": {
+            "default": false,
+            "title": "Desktop Client Label",
             "type": "boolean"
           },
           "client_activity": {

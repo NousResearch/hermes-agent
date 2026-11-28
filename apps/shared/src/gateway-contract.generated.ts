@@ -2062,6 +2062,7 @@ export interface ClientCapabilitiesResult {
   server_requests: string[]
   declines_not_shown?: boolean
   canonical_clarify_batch?: boolean
+  desktop_client_label?: boolean
   client_activity?: boolean
 }
 export interface ClientActivityParams {
@@ -5484,6 +5485,7 @@ export interface CanonicalSubmitParams {
   unattended?: boolean
   surface?: string | null
   voice_context?: string | null
+  desktop_client_label?: string | null
   interrupted?: boolean
   voice_turn?: boolean
   display_kind?: 'hidden' | null

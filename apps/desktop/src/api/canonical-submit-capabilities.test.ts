@@ -1,12 +1,12 @@
 // @vitest-environment node
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import { HermesGateway } from './client'
 
 // The owner asks a multi-question clarify as ONE request (the card's single form) only for a turn
 // whose submit declared `clarify_batch`; an older owner's closed submit params refuse the key, so the
 // Desktop declares it only where `client.capabilities` advertised `canonical_clarify_batch`.
-async function submitThrough(capabilities: Record<string, unknown> | null, dial = 'native_dial=fixture&ticket=t') {
+async function submitThrough(capabilities: Record<string, unknown> | null, dial = 'native_dial=fixture&ticket=t', betweenTurns?: () => void) {
   const wsPackage = 'ws'
   const { WebSocketServer } = await import(wsPackage)
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
@@ -46,6 +46,7 @@ async function submitThrough(capabilities: Record<string, unknown> | null, dial 
     // Let the capability answer land before the turn, as the app's boot does.
     await new Promise(resolve => setTimeout(resolve, 20))
     await client.request('prompt.submit', { session_id: 's', text: 'one' })
+    betweenTurns?.()
     await client.request('prompt.submit', { session_id: 's', text: 'two' })
 
     return submits
@@ -57,6 +58,20 @@ async function submitThrough(capabilities: Record<string, unknown> | null, dial 
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 }
+
+test('only opted-in sends to a supporting owner carry the current Desktop label', async () => {
+  let label = 'Work laptop'
+  vi.stubGlobal('localStorage', { getItem: (key: string) => key === 'hermes.desktop.clientLabel.v1' ? label : null })
+  try {
+    const [on, off] = await submitThrough({ desktop_client_label: true }, undefined, () => { label = '' })
+    expect(on).toMatchObject({ text: 'one', desktop_client_label: 'Work laptop' })
+    expect(off).not.toHaveProperty('desktop_client_label')
+    label = 'Work laptop'
+    expect((await submitThrough({}))[0]).not.toHaveProperty('desktop_client_label')
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
 
 test('every turn declares clarify_batch to an owner advertising canonical_clarify_batch', async () => {
   const submits = await submitThrough({ declines_not_shown: true, canonical_clarify_batch: true })

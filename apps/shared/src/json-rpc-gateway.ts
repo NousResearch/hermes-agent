@@ -230,6 +230,10 @@ export class JsonRpcGatewayClient {
     return this.channel.clarifyBatch
   }
 
+  protected get backendDesktopClientLabel(): boolean {
+    return this.channel.desktopClientLabel
+  }
+
   /** The connected backend keeps `client.activity` reports (`client.capabilities`); send none otherwise. */
   get clientActivity(): boolean {
     return this.channel.clientActivity

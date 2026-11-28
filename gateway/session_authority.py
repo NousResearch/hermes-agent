@@ -756,7 +756,7 @@ class SessionAuthority:
                       api_target=None, hosted=None):
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
-                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
+                'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'desktop_client_label', 'interrupted',
                 'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch',
                 'client'}
                 or not isinstance(request.payload['text'], str)):

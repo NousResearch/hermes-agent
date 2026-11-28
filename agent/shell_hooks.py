@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
+from tools.environments.fd_wait import open_fd_waiter
 
 logger = logging.getLogger(__name__)
 
@@ -580,7 +581,6 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
             # still holds the pipe. The shared waiter has no FD_SETSIZE ceiling and falls back to poll()
             # at the fd limit. Windows pipes cannot be selected, so a read there blocks until EOF.
             if not IS_WINDOWS:
-                from tools.environments.fd_wait import open_fd_waiter
                 if (waiter := open_fd_waiter(fd)) is None:
                     return  # already closed: nothing to drain
             while not stop.is_set():

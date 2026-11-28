@@ -2701,7 +2701,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
-    from hermes_cli.kanban_worker_env import worker_client_env
+    from hermes_cli.kanban_worker_env import worker_spawn_env
     from tools.environments.local import _is_routed_home, build_subprocess_env
 
     try:
@@ -2725,22 +2725,14 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
             scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
-    # For another profile, host plumbing only: a gateway the client cold-starts gets this env plus the
-    # assignee's secrets, which replace values but never remove one (kanban_worker_env).
-    if routed:
-        env = worker_client_env(env, profile_home)
+
     # The dispatcher is detached from every conversation; its worker must never
     # inherit routing mirrored by a previous gateway turn.
     from gateway.session_context import _VAR_MAP
     for key in _VAR_MAP:
         env.pop(key, None)
 
-    # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml:
-    # without it the child's get_hermes_home() falls back to the DEFAULT
-    # profile root because `hermes -p` applies its override before
-    # hermes_constants is imported.
-    if profile_home:
-        env["HERMES_HOME"] = profile_home
+    env = worker_spawn_env(env, profile_home, routed=routed)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

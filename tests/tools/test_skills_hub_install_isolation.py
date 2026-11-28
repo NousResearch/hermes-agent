@@ -145,3 +145,24 @@ def test_failed_quarantine_write_leaves_no_partial_tree(hub_dirs, monkeypatch, e
     with pytest.raises(type(exc)):
         quarantine_bundle(bundle)
     assert list((hub_dir / "quarantine").iterdir()) == []
+
+
+@pytest.mark.parametrize("twin, original", [
+    ("skill.md", "SKILL.md"),                          # case twin of the bundle root
+    ("scripts/tidy.py", "scripts/Tidy.py"),            # case twin of a script
+    ("scripts/café.py", "scripts/café.py"),  # NFD twin of an NFC name
+    ("./SKILL.md", "SKILL.md"),                        # normalizes to the same path
+])
+def test_quarantine_refuses_members_that_share_one_file(hub_dirs, twin, original):
+    """Each quarantined file must hold the bytes of exactly one bundle member. Members that land
+    on one file on a case- or normalization-insensitive filesystem are refused on any OS."""
+    _skills_dir, hub_dir = hub_dirs
+    bundle = SkillBundle(
+        name="demo",
+        files={original: "---\nname: demo\n---\nshown\n", twin: "---\nname: demo\n---\nother\n"},
+        source="github", identifier="someone/skills/demo", trust_level="community",
+    )
+    with pytest.raises(ValueError, match="Unsafe bundle file path"):
+        quarantine_bundle(bundle)
+
+    assert not list((hub_dir / "quarantine").glob("demo*"))

@@ -268,3 +268,9 @@ def test_a_failed_config_write_reports_one_outcome_once(tmp_path, monkeypatch):
     assert len(starts[0]) == 1 and "could not be kept" in starts[0][0], starts
     assert "plugins.disabled lists 'yuanbao'" in starts[0][0]
     assert starts[1] == []
+    # The operator removes the plugin while the write still fails: the new state's remedy is said (greptile #159651).
+    (home / "plugins" / "yuanbao").rmdir()
+    said = []
+    lcm.migrate_home(home, install=lambda name: {"ok": True}, say=said.append)
+    told = [line for line in said if "could not be kept" in line]
+    assert len(told) == 1 and "`hermes plugins install yuanbao`" in told[0], said

@@ -2,7 +2,7 @@
 """Tests for execute_code's session kernel.
 
 Session kernels are always on (the ``code_execution.kernel_mode`` key is
-retired): each (task, mode, interpreter, cwd, tool-set) owner keeps one
+retired): each (task, mode, interpreter, tool-set) owner keeps one
 Python child alive so state survives across calls. These tests pin the
 contract:
 
@@ -76,6 +76,69 @@ class TestSessionStatePersistence(unittest.TestCase):
         self.assertIn("42", second["output"])
         self.assertEqual(second["kernel"]["reused"], True)
         self.assertEqual(second["kernel"]["execution_count"], 2)
+
+    def test_terminal_cwd_changes_preserve_state_and_update_relative_paths(self):
+        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+
+        with tempfile.TemporaryDirectory() as root:
+            first_dir = Path(root, "first")
+            second_dir = Path(root, "second")
+            first_dir.mkdir()
+            second_dir.mkdir()
+            (first_dir / "value.txt").write_text("first", encoding="utf-8")
+            (second_dir / "value.txt").write_text("second", encoding="utf-8")
+            try:
+                with _kernel_config(mode="project"):
+                    record_session_cwd("kernel-test", str(first_dir))
+                    first = _run("import os\nx = 41\nprint(os.getpid())")
+                    self.assertEqual(first["status"], "success", first)
+                    for directory, expected in ((second_dir, "second"), (first_dir, "first")):
+                        record_session_cwd("kernel-test", str(directory))
+                        result = _run("print(x + 1, os.getpid(), open('value.txt').read())")
+                        self.assertEqual(result["status"], "success", result)
+                        self.assertEqual(result["output"].strip(),
+                                         f"42 {first['output'].strip()} {expected}")
+                        self.assertTrue(result["kernel"]["reused"])
+                        self.assertFalse(result["kernel"]["state_reset"])
+                        self.assertEqual(len(_KERNELS), 1)
+            finally:
+                clear_session_cwd("kernel-test")
+
+    def test_python_cwd_persists_until_terminal_cwd_changes(self):
+        """Python chdir persists across cells; a terminal cd overrides it without state loss."""
+        from tools.terminal_tool import clear_session_cwd, record_session_cwd
+
+        with tempfile.TemporaryDirectory() as root:
+            first_dir = Path(root, "first")
+            nested_dir = first_dir / "nested"
+            second_dir = Path(root, "second")
+            nested_dir.mkdir(parents=True)
+            second_dir.mkdir()
+            (nested_dir / "value.txt").write_text("nested", encoding="utf-8")
+            (second_dir / "value.txt").write_text("second", encoding="utf-8")
+            try:
+                with _kernel_config(mode="project"):
+                    record_session_cwd("kernel-test", str(first_dir))
+                    first = _run("import os\nx = 41\nos.chdir('nested')")
+                    self.assertEqual(first["status"], "success", first)
+
+                    # Without a terminal cd, Python's os.chdir is persistent cell state.
+                    still_nested = _run("print(x + 1, open('value.txt').read())")
+                    self.assertEqual(still_nested["status"], "success", still_nested)
+                    self.assertEqual(still_nested["output"].strip(), "42 nested")
+                    self.assertTrue(still_nested["kernel"]["reused"])
+
+                    # A real terminal cd must take effect without discarding Python globals.
+                    record_session_cwd("kernel-test", str(second_dir))
+                    moved = _run("print(x + 1, open('value.txt').read())")
+                    self.assertEqual(moved["status"], "success", moved)
+                    self.assertEqual(moved["output"].strip(), "42 second")
+                    self.assertTrue(moved["kernel"]["reused"])
+                    self.assertFalse(moved["kernel"]["state_reset"])
+            finally:
+                # Windows cannot remove a directory used as a live child process cwd.
+                shutdown_all_kernels()
+                clear_session_cwd("kernel-test")
 
     def test_reset_discards_state(self):
         with _kernel_config():

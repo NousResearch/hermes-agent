@@ -110,6 +110,85 @@ def _no(*a, **k):
 # ── pinned ──────────────────────────────────────────────────────────
 
 
+def _catalog_prov(name, source, revision="a" * 40):
+    return _prov(
+        ProvenanceClass.GIT,
+        row={
+            "pinned": True,
+            "revision": revision,
+            "source": source,
+            "catalog": {"name": name, "repo": "https://github.com/o/mono",
+                        "sha": "b" * 40, "tier": "official"},
+        },
+    )
+
+
+def _entry(name, repo, subdir="", sha="b" * 40):
+    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    return PluginCatalogEntry(
+        name=name, repo=repo, sha=sha, description="", maintainer="o", subdir=subdir,
+    )
+
+
+def test_catalog_entry_from_another_repo_is_not_offered(monkeypatch):
+    """A same-named plugin installed from its own repo must not inherit a monorepo entry's sha."""
+    import hermes_cli.plugin_catalog as pc
+    monkeypatch.setattr(
+        pc, "get_live_catalog_entry",
+        lambda n: _entry("hermes-memory-wiki", "https://github.com/o/mono", subdir="memory-wiki"),
+    )
+    r = check_provenanced(
+        _catalog_prov("hermes-memory-wiki", "https://github.com/o/hermes-memory-wiki"),
+        fetch=_no, ls_remote=_no,
+    )
+    assert r.update_available is None
+    assert r.latest == "b" * 40
+    assert "switches sources" in r.reason
+    assert "hermes-memory-wiki" in r.reason
+
+
+def test_catalog_entry_with_vanished_subdir_is_not_offered(monkeypatch):
+    """Entry resolves to ``repo#memory-wiki`` but that subdir is gone from the repo."""
+    import hermes_cli.plugin_catalog as pc
+    monkeypatch.setattr(
+        pc, "get_live_catalog_entry",
+        lambda n: _entry("memory-wiki", "https://github.com/o/mono", subdir="memory-wiki"),
+    )
+    r = check_provenanced(
+        _catalog_prov("memory-wiki", "https://github.com/o/hermes-memory-wiki"),
+        fetch=_no, ls_remote=_no,
+    )
+    assert r.update_available is None
+    assert "switches sources" in r.reason
+
+
+def test_catalog_entry_with_matching_source_still_offers_update(monkeypatch):
+    import hermes_cli.plugin_catalog as pc
+    monkeypatch.setattr(
+        pc, "get_live_catalog_entry",
+        lambda n: _entry("homeassistant", "https://github.com/o/mono", subdir="homeassistant"),
+    )
+    r = check_provenanced(
+        _catalog_prov("homeassistant", "https://github.com/o/mono#homeassistant"),
+        fetch=_no, ls_remote=_no,
+    )
+    assert r.update_available is True
+    assert r.latest == "b" * 40
+
+
+def test_catalog_source_match_ignores_git_suffix_and_case(monkeypatch):
+    import hermes_cli.plugin_catalog as pc
+    monkeypatch.setattr(
+        pc, "get_live_catalog_entry",
+        lambda n: _entry("homeassistant", "https://github.com/o/mono", subdir="homeassistant"),
+    )
+    r = check_provenanced(
+        _catalog_prov("homeassistant", "https://GitHub.com/O/Mono.git#homeassistant"),
+        fetch=_no, ls_remote=_no,
+    )
+    assert r.update_available is True
+
+
 def test_pinned_never_auto_moves():
     r = check_provenanced(_git_prov(pinned=True), fetch=_no, ls_remote=_no)
     assert r.update_available is False

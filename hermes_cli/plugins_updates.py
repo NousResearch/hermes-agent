@@ -139,6 +139,41 @@ def check_local_provenance(prov: Provenance) -> CheckResult:
     return result
 
 
+def _normalize_repo(url: str) -> str:
+    """``host/path`` for a git URL, so ``.git``/scheme/``www.``/case don't split a match."""
+    text = (url or "").strip().lower()
+    if not text:
+        return ""
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    text = text.split("@", 1)[-1]  # strip userinfo
+    if text.startswith("www."):
+        text = text[4:]
+    repo, sep, subdir = text.partition("#")
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    return (repo + sep + subdir).rstrip("/")
+
+
+def _source_matches_entry(installed_source: str, entry) -> bool:
+    """Does the installed provenance point at the exact artifact the catalog entry pins?
+
+    Catalog entries name where their code lives via ``install_identifier`` — ``repo`` for
+    a single-repo plugin, ``repo#subdir`` for a monorepo entry. An install records where it
+    actually came from (``repo`` or ``repo#subdir``). Comparing only the catalog *name*
+    would let a same-named plugin from a different repo (or a monorepo subdir that has
+    since been dropped) inherit another artifact's pinned sha, so the sha comparison has
+    to be gated on the source matching too.
+    """
+    installed = _normalize_repo(installed_source)
+    if not installed:
+        return True  # nothing recorded: leave the pre-existing name-only behaviour
+    entry_identifier = _normalize_repo(entry.install_identifier)
+    if not entry_identifier:
+        return True
+    return installed == entry_identifier
+
+
 def held_for_newer_hermes(result: CheckResult) -> Optional[str]:
     """``needs Hermes <spec>; this is <version>`` when the update's ``min_hermes`` (a feed floor or the
     catalog entry's ``requires_hermes``) rejects the running Hermes, else ``None``. The update path refuses
@@ -176,6 +211,28 @@ def check_provenanced(
         entry = get_live_catalog_entry(str(catalog_name))
         if entry is None:
             result.reason = "catalog entry is unavailable; installed pin retained"
+            return result
+        # The catalog name is matched by name alone, but the entry's install
+        # identifier pins WHERE it comes from (``repo#subdir`` for monorepo
+        # entries). A same-named plugin living in a different repository is a
+        # different artifact: chasing its sha would "update" the install to
+        # unrelated code. Report the mismatch instead of offering a plain update.
+        installed_source = str(row.get("source") or row.get("repo") or "").strip()
+        if installed_source and not _source_matches_entry(installed_source, entry):
+            # Same name, different artifact. The catalog sha belongs to the entry's
+            # install identifier, so following it would swap the install's source
+            # rather than update it. Not an error, but never silent: the operator
+            # must decide. `hermes plugins install <catalog name>` switches sources.
+            result.latest = entry.sha
+            result.update_available = None
+            result.reason = (
+                f"installed from {installed_source}, but catalog entry {catalog_name!r} "
+                f"resolves to {entry.install_identifier}"
+                + (f" (v{entry.version})" if entry.version else "")
+                + "; `hermes plugins install "
+                + str(catalog_name)
+                + "` switches sources"
+            )
             return result
         result.latest = entry.sha
         result.update_available = result.current != entry.sha

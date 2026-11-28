@@ -241,18 +241,66 @@ class GatewayKanbanWatchersMixin:
         # lives at the machine-global kanban root, so it serialises ALL gateways.
         self._kanban_dispatcher_lock_handle = None
         _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        # A contended lock means "not the dispatcher yet": the watcher re-tries it
+        # every tick, so losing a startup race does not disable dispatch for the
+        # life of the process when the holder later exits.
+        self._kanban_dispatcher_lock_path = _lock_path
         _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        if _lock_state == "contended":
-            logger.info("kanban dispatcher: another gateway already holds the dispatcher "
-                        "lock (%s); this gateway will NOT dispatch.", _lock_path)
-            return None
+        # Decided once at startup: the fallback when the lock cannot be used at
+        # all, never a licence to dispatch unlocked after a later failure.
+        self._kanban_dispatcher_lock_unsupported = _lock_state == "unavailable"
         if _lock_state == "held":
             self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
             logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+        elif _lock_state == "contended":
+            logger.info("kanban dispatcher: another gateway already holds the dispatcher "
+                        "lock (%s); this gateway will NOT dispatch while that holder lives, "
+                        "but re-checks every tick and takes over if it exits.", _lock_path)
         else:
             logger.warning("kanban dispatcher: advisory lock unavailable at %s; proceeding "
                            "on config control alone.", _lock_path)
         return _load_config, _kb, kanban_cfg
+
+    def _kanban_dispatch_lock_held(self) -> bool:
+        """True when this process may dispatch on this tick.
+
+        Holding the lock is the only licence to dispatch. The re-try uses the same
+        non-blocking flock, which the kernel grants to one open file description
+        machine-wide, so it never produces a second dispatcher. After startup,
+        "unavailable" is a transient failure and means "not mine".
+        """
+        if self._owns_kanban_dispatcher_lock():
+            return True
+        if getattr(self, "_kanban_dispatcher_lock_unsupported", False):
+            return True
+        handle, state = _acquire_singleton_lock(self._kanban_dispatcher_lock_path)
+        previous = getattr(self, "_kanban_dispatcher_lock_wait_state", None)
+        self._kanban_dispatcher_lock_wait_state = state
+        if state == "unavailable" and previous != "unavailable":
+            # Logged once per change: a lock file that stays broken would
+            # otherwise stop dispatch with no trace in the log.
+            logger.warning("kanban dispatcher: dispatcher lock unavailable at %s; not "
+                           "dispatching until it can be taken.", self._kanban_dispatcher_lock_path)
+        if state != "held":
+            return False
+        self._kanban_dispatcher_lock_handle = handle
+        # WARNING: a takeover means the previous dispatcher died, and the gap
+        # since then is undispatched work.
+        logger.warning("kanban dispatcher: dispatcher lock (%s) came free; this gateway "
+                       "acquired it and is now dispatching.", self._kanban_dispatcher_lock_path)
+        return True
+
+    async def _kanban_dispatcher_idle(self, wait) -> None:
+        """Await *wait*; a cancel here releases the dispatcher lock.
+
+        No tick thread runs while the watcher waits, so a waiting gateway can
+        take the lock at once instead of when this process exits.
+        """
+        try:
+            await wait
+        except asyncio.CancelledError:
+            self._release_kanban_dispatcher_lock()
+            raise
 
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
@@ -271,7 +319,7 @@ class GatewayKanbanWatchersMixin:
         interval = settings.interval
 
         # Initial delay so adapters are wired before workers spawn (matches the notifier).
-        await asyncio.sleep(5)
+        await self._kanban_dispatcher_idle(asyncio.sleep(5))
 
         # Health telemetry (mirrors `_cmd_daemon`): warn when the ready queue
         # is non-empty but spawns are 0 for N consecutive ticks — usually a
@@ -283,6 +331,11 @@ class GatewayKanbanWatchersMixin:
 
         logger.info("kanban dispatcher: embedded in gateway (interval=%.1fs)", interval)
         while self._running:
+            if not self._kanban_dispatch_lock_held():
+                # Another process dispatches: no reaping, reclaims, spawns or
+                # stuck-board telemetry from this one.
+                await self._kanban_dispatcher_idle(self._sleep_between_ticks(interval))
+                continue
             try:
                 # Reap zombies before per-board work so a board DB failure
                 # cannot block cleanup of unrelated workers.
@@ -321,12 +374,14 @@ class GatewayKanbanWatchersMixin:
                     )
                     last_warn_at = now
             except asyncio.CancelledError:
+                # Keep the lock: cancelling to_thread does not stop the thread, so
+                # this tick can still be writing, and a waiting gateway re-tries the
+                # lock every tick. Process exit releases it.
                 logger.debug("kanban dispatcher: cancelled")
-                self._release_kanban_dispatcher_lock()
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
 
-            await self._sleep_between_ticks(interval)
+            await self._kanban_dispatcher_idle(self._sleep_between_ticks(interval))
 
         self._release_kanban_dispatcher_lock()

@@ -102,6 +102,7 @@ gateway:
 ## Mentions, channels, and DMs
 
 - In shared channels the agent only responds when **addressed** — by `@name`, its npub, or its hex pubkey. Everything else is ignored.
+- A `@name` that is only the start of another member's longer name (for example `@Chip Sales` when a member is named *Chip Sales*) addresses that member, not the agent.
 - Direct messages always reach the agent, no mention needed.
 - The agent's own messages are never dispatched back to it (self-echo suppression by pubkey), and every event is de-duplicated by event id against a per-channel high-water mark.
 

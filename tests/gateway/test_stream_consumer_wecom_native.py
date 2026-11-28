@@ -1048,20 +1048,20 @@ class TestClarifyEagerReseed:
 
 
 class TestNativeCommentaryPreservesAccumulated:
-    """Regression lock for root cause #1 of the "Cla"/"ude" split-bubble bug.
+    """Regression lock for the split-bubble bug on cumulative native streams.
 
-    In native streaming mode a mid-turn commentary (e.g. a Hindsight
-    "recalled N memories" notice) must be delivered as its own message via
-    ``send()`` WITHOUT calling ``_reset_segment_state()``.  The native stream
-    is cumulative: resetting ``_accumulated`` mid-turn dropped all
-    pre-commentary text, so the following delta (and the finalize frame)
-    carried only the few characters accumulated *after* the reset — producing
-    a mini-bubble like ``Cla`` and a body missing its first characters.
+    Two invariants, both load-bearing:
 
-    Drives the exact ``on_delta -> on_commentary -> on_delta`` sequence on a
-    real BasePlatformAdapter subclass so the
-    ``isinstance(BasePlatformAdapter)`` + ``_use_native_streaming`` gate is
-    satisfied and the new ``elif self._use_native_streaming`` branch runs.
+    1. A mid-turn commentary must NOT reset ``_accumulated``: the native stream is
+       cumulative, so resetting dropped all pre-commentary text and the following
+       delta/finalize carried only the few characters after the reset (mini-bubble
+       ``Cla`` next to a body missing its first characters).
+    2. On a cumulative native transport the commentary must NOT go through ``send()``
+       as its own message.  Such a transport renders one bubble per turn anchored under
+       the user's message; a ``send()`` opens a SECOND message that the client places at
+       the bottom of the conversation while the answer keeps growing in the anchored
+       bubble above it — readers get the full answer in the middle and one of its
+       fragments last.  The commentary is folded into the single bubble instead.
     """
 
     async def _wait_until(self, predicate, timeout: float = 1.0) -> bool:
@@ -1086,13 +1086,22 @@ class TestNativeCommentaryPreservesAccumulated:
         await self._wait_until(lambda: consumer._native_stream_opened)
         # Mid-turn commentary (Hindsight recall) — MUST NOT reset _accumulated.
         consumer.on_commentary("🔮 recalled 10 memories")
-        await self._wait_until(lambda: adapter.send.await_count >= 1)
+        await self._wait_until(lambda: "recalled 10 memories" in consumer._accumulated)
         consumer.on_delta("finished (exit 0).")
         consumer.finish()
         await task
 
-        # 1) Commentary went out as its own proactive message (not a frame).
-        assert adapter.send.await_count == 1
+        # 1) No extra message: on a cumulative native stream the commentary is folded
+        #    into the single bubble, so send() is never used.
+        assert adapter.send.await_count == 0, (
+            f"commentary opened a second message on a cumulative stream: "
+            f"{adapter.send.await_args_list}"
+        )
+        # ... but it is still visible to the reader, in order, inside that bubble.
+        frame_texts = [f["text"] for f in adapter.frames]
+        assert any("recalled 10 memories" in t for t in frame_texts), (
+            f"commentary never reached the bubble: {frame_texts!r}"
+        )
 
         # 2) The finalize frame carries the FULL cumulative body — no
         #    first-character loss ("Claude Code finished", never "ude ...").
@@ -1103,3 +1112,38 @@ class TestNativeCommentaryPreservesAccumulated:
             f"pre-commentary prefix lost (the bug): {final_text!r}"
         )
         assert "finished (exit 0)." in final_text
+
+    @pytest.mark.asyncio
+    async def test_folded_commentary_survives_authoritative_final(self):
+        """The production path finishes with the authoritative final_response, which never
+        contains the mid-turn commentary.  Adopting it wholesale would wipe text the reader
+        already saw (it appears, then vanishes) — folded commentary must be re-applied."""
+        adapter = _make_native_streaming_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_cla",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        task = asyncio.create_task(consumer.run())
+        consumer.on_delta("Checking the logs now.")
+        await self._wait_until(lambda: consumer._native_stream_opened)
+        consumer.on_commentary("Reading the traceback.")
+        await self._wait_until(lambda: "Reading the traceback." in consumer._accumulated)
+        consumer.on_delta("The fix is in the parser.")
+        consumer.finish("The fix is in the parser.")
+        await task
+
+        finalize_frames = [f for f in adapter.frames if f["finalize"]]
+        assert finalize_frames, "expected a finalize frame"
+        final_text = finalize_frames[-1]["text"]
+        assert "Reading the traceback." in final_text, (
+            f"folded commentary was wiped by the authoritative final: {final_text!r}"
+        )
+        assert "The fix is in the parser." in final_text, (
+            f"the actual answer is missing from the finalize frame: {final_text!r}"
+        )
+        assert adapter.send.await_count == 0, (
+            f"commentary opened a second message on a cumulative stream: "
+            f"{adapter.send.await_args_list}"
+        )

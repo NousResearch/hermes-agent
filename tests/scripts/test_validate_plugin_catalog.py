@@ -324,25 +324,17 @@ def test_json_output_shape_on_success_with_warning(tmp_path):
 # ── directory mode ─────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("with_yaml", [False, True])
-def test_directory_discovery_matches_runtime_extensions(tmp_path, with_yaml):
-    """Regression for #160206: admission must not discover entries runtime ignores."""
+def test_directory_with_stray_yml_entry_fails_admission(tmp_path):
+    """Regression for #160206: runtime ignores *.yml, so the directory gate must fail on one."""
+    write_entry(tmp_path, VALID_ENTRY)
     write_entry(tmp_path, {**VALID_ENTRY, "name": "ignored-plugin"}, "ignored.yml")
-    if with_yaml:
-        write_entry(tmp_path, VALID_ENTRY)
 
     result = run_validator("--json", str(tmp_path))
-    entries = load_catalog(tmp_path)
-    if not with_yaml:
-        assert entries == []
-        assert result.returncode == 1, result.stdout + result.stderr
-        assert "no YAML files found" in result.stderr
-    else:
-        assert result.returncode == 0, result.stdout + result.stderr
-        report = json.loads(result.stdout)
-        assert {Path(row["path"]).stem for row in report["files"]} == {
-            entry.name for entry in entries
-        }
+    assert [entry.name for entry in load_catalog(tmp_path)] == [VALID_ENTRY["name"]]
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = {Path(row["path"]).name: row for row in json.loads(result.stdout)["files"]}
+    assert rows[f"{VALID_ENTRY['name']}.yaml"]["ok"] is True
+    assert any(".yaml" in error for error in rows["ignored.yml"]["errors"])
 
 
 def test_explicit_yml_entry_is_rejected(tmp_path):

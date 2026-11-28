@@ -347,6 +347,9 @@ def collect_paths(args: list[str]) -> list[Path]:
         p = Path(arg)
         if p.is_dir():
             paths.extend(sorted(p.glob("*.yaml")))
+            # Runtime and docs load only *.yaml; collect *.yml so validate_file
+            # fails the gate instead of a stray entry passing CI and never loading.
+            paths.extend(sorted(p.glob("*.yml")))
         else:
             paths.append(p)
     return paths

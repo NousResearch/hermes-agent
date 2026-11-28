@@ -1347,7 +1347,7 @@ class AIAgent(
             if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
-        if stall_notice:
+        if stall_notice and isinstance(function_result, str):
             function_result = (function_result or "") + "\n\n" + stall_notice
         return function_result
 

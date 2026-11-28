@@ -8,6 +8,7 @@ from agent.tool_guardrails import (
     ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolCallSignature,
+    append_toolguard_guidance,
     canonical_tool_args,
     classify_tool_failure,
 )
@@ -506,3 +507,53 @@ def test_rate_limited_retry_is_not_a_replay_but_stays_bounded(result, throttled,
             break
     else:
         raise AssertionError("a permanently failing endpoint must still halt or block")
+
+
+def test_multimodal_idempotent_read_file_pdf_guardrails_safe():
+    """Idempotent tools like read_file can return a _multimodal dict (native PDF fast-path).
+    after_call(), classify_tool_failure(), and append_toolguard_guidance() must handle it
+    without AttributeError ('dict' object has no attribute 'encode') or TypeError."""
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(warnings_enabled=True, no_progress_warn_after=2)
+    )
+    args = {"path": "/tmp/blood_test.pdf"}
+    pdf_envelope = {
+        "_multimodal": True,
+        "meta": {"native_document": True, "filename": "blood_test.pdf", "bytes": 1234},
+        "content": [
+            {"type": "text", "text": "Attached PDF natively (blood_test.pdf)."},
+            {"type": "document", "mime_type": "application/pdf", "data": "JVBERi0xLjQ=", "filename": "blood_test.pdf"},
+        ],
+        "text_summary": "Attached PDF natively (blood_test.pdf).",
+    }
+
+    # First read (both explicit failed=False and fallback failed=None) succeeds cleanly.
+    first = controller.after_call("read_file", args, pdf_envelope, failed=False)
+    assert first.action == "allow"
+    assert first.count == 1
+
+    # Second identical read warns via idempotent_no_progress_warning and appends guidance safely.
+    second = controller.after_call("read_file", args, pdf_envelope)
+    assert second.action == "warn"
+    assert second.code == "idempotent_no_progress_warning"
+    assert second.count == 2
+
+    guided = append_toolguard_guidance(pdf_envelope, second)
+    assert isinstance(guided, dict) and guided.get("_multimodal") is True
+    assert guided["content"][1] == pdf_envelope["content"][1]
+    assert "Tool loop warning" in guided["content"][0]["text"]
+    assert "Tool loop warning" in guided["text_summary"]
+    # Original envelope must not be mutated in place.
+    assert "Tool loop warning" not in pdf_envelope["content"][0]["text"]
+
+    # Changed PDF payload resets repeat count.
+    updated_envelope = {
+        **pdf_envelope,
+        "content": [
+            pdf_envelope["content"][0],
+            {**pdf_envelope["content"][1], "data": "JVBERi0xLjUtbmV3"},
+        ],
+    }
+    third = controller.after_call("read_file", args, updated_envelope, failed=False)
+    assert third.action == "allow"
+    assert third.count == 1

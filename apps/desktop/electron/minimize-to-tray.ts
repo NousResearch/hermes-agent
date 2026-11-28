@@ -234,6 +234,22 @@ export function createMinimizeToTray(options: Options) {
         win.blur()
       }
 
+      // macOS keeps a hidden window's fullscreen Space on screen, so the user
+      // is left on an empty black Space. Leave fullscreen first and hide once
+      // the (asynchronous, animated) exit has finished. A restore meanwhile
+      // releases the window, which cancels the pending hide.
+      if (process.platform === 'darwin' && win.isFullScreen()) {
+        win.once('leave-full-screen', () => {
+          if (!win.isDestroyed() && hidden.has(win)) {
+            win.hide()
+            syncDock()
+          }
+        })
+        win.setFullScreen(false)
+
+        return true
+      }
+
       win.hide()
       syncDock()
 

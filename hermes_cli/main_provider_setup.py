@@ -501,53 +501,136 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
     return str(provider_info.get("base_url_ref", "") or "").strip() or str(resolved_base_url or "").strip()
 
 
+def _apply_custom_provider_credentials(entry, *, api_key, key_env, credential_env) -> bool:
+    """Apply a credential save to *entry* in place; True when the entry changed.
+
+    Exactly one pointer survives (``key_env`` or ``api_key``), so a credential-mode switch never
+    leaves stale secret state behind (#45533 review). ``${VAR}`` templates stay as given, legacy
+    inline entries update in place, and literal secrets go to ``.env`` (#77471).
+    """
+    if key_env:
+        if entry.get("key_env") == key_env and not entry.get("api_key"):
+            return False
+        entry["key_env"] = key_env
+        entry.pop("api_key", None)
+        return True
+    if not api_key:
+        return False
+    from hermes_cli.config_secret_refs import is_env_reference
+    if is_env_reference(api_key):
+        if entry.get("api_key") == api_key and not entry.get("key_env"):
+            return False
+        entry["api_key"] = api_key
+        entry.pop("key_env", None)
+        return True
+    if entry.get("api_key"):
+        if entry["api_key"] == api_key:
+            return False
+        entry["api_key"] = api_key
+        return True
+    write_env = credential_env(api_key, entry)
+    if write_env:
+        if entry.get("key_env") == write_env:
+            return False
+        entry["key_env"] = write_env
+        return True
+    if not (entry.get("key_env") or entry.get("api_key") == api_key):
+        return False
+    entry["api_key"] = api_key
+    entry.pop("key_env", None)
+    return True
+
+
+def _apply_custom_provider_update(entry, *, base_url, model, context_length, api_mode,
+                                  api_key, key_env, credential_env) -> bool:
+    """Apply a save to an existing ``custom_providers`` entry in place; True when it changed."""
+    changed = False
+    if model and entry.get("model") != model:
+        entry["model"] = model
+        changed = True
+    if model and context_length:
+        _ensure_dict_section(entry, "models")[model] = {"context_length": context_length}
+        changed = True
+    if api_mode:
+        if entry.get("api_mode") != api_mode:
+            entry["api_mode"] = api_mode
+            changed = True
+    elif "api_mode" in entry:
+        entry.pop("api_mode", None)
+        changed = True
+    # Keep the URL in sync: one identity may be re-registered under a moved endpoint.
+    if entry.get("base_url", "").rstrip("/") != base_url.rstrip("/"):
+        entry["base_url"] = base_url
+        changed = True
+    if _apply_custom_provider_credentials(entry, api_key=api_key, key_env=key_env,
+                                          credential_env=credential_env):
+        changed = True
+    return changed
+
+
 def _save_custom_provider(base_url, api_key="", model="", context_length=None, name=None, api_mode=None,
                           key_env=""):
-    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by base_url (an
-    existing entry gets model / context_length / api_mode updated). *key_env* set means the caller
-    already wrote the key to ``.env``; the entry references it instead of inlining the secret. A
-    literal *api_key* for a NEW entry is written to ``.env`` under the endpoint's name and the entry
-    gets ``key_env`` (#77471); a ``${VAR}`` reference is kept as given and existing entries are
-    never migrated.
+    """Save a custom endpoint to ``custom_providers`` in config.yaml, deduplicated by canonical
+    slug — the identity the picker/resolver routes by (``custom_provider_slug``). An entry with
+    the same canonical identity gets model / context_length / api_mode / URL / credentials
+    updated; two providers sharing a base URL under *different* identities stay separate
+    entries (#45481). *key_env* set means the caller already wrote the key to ``.env``; the
+    entry references it instead of inlining the secret. A literal *api_key* is written to
+    ``.env`` under the endpoint's name and the entry gets ``key_env`` (#77471); a ``${VAR}``
+    reference is kept as given and existing entries are never migrated wholesale.
 
     See #69449.
     """
     from hermes_cli.config import load_config, save_config
+    from hermes_cli.providers import custom_provider_slug
+
     cfg = load_config()
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
+
+    name = name or _auto_provider_name(base_url)
+    canonical_slug = custom_provider_slug(name)
+    # Credential variables are named by endpoint; a second identity on the same URL (aggregator
+    # profiles) would otherwise share — and silently overwrite — the first profile's secret.
+    taken_by_others = {
+        str(other.get("key_env") or "")
+        for other in providers
+        if isinstance(other, dict)
+        and custom_provider_slug(str(other.get("name") or "")) != canonical_slug
+    }
+    taken_by_others.discard("")
+
+    def _credential_env(literal_key: str, existing: dict | None = None) -> str:
+        """Env var that will hold *literal_key*; literal secrets live in ``.env`` (#77471).
+
+        Keeps an entry's existing variable, otherwise uses the endpoint-named variable and
+        falls back to the identity-named one when another row already claims it.
+        """
+        from hermes_cli.config_secret_refs import (
+            endpoint_api_key_env, provider_name_key_env, secret_key_env_for,
+        )
+        preferred = str((existing or {}).get("key_env") or "")
+        if not preferred:
+            endpoint_name = endpoint_api_key_env(base_url)
+            preferred = provider_name_key_env(name) if endpoint_name in taken_by_others else endpoint_name
+        return secret_key_env_for(preferred, literal_key, base_url)
+
     for entry in providers:
-        if not (isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")):
+        if not (isinstance(entry, dict) and custom_provider_slug(str(entry.get("name") or "")) == canonical_slug):
             continue
-        changed = False
-        if model and entry.get("model") != model:
-            entry["model"] = model
-            changed = True
-        if model and context_length:
-            _ensure_dict_section(entry, "models")[model] = {"context_length": context_length}
-            changed = True
-        if api_mode:
-            if entry.get("api_mode") != api_mode:
-                entry["api_mode"] = api_mode
-                changed = True
-        elif "api_mode" in entry:
-            entry.pop("api_mode", None)
-            changed = True
-        if key_env and (entry.get("key_env") != key_env or entry.get("api_key")):
-            entry["key_env"] = key_env
-            entry.pop("api_key", None)
-            changed = True
-        if changed:
+        if _apply_custom_provider_update(
+            entry, base_url=base_url, model=model, context_length=context_length,
+            api_mode=api_mode, api_key=api_key, key_env=key_env,
+            credential_env=_credential_env,
+        ):
             cfg["custom_providers"] = providers
             save_config(cfg)
         return  # already saved, updated if needed
 
-    name = name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
     if api_key and not key_env:
-        from hermes_cli.config_secret_refs import endpoint_api_key_env, secret_key_env_for
-        key_env = secret_key_env_for(endpoint_api_key_env(base_url), api_key, base_url)
+        key_env = _credential_env(api_key)
     if key_env:
         entry["key_env"] = key_env
     elif api_key:

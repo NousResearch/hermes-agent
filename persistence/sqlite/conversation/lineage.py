@@ -15,7 +15,7 @@ from .._backend import SQLiteStore, register_repository
 from ._store.compression import (
     finalize_orphaned_compression_sessions, get_compression_chain, get_compression_fallback_streak,
     get_compression_ineffective_count, get_compression_lineage, get_compression_overload_streak,
-    get_compression_recovery_deadline, get_compression_tip, get_tool_rotation_root, increment_compression_overload_streak,
+    get_compression_recovery_deadline, get_compression_tip, get_tool_rotation_root, get_tool_rotation_tip, increment_compression_overload_streak,
     publish_compression_child, reopen_orphaned_compression_session, set_compression_fallback_streak,
     set_compression_ineffective_count, set_compression_overload_streak, set_compression_recovery_deadline,
     stamp_legacy_compression_chains, _is_compression_child_row,
@@ -137,6 +137,11 @@ class SQLiteLineageRepository:
         holder = self._store.holder()
         with refusals(holder, session_id):
             return SessionId(get_tool_rotation_root(holder, session_id))
+
+    def tool_rotation_tip(self, session_id: SessionId) -> SessionId:
+        holder = self._store.holder()
+        with refusals(holder, session_id):
+            return SessionId(get_tool_rotation_tip(holder, session_id))
 
     def is_fork_child(self, session_id: SessionId) -> bool:
         holder = self._store.holder()

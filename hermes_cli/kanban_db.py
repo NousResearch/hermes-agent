@@ -3556,16 +3556,22 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off), closing any leaked run first. A ``triage`` card the
+    unblock-loop breaker escalated (:func:`is_breaker_escalation`) is a human-parked block
+    too and exits the same way; other triage cards are refused (specify/decompose them)."""
     now = int(time.time())
     with write_txn(conn):
+        cur_status = _task_status(conn, task_id)
+        from_statuses: tuple[str, ...] = ("blocked", "scheduled")
+        if cur_status == "triage" and is_breaker_escalation(conn, task_id):
+            from_statuses = ("triage",)
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if cur_status in ("blocked", "triage")
             else "ready"
         )
         _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
+            conn, task_id, statuses=from_statuses, now=now,
             note="invariant recovery on unblock",
         )
         # Re-gate on parent completion before restoring the source phase.
@@ -3583,7 +3589,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            f"WHERE id = ? AND status IN ({', '.join('?' for _ in from_statuses)})",
+            (new_status, task_id, *from_statuses),
         )
         if cur.rowcount != 1:
             return False
@@ -3727,6 +3734,39 @@ def invalidate_descendants_for_parent_reopen(
         for pid, claim_lock, started_at in terminations:
             _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
     return {"invalidated": invalidated, "terminations": terminations}
+
+
+# Events that move a card into or out of ``triage`` (or start a new attempt). When the newest of
+# these is ``block_loop_detected``, the card sits in triage because the unblock-loop breaker
+# escalated it to a human, not because it is an unspecified one-liner.
+_TRIAGE_ENTRY_EVENT_KINDS = (
+    "created", "block_loop_detected", "specified", "decomposed", "promoted", "unblocked", "claimed",
+)
+
+
+def is_breaker_escalation(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when *task_id* is in ``triage`` because :func:`_route_block` escalated it.
+
+    Automatic triage sweeps (auto-decompose tick, ``specify/decompose --all``) must skip these:
+    promoting them back to ``todo`` respawns the worker with nothing new, it re-blocks for the
+    same cause, the breaker sends it back to triage, and the loop the breaker exists to stop runs
+    forever (one run + one notification per tick). Only an explicit operator action on that id
+    moves the card on.
+    """
+    placeholders = ", ".join("?" for _ in _TRIAGE_ENTRY_EVENT_KINDS)
+    row = conn.execute(
+        f"SELECT kind FROM task_events WHERE task_id = ? AND kind IN ({placeholders}) "
+        "ORDER BY id DESC LIMIT 1", (task_id, *_TRIAGE_ENTRY_EVENT_KINDS),
+    ).fetchone()
+    return bool(row) and row["kind"] == "block_loop_detected"
+
+
+def auto_triage_ids(conn: sqlite3.Connection, *, tenant: Optional[str] = None) -> list[str]:
+    """Triage task ids an automatic sweep may specify/decompose (breaker escalations excluded)."""
+    return [
+        t.id for t in list_tasks(conn, status="triage", tenant=tenant, include_archived=False, limit=1000)
+        if not is_breaker_escalation(conn, t.id)
+    ]
 
 
 def specify_triage_task(

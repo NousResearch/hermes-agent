@@ -235,7 +235,7 @@ def specify_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Task ids in the triage column; ``tenant`` narrows the sweep."""
+    """Triage task ids an automatic sweep may specify; ``tenant`` narrows the sweep. Cards the
+    unblock-loop breaker escalated are skipped (``kanban_db.is_breaker_escalation``)."""
     with kbc.connect_closing() as conn:
-        tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False)
-    return [t.id for t in tasks]
+        return kb.auto_triage_ids(conn, tenant=tenant)

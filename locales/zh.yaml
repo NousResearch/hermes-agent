@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "本次叠加调用中的 **{names}** 技能在 {platform} 上已被禁用。\n启用方式：`hermes skills config`"
     stacked_load_failed: "无法为 /{command} 加载叠加技能。"
     gate_off: "技能写入审批已关闭（skills.write_approval）。可用 /skills approval on 开启，然后在此处用 /skills pending 审查暂存的写入。"
-    unknown_subcommand: "此平台不支持该 /skills 子命令。可用：pending、approve <id>、reject <id>、diff <id>、approval <on|off>。（搜索/安装仅限 CLI。）"
+    unknown_subcommand: "此平台不支持该 /skills 子命令。可用：pending、approve <id>、reject <id>、diff <id>、approval <on|off|background>。（搜索/安装仅限 CLI。）"
     diff_truncated: "\n…（已截断——完整 diff 见 ~/.hermes/pending/skills/{pending_id}.json）"
   busy:
     action_restarting: "正在重启"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}`——{desc} _（{count} 个技能）_"
     invoke_hint: "用 `/<slug>` 调用技能包，即可加载其全部技能。"
   memory:
-    unknown_subcommand: "未知的 /memory 子命令。可用：pending、approve <id>、reject <id>、approval <on|off>。"
+    unknown_subcommand: "未知的 /memory 子命令。可用：pending、approve <id>、reject <id>、approval <on|off|background>。"
   approvals:
     admin_only: "只有网关管理员才能更改持久化的审批模式。"
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) 看板错误：{error}"
     memory:
-      unknown_subcommand: "未知的 /memory 子命令。可用：pending、approve <id>、reject <id>、approval <on|off>。"
+      unknown_subcommand: "未知的 /memory 子命令。可用：pending、approve <id>、reject <id>、approval <on|off|background>。"
     learn:
       from_description: "⚡ 正在根据你的描述学习技能..."
       from_conversation: "⚡ 正在从本次对话中学习技能..."

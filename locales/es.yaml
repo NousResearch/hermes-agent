@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "La(s) skill(s) **{names}** de esta invocación apilada están desactivadas para {platform}.\nActívalas con: `hermes skills config`"
     stacked_load_failed: "No se pudieron cargar las skills apiladas para /{command}."
     gate_off: "La aprobación de escritura de skills está desactivada (skills.write_approval). Actívala con /skills approval on y luego revisa aquí las escrituras pendientes con /skills pending."
-    unknown_subcommand: "Subcomando de /skills desconocido en esta plataforma. Usa: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Buscar/instalar solo desde la CLI.)"
+    unknown_subcommand: "Subcomando de /skills desconocido en esta plataforma. Usa: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Buscar/instalar solo desde la CLI.)"
     diff_truncated: "\n… (truncado — diff completo en ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "reiniciándose"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} skills)_"
     invoke_hint: "Invoca un bundle con `/<slug>` para cargar todas sus skills."
   memory:
-    unknown_subcommand: "Subcomando de /memory desconocido. Usa: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Subcomando de /memory desconocido. Usa: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Solo los administradores del gateway pueden cambiar el modo de aprobación persistente."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) error de kanban: {error}"
     memory:
-      unknown_subcommand: "Subcomando de /memory desconocido. Usa: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Subcomando de /memory desconocido. Usa: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Aprendiendo una skill a partir de lo que describiste..."
       from_conversation: "⚡ Aprendiendo una skill a partir de esta conversación..."

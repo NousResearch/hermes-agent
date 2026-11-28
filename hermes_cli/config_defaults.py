@@ -1262,10 +1262,10 @@ DEFAULT_CONFIG = {
         "memory_enabled": True,
         "user_profile_enabled": True,
         "prefetch_spill_enabled": False,  # External recall opt-in to hooks.output_spill.
-        # Approval gate for memory writes on BOTH foreground turns and the background review fork.
-        # true = foreground writes prompt inline; background writes are staged (/memory
-        # pending|approve <id>|reject <id>). To disable memory: memory_enabled.
+        # Approval gate for memory writes, foreground and background review: true = foreground writes
+        # prompt inline, background ones stage (/memory pending|approve|reject). Disable: memory_enabled.
         "write_approval": False,
+        "write_approval_scope": "all",  # "background" = gate only writes not made by your own turns
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # Periodic built-in memory review; 0 when an external provider auto-extracts.
@@ -1425,10 +1425,10 @@ DEFAULT_CONFIG = {
         # "skillevaluator @ git+https://github.com/NVIDIA/SkillEvaluator.git"). Informational, never
         # blocking; secrets-class findings shown red. No-op without it.
         "tier1_advisory": True,
-        # Approval gate for skill_manage mutations on BOTH foreground turns and the background
-        # review fork. true = ALWAYS stage (SKILL.md too large for an inline prompt): /skills
-        # pending, /skills diff <id>, /skills approve|reject <id>.
+        # Approval gate for skill_manage mutations, foreground and background review. true = ALWAYS
+        # stage (SKILL.md too large to prompt inline): /skills pending|diff|approve|reject <id>.
         "write_approval": False,
+        "write_approval_scope": "all",  # "background" = gate only writes not made by your own turns
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.

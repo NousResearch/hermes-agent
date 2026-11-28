@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "Die **{names}**-vaardigheid(e) in hierdie gestapelde oproep is vir {platform} gedeaktiveer.\nAktiveer hulle met: `hermes skills config`"
     stacked_load_failed: "Kon nie gestapelde vaardighede vir /{command} laai nie."
     gate_off: "Vaardigheid-skryfgoedkeuring is af (skills.write_approval). Aktiveer dit met /skills approval on, en hersien dan voorbereide skrywes hier met /skills pending."
-    unknown_subcommand: "Onbekende /skills-subopdrag op hierdie platform. Gebruik: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Soek/installeer is slegs via die CLI.)"
+    unknown_subcommand: "Onbekende /skills-subopdrag op hierdie platform. Gebruik: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Soek/installeer is slegs via die CLI.)"
     diff_truncated: "\n… (afgekap — volledige diff in ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "besig om te herbegin"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} vaardighede)_"
     invoke_hint: "Roep 'n bondel met `/<slug>` aan om al sy vaardighede te laai."
   memory:
-    unknown_subcommand: "Onbekende /memory-subopdrag. Gebruik: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Onbekende /memory-subopdrag. Gebruik: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Slegs gateway-administrateurs kan die permanente goedkeuringsmodus verander."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) kanban-fout: {error}"
     memory:
-      unknown_subcommand: "Onbekende /memory-subopdrag. Gebruik: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Onbekende /memory-subopdrag. Gebruik: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Leer 'n vaardigheid uit wat jy beskryf het..."
       from_conversation: "⚡ Leer 'n vaardigheid uit hierdie gesprek..."

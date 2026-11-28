@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "이 중첩 호출의 **{names}** 스킬은 {platform}에서 비활성화되어 있어요.\n활성화 방법: `hermes skills config`"
     stacked_load_failed: "/{command}의 중첩 스킬을 불러오지 못했어요."
     gate_off: "스킬 쓰기 승인이 꺼져 있어요 (skills.write_approval). /skills approval on으로 켠 뒤, /skills pending으로 대기 중인 쓰기를 여기서 검토하세요."
-    unknown_subcommand: "이 플랫폼에서 알 수 없는 /skills 하위 명령이에요. 사용 가능: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (검색/설치는 CLI 전용이에요.)"
+    unknown_subcommand: "이 플랫폼에서 알 수 없는 /skills 하위 명령이에요. 사용 가능: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (검색/설치는 CLI 전용이에요.)"
     diff_truncated: "\n… (잘림 — 전체 변경 사항은 ~/.hermes/pending/skills/{pending_id}.json에 있어요)"
   busy:
     action_restarting: "재시작 중"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _(스킬 {count}개)_"
     invoke_hint: "`/<slug>`로 번들을 호출하면 포함된 스킬을 모두 불러와요."
   memory:
-    unknown_subcommand: "알 수 없는 /memory 하위 명령이에요. 사용 가능: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "알 수 없는 /memory 하위 명령이에요. 사용 가능: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "영구 승인 모드는 게이트웨이 관리자만 변경할 수 있어요."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) 칸반 오류: {error}"
     memory:
-      unknown_subcommand: "알 수 없는 /memory 하위 명령이에요. 사용 가능: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "알 수 없는 /memory 하위 명령이에요. 사용 가능: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ 설명하신 내용으로 스킬을 학습하는 중..."
       from_conversation: "⚡ 이 대화에서 스킬을 학습하는 중..."

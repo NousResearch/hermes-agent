@@ -3,7 +3,8 @@
 
 A per-subsystem boolean ``write_approval`` gates the agent's cross-session writes —
 **memory** (MEMORY.md / USER.md) and **skills** (SKILL.md + files) — from either
-origin (**foreground** turn or **background_review** fork). The gate is enforced
+origin (**foreground** turn or **background_review** fork); ``write_approval_scope:
+background`` exempts the user's own turns, so an enabled gate covers only forked writers. The gate is enforced
 by the subsystem tools that own these writes (``memory``, ``skill_manage``);
 the generic file tools (``write_file``/``patch``) do not consult it (#60440
 tracks closing that gap). ``false`` (default) writes freely; ``true`` never
@@ -39,6 +40,19 @@ _SUBSYSTEMS = (MEMORY, SKILLS)
 # Per-subsystem config key. Intentionally a single boolean with no "block all writes"
 # state — to disable a subsystem use its own enable flag (e.g. ``memory.memory_enabled``).
 CONFIG_KEY = "write_approval"
+# Which write origins an enabled gate covers. A separate key, not a third ``write_approval`` value:
+# generic code reads ``write_approval`` for truthiness (gateway command visibility, "gate off"
+# shortcuts), and a string mode would read as off there while writes are being staged.
+SCOPE_KEY = "write_approval_scope"
+SCOPE_ALL = "all"
+SCOPE_BACKGROUND = "background"
+# Accepted spellings of SCOPE_BACKGROUND: the issue's ``background_review`` and #53412's ``background_only``.
+BACKGROUND_SCOPE_WORDS = frozenset({SCOPE_BACKGROUND, "background_review", "background_only"})
+# Write origins of the user's own turns: ``assistant_tool`` (every main-agent turn, incl. subagents)
+# and the ContextVar default ``foreground`` (nothing bound). Every forked writer — the background
+# review, /refine, the curator's consolidation fork, plugin session forks, side questions, and any
+# origin added later — is outside this set, so a ``background`` scope keeps gating it.
+_FOREGROUND_ORIGINS = frozenset({"foreground", "assistant_tool"})
 _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 
 
@@ -53,6 +67,20 @@ def write_approval_enabled(subsystem: str) -> bool:
         return _normalize_enabled(cfg_get(load_config(), subsystem, CONFIG_KEY, default=False))
     except Exception:
         return False
+
+
+def write_approval_scope(subsystem: str) -> str:
+    """``<subsystem>.write_approval_scope``: ``background`` exempts the user's own turns from an enabled
+    gate; anything else (unset, unknown, non-string) is ``all``, today's gate — never less gating by accident."""
+    try:
+        from hermes_cli.config import load_config, cfg_get
+        raw = cfg_get(load_config(), subsystem, SCOPE_KEY, default=SCOPE_ALL)
+    except Exception:  # config unreadable: keep the full gate rather than narrowing it blind
+        logger.warning("Could not read %s.%s; gating every write", subsystem, SCOPE_KEY, exc_info=True)
+        return SCOPE_ALL
+    if isinstance(raw, str) and raw.strip().lower() in BACKGROUND_SCOPE_WORDS:
+        return SCOPE_BACKGROUND
+    return SCOPE_ALL
 
 
 def _normalize_enabled(value: Any) -> bool:
@@ -202,14 +230,20 @@ def _staged(subsystem: str) -> GateDecision:
 
 
 def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: str = "") -> GateDecision:
-    """Decide what to do with a pending write: gate off → allow; gate on + skills (any origin) or
-    background → stage; gate on + memory + foreground → inline prompt when an interactive channel
-    exists, else stage. The gate only ever delays a write, never silently refuses it; ``blocked``
-    is produced only when the user actively denies the inline prompt."""
+    """Decide what to do with a pending write: gate off → allow; scope ``background`` + the user's own
+    turn → allow; gate on + skills (any origin) or background → stage; gate on + memory + foreground →
+    inline prompt when an interactive channel exists, else stage. The gate only ever delays a write,
+    never silently refuses it; ``blocked`` is produced only when the user actively denies the inline
+    prompt."""
     if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
+    origin = current_origin()
+    # Exempt by allowlist, not by matching "background_review": an origin this gate has never heard
+    # of (a new fork kind) stays gated rather than slipping through.
+    if origin in _FOREGROUND_ORIGINS and write_approval_scope(subsystem) == SCOPE_BACKGROUND:
+        return GateDecision(allow=True)
     # Skills are too big to review inline; a background write runs in a daemon thread with no user.
-    if subsystem == SKILLS or current_origin() == "background_review":
+    if subsystem == SKILLS or origin == "background_review":
         return _staged(subsystem)
     granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
     if granted is None:

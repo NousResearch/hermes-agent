@@ -913,9 +913,9 @@ def _cmd_compress(rid, params, session, name, arg):
 # MEMORY.md/USER.md and its memory char limits (see the scope note on `_session_home_scope`,
 # #110695).
 _MEMORY_USAGE = ("Unknown /memory subcommand. "
-                 "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+                 "Use: pending, approve <id>, reject <id>, approval <on|off|background>.")
 _SKILLS_USAGE = ("Unknown /skills subcommand here. "
-                 "Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                 "Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. "
                  "(Search/install/browse are terminal-side.)")
 
 
@@ -935,9 +935,10 @@ def _pending_subcommand_store(session):
 
 
 def _write_approval_mode_setter(subsystem: str):
-    """Persist ``<subsystem>.write_approval`` into the SESSION's profile config (this runs inside
-    ``_session_home_scope``, so ``_write_config_key`` writes the right profile's config.yaml)."""
-    return lambda enabled: _write_config_key(f"{subsystem}.write_approval", bool(enabled))
+    """Persist the ``<subsystem>.write_approval*`` settings into the SESSION's profile config in one
+    write (this runs inside ``_session_home_scope``, so ``_write_config_keys`` writes the right
+    profile's config.yaml)."""
+    return lambda settings: _write_config_keys({f"{subsystem}.{key}": value for key, value in settings.items()})
 
 
 def _run_pending_review(rid, subsystem: str, arg: str, session, *, unknown: str):

@@ -338,6 +338,13 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 | `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
 | `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
+To gate only background saves and let your own turns save without a prompt,
+add `memory.write_approval_scope: background` (default `all`). Saves from your
+own turns (CLI, messaging, cron, and the subagents they delegate to) then apply
+directly, and saves from every forked agent are staged: the background review,
+`/refine`, the curator's consolidation pass, and plugin session forks.
+`/memory approval background` sets both keys; any other scope value means `all`.
+
 > To turn memory off entirely (not just gate it), set both `memory_enabled: false` and `user_profile_enabled: false`. When both built-in stores are disabled, the built-in `memory` tool is automatically hidden.
 
 Review staged writes from the CLI or any messaging platform:
@@ -347,6 +354,7 @@ Review staged writes from the CLI or any messaging platform:
 /memory approve <id>        # apply one (or 'all')
 /memory reject <id>         # drop one (or 'all')
 /memory approval on         # turn the gate on (or 'off') and persist it
+/memory approval background # gate only background saves; yours apply directly
 ```
 
 This is the answer to "the agent saved a wrong assumption about me": set

@@ -739,7 +739,7 @@ gateway:
     stacked_disabled: "Az összefűzött hívásban szereplő **{names}** skill(ek) ki vannak kapcsolva ezen a platformon: {platform}.\nBekapcsolás: `hermes skills config`"
     stacked_load_failed: "Nem sikerült betölteni az összefűzött skilleket a /{command} parancshoz."
     gate_off: "A skillírások jóváhagyása ki van kapcsolva (skills.write_approval). Kapcsold be a /skills approval on paranccsal, majd nézd át itt a várakozó írásokat a /skills pending paranccsal."
-    unknown_subcommand: "Ismeretlen /skills alparancs ezen a platformon. Használható: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (A keresés/telepítés csak CLI-ből érhető el.)"
+    unknown_subcommand: "Ismeretlen /skills alparancs ezen a platformon. Használható: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (A keresés/telepítés csak CLI-ből érhető el.)"
     diff_truncated: "\n… (levágva — a teljes diff itt: ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "újraindul"
@@ -938,7 +938,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} skill)_"
     invoke_hint: "Egy csomag összes skilljét a `/<slug>` paranccsal töltheted be."
   memory:
-    unknown_subcommand: "Ismeretlen /memory alparancs. Használható: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Ismeretlen /memory alparancs. Használható: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "A tartós jóváhagyási módot csak az átjáró adminjai módosíthatják."
   heartbeat:
@@ -3046,7 +3046,7 @@ cli:
     kanban:
       failed: "(._.) kanban hiba: {error}"
     memory:
-      unknown_subcommand: "Ismeretlen /memory alparancs. Használható: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Ismeretlen /memory alparancs. Használható: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Skill tanulása a leírásod alapján..."
       from_conversation: "⚡ Skill tanulása ebből a beszélgetésből..."

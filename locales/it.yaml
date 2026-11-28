@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "Le skill **{names}** in questa invocazione combinata sono disattivate per {platform}.\nAttivale con: `hermes skills config`"
     stacked_load_failed: "Impossibile caricare le skill combinate per /{command}."
     gate_off: "L'approvazione delle scritture delle skill è off (skills.write_approval). Attivala con /skills approval on, poi rivedi qui le scritture in attesa con /skills pending."
-    unknown_subcommand: "Sottocomando /skills sconosciuto su questa piattaforma. Usa: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Ricerca/installazione solo da CLI.)"
+    unknown_subcommand: "Sottocomando /skills sconosciuto su questa piattaforma. Usa: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Ricerca/installazione solo da CLI.)"
     diff_truncated: "\n… (troncato — diff completo in ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "in riavvio"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} skill)_"
     invoke_hint: "Richiama un bundle con `/<slug>` per caricare tutte le sue skill."
   memory:
-    unknown_subcommand: "Sottocomando /memory sconosciuto. Usa: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Sottocomando /memory sconosciuto. Usa: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Solo gli admin del gateway possono cambiare la modalità di approvazione persistente."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) errore kanban: {error}"
     memory:
-      unknown_subcommand: "Sottocomando /memory sconosciuto. Usa: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Sottocomando /memory sconosciuto. Usa: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Sto creando una skill da quanto hai descritto..."
       from_conversation: "⚡ Sto creando una skill da questa conversazione..."

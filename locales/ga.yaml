@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "Tá an scil/na scileanna **{names}** sa ghlao cruachta seo díchumasaithe do {platform}.\nCumasaigh iad le: `hermes skills config`"
     stacked_load_failed: "Theip ar scileanna cruachta a lódáil do /{command}."
     gate_off: "Tá cead scríofa scileanna as (skills.write_approval). Cumasaigh é le /skills approval on, ansin déan athbhreithniú ar scríobhanna stáitsithe anseo le /skills pending."
-    unknown_subcommand: "Fo-ordú /skills anaithnid ar an ardán seo. Úsáid: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Tá cuardach/suiteáil ar fáil ón CLI amháin.)"
+    unknown_subcommand: "Fo-ordú /skills anaithnid ar an ardán seo. Úsáid: pending, approve <id>, reject <id>, diff <id>, approval <on|off|background>. (Tá cuardach/suiteáil ar fáil ón CLI amháin.)"
     diff_truncated: "\n… (giorraithe — an diff iomlán i ~/.hermes/pending/skills/{pending_id}.json)"
   busy:
     action_restarting: "ag atosú"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} scil)_"
     invoke_hint: "Glaoigh ar chuach le `/<slug>` chun a scileanna uile a lódáil."
   memory:
-    unknown_subcommand: "Fo-ordú /memory anaithnid. Úsáid: pending, approve <id>, reject <id>, approval <on|off>."
+    unknown_subcommand: "Fo-ordú /memory anaithnid. Úsáid: pending, approve <id>, reject <id>, approval <on|off|background>."
   approvals:
     admin_only: "Ní féidir ach le riarthóirí gateway an mód ceadaithe buan a athrú."
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) earráid kanban: {error}"
     memory:
-      unknown_subcommand: "Fo-ordú /memory anaithnid. Úsáid: pending, approve <id>, reject <id>, approval <on|off>."
+      unknown_subcommand: "Fo-ordú /memory anaithnid. Úsáid: pending, approve <id>, reject <id>, approval <on|off|background>."
     learn:
       from_description: "⚡ Ag foghlaim scile ón gcur síos a thug tú..."
       from_conversation: "⚡ Ag foghlaim scile ón gcomhrá seo..."

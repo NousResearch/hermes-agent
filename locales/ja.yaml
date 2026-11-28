@@ -729,7 +729,7 @@ gateway:
     stacked_disabled: "このスタック呼び出しに含まれる **{names}** スキルは {platform} では無効です。\n有効化するには: `hermes skills config`"
     stacked_load_failed: "/{command} のスタックスキルの読み込みに失敗しました。"
     gate_off: "スキル書き込みの承認はオフです (skills.write_approval)。/skills approval on で有効化し、ステージされた書き込みを /skills pending でここからレビューしてください。"
-    unknown_subcommand: "このプラットフォームでは不明な /skills サブコマンドです。使用可能: pending、approve <id>、reject <id>、diff <id>、approval <on|off>。(検索/インストールは CLI 専用です。)"
+    unknown_subcommand: "このプラットフォームでは不明な /skills サブコマンドです。使用可能: pending、approve <id>、reject <id>、diff <id>、approval <on|off|background>。(検索/インストールは CLI 専用です。)"
     diff_truncated: "\n… (省略 — 完全な diff は ~/.hermes/pending/skills/{pending_id}.json にあります)"
   busy:
     action_restarting: "再起動中"
@@ -924,7 +924,7 @@ gateway:
     item: "• `/{slug}` — {desc} _({count} 個のスキル)_"
     invoke_hint: "`/<slug>` でバンドルを呼び出すと、含まれるすべてのスキルを読み込みます。"
   memory:
-    unknown_subcommand: "不明な /memory サブコマンドです。使用可能: pending、approve <id>、reject <id>、approval <on|off>。"
+    unknown_subcommand: "不明な /memory サブコマンドです。使用可能: pending、approve <id>、reject <id>、approval <on|off|background>。"
   approvals:
     admin_only: "永続的な承認モードを変更できるのはゲートウェイ管理者のみです。"
   heartbeat:
@@ -3029,7 +3029,7 @@ cli:
     kanban:
       failed: "(._.) kanban エラー: {error}"
     memory:
-      unknown_subcommand: "不明な /memory サブコマンドです。次のいずれかを使ってください: pending, approve <id>, reject <id>, approval <on|off>。"
+      unknown_subcommand: "不明な /memory サブコマンドです。次のいずれかを使ってください: pending, approve <id>, reject <id>, approval <on|off|background>。"
     learn:
       from_description: "⚡ 説明された内容からスキルを学習しています..."
       from_conversation: "⚡ この会話からスキルを学習しています..."

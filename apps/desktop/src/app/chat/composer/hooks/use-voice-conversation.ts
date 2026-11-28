@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS, AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS } from '@/api/system'
 import { type ResolvedOwner, resolveOwnerNow } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { IncrementalSpeechSentenceBuffer } from '@/lib/speech-text'
@@ -36,7 +37,7 @@ interface VoiceConversationOptions {
   onInterrupt?: () => Promise<void> | void
   onStopWord?: () => void
   onSubmit: (text: string) => Promise<void> | void
-  onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
+  onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner, timeoutMs?: number) => Promise<string>
   pendingResponse: () => PendingVoiceResponse | null
   consumePendingResponse: () => void
   /** Surface a transcript that cannot be delivered as a turn (live busy never
@@ -64,6 +65,36 @@ interface Conversation {
 /** How long a barge-triggered interrupt may take to settle before we submit
  *  the captured utterance anyway. */
 const INTERRUPT_SETTLE_TIMEOUT_MS = 5_000
+
+/** Bound model readiness and audio transcription so the chained turn recovers. */
+function withVoiceSttDeadline<T>(operation: () => Promise<T>, deadline: number, timeoutMs: number): Promise<T> {
+  const remainingMs = deadline - Date.now()
+  const timeoutSeconds = Math.ceil(timeoutMs / 1_000)
+
+  if (remainingMs <= 0) {
+    return Promise.reject(new Error(`Speech transcription timed out after ${timeoutSeconds} seconds`))
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(
+      () => reject(new Error(`Speech transcription timed out after ${timeoutSeconds} seconds`)),
+      remainingMs
+    )
+
+    void Promise.resolve()
+      .then(operation)
+      .then(
+        result => {
+          window.clearTimeout(timeoutId)
+          resolve(result)
+        },
+        error => {
+          window.clearTimeout(timeoutId)
+          reject(error)
+        }
+      )
+  })
+}
 
 /** A take whose level meter died is sent to STT (the meter can't say whether
  *  it heard speech) unless it is shorter than this. */
@@ -264,17 +295,25 @@ export function useVoiceConversation({
         }
 
         try {
-          // Readiness first: let the listening-start warm-up settle before
-          // handing the clip to transcription (#105955) — a cold model load
-          // must not run inside the transcription request's decode budget.
-          // syncSttLease never rejects.
-          await conversation.warmup
+          // Keep cold model loading inside the readiness budget, separate from
+          // the short-clip transcription deadline. syncSttLease never rejects.
+          const warmupDeadline = Date.now() + AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+          await withVoiceSttDeadline(() => conversation.warmup, warmupDeadline, AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS)
 
           if (!live()) {
             return
           }
 
-          const transcript = (await onTranscribeAudio(result.audio, conversation.owner)).trim()
+          const sttDeadline = Date.now() + AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS
+          const requestTimeoutMs = Math.max(1, sttDeadline - Date.now() - 250)
+
+          const transcript = (
+            await withVoiceSttDeadline(
+              () => onTranscribeAudio(result.audio, conversation.owner, requestTimeoutMs),
+              sttDeadline,
+              AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS
+            )
+          ).trim()
 
           if (!live()) {
             return
@@ -507,17 +546,25 @@ export function useVoiceConversation({
       setStatus('transcribing')
 
       try {
-        // Same readiness barrier as handleTurn: the barge capture transcribes
-        // with the warm-up issued when this conversation last started
-        // listening (the monitor is armed through the whole turn, so the
-        // barrier is normally already settled by speech time).
-        await conversation.warmup
+        // Cold model loading gets its existing warm-up budget; the captured
+        // interruption then receives a fresh, bounded transcription deadline.
+        const warmupDeadline = Date.now() + AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS
+        await withVoiceSttDeadline(() => conversation.warmup, warmupDeadline, AUDIO_STT_LEASE_REQUEST_TIMEOUT_MS)
 
         if (!live()) {
           return
         }
 
-        const transcript = (await onTranscribeAudio(audio, conversation.owner)).trim()
+        const sttDeadline = Date.now() + AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS
+        const requestTimeoutMs = Math.max(1, sttDeadline - Date.now() - 250)
+
+        const transcript = (
+          await withVoiceSttDeadline(
+            () => onTranscribeAudio(audio, conversation.owner, requestTimeoutMs),
+            sttDeadline,
+            AUDIO_CHAINED_STT_REQUEST_TIMEOUT_MS
+          )
+        ).trim()
 
         if (!live()) {
           return

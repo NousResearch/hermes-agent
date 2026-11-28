@@ -136,6 +136,46 @@ class TestLightModeRemap:
 class TestSkinConfigHook:
     """Exercise the installed color hook, including self-painted badge colors."""
 
+    @pytest.mark.parametrize("skin_name", ["default", "slate", "daylight"])
+    def test_painted_surfaces_keep_their_colors_on_light_terminals(
+        self, cli_mod, monkeypatch, skin_name
+    ):
+        from prompt_toolkit.styles import Style
+        from hermes_cli.skin_engine import get_active_skin, set_active_skin
+
+        previous = get_active_skin().name
+        instance = cli_mod.HermesCLI.__new__(cli_mod.HermesCLI)
+        instance._tui_style_base = {}
+        try:
+            set_active_skin(skin_name)
+            monkeypatch.setattr(cli_mod, "_LIGHT_MODE_CACHE", False)
+            dark_styles = instance._build_tui_style_dict()
+            monkeypatch.setattr(cli_mod, "_LIGHT_MODE_CACHE", True)
+            light_styles = instance._build_tui_style_dict()
+            dark = Style.from_dict(dark_styles)
+            light = Style.from_dict(light_styles)
+            for name, value in dark_styles.items():
+                if "bg:" not in value:
+                    continue
+                before = dark.get_attrs_for_style_str(f"class:{name}")
+                after = light.get_attrs_for_style_str(f"class:{name}")
+                assert (after.color, after.bgcolor) == (before.color, before.bgcolor), name
+            assert light_styles["prompt"] == get_active_skin().get_color("prompt")
+        finally:
+            set_active_skin(previous)
+
+    def test_painted_surface_fallbacks_do_not_inherit_remapped_ink(self, cli_mod, monkeypatch):
+        from hermes_cli import skin_engine
+
+        skin = skin_engine.SkinConfig(name="minimal", colors={"banner_text": "#FFF8DC"})
+        monkeypatch.setattr(skin_engine, "_active_skin", skin)
+        monkeypatch.setattr(cli_mod, "_LIGHT_MODE_CACHE", False)
+        dark = skin_engine.get_prompt_toolkit_style_overrides()
+        monkeypatch.setattr(cli_mod, "_LIGHT_MODE_CACHE", True)
+        light = skin_engine.get_prompt_toolkit_style_overrides()
+        for name in ("status-bar", "completion-menu", "voice-status", "subagent-dock"):
+            assert light[name] == dark[name], name
+
     @pytest.mark.parametrize("skin_name", ["default", "sisyphus"])
     def test_badge_preserves_its_paired_colors_in_light_mode(
         self, cli_mod, monkeypatch, skin_name

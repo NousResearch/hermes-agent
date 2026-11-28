@@ -7,6 +7,7 @@ only when bundled changed AND the user copy still matches the origin hash (else 
 archived copy remains (the entry is that copy's only built-in provenance record)."""
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -395,6 +396,28 @@ def _seed_category_descriptions(bundled_dir: Path, only_dirs: Optional[set[Path]
             logger.debug("Could not copy %s: %s", desc_md, e)
 
 
+def _retired_kept(active_removed: list[tuple[str, str]]) -> list[list[str]]:
+    """``[name, rel_path]`` of active leftovers of skills that left the bundle and are not Hub-managed,
+    read after the optional backfill. Splitting them by catalog is left to the update report: indexing
+    optional-skills/ would add measurable cost to every launch's sync. Best-effort: empty when the Hub
+    lock exists but can't be read or has the wrong shape, since unknown ownership is not proof that a
+    copy is unmanaged, and this report must never fail the sync."""
+    if not active_removed:
+        return []
+    try:  # read directly: an exists() pre-check can't tell "absent" from "inaccessible"
+        data = json.loads((_skills_dir() / ".hub" / "lock.json").read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        data = {}
+    except (OSError, ValueError):  # ValueError covers malformed JSON and undecodable bytes
+        return []
+    installed = data.get("installed", {}) if isinstance(data, dict) else None
+    if not isinstance(installed, dict):
+        return []
+    hub_paths = {str(e["install_path"]).strip("/") for e in installed.values()
+                 if isinstance(e, dict) and e.get("install_path")}
+    return [list(pair) for pair in sorted({pair for pair in active_removed if pair[1] not in hub_paths})]
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """Sync bundled skills into ~/.hermes/skills/ using the manifest; returns the per-category
     result dict. Opted-out profiles seed ONLY ESSENTIAL_SKILLS (the system prompt always
@@ -405,7 +428,8 @@ def sync_skills(quiet: bool = False) -> dict:
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
-                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": []}
+                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": [],
+                "retired_kept": []}
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     if essential_only:
@@ -437,24 +461,31 @@ def sync_skills(quiet: bool = False) -> dict:
     # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
     # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills
     # is only the essential set there, so cleaning would drop tracking for everything else.
-    removed = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
-    present = set()
+    removed = set() if essential_only else set(st.manifest) - {name for name, _ in bundled_skills}
+    active_removed = []
+    archived = set()
     if removed:  # curator archive is flat: directory name == skill name
+        for md in _iter_active_skill_mds():
+            name = read_skill_name(md, md.parent.name)
+            if name in removed:
+                active_removed.append((name, _rel_skills_posix(md.parent)))
         archive = _skills_dir() / ".archive"
-        present = {read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
-            {p.name for p in archive.iterdir() if p.is_dir()} if archive.is_dir() else set())
-    cleaned = [name for name in removed if name not in present]
+        if archive.is_dir():
+            archived = {p.name for p in archive.iterdir() if p.is_dir()}
+    cleaned = sorted(removed - {name for name, _ in active_removed} - archived)
     for name in cleaned:
         del st.manifest[name]
     _seed_category_descriptions(
         bundled_dir,
         {_compute_relative_dest(src, bundled_dir).parent for _, src in bundled_skills} if essential_only else None)
     _write_manifest(st.manifest)
+    backfilled = _backfill_optional_provenance(quiet=quiet)
     return {
         "copied": st.copied, "updated": st.updated, "skipped": st.skipped, "user_modified": st.user_modified,
         "cleaned": cleaned, "suppressed": st.suppressed, "relocated": st.relocated,
         "total_bundled": len(bundled_skills),
-        "optional_provenance_backfilled": _backfill_optional_provenance(quiet=quiet),
+        "optional_provenance_backfilled": backfilled,
+        "retired_kept": _retired_kept(active_removed),
         "shadowed_by_external": st.shadowed_by_external,
         "skipped_opt_out": essential_only}  # lets callers report "opted out", not a normal sync
 

@@ -497,6 +497,47 @@ def _report_catalog_plugin_updates() -> None:
     report_catalog_updates_after_hermes_update(home, _sibling_profile_homes(home))
 
 
+# Retained copies of skills that left the bundle, by group. The notice only reports: what to do
+# about them depends on the profile and on Skills Hub installs, so the docs carry the steps.
+_RETIRED_SKILL_NOTICES = (("optional", "moved to optional"), ("removed", "removed from the bundle"))
+_RETIRED_SKILLS_DOCS = ("https://hermes-agent.nousresearch.com/docs/user-guide/features/skills"
+                        "#skills-that-leave-the-bundle")
+
+
+def _split_retired_kept(result: dict) -> dict[str, list[str]]:
+    """Group ``sync_skills``' retained retired copies by whether the official optional catalog ships them,
+    matching the frontmatter name or the copy's folder name (a skill can be renamed when it moves).
+    Done here rather than in the sync, which runs on every launch and doesn't need the catalog index."""
+    from tools.skills_sync_optional import _optional_skill_index
+    kept = result.get("retired_kept") or []
+    index = _optional_skill_index() if kept else {}
+    optional = {name for name, path in kept if name in index or path.rsplit("/", 1)[-1] in index}
+    return {"optional": sorted(optional), "removed": sorted({name for name, _ in kept} - optional)}
+
+
+def _shown_names(names: list[str], limit: int = 5) -> str:
+    return ", ".join(names[:limit]) + (f", +{len(names) - limit} more" if len(names) > limit else "")
+
+
+def _retired_skill_counts(result: dict) -> list[str]:
+    groups = _split_retired_kept(result)
+    return [f"!{len(names)} {label}" for group, label in _RETIRED_SKILL_NOTICES if (names := groups[group])]
+
+
+def _print_retired_skill_notices(result: dict) -> bool:
+    """Print one line per group of retained retired skills; True when anything was printed."""
+    groups = _split_retired_kept(result)
+    printed = False
+    for group, label in _RETIRED_SKILL_NOTICES:
+        if names := groups[group]:
+            print(f"  ! {len(names)} {label}, local copy kept (no bundled updates): {_shown_names(names)}")
+            printed = True
+    if printed:
+        print("    Reported on each update while those copies remain. Options:")
+        print(f"    {_RETIRED_SKILLS_DOCS}")
+    return printed
+
+
 def _print_bundled_skills_sync_report() -> None:
     """Run ``sync_skills`` (copies new, updates changed, respects user deletions) and print its summary."""
     from tools.skills_sync import sync_skills
@@ -512,7 +553,8 @@ def _print_bundled_skills_sync_report() -> None:
         print(f"  − {len(result['cleaned'])} removed from manifest")
     if result.get("relocated"):
         print(f"  → {len(result['relocated'])} moved to new upstream paths: {', '.join(result['relocated'])}")
-    if not result["copied"] and not result.get("updated"):
+    retired = _print_retired_skill_notices(result)
+    if not result["copied"] and not result.get("updated") and not retired:
         print("  ✓ Skills are up to date")
 
 
@@ -823,6 +865,7 @@ def _profile_skill_sync_status(r) -> str:
         count = len(r.get(key, []))
         if count:
             parts.append(fmt.format(count))
+    parts.extend(_retired_skill_counts(r))
     return ", ".join(parts) if parts else "up to date"
 
 

@@ -57,6 +57,7 @@ from cron.job_args import (
     _origin_from_env,
     _repeat_display,
     _resolve_cron_context_deliver,
+    _scratch_dependency_warning,
     _split_monitor_arg,
     _validate_bot_chat_deliver,
     _validate_context_from_refs,
@@ -670,6 +671,9 @@ def _with_guidance(result: dict[str, Any], job: dict[str, Any], deliver: Optiona
     _notes = _mode_guidance_notes(job, deliver)
     if _notes:
         result["guidance"] = _notes
+    _scratch_warning = _scratch_dependency_warning(job)
+    if _scratch_warning:
+        result["scratch_warning"] = _scratch_warning
     return result
 
 

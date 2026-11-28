@@ -784,16 +784,52 @@ def _resolve_worktree_workspace(task: Task, *, board: Optional[str] = None) -> t
     return requested, branch_name
 
 
+def _refuse_dir_main_checkout(task_id: str, path: Path) -> None:
+    """Refuse a dir workspace that would edit a git repo's main checkout.
+
+    Linked worktrees (``--git-dir`` differs from ``--git-common-dir``) and
+    non-git directories are left alone.
+    """
+    probe = path if path.exists() else _nearest_existing_path(path)
+    if not probe.exists():
+        return
+    spec = _git(
+        probe, "rev-parse", "--path-format=absolute", "--show-toplevel",
+        "--git-dir", "--git-common-dir", timeout=30,
+    )
+    lines = (spec.stdout or "").splitlines() if spec.returncode == 0 else []
+    if len(lines) < 3:
+        return
+    toplevel = Path(lines[0]).expanduser().resolve(strict=False)
+    if _path_key(Path(lines[1]).resolve(strict=False)) != _path_key(
+        Path(lines[2]).resolve(strict=False)
+    ):
+        return
+    key_probe = _path_key(probe.resolve(strict=False))
+    key_top = _path_key(toplevel)
+    inside = key_probe.startswith(key_top.rstrip("/\\") + os.sep)
+    if key_probe != key_top and not inside:
+        return
+    raise ValueError(
+        f"task {task_id}: workspace_kind=dir points at the main checkout of "
+        f"git repo {toplevel}; use workspace_kind=worktree with "
+        f"workspace_path={toplevel} so the task gets its own linked worktree"
+    )
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
     ``scratch``: ``<board-root>/workspaces/<id>/`` — path-stable across the
     dispatcher and every profile worker. ``dir``: ``workspace_path``, created
     if missing; MUST be absolute (relative paths would resolve against the
-    dispatcher's CWD — confused-deputy traversal). ``worktree``: a linked git
-    worktree; a repo-root ``workspace_path`` anchors ``<repo>/.worktrees/<id>``,
-    a concrete path is created/reused, none -> the board's ``default_workdir``
-    (raises if unset rather than guessing). Persist via ``set_workspace_path``.
+    dispatcher's CWD — confused-deputy traversal). A path that is a git repo's
+    main checkout, or a subdirectory of that checkout outside a linked
+    worktree, is refused (use ``worktree`` instead).
+    ``worktree``: a linked git worktree; a repo-root ``workspace_path`` anchors
+    ``<repo>/.worktrees/<id>``, a concrete path is created/reused, none -> the
+    board's ``default_workdir`` (raises if unset rather than guessing). Persist
+    via ``set_workspace_path``.
     """
     kind = task.workspace_kind or "scratch"
     if kind == "worktree":
@@ -819,6 +855,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"{task.workspace_path!r}; use an absolute path "
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
+        _refuse_dir_main_checkout(task.id, p)
     else:
         raise ValueError(f"unknown workspace_kind: {kind}")
     p.mkdir(parents=True, exist_ok=True)

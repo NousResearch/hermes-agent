@@ -32,6 +32,7 @@ _dashboard_local_update_managed_externally = late("_dashboard_local_update_manag
 _spawn_gateway_restart = late("_spawn_gateway_restart")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 detect_install_method = late("detect_install_method", "hermes_cli.config")
+format_tarball_update_message = late("format_tarball_update_message", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _ACTION_COMMANDS = LateState("_ACTION_COMMANDS", "hermes_cli.web_server_gateway")
@@ -284,6 +285,7 @@ async def update_hermes():
 _NON_APPLYABLE_MESSAGES = {
     "docker": format_docker_update_message,
     "apt": lambda: "Hermes is managed by Termux APT; run `pkg upgrade hermes-agent`.",
+    "tarball": format_tarball_update_message,
 }
 
 
@@ -296,7 +298,7 @@ def _source_release_label(status: dict[str, Any]) -> str:
 async def check_hermes_update(force: bool = False, profile: Optional[str] = None):
     """Report whether a Hermes update is available, without applying it.
 
-    Returns install_method ('apt'|'git'|'docker'|'nix'|'nixos'|'unknown'),
+    Returns install_method ('apt'|'git'|'docker'|'nix'|'nixos'|'tarball'|'unknown'),
     current_version, behind (commits behind, 0 = up to date, -1 = unknown count,
     null = check could not run), update_available, can_apply (git only — the
     dashboard button can apply in place), update_command, message (guidance for

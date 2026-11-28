@@ -251,8 +251,9 @@ def get_managed_update_command() -> Optional[str]:
 
 # "apt" is the Termux APT distribution identifier, not a generic Debian/Ubuntu signal; another
 # APT distribution needs its own method. "home-manager" is listed because the managed marker can
-# return it and a stamp must name every method this function returns.
-_SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-manager", "git", "unknown"})
+# return it and a stamp must name every method this function returns. "tarball" is a release
+# archive unpacked in place (no .git, an install stamp naming an external update mechanism).
+_SUPPORTED_INSTALL_METHODS = frozenset({"apt", "docker", "nix", "nixos", "home-manager", "git", "tarball", "unknown"})
 
 
 def _install_method_stamp(path: Path) -> Optional[str]:
@@ -264,9 +265,10 @@ def _install_method_stamp(path: Path) -> Optional[str]:
 
 
 def detect_install_method(project_root: Optional[Path] = None) -> str:
-    """Detect how Hermes was installed: apt/docker/nix/nixos/home-manager/git/unknown.
+    """Detect how Hermes was installed: apt/docker/nix/nixos/home-manager/git/tarball/unknown.
     Order: code-scoped ``<install tree>/.install_method`` stamp (authoritative) -> legacy
-    ``$HERMES_HOME/.install_method`` -> managed marker -> /nix/store path -> .git dir -> unknown.
+    ``$HERMES_HOME/.install_method`` -> managed marker -> /nix/store path -> .git dir ->
+    external install stamp (tarball) -> unknown.
     The stamp lives next to the code because HERMES_HOME is shared data: a container and a host
     install can bind-mount the same home, so a home-scoped ``docker`` stamp would make the host
     ``hermes update`` refuse to run. A legacy ``docker`` value is therefore ignored unless we are
@@ -278,6 +280,11 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     The published image bakes a ``docker`` marker into ``/opt/hermes``. A manual
     clone in a container still resolves via ``.git``, not container presence alone.
     See issue #34397.
+
+    A tree with neither stamp nor ``.git`` that still carries an install stamp naming
+    ``updateMechanism: external`` is a release tarball: an installer or distribution
+    owns its updates. Naming that shape keeps ``hermes update`` from attempting a git
+    pull inside a tree that has no checkout, and lets the refusal point at the installer.
     """
     # The stamp is a property of the running code tree (parent of hermes_cli/), NOT of $HERMES_HOME,
     # so it survives two installs sharing a home.
@@ -309,6 +316,16 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
             return "git"
     except OSError:
         pass
+
+    # Neither a stamp nor a checkout: an install stamp that hands updates to an external
+    # owner (--update-mechanism external) means the tree came from a release tarball.
+    try:
+        from hermes_cli.steward import read_install_stamp
+
+        if read_install_stamp(root).get("updateMechanism") == "external":
+            return "tarball"
+    except Exception:
+        pass
     return "unknown"
 
 
@@ -327,9 +344,15 @@ def is_nix_install_method(method: str) -> bool:
     return method == "nix" or method in _NIX_MANAGED_SYSTEMS
 
 
+# A release tarball has no checkout to pull into and no package-manager command that
+# Hermes can name, so the one-line remediation is guidance rather than a command.
+_TARBALL_UPDATE_GUIDANCE = "update via the installer or distribution that provided this copy"
+
+
 _UPDATE_COMMAND_BY_METHOD = {
     "docker": "docker pull nousresearch/hermes-agent:latest",
     "apt": "pkg upgrade hermes-agent",  # "apt" == Termux APT by contract; uses Termux's `pkg`.
+    "tarball": _TARBALL_UPDATE_GUIDANCE,
 }
 
 
@@ -384,6 +407,24 @@ Notes:
 def format_docker_update_message() -> str:
     """Return the user-facing message for ``hermes update`` inside Docker."""
     return _DOCKER_UPDATE_MESSAGE
+
+
+_TARBALL_UPDATE_MESSAGE = """\
+\u2717 ``hermes update`` doesn't apply to this installation.
+
+This tree was unpacked from a release archive, not cloned: it has no ``.git`` and
+its install stamp hands updates to an external owner (``updateMechanism:
+external``). There is no checkout to pull into, so an in-place update is refused
+instead of failing halfway through.
+
+Update the way this copy was installed - re-run that installer, or install the
+newer release the same way - and let it replace the tree. Your configuration and
+session history live under $HERMES_HOME and are not affected."""
+
+
+def format_tarball_update_message() -> str:
+    """Return the user-facing message for ``hermes update`` on a release tarball."""
+    return _TARBALL_UPDATE_MESSAGE
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:

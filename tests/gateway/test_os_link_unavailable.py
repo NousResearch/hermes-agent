@@ -56,16 +56,20 @@ def test_publish_without_os_link_uses_the_fallback(publish, tmp_path, monkeypatc
     assert expected and path.read_bytes() == expected
 
 
+def _slowed(real):
+    def call(*args, **kwargs):  # widen the open→write and check→publish windows a racer could hit
+        time.sleep(0.05)  # health: allow HX013 -- the widened window IS the race under test
+        return real(*args, **kwargs)
+
+    return call
+
+
+@pytest.mark.platforms("any")  # Windows publishes with a no-clobber rename, POSIX under a flock
 def test_concurrent_first_use_without_os_link_agrees_on_one_secret(tmp_path, monkeypatch):
     """Racing first users never read a partial secret and all sign with the same key."""
     monkeypatch.delattr(os, "link", raising=False)
-    real_fdopen = os.fdopen
-
-    def slow_fdopen(*args, **kwargs):  # widen the open→write window a reader could race
-        time.sleep(0.05)  # health: allow HX013 -- the open-to-write delay IS the race window under test
-        return real_fdopen(*args, **kwargs)
-
-    monkeypatch.setattr(os, "fdopen", slow_fdopen)
+    for name in ("fdopen", "replace", "rename"):
+        monkeypatch.setattr(os, name, _slowed(getattr(os, name)))
     mint = hosted_room_peer._gateway_room_grant_secret_for_home.__wrapped__
     barrier = threading.Barrier(16)
     results, errors = [], []

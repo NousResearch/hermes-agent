@@ -1,6 +1,6 @@
 import * as sdk from '@hermes/plugin-sdk'
 import { Codicon, Tip } from '@hermes/plugin-sdk'
-import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CanonicalGroupAttachment, CanonicalGroupAttachments, fetchCanonicalGroupAttachment } from './canonical-group-attachments'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
@@ -172,30 +172,33 @@ function ImagePreview({ binding, eventId, attachment, disabled }: {
   return previewable ? <div ref={box}>{src && <img alt={attachment.name} className="max-h-64 max-w-full rounded object-contain" src={src} />}</div> : null
 }
 
-export function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, downloads = true, onReply, pause }: CanonicalGroupHistoryProps) {
+// Memoised: the room view above hands this one stable props object, so a composer keystroke in
+// the workspace does not re-run the transcript, and nothing below it re-parses a markdown body.
+export const CanonicalGroupHistory = memo(function CanonicalGroupHistory({ avatarFor, binding, events, members = [], disabled = false, downloads = true, onReply, pause }: CanonicalGroupHistoryProps) {
   const labels = useCanonicalGroupLabels()
-  const roster = new Map(members.map(member => [member.member_id, member]))
+  const roster = useMemo(() => new Map(members.map(member => [member.member_id, member])), [members])
   const maxContinues = pause?.maxContinues
   const pauses = useMemo(() => typeof maxContinues === 'number' ? pausedDiscussions(events, maxContinues) : undefined, [events, maxContinues])
 
-  // One members × events scan per log or roster change, not per render.
-  const handoffsAfter = useMemo(() => {
-    const byEvent = new Map<number, RoomHandoff[]>()
+  // Handoffs and their names are pure derived data: one members × events scan per log or roster
+  // change, not per render, and `nameOf` keeps its identity so a row's props stay comparable.
+  const { handoffsAfter, nameOf } = useMemo(() => {
+    const handoffsAfter = new Map<number, RoomHandoff[]>()
 
     for (const handoff of roomHandoffs(events as RoomLogEvent[], members)) {
-      const after = byEvent.get(handoff.afterSeq)
+      const after = handoffsAfter.get(handoff.afterSeq)
 
-      if (after) {after.push(handoff)} else {byEvent.set(handoff.afterSeq, [handoff])}
+      if (after) {after.push(handoff)} else {handoffsAfter.set(handoff.afterSeq, [handoff])}
     }
 
-    return byEvent
-  }, [events, members])
-
-  const nameOf = (id: string) => { const member = roster.get(id);
+    const nameOf = (id: string) => { const member = roster.get(id);
 
  return member?.display_name || member?.handle || id }
 
-  const notices = new Map([
+    return { handoffsAfter, nameOf }
+  }, [events, members, roster])
+
+  const notices = useMemo(() => new Map([
     ['turn.failed', labels.turnFailed],
     ['turn.cancelled', labels.turnCancelled],
     ['turn.deferred', labels.turnDeferred],
@@ -203,7 +206,7 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
     ['room.stop_requested', labels.roomStopped],
     ['room.disbanded', labels.roomDisbanded],
     ['authority.lost', labels.authorityLost]
-  ])
+  ]), [labels])
 
   return <>{events.map(event => <Fragment key={event.seq}>
     {event.kind === ASSIGNMENT_EVENT_KIND ? <CanonicalGroupAssignmentRow event={event} members={members} />
@@ -215,7 +218,7 @@ export function CanonicalGroupHistory({ avatarFor, binding, events, members = []
     {handoffsAfter.get(event.seq)?.map(handoff =>
       <RoomActivityRow key={`handoff:${event.seq}:${handoff.to}`}>{fill(labels.handoff, { from: nameOf(handoff.from), to: nameOf(handoff.to) })}</RoomActivityRow>)}
   </Fragment>)}</>
-}
+})
 
 interface HistoryRowProps extends Pick<CanonicalGroupHistoryProps, 'avatarFor' | 'binding' | 'onReply'> {
   disabled: boolean
@@ -224,7 +227,7 @@ interface HistoryRowProps extends Pick<CanonicalGroupHistoryProps, 'avatarFor' |
   roster: Map<string, CanonicalRoomMember>
 }
 
-function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, roster }: HistoryRowProps) {
+const HistoryRow = memo(function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, roster }: HistoryRowProps) {
   const labels = useCanonicalGroupLabels()
   const notice = event.kind === 'room.activity' && event.payload.status === 'bounded' ? labels.workLimitReached : notices.get(event.kind)
   const isMessage = MESSAGE_KINDS.has(event.kind)
@@ -242,11 +245,11 @@ function HistoryRow({ avatarFor, binding, disabled, event, notices, onReply, ros
   }
 
   return <MessageRow author={author} avatarFor={avatarFor} binding={binding} disabled={disabled} event={event} member={member} memberId={memberId} onReply={onReply} />
-}
+})
 
 const MESSAGE_KINDS = new Set(['message', 'message.user', 'message.member'])
 
-function MessageRow({ author, avatarFor, binding, disabled, event, member, memberId, onReply }: Omit<HistoryRowProps, 'notices' | 'roster'> & {
+const MessageRow = memo(function MessageRow({ author, avatarFor, binding, disabled, event, member, memberId, onReply }: Omit<HistoryRowProps, 'notices' | 'roster'> & {
   author?: string; member?: CanonicalRoomMember; memberId?: string
 }) {
   const labels = useCanonicalGroupLabels()
@@ -264,7 +267,7 @@ function MessageRow({ author, avatarFor, binding, disabled, event, member, membe
     <EventBody event={event} labels={labels} />
     <EventFiles binding={binding} disabled={disabled} event={event} />
   </RoomMessage>
-}
+})
 
 function EventFiles({ binding, disabled, event }: { binding: CanonicalGroupBinding; disabled: boolean; event: CanonicalGroupEvent }) {
   const previewEventId = event.room_id === binding.roomId ? event.event_id : undefined

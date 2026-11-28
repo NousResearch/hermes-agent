@@ -3811,11 +3811,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, e: Exception, turns_to_summarize: list[dict[str, Any]], focus_topic: Optional[str], memory_context: str,
     ) -> Optional[str]:
         """Classify a summary-call failure; retry once on the main model (returning its result) or arm a cooldown (None)."""
-        # A detached stale attempt must not arm a failure cooldown or stamp error state the fallback
-        # attempt owns; unwind as a cancellation so none of the shared-state writes below can land.
+        # A stale attempt (a newer one owns the compressor) or a host-cancelled one (nobody waits for it) must not
+        # demote the route, arm a cooldown or stamp error state; unwind as a cancellation so no write below lands.
         from agent.conversation_compression import _raise_if_stale_attempt
 
         _raise_if_stale_attempt(self)
+        if ContextCompressor._compression_cancelled(self):
+            raise AuxiliaryExplicitCancellation() from e
         # Only a genuine no-provider RuntimeError gets the long cooldown; empty/invalid-response
         # RuntimeErrors are transient and must get the main-model retry below first.
         # ``call_llm`` raises ``RuntimeError`` for two very different cases: 1. 2. An empty/invalid response
@@ -3852,9 +3854,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # ``provider: auto`` resolves a model per call WITHOUT setting ``summary_model``; use the model the
         # aux lane actually resolved so an auto route that keeps returning empty content (a proxy channel
         # answering 200 with no body) is abandoned for the main model instead of retried forever (#116472).
-        _route_model = str(
-            self.summary_model or getattr(self, "_last_aux_resolved_model", "") or ""
-        ).strip()
+        _route_model = str(self.summary_model or getattr(self, "_last_aux_resolved_model", "") or "").strip()
         if _route_model and _route_model != self.model and not getattr(self, "_summary_model_fallen_back", False):
             self._fallback_to_main_for_compression(e, kind.fallback_reason(), failed_model=_route_model)
             # Retry immediately on the main model.

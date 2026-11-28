@@ -65,7 +65,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
             "--deliver). 'local' suppresses failure notices entirely; run "
             "state stays visible in `hermes cron list`. Omit = failures "
             "follow --deliver.")
-    cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
+    cron_create.add_argument("--repeat",
+        help="Optional repeat count: an integer, 'forever' (no limit), or 'once' (run once). "
+             "Numeric strings like '3' are accepted too.")
     _add_catch_up(cron_create)
     _add_wrap_response(cron_create)
     cron_create.add_argument("--skill", dest="skills", action="append",
@@ -141,7 +143,7 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument("--failure-deliver", dest="failure_deliver",
         help="Override target for failure notices (same grammar as --deliver; "
             "'local' suppresses; '' clears the override)")
-    cron_edit.add_argument("--repeat", type=int, help="New repeat count")
+    cron_edit.add_argument("--repeat", help="New repeat count: an integer, 'forever', or 'once'.")
     _add_catch_up(cron_edit)
     _add_wrap_response(cron_edit, allow_inherit=True)
     cron_edit.add_argument("--skill", dest="skills", action="append",

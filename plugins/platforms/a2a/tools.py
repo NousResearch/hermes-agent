@@ -104,7 +104,7 @@ def _send_task(agent_label: str, peer: dict, message: str, context_id: str) -> t
         card = None
     # A required signature must also block calls when fetching the Agent Card fails:
     # the configured base URL is not an authenticated fallback.
-    trusted, reason = security.verify_peer_card(card if card is not None else {})
+    trusted, reason = security.verify_peer_card(card)
     if not trusted:
         raise ValueError(f"Peer '{agent_label}' Agent Card rejected: {reason}")
     ctx = context_id or protocol.new_context_id()

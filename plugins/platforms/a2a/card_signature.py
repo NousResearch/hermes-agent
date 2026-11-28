@@ -118,7 +118,7 @@ def _verify_one(entry: dict, payload_b64: str, trusted: dict) -> bool:
     return False
 
 
-def verify_card_signatures(card: dict, trusted_signers: dict, *, require: bool) -> tuple[bool, str]:
+def verify_card_signatures(card: dict | None, trusted_signers: dict, *, require: bool) -> tuple[bool, str]:
     """``(trusted, reason)``. ``trusted`` is True when the card's endpoints and skills may be used.
 
     - **No trusted signers configured** — inert. Nothing can be verified, so the card is accepted
@@ -130,7 +130,7 @@ def verify_card_signatures(card: dict, trusted_signers: dict, *, require: bool) 
     - **Unsigned card** — refused only when ``require`` is set.
     """
     if not isinstance(card, dict):
-        return (not require), "no card"
+        return (not require), "the Agent Card could not be fetched, so no signature can be verified"
     signatures = card.get("signatures")
     has_signatures = isinstance(signatures, list) and len(signatures) > 0
 

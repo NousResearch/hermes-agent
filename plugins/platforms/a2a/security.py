@@ -35,7 +35,7 @@ def _startup_env(name: str) -> str:
     return str(_get_scoped_secret(name, "", external_fallback=True) or "").strip()
 
 
-def verify_peer_card(card: dict) -> tuple[bool, str]:
+def verify_peer_card(card: dict | None) -> tuple[bool, str]:
     """Verify a peer's Agent Card against the configured trust anchors (A2A v1.0 §8.4).
 
     ``(trusted, reason)`` — ``trusted`` is False when the card's endpoints and skills must not be
@@ -47,7 +47,7 @@ def verify_peer_card(card: dict) -> tuple[bool, str]:
 
     trusted = card_signature.load_trusted_signers(_startup_env("A2A_TRUSTED_SIGNERS"))
     require = _startup_env("A2A_REQUIRE_CARD_SIGNATURE").lower() in {"1", "true", "yes"}
-    return card_signature.verify_card_signatures(card if isinstance(card, dict) else {}, trusted, require=require)
+    return card_signature.verify_card_signatures(card, trusted, require=require)
 
 
 def _parse_peer_tokens(raw: str) -> dict[str, str]:

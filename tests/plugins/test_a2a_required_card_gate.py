@@ -35,6 +35,6 @@ def test_required_card_fetch_failure_refuses_send(monkeypatch):
     monkeypatch.setattr(security, "audit", lambda *args, **kwargs: None)
     monkeypatch.setattr(tools.protocol, "persist_message", lambda *args, **kwargs: None)
 
-    with pytest.raises(ValueError, match="Agent Card rejected"):
+    with pytest.raises(ValueError, match="Agent Card rejected: the Agent Card could not be fetched"):
         tools._send_task("peer", {"url": "https://peer.example"}, "hello", "")
     assert posted_urls == []

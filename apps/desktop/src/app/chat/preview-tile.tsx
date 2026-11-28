@@ -44,6 +44,9 @@ import {
   setPreviewTabPinned
 } from '@/store/preview'
 import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
+import { currentSessionId } from '@/store/preview-ownership'
+import { $selectedStoredSessionId } from '@/store/session'
+import { focusChatBehindChrome, TILE_PANE_PREFIX } from '@/store/session-focus'
 import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
@@ -211,21 +214,61 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
 
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
 
-/** The pane a NEW preview tile should stack into: another preview tile already
- *  in the tree, else — when several tabs arrive in one pass (a reload, or a
- *  session switch bringing its tabs back) — the FIRST of them, which itself
- *  gets no anchor and opens the zone. One shared head keeps the anchors
- *  acyclic; adoption places a pane after an anchor arriving with it (store.ts).
- *  `undefined` means this is the first preview — it opens its own zone. */
+/** The stored session a tab belongs to, through every rotation (null: a draft
+ *  or pending tab, which is the primary's); undefined once the tab is gone. */
+function tabOwner(tabId: string): null | string | undefined {
+  const tab = $previewTabs.get().find(item => item.id === tabId)
+
+  return tab ? currentSessionId(tab.sessionId) : undefined
+}
+
+/** The chat in the tree that owns a tab: its session's tile, else main when
+ *  the tab is the primary's (or a draft/pending one); null when neither. */
+function ownerChatOnScreen(tabId: string): null | string {
+  const owner = tabOwner(tabId)
+
+  if (owner === undefined) {
+    return null
+  }
+
+  const tile = owner ? `${TILE_PANE_PREFIX}${owner}` : null
+
+  if (tile && treePanesWithPrefix(TILE_PANE_PREFIX).includes(tile)) {
+    return tile
+  }
+
+  const primary = owner === null || owner === currentSessionId($selectedStoredSessionId.get())
+
+  return primary && treePanesWithPrefix('workspace').includes('workspace') ? 'workspace' : null
+}
+
+/** The chat a session's FIRST preview opens beside: that session's chat on
+ *  screen, else the primary. Previews used to dock beside `workspace`
+ *  whatever opened them, far from a tile across the grid. */
+const ownerChatPane = (tabId: string): string => ownerChatOnScreen(tabId) ?? 'workspace'
+
+/** The pane a NEW preview tile should stack into: another preview tile of the
+ *  SAME session already in the tree, else — when several of its tabs arrive in
+ *  one pass (a reload, or a session switch bringing its tabs back) — the FIRST
+ *  of them, which itself gets no anchor and opens the zone. One head per
+ *  session keeps the anchors acyclic; adoption places a pane after an anchor
+ *  arriving with it (store.ts). Another session's preview zone is never a
+ *  target: each session's previews sit beside its own chat. `undefined` means
+ *  this is the session's first preview — it opens its own zone. */
 function existingPreviewAnchor(tabId: string): string | undefined {
   const own = previewPaneId(tabId)
-  const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PREFIX}:`).find(id => id !== own)
+  const owner = tabOwner(tabId)
+  const sameOwner = (id: string) => tabOwner(id) === owner
+
+  const inTree = treePanesWithPrefix(`${PREVIEW_TILE_PREFIX}:`).find(
+    id => id !== own && sameOwner(id.slice(PREVIEW_TILE_PREFIX.length + 1))
+  )
 
   if (inTree) {
     return inTree
   }
 
-  const head = $dockedVisiblePreviewTabs.get()[0]
+  const head = $dockedVisiblePreviewTabs.get().find(tab => sameOwner(tab.id))
 
   return head && head.id !== tabId ? previewPaneId(head.id) : undefined
 }
@@ -306,8 +349,26 @@ export function watchPreviewTiles(): void {
 
     const tabId = active.slice(PREVIEW_TILE_PREFIX.length + 1) as RightRailTabId
 
-    if (targetFor(tabId) && $rightRailActiveTabId.get() !== tabId) {
+    if (!targetFor(tabId)) {
+      return
+    }
+
+    if ($rightRailActiveTabId.get() !== tabId) {
       selectRightRailTab(tabId)
+    }
+
+    // Focus follows the pointer (#114245), so the zone worked in can front a
+    // preview of ANOTHER chat on screen. Working in it is working in that
+    // chat, as a click on its tile would be; otherwise the drawer (⌘L, the
+    // titlebar) keeps answering for the chat the pointer last crossed and the
+    // next re-home snaps the selection back to it. Selected first, so the
+    // re-home the focus change triggers already finds it visible.
+    if (!$visiblePreviewTabs.get().some(tab => tab.id === tabId)) {
+      const chat = ownerChatOnScreen(tabId)
+
+      if (chat) {
+        focusChatBehindChrome(chat)
+      }
     }
   }
 
@@ -337,23 +398,25 @@ function keepsLiveBody(tabId: string): boolean {
 const retainHiddenPreview = (tabId: string) => keepsLiveBody(tabId) && !$poppedBrowserTabIds.get().has(tabId)
 
 const watchPreviewTileMirror = paneMirror<{ id: string }>({
-  // Only the FOCUSED session's tabs (plus pins) are in the tree — switching
-  // sessions swaps the drawer without closing any tab. A hidden session's
-  // live page leaves the tree but stays mounted (hidden, inert) so returning
-  // to that session shows the same guest, not a reload; a popped-out
-  // Browser's pane leaves the docked tree for good.
+  // Only the tabs of sessions ON SCREEN (the primary and every session tile,
+  // plus pins) are in the tree — switching the primary swaps its previews
+  // without closing any tab, and moving the focus between visible chats moves
+  // nothing. A hidden session's live page leaves the tree but stays mounted
+  // (hidden, inert) so returning to that session shows the same guest, not a
+  // reload; a popped-out Browser's pane leaves the docked tree for good.
   source: $dockedVisiblePreviewTabs,
   retain: retainHiddenPreview,
   retainLimit: HIDDEN_LIVE_PREVIEW_LIMIT,
   key: tab => tab.id,
   prefix: PREVIEW_TILE_PREFIX,
-  // The FIRST preview still opens its own zone docked beside main (identical
-  // to route tiles — NOT anchored to the file tree, so ⌘J can't take it
-  // along). Every SUBSEQUENT preview stacks into that zone as a center tab:
-  // without the anchor each opened file split a new zone off the right edge
-  // (#93610), turning three file opens into three ever-narrower columns.
+  // A session's FIRST preview still opens its own zone, docked beside that
+  // session's chat (its tile, else main — NOT anchored to the file tree, so
+  // ⌘J can't take it along). Every SUBSEQUENT preview of that session stacks
+  // into that zone as a center tab: without the anchor each opened file split
+  // a new zone off the right edge (#93610), turning three file opens into
+  // three ever-narrower columns.
   dir: tab => (existingPreviewAnchor(tab.id) ? 'center' : 'right'),
-  anchor: tab => existingPreviewAnchor(tab.id),
+  anchor: tab => existingPreviewAnchor(tab.id) ?? ownerChatPane(tab.id),
   minWidth: '22rem',
   title: previewTitle,
   tabLead: tabId => <PreviewTabLead tabId={tabId} />,

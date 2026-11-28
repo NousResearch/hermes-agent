@@ -107,3 +107,12 @@ export const $focusedSessionIsTile = computed($focusedTreePaneId, active =>
 export const $focusedStoredSessionId = computed([$focusedTreePaneId, $selectedStoredSessionId], (active, selected) =>
   active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
 )
+
+/** Hand the focus to a chat on screen while the interacted zone keeps fronting
+ *  chrome — a preview that chat opened: the remembered chat is what names the
+ *  focused session then. Anything but a chat pane is ignored. */
+export function focusChatBehindChrome(paneId: string): void {
+  if (isChatPane(paneId)) {
+    $lastContentPane.set(paneId)
+  }
+}

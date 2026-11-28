@@ -1,7 +1,14 @@
 import { randomUuid } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { dismissTreePane, isPaneVisible } from '@/components/pane-shell/tree/store'
+import { allPaneIds, findGroupOfPane } from '@/components/pane-shell/tree/model'
+import {
+  $activeTreeGroup,
+  $layoutTree,
+  dismissTreePane,
+  isPaneVisible,
+  revealTreePane
+} from '@/components/pane-shell/tree/store'
 import {
   capturePreviewAnnotateDestination,
   clearPreviewAnnotateDestination,
@@ -20,13 +27,14 @@ import {
   bucketTabsFor,
   currentSessionId,
   drawerShowsTab,
+  type DrawerView,
   ownerIdentity,
   type PreviewOwner,
   setPendingRuntime
 } from './preview-ownership'
 import { normalizeProfileKey } from './profile'
-import { $activeSessionId } from './session'
-import { $focusedSessionIsTile, $focusedStoredSessionId } from './session-focus'
+import { $activeSessionId, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from './session'
+import { $focusedSessionIsTile, $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
 import { canOpenBrowserWindow, isBrowserWindow, openBrowserInNewWindow, windowBrowserTabId } from './windows'
 
 /**
@@ -831,10 +839,76 @@ export function markBrowserTabPopped(tabId: string, popped: boolean) {
   $poppedBrowserTabIds.set(next)
 }
 
-/** The FOCUSED session's tabs that still belong in the docked layout tree —
- *  the layout-tree mirror renders only these (#73890): switching sessions
- *  swaps the drawer, and a popped-out Browser pane stays out. */
-export const $dockedVisiblePreviewTabs = computed([$visiblePreviewTabs, $poppedBrowserTabIds], (tabs, popped) =>
+/** The chat panes in the layout tree — `workspace` (the primary) and every
+ *  session tile — as one string, so a tree change that moves no chat (a
+ *  resize, a preview pane coming or going) does not re-filter the tabs. */
+const $chatPanesInTree = computed($layoutTree, tree =>
+  (tree ? allPaneIds(tree).filter(id => id === 'workspace' || id.startsWith(TILE_PANE_PREFIX)) : []).join('\n')
+)
+
+/** Tabs some chat on screen shows: the focused drawer's, plus those of every
+ *  other chat in the tree. Focus follows the pointer, so a session's previews
+ *  stay put while the pointer crosses another tile; they leave only when that
+ *  session leaves the screen (#73890 still holds per session). */
+const $onScreenPreviewTabs = computed(
+  [
+    $previewTabs,
+    $visiblePreviewTabs,
+    $chatPanesInTree,
+    $selectedStoredSessionId,
+    $sessions,
+    $rotatedSessionIds,
+    $pendingRuntimeByTab,
+    $activeSessionId
+  ],
+  (tabs, focused, panes, selected, sessions, rotated, pending, activeRuntime) => {
+    const views = panes
+      .split('\n')
+      .filter(Boolean)
+      .map((pane): DrawerView =>
+        pane === 'workspace'
+          ? {
+              activeRuntime,
+              focusedIsTile: false,
+              pending,
+              rotated,
+              selectionIsListed: Boolean(selected && sessions.some(row => sessionMatchesStoredId(row, selected))),
+              sessionId: selected
+            }
+          : {
+              activeRuntime,
+              focusedIsTile: true,
+              pending,
+              rotated,
+              selectionIsListed: false,
+              sessionId: pane.slice(TILE_PANE_PREFIX.length)
+            }
+      )
+
+    const shown = new Set(focused.map(tab => tab.id))
+
+    return tabs.filter(tab => shown.has(tab.id) || views.some(view => drawerShowsTab(tab, view)))
+  }
+)
+
+/** A tab opened for another chat on screen (the focus followed the pointer
+ *  elsewhere) comes to the front of ITS zone, the way the focused session's
+ *  open does — never of the zone the user is working in, and never moving
+ *  the focus or the drawer's selection. */
+function revealOffFocus(tabId: string): void {
+  const paneId = `${PREVIEW_TILE_PREFIX}:${tabId}`
+  const tree = $layoutTree.get()
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  if (group && group.id !== $activeTreeGroup.get()) {
+    revealTreePane(paneId)
+  }
+}
+
+/** The on-screen chats' tabs that still belong in the docked layout tree —
+ *  the layout-tree mirror renders only these: a session leaving the screen
+ *  takes its previews with it, and a popped-out Browser pane stays out. */
+export const $dockedVisiblePreviewTabs = computed([$onScreenPreviewTabs, $poppedBrowserTabIds], (tabs, popped) =>
   popped.size === 0 ? tabs : tabs.filter(tab => !popped.has(tab.id))
 )
 
@@ -1006,6 +1080,7 @@ export function openPreview(
 
   if (!$visiblePreviewTabs.get().some(item => item.id === id)) {
     rememberActiveTab(owner, id)
+    revealOffFocus(id)
 
     return
   }

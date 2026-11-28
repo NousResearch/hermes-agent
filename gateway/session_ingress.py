@@ -393,6 +393,12 @@ async def execute_admission(authority, ref, row):
             authority.pending_results[row['admission_id']] = {
                 'result': result, 'usage': captured.get('usage', {}),
                 **({'session_usage': captured['session_usage']} if 'session_usage' in captured else {})}
+            # A background notification interrupted by a new message has no user waiting for
+            # its interruption diagnostic. As with the in-band queued follow-up path, discard
+            # that diagnostic rather than sending it ahead of the new message's answer. Keep the
+            # interrupted result for the receipt, and do not suppress failures or human turns.
+            if event.internal and not is_api and not native and result.get('interrupted'):
+                response = ''
             if not is_api and response:
                 adapter = authority.runner._adapter_for_source(event.source)
                 if adapter is not None:

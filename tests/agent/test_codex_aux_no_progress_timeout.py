@@ -15,9 +15,9 @@ New contract for ``_CodexCompletionsAdapter.create``:
    absolute ``total_timeout``.
 3. A mid-stream stall (tokens seen, then silence) dies one no-progress
    window after the last token (``stalled`` in the message).
-4. The compression critical-path retry gate distinguishes the two: a
-   cheap first-token failure still gets the same-provider retry; a
-   full-budget stall skips straight to fallback (#54465 semantics).
+4. Compression falls back after a timeout even when no output was seen
+   or the timeout followed a short-lived transport failure. A dropped
+   connection alone can still retry on the same provider.
 """
 
 import threading
@@ -25,6 +25,7 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from agent.auxiliary_client import _CodexCompletionsAdapter, call_llm
@@ -201,14 +202,14 @@ class TestNoProgressFailFast:
 
 
 class TestCompressionRetryGate:
-    """First-token failures retry same-provider; stalls skip to fallback."""
+    """Compression may retry cheap transport failures before falling back."""
 
-    def _run_call_llm(self, primary_error, second_response=None):
+    def _run_call_llm(self, primary_error, *following_attempts):
         primary_client = MagicMock()
         primary_client.base_url = "https://chatgpt.com/backend-api/codex"
-        if second_response is not None:
+        if following_attempts:
             primary_client.chat.completions.create.side_effect = [
-                primary_error, second_response,
+                primary_error, *following_attempts,
             ]
         else:
             primary_client.chat.completions.create.side_effect = primary_error
@@ -242,11 +243,29 @@ class TestCompressionRetryGate:
             )
         return result, primary_client, mock_fb
 
-    def test_no_progress_timeout_retries_same_provider(self):
+    def test_no_progress_timeout_skips_same_provider_retry(self):
         err = TimeoutError(
             "Codex auxiliary Responses stream produced no output within "
             "60.0s (no-progress timeout, 60.2s elapsed)"
         )
+        result, primary, mock_fb = self._run_call_llm(err)
+        assert result.choices[0].message.content == "fallback"
+        assert primary.chat.completions.create.call_count == 1
+        assert mock_fb.called
+
+    def test_timeout_on_retry_skips_remaining_same_provider_attempts(self):
+        dropped = httpx.RemoteProtocolError("incomplete chunked read")
+        timeout = TimeoutError(
+            "Codex auxiliary Responses stream produced no output within "
+            "60.0s (no-progress timeout, 60.2s elapsed)"
+        )
+        result, primary, mock_fb = self._run_call_llm(dropped, timeout, timeout)
+        assert result.choices[0].message.content == "fallback"
+        assert primary.chat.completions.create.call_count == 2
+        assert mock_fb.called
+
+    def test_incomplete_read_can_retry_same_provider(self):
+        dropped = httpx.RemoteProtocolError("incomplete chunked read")
         good = SimpleNamespace(
             choices=[SimpleNamespace(
                 index=0,
@@ -255,7 +274,7 @@ class TestCompressionRetryGate:
             )],
             model="gpt-5.6-sol", usage=None,
         )
-        result, primary, mock_fb = self._run_call_llm(err, second_response=good)
+        result, primary, mock_fb = self._run_call_llm(dropped, good)
         assert result.choices[0].message.content == "retried"
         assert primary.chat.completions.create.call_count == 2
         assert not mock_fb.called

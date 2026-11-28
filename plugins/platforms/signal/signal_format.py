@@ -26,6 +26,11 @@ def _split_fenced(source: str) -> list[str]:
         last = match.end()
     return parts + [source[last:]]
 _HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+# Markdown image ![alt](url) first (so the "!" isn't left behind), then inline link [text](url).
+# Signal has no clickable-text: the text is kept and the bare URL follows it in parentheses-free form,
+# which the client auto-links. Titles/alt text are dropped only for images.
+_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((\S+?)\)")
+_LINK_RE = re.compile(r"\[([^\]]+)\]\((\S+?)\)")
 _INLINE_PATTERNS = [
     # First match wins and spans never nest. Inline code goes first so its text stays verbatim; an
     # enclosing pair then loses ("**run `x`**" keeps its asterisks, where main kept the backticks).
@@ -48,6 +53,16 @@ def _normalize_bullet_markers(source: str) -> str:
     parts = _split_fenced(source)
     return "".join(re.sub(r"(?m)^([ \t]{0,3})[-*+]\s+", r"\1• ", part) if idx % 2 == 0 else part
                    for idx, part in enumerate(parts))
+
+
+def _convert_links(source: str) -> str:
+    """Signal has no styled link text: ``[text](url)`` would arrive with its Markdown brackets intact.
+    Emit the label followed by the bare URL, which Signal auto-links. Fenced code is left untouched."""
+    parts = _split_fenced(source)
+    def _one(part: str) -> str:
+        part = _IMAGE_RE.sub(lambda m: m.group(2), part)
+        return _LINK_RE.sub(lambda m: f"{m.group(1).strip()}: {m.group(2)}", part)
+    return "".join(_one(part) if idx % 2 == 0 else part for idx, part in enumerate(parts))
 
 
 def _fence_tables(source: str) -> str:
@@ -81,7 +96,7 @@ def markdown_to_signal(text: str) -> tuple[str, list[str]]:
     """Convert markdown to plain text + Signal textStyles list. Signal uses ``bodyRanges`` (signal-cli
     ``textStyle`` / ``textStyles`` params) as ``start:length:STYLE`` with positions in UTF-16 code units.
     Supported styles: BOLD, ITALIC, STRIKETHROUGH, MONOSPACE."""
-    text = _fence_tables(_normalize_bullet_markers(re.sub(r"\n{3,}", "\n\n", text).strip()))
+    text = _fence_tables(_normalize_bullet_markers(_convert_links(re.sub(r"\n{3,}", "\n\n", text).strip())))
     styles: list[tuple[int, int, str]] = []
     code_blocks: list[tuple[int, int]] = []
     # One pass over the original text: code a longer fence kept may hold ``` runs, never re-parsed.

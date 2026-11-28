@@ -939,13 +939,15 @@ class CLITuiMixin:
         if overlay_cleared and not (self._agent_running and self.agent):
             return
         if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
+            from cli import _cprint
+            # Through _cprint, which records them: the post-interrupt replay repaints every row.
             if now - self._last_ctrl_c_time < 2.0:
-                print("\n" + t("cli.tui.force_exiting"))
+                _cprint("\n" + t("cli.tui.force_exiting"))
                 self._should_exit = True
                 event.app.exit()
                 return
             self._last_ctrl_c_time = now
-            print("\n" + t("cli.tui.interrupting_again_hint"))
+            _cprint("\n" + t("cli.tui.interrupting_again_hint"))
             request_hard_interrupt(self.agent)
         else:
             self._tui_clear_or_exit(event)
@@ -962,7 +964,8 @@ class CLITuiMixin:
         if overlay_cleared and not (self._agent_running and self.agent):
             return
         if self._agent_running and self.agent and not (event.app.current_buffer.text or self._attached_images):
-            print("\n" + t("cli.tui.interrupting"))
+            from cli import _cprint
+            _cprint("\n" + t("cli.tui.interrupting"))
             request_hard_interrupt(self.agent)
         else:
             self._tui_clear_or_exit(event)

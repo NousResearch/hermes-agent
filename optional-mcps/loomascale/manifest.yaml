@@ -1,0 +1,43 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: loomascale
+description: 'Audit ad spend and edit campaigns in Google Ads, Meta Ads, LinkedIn Ads, and TikTok Ads, plus GA4, Tag Manager, Search Console, and Merchant Center. Research competitors'' public Google and Meta ads.'
+source: https://loomascale.com
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: 401 WWW-Authenticate -> RFC 9728 protected-resource
+# metadata -> AS metadata with registration_endpoint, S256 PKCE, public
+# clients). Registration accepts loopback http redirects, which Hermes's
+# 127.0.0.1 callback needs. Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://api.loomascale.com/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - loomascale
+    - google ads
+    - meta ads
+  hosts:
+    - loomascale.com
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to LoomaScale
+  (or run `hermes mcp login loomascale`). Connect the ad platforms and
+  accounts you want the agent to reach, approve access, then restart
+  the session so tools load.
+
+  Caution: write tools change live campaigns, budgets, and bids that
+  spend real ad money. Any account can be set to read-only in the
+  LoomaScale dashboard, or prune write tools with
+  `hermes mcp configure loomascale` if you only want reporting and
+  audits.

@@ -62,7 +62,9 @@ def fake_kind(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
-    monkeypatch.delenv("FAKE_P21_PLANE", raising=False)
+    # Bootstrap publishes this .env value without monkeypatch: record it even when absent so teardown undoes it.
+    monkeypatch.setenv("FAKE_P21_PLANE", "")
+    monkeypatch.delenv("FAKE_P21_PLANE")
     monkeypatch.setattr(cb, "_BOOTSTRAPPED", False)
     yield home
     for name in [m for m in sys.modules if m.startswith(f"plugins.config_backends.{FAKE}")]:

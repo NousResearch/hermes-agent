@@ -222,6 +222,85 @@ def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatc
     assert signalled == [owner_pid]
 
 
+_CLIENT_STARTED = "python -m hermes_cli.main --profile default gateway run --quiet --idle-exit"
+
+
+def _a_served_host(tmp_path, monkeypatch, owner_pid, cmdline, *, external_supervisor=True):
+    """GW-90's arrangement: the default profile's start finds an owner that already serves it."""
+    owner_home = tmp_path / "root"
+    _publish(owner_pid, owner_home, ("default",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["default"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: owner_home)
+    monkeypatch.setattr("gateway.status._read_process_cmdline", lambda pid: cmdline)
+    for marker in ("INVOCATION_ID", "XPC_SERVICE_NAME", "HERMES_S6_SUPERVISED_CHILD", "HERMES_LAUNCHD_LABEL"):
+        monkeypatch.delenv(marker, raising=False)
+    if external_supervisor:
+        monkeypatch.setenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", "1")
+    else:
+        monkeypatch.delenv("HERMES_GATEWAY_EXTERNAL_SUPERVISOR", raising=False)
+    signalled: list[int] = []
+
+    async def _replace(pid, replace):
+        signalled.append(pid)
+        return True
+
+    monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", _replace)
+    return owner_home, signalled
+
+
+def test_an_external_supervisor_start_takes_the_host_back_from_a_client_started_owner(tmp_path, monkeypatch, owner_pid):
+    """GW-90: a client call while the supervised gateway was down started ``gateway run --idle-exit``; a
+    cron job or a platform kept it busy, and every supervised start attached to it and exited 75."""
+    owner_home, signalled = _a_served_host(tmp_path, monkeypatch, owner_pid, _CLIENT_STARTED)
+
+    decision = host_attach.decide(owner_home)
+    assert decision.outcome == host_attach.REPLACE_HOST
+    assert decision.owner is not None and decision.owner.pid == owner_pid
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None  # None: the start goes on
+    assert signalled == [owner_pid]
+
+
+def test_the_client_started_owner_is_also_known_by_the_argv_it_stamped(tmp_path, monkeypatch, owner_pid):
+    """psutil and /proc cannot always read another process's command line; the owner's own
+    ``gateway_state.json`` carries the argv it was started with."""
+    owner_home, _signalled = _a_served_host(tmp_path, monkeypatch, owner_pid, None)
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda path=None: {"pid": owner_pid, "argv": _CLIENT_STARTED.split()}
+        if Path(path) == owner_home / "gateway_state.json" else None)
+
+    assert host_attach.decide(owner_home).outcome == host_attach.REPLACE_HOST
+
+
+@pytest.mark.parametrize("cmdline", [
+    "python -m hermes_cli.main gateway run",                           # someone's own foreground run
+    "python -m hermes_cli.main --profile default gateway run --quiet", # Desktop's attached gateway
+    "python -m hermes_cli.main gateway run --external-supervisor",     # another supervisor's gateway
+    None,                                                              # argv unreadable: never replaced
+])
+def test_an_external_supervisor_start_leaves_every_other_owner_alone(tmp_path, monkeypatch, owner_pid, cmdline):
+    owner_home, signalled = _a_served_host(tmp_path, monkeypatch, owner_pid, cmdline)
+
+    assert host_attach.decide(owner_home).outcome == host_attach.ATTACH
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is True  # True: attach, as before
+    assert signalled == []
+
+
+@pytest.mark.parametrize("unit_marker", [None, "INVOCATION_ID"])
+def test_only_an_external_supervisor_start_takes_the_host_back(tmp_path, monkeypatch, owner_pid, unit_marker):
+    """A foreground ``gateway run`` and a systemd unit keep attaching: #79048 took ``--replace`` away from
+    supervised starts so two of them never kill each other, and a client starts an installed unit
+    instead of a gateway of its own."""
+    owner_home, signalled = _a_served_host(tmp_path, monkeypatch, owner_pid, _CLIENT_STARTED,
+                                           external_supervisor=False)
+    if unit_marker:
+        monkeypatch.setenv(unit_marker, "unit-under-test")
+
+    assert host_attach.decide(owner_home).outcome == host_attach.ATTACH
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is True
+    assert signalled == []
+
+
 def test_force_starts_without_consulting_the_owner(tmp_path, monkeypatch, owner_pid):
     """``--force`` printed the starting banner and then attached anyway. It must START."""
     owner_home = tmp_path / "root"

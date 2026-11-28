@@ -126,16 +126,28 @@ def test_watcher_reasks_gate_before_dormant_sequence(monkeypatch):
             self._scale_to_zero_cooldown_until = 0.0
             self._scale_to_zero_no_suspend_logged = False
             self._scale_to_zero_direct_platform_logged = False
+            self.checked = asyncio.Event()
 
         def _running_agent_count(self):
             return 0
+
+        def _scale_to_zero_idle_timeout_seconds(self):
+            return 120
+
+        def _scale_to_zero_active_messaging_platforms(self):
+            platforms = super()._scale_to_zero_active_messaging_platforms()
+            self.checked.set()
+            return platforms
+
+        def _serving_state(self):
+            return "running"
 
         def _update_runtime_status(self, state):
             pass
 
     async def one_tick(runner):
         task = asyncio.ensure_future(runner._scale_to_zero_watcher(interval=0.0))
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(runner.checked.wait(), timeout=5)
         runner._running = False
         task.cancel()
         try:

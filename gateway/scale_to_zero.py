@@ -17,7 +17,7 @@ import socket
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +82,52 @@ def should_arm(*, enabled: bool, relay_only_or_absent: bool, wake_url: Optional[
 def is_idle(*, active_work_count: int, seconds_since_last_inbound: float,
             idle_timeout_seconds: float, has_live_background_work: bool) -> bool:
     """Pure idle predicate: no active work, no inbound within the window, no live background work.
-    ``active_work_count`` is the BROAD aggregate (agent turns + cron + API runs) — passing only
+    ``active_work_count`` includes agent turns, session runtime work, cron and API runs. Passing only
     ``len(_running_agents)`` reopens the mid-cron-job suspend hole. Callers that cannot read a
     work source must fail AWAKE (pass a positive sentinel), never fail to 0."""
     return (active_work_count <= 0 and not has_live_background_work
             and seconds_since_last_inbound >= idle_timeout_seconds)
+
+
+def gateway_is_idle(runner) -> bool:
+    from gateway.run_runtime import managed_turn_count
+    from gateway.scale_to_zero_work import has_durable_work
+
+    # Drain counters can swallow errors to zero. An unreadable source must keep the gateway awake.
+    def read_or_awake(label: str, read: Callable[[], Any], busy: Any) -> Any:
+        try:
+            return read()
+        except Exception:
+            logger.debug("scale-to-zero: %s unreadable. Staying awake", label, exc_info=True)
+            return busy
+
+    def relay_reply_in_flight() -> bool:
+        adapter = runner._relay_adapter_for_dormancy()
+        # Classic inbound tasks stay live through the reply send. Durable delivery is
+        # covered separately by managed_turn_count below.
+        return any(not task.done() for task in getattr(adapter, "_background_tasks", ()))
+
+    cron_count = read_or_awake("cron work count", runner._running_cron_job_count, 1)
+    api_count = read_or_awake("api work count", lambda: runner._api_server_hook("active_agent_work_count"), 1)
+    # The session authority owns durable turns through settlement and delivery, including the
+    # interval after the agent slot is released and before the relay send starts.
+    runtime_count = read_or_awake("session runtime work count", lambda: managed_turn_count(runner), 1)
+    relay_busy = read_or_awake("relay work", relay_reply_in_flight, True)
+    durable_busy = read_or_awake("cross-process work", has_durable_work, True)
+
+    # A connected dashboard/desktop/TUI client is inbound activity. Its marker ages out normally.
+    last_inbound = runner._last_inbound_at
+    seen = read_or_awake("dashboard heartbeat", dashboard_client_last_seen, time.time())
+    if seen is not None and seen > last_inbound:
+        last_inbound = seen
+    return is_idle(
+        active_work_count=runner._running_agent_count() + runtime_count + cron_count + api_count,
+        seconds_since_last_inbound=time.time() - last_inbound,
+        idle_timeout_seconds=runner._scale_to_zero_idle_timeout_seconds(),
+        has_live_background_work=(
+            relay_busy or durable_busy or runner._scale_to_zero_has_live_background_work()
+        ),
+    )
 
 
 def dashboard_client_heartbeat_path(hermes_home: Optional[os.PathLike | str] = None):

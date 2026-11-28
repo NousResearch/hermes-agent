@@ -49,13 +49,15 @@ def test_a_tree_the_left_core_migrator_could_not_enable_is_owed_not_settled(tmp_
     assert installs == [(home, "accent-picker")]
 
 
+@pytest.mark.parametrize("listed", ["disabled", "enabled"])
 @pytest.mark.parametrize("name", ["platforms/qqbot", "qqbot-platform"])
-def test_a_core_era_disable_keeps_the_tree_the_left_core_migrator_could_not_enable(tmp_path, installs, name):
-    """The same refused-enable tree, in a home whose ``plugins.disabled`` names QQ Bot by its core-era key: the
-    user chose it off, so the default pass keeps that copy as it is (never discards it to retry a download)."""
+def test_a_core_era_choice_keeps_the_tree_the_left_core_migrator_could_not_enable(tmp_path, installs, name, listed):
+    """The same refused-enable tree, in a home whose ``plugins.disabled`` or ``plugins.enabled`` names QQ Bot by its
+    core-era key (the loader honours both): the user chose, so the default pass keeps that copy as it is (never
+    discards a working copy to retry a download that may fail)."""
     home = tmp_path / "home"
     (home / "plugins" / "qqbot").mkdir(parents=True)
-    (home / "config.yaml").write_text(f"plugins:\n  disabled: [{name}]\n", encoding="utf-8")
+    (home / "config.yaml").write_text(f"plugins:\n  {listed}: [{name}]\n", encoding="utf-8")
     lcm._placed(home, "qqbot").parent.mkdir(parents=True)
     lcm._placed(home, "qqbot").touch()
 

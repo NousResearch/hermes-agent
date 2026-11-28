@@ -35,8 +35,15 @@ class TestIsLocalEndpoint:
         "https://openrouter.ai/api",
         "https://api.anthropic.com",
         "https://evil.docker.internal.example.com",
+        "https://box.ts.net.example.com",
     ])
     def test_remote_endpoints(self, url):
         assert is_local_endpoint(url) is False
+
+    def test_tailscale_magicdns_name_is_local_like_its_cgnat_address(self):
+        """A MagicDNS ``*.ts.net`` name is the name of a 100.64/10 tailnet address, which is already
+        local; by name it got the cloud stale timeout, so a long local prefill was cut mid-flight."""
+        assert is_local_endpoint("http://100.101.102.103:11434/v1") is True
+        assert is_local_endpoint("http://gpu-box.tail1234ab.ts.net:11434/v1") is True
 
 

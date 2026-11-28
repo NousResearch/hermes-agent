@@ -13,8 +13,14 @@ Hermes' own location before the dispatcher adds the claim.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Optional
+
+# Keep a little wall-clock budget for the worker to observe a terminal timeout
+# and make a terminal board call (kanban_block/kanban_complete/kanban_request_review)
+# before max_runtime_seconds kills it.
+KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
 # Exact names (Windows matches case-insensitively). Host plumbing, never a profile's settings.
 _HOST_NAMES = frozenset({
@@ -65,3 +71,57 @@ def worker_client_env(env: Mapping[str, str], assignee_home: str | Path) -> dict
     # credential is not part of it: the assignee resolves its own and fails closed without it.
     names = _HOST_NAMES | {name.upper() for name in deployment_env_names()}
     return {k: v for k, v in host.items() if k.upper() in names or k.upper().startswith(_HOST_PREFIXES)}
+
+
+def worker_terminal_timeout_env(
+    max_runtime_seconds: Optional[int],
+    current_timeout: Optional[str],
+) -> Optional[str]:
+    """Return a worker-scoped TERMINAL_TIMEOUT override, if needed.
+
+    When ``max_runtime_seconds`` exceeds the terminal tool's default timeout,
+    raise only the child's default so a long command isn't killed by the
+    generic terminal default first.
+    """
+    if max_runtime_seconds is None:
+        return None
+    try:
+        runtime = int(max_runtime_seconds)
+    except (TypeError, ValueError):
+        return None
+    if runtime <= 0:
+        return None
+
+    desired = max(1, runtime - KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS)
+    try:
+        existing = int(str(current_timeout).strip()) if current_timeout else 0
+    except (TypeError, ValueError):
+        existing = 0
+    if existing >= desired:
+        return None
+    return str(desired)
+
+
+@contextlib.contextmanager
+def worker_profile_scope(hermes_home: str):
+    """Bind an assigned profile's whole runtime scope (home, secrets, terminal policy) for one
+    dispatch-side read or spawn-env build.
+
+    The dispatcher runs detached from any turn, so nothing binds a profile for it: ``load_config``,
+    the toolset probes' ``get_secret`` reads and ``build_subprocess_env``'s passthrough resolution
+    all fall back to the LAUNCH profile's ambient ``os.environ`` / ``TERMINAL_*``. Binding was
+    previously conditional on ``is_multiplex_active()``, so on a single-profile host a worker for
+    profile B was built entirely from the dispatcher's own environment.
+
+    Home, secrets and terminal policy always move together: the spawned child only submits the
+    claim to the assignee's own gateway, which runs the turn (and, if the child starts it, gets
+    the assignee's own secrets from ``served_profile_child_env``).
+
+    The secret mapping is never widened: a profile that is not this process's own home gets its own
+    ``.env`` + external sources ONLY, while the launch home keeps its established
+    env-over-``.env`` precedence (``launch_secret_scope``) so systemd / ``op run`` injection still
+    resolves for a standalone dispatcher.
+    """
+    from agent.runtime_scope import bind_profile_scope
+    with bind_profile_scope(hermes_home, hydrate_secrets=False):
+        yield

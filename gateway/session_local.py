@@ -592,6 +592,10 @@ def local_session_info(authority, ref):
     info.update(_resolve_session_effort_fields(
         authority, live, agent, policy, model=info['model'], reasoning_override=override,
     ))
+    from gateway.session_state import SERVICE_TIER_UNSET
+    pin = state.conversation.service_tier_override if state is not None else SERVICE_TIER_UNSET
+    if pin is not SERVICE_TIER_UNSET:  # a session /fast is the next turn's tier, over the agent's or policy's
+        info.update(service_tier=pin or '', fast=service_tier_fast(authority, ref, pin or ''))
     if policy:
         # The creation request the route was frozen with (secrets already extracted), so a
         # resuming client can tell "same flags again" from a real override attempt.

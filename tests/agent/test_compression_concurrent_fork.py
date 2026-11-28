@@ -29,6 +29,7 @@ fixture deterministically produces 2 children; with the lock, exactly 1.
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import os
 import sqlite3
@@ -1117,6 +1118,127 @@ def test_signature_introspection_exception_releases_lock_and_refresher(
     assert db.coordination.get_compression_lock_holder(session_id=parent_sid) is None
     assert len(refreshers) == 1
     assert not refreshers[0]._thread.is_alive()
+
+
+
+
+
+
+
+
+def _legacy_compressor(session_db, session_id: str = "LEGACY_SESSION"):
+    """A ContextCompressor whose only persistence handle is a pre-cooldown store.
+
+    The storage refactor moved ``_capture_authoritative_cooldown_under_lease`` into
+    ``agent/conversation_compression_store.py`` and gated the raw-row reader behind
+    ``store is None``; ``writer_interface`` returns ``None`` when there is no
+    ``_persistence``, which is exactly the version-skew shape this PR fixes.
+    """
+    from agent.context_compressor import ContextCompressor
+
+    compressor = object.__new__(ContextCompressor)
+    compressor._session_db = session_db
+    compressor._session_id = session_id
+    compressor._persistence = None
+    return compressor
+
+
+class _PreCooldownStore:
+    """A store class retained before the raw cooldown-row API existed."""
+
+    def create_session(self, *_a, **_kw):  # pragma: no cover - never called
+        raise AssertionError("no durable call is expected on the legacy path")
+
+
+class _NonCallableRawReaderStore(_PreCooldownStore):
+    get_compression_failure_cooldown_row = None
+
+
+class _ReadErrorStore(_PreCooldownStore):
+    def get_compression_failure_cooldown_row(self, _session_id):
+        raise RuntimeError("simulated raw cooldown read failure")
+
+
+def test_legacy_session_db_without_raw_cooldown_api_preserves_compression_compatibility() -> None:
+    """A stale pre-cooldown store must not turn compression into a no-op."""
+    from agent.conversation_compression_store import _capture_authoritative_cooldown_under_lease
+
+    compressor = _legacy_compressor(_PreCooldownStore())
+    authoritative, durable_state = _capture_authoritative_cooldown_under_lease(compressor, {})
+
+    assert authoritative is None, "legacy skew must read as 'API absent', not as a durable read failure"
+    assert durable_state is None
+
+
+def test_malformed_raw_cooldown_api_fails_closed() -> None:
+    """A present but malformed cooldown API is not legacy version skew."""
+    from agent.conversation_compression_store import _capture_authoritative_cooldown_under_lease
+
+    for session_db in (_NonCallableRawReaderStore(), _ReadErrorStore()):
+        authoritative, durable_state = _capture_authoritative_cooldown_under_lease(
+            _legacy_compressor(session_db), {}
+        )
+        assert authoritative is False, type(session_db).__name__
+        assert durable_state is None
+
+
+
+class _NominalSessionDBImpostor:
+    """A proxy that spoofs names but lacks the real SessionDB source contract."""
+
+    def __init__(self, real_db: SessionDB) -> None:
+        self._real = real_db
+
+    def create_session(self, *args, **kwargs):
+        return self._real.create_session(*args, **kwargs)
+
+    def __getattr__(self, name):
+        if name == "try_acquire_compression_lock":
+            raise AttributeError(name)
+        return getattr(self._real, name)
+
+
+_NominalSessionDBImpostor.__module__ = "hermes_state"
+_NominalSessionDBImpostor.__name__ = "SessionDB"
+
+
+class _BrokenLockLookupDB:
+    """A present lock API whose instance lookup fails unexpectedly."""
+
+    def __init__(self, real_db: SessionDB, error: Exception) -> None:
+        self._real = real_db
+        self._error = error
+
+    def try_acquire_compression_lock(self, *_args, **_kwargs):
+        raise AssertionError("the broken lookup must not resolve to a callable")
+
+    def __getattribute__(self, name):
+        if name == "try_acquire_compression_lock":
+            raise object.__getattribute__(self, "_error")
+        if name in {"_real", "_error", "__class__"}:
+            return object.__getattribute__(self, name)
+        return getattr(object.__getattribute__(self, "_real"), name)
+
+
+class _NonCallableLockAPI:
+    """A present lock API descriptor that resolves to a non-callable value."""
+
+    def __init__(self, real_db: SessionDB) -> None:
+        self._real = real_db
+
+    try_acquire_compression_lock = None
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+
+
+
+
+
+
+
 
 @pytest.mark.parametrize(
     "error",

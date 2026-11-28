@@ -37,6 +37,8 @@ export { createRoot, forceRedraw, default as render, renderSync } from './src/in
 export type { Instance, RenderOptions, Root } from './src/ink/root.ts'
 export { stringWidth } from './src/ink/stringWidth.ts'
 export type { MouseTrackingMode } from './src/ink/termio/dec.ts'
+export { useTerminalNotification } from './src/ink/useTerminalNotification.ts'
+export type { TerminalNotification } from './src/ink/useTerminalNotification.ts'
 export { wrapAnsi } from './src/ink/wrapAnsi.ts'
 // 'ink-text-input' types deliberately not re-exported here; see
 // src/entry-exports.ts for the full rationale (#31227). Use the

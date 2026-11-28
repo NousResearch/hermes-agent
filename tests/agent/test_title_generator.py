@@ -82,6 +82,34 @@ class TestGenerateTitle:
         # The background model-title path refuses the same opener.
         assert generate_title(msg) is None
 
+    def test_attachment_preview_is_titleable_without_making_manual_attachments_titleable(self):
+        from agent.title_generator import _is_real_user_turn
+
+        opener = "@file:/tmp/composer-pastes/pasted-text.txt"
+        preview = "Quarterly incident analysis for the database migration"
+        assert not is_titleable_user_message(opener)
+        assert is_titleable_user_message(opener, preview)
+        assert (derive_title(opener, preview) or "").startswith("Quarterly incident analysis")
+        assert _is_real_user_turn({"role": "user", "content": opener,
+                                   "display_metadata": {"title_preview": preview}})
+        assert not _is_real_user_turn({"role": "user", "content": "@file:report.pdf"})
+
+    def test_preview_attachment_reaches_instant_and_model_title_paths(self, tmp_path):
+        from agent import title_generator as tg
+
+        db = storage_handle(tmp_path)
+        seed_session(db, "preview-session", "cli")
+        opener = "@file:/tmp/composer-pastes/pasted-text.txt"
+        preview = "Quarterly incident analysis for the database migration"
+        with patch.object(tg, "_auto_title_enabled", return_value=True), \
+             patch.object(tg, "_model_title_upgrade_enabled", return_value=True), \
+             patch.object(tg, "title_upgrade_must_wait_for_turn", return_value=False), \
+             patch("agent.memory_provider.spawn_context_thread", return_value=MagicMock()) as spawn, \
+             patch.object(tg, "start_title_upgrade"):
+            maybe_auto_title(db, "preview-session", opener, [], title_preview=preview, persistence=db)
+        assert db.sessions.get_title("preview-session").startswith("Quarterly incident analysis")
+        assert spawn.call_args.kwargs["kwargs"]["title_preview"] == preview
+
     def test_attachment_plus_instruction_titles_from_the_instruction(self):
         """Prose around a manual attachment keeps driving the title — an
         attachment WITH a typed request is a real question, not a file drop."""

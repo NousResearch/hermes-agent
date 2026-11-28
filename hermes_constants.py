@@ -1192,6 +1192,13 @@ def export_scratch_tmp_env() -> bool:
     if changed:
         import tempfile
         tempfile.tempdir = None
+    # Pruning the scratch dir does not depend on whether TMPDIR could be repointed.
+    # When a boot environment already carries a temp value (git-bash exports
+    # TMPDIR=TMP=TEMP=/tmp), apply_scratch_tmp_env returns False before
+    # get_scratch_dir(prune=True) is ever reached, and nothing else on this path
+    # asks for the scratch dir — so the 24h prune never ran at all on such a host.
+    with contextlib.suppress(Exception):
+        _prune_scratch_dir_once(get_scratch_dir(prune=False))
     return changed
 
 

@@ -838,6 +838,13 @@ class AuthorityConnection:
         if self._voice_stop_replay(ref, params) or await self._typed_voice_stop(ref, params):
             self._record_voice_stop(ref, params)
             return {'voice_stopped': True}
+        # W1 desktop intake screen: gating now lives at the shared
+        # choke point (SessionAuthority._submit via
+        # gateway/desktop_screen.py authority_gate) - every viewer
+        # submit surface, including this one, funnels through that
+        # admission (the per-surface hook here missed the desktop
+        # app's own serve backend, found by the owner's 17 Nov live
+        # test).
         # The interactive WS is the one surface a restart's after-turn wait admits (#139041).
         receipt = await self.authority.submit(self.actor, self.submission(ref, params),
                                               queue_while_restarting=self._operator is True)

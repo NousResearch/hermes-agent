@@ -788,6 +788,29 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+        # W1 desktop intake screen (owner order 16 Nov 2026; live-test
+        # gap 17 Nov): the SINGLE shared intake gate. Every viewer
+        # submit funnels through this admission - the Desktop app's own
+        # local backend (``hermes serve``), the gateway WS control
+        # plane, TUI and queued edits - so one hook covers every
+        # surface (the per-surface hooks this replaces missed the serve
+        # path entirely). Screens the model-visible texts of viewer
+        # input on desktop-launched sessions and refuses block-tier
+        # submits BEFORE durable admission; machine producers (kanban
+        # cards, hosted rooms, classic-CLI turns) and non-desktop
+        # launch sources are structurally out of scope. Inert unless
+        # env-enabled; fail-open; see gateway/desktop_screen.py.
+        from gateway.desktop_screen import authority_gate
+        try:
+            await authority_gate(self, actor.subject, request.ref.session_id,
+                                 payload, kanban_card=_kanban_card is not None)
+        except Exception:
+            from contextlib import suppress
+            with suppress(Exception):
+                # A held submit is a refused submission: its captured
+                # attachment bytes have no owner yet.
+                self._release_refused_capture(request, payload)
+            raise
         def admit():
             try:
                 row, _created = store.admissions.admit(

@@ -218,3 +218,78 @@ class CompactionScanTests(unittest.TestCase):
 
         self.assertEqual(scan["aggregate"]["max_distinct_tools_in_session"], 20)
         self.assertEqual(scan["scan_meta"]["sessions_reused"], 0)
+
+
+class MemoryProviderToolCountTests(unittest.TestCase):
+    def test_provider_tool_calls_count_for_memory_keeper_without_name_match(self):
+        """#157197: the session's ``memory_tools`` sidecar counts provider calls for Memory Keeper
+        by ownership; a read of an unnamed provider is not reclassified as a Palace write."""
+        messages = [
+            {"role": "assistant", "tool_calls": [
+                {"function": {"name": "hindsight_retain"}},
+                {"function": {"name": "hindsight_recall"}},
+            ]},
+            {"role": "tool", "tool_name": "hindsight_retain", "content": "ok"},
+        ]
+
+        unnamed = plugin_api.analyze_messages("s1", "Remember things", messages)
+
+        self.assertEqual(unnamed["memory_events"], 0)
+
+        stats = plugin_api.analyze_messages(
+            "s1", "Remember things", messages,
+            memory_tools={"hindsight_retain": "hindsight", "hindsight_recall": "hindsight"})
+
+        # Two model calls; the tool-result row must not double-count hindsight_retain.
+        self.assertEqual(stats["memory_events"], 2)
+        self.assertEqual(stats["memory_write_events"], 0)
+
+    def test_provider_and_needle_match_counts_once_per_call(self):
+        messages = [{"role": "assistant", "tool_calls": [{"function": {"name": "acme_memory_search"}}]}]
+
+        stats = plugin_api.analyze_messages(
+            "s1", "", messages, memory_tools={"acme_memory_search": "acme"})
+
+        self.assertEqual(stats["memory_events"], 1)
+        # The name needles keep driving Palace (`mnemosyne_remember`/`memory`), unchanged here.
+        self.assertEqual(stats["memory_write_events"], 1)
+
+    def test_default_counting_is_unchanged_without_a_sidecar(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [{"function": {"name": "memory"}}]},
+            {"role": "tool", "tool_name": "memory", "content": "ok"},
+        ]
+
+        stats = plugin_api.analyze_messages("s1", "", messages)
+
+        self.assertEqual(stats["memory_events"], 1)
+        self.assertEqual(stats["memory_write_events"], 1)
+
+    def test_a_non_dict_sidecar_value_is_ignored(self):
+        messages = [{"role": "assistant", "tool_calls": [{"function": {"name": "hindsight_retain"}}]}]
+
+        for memory_tools in (None, ["hindsight_retain"], "hindsight_retain"):
+            stats = plugin_api.analyze_messages("s1", "", messages, memory_tools=memory_tools)
+            self.assertEqual(stats["memory_events"], 0, f"shape {memory_tools!r} must not count")
+
+    def test_real_session_db_provider_row_counts_for_keeper(self):
+        """End to end: a session created with the ``memory_tools`` sidecar has its provider calls
+        counted by the scan, where the name-only reading scored zero."""
+        from persistence.conversation.messages import NewMessage
+        from persistence.conversation.sessions import NewSession
+        from persistence_assembly import open_persistence, profile_scope
+
+        with TemporaryDirectory() as tmp, patch.object(plugin_api, "_data_dir", return_value=Path(tmp) / "data"), patch.object(plugin_api, "get_hermes_home", return_value=Path(tmp)), patch.dict(os.environ, {"HERMES_HOME": tmp}):
+            with open_persistence(profile_scope(home=Path(tmp))) as store:
+                store.sessions.create(NewSession(
+                    session_id="s1", source="cli", model="m",
+                    model_config={"memory_tools": {
+                        "hindsight_retain": "hindsight", "hindsight_recall": "hindsight",
+                        "hindsight_reflect": "hindsight"}}))
+                for name in ("hindsight_retain", "hindsight_recall", "hindsight_reflect"):
+                    store.messages.append("s1", NewMessage(role="assistant", content=None, tool_calls=({"function": {"name": name, "arguments": "{}"}},)))
+                    store.messages.append("s1", NewMessage(role="tool", content="ok", tool_name=name))
+            scan = plugin_api.scan_sessions()
+
+        self.assertEqual(scan["aggregate"]["memory_events"], 3)
+        self.assertEqual(scan["aggregate"]["memory_write_events"], 0)

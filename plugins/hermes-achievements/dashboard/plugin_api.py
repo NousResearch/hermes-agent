@@ -262,9 +262,15 @@ def _content(msg: dict[str, Any]) -> str:
         return str(content)
 
 
-def _count_tool(tool_names: list[str], *needles: str) -> int:
+def _count_tool(tool_names: list[str], *needles: str, provider_names: frozenset[str] = frozenset()) -> int:
     lowered = [name.lower() for name in tool_names]
-    return sum(1 for name in lowered if any(needle in name for needle in needles))
+    return sum(1 for name in lowered
+               if name in provider_names or any(needle in name for needle in needles))
+
+
+def _sidecar_dict(model_config: Any) -> dict[str, Any]:
+    """A session's ``model_config`` sidecar as a dict, tolerating a reader that left it unset."""
+    return model_config if isinstance(model_config, dict) else {}
 
 
 _PROVIDER_MARKERS = ["openai", "anthropic", "google", "gemini", "mistral", "meta", "qwen", "deepseek", "xai", "nous", "ollama", "groq", "openrouter", "codex"]
@@ -288,7 +294,13 @@ def is_local_model_name(model_name: str) -> bool:
     return bool(name) and name != "none" and any(marker in name for marker in _LOCAL_MARKERS)
 
 
-def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]],
+                     memory_tools: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    # Tool names the session's memory provider registered (the "memory_tools" sidecar the agent
+    # records at build, #157197): owned tools count for Memory Keeper whatever their name.
+    memory_provider_names = frozenset(
+        name.lower() for name in (memory_tools if isinstance(memory_tools, dict) else {})
+        if isinstance(name, str))
     tool_names: set[str] = set()
     tool_sequence: list[str] = []
     files_touched: set[str] = set()
@@ -348,7 +360,7 @@ def analyze_messages(session_id: str, title: str, messages: list[dict[str, Any]]
         "tts_calls": _count_tool(tool_sequence, "tts", "text_to_speech"),
         "skill_events": _count_tool(tool_sequence, "skill") + len(re.findall(r"\bskill", lower)),
         "skill_manage_events": _count_tool(tool_sequence, "skill_manage"),
-        "memory_events": _count_tool(tool_sequence, "memory", "mnemosyne"),
+        "memory_events": _count_tool(tool_sequence, "memory", "mnemosyne", provider_names=memory_provider_names),
         "memory_write_events": _count_tool(tool_sequence, "mnemosyne_remember", "memory"),
         "port_conflict": bool(PORT_RE.search(full_text)),
         "port_conflict_events": 1 if PORT_RE.search(full_text) else 0,
@@ -598,7 +610,11 @@ def scan_sessions(limit: Optional[int] = None, progress_callback: Optional[Any] 
                 # window shrinks after compaction, and stats read from it were never monotonic
                 # (#112273). Rewound rows stay out — that work was undone.
                 transcript = store.messages.read_transcript(sid, TranscriptRead(view=TranscriptView.DISPLAY))
-                stats = analyze_messages(sid, title or "Untitled", [r.as_wire_row() for r in transcript])
+                stats = analyze_messages(
+                    sid, title or "Untitled", [r.as_wire_row() for r in transcript],
+                    # The session's memory-provider tool map (written beside the session's other
+                    # sidecar state at agent build, #157197): provider calls count for Keeper.
+                    memory_tools=_sidecar_dict(getattr(row, "model_config", None)).get("memory_tools"))
                 rescanned += 1
             stats.update(session_id=sid, title=title or stats.get("title") or "Untitled", started_at=meta.get("started_at"), last_active=meta.get("last_active"), source=meta.get("source"))
             if meta.get("model"):

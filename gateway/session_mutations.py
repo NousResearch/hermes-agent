@@ -375,9 +375,8 @@ def _project_committed(authority, ref, operation, result):
     if operation in {'model', 'reasoning', 'workspace', 'edit_policy'}:
         # Every viewer repaints its model, reasoning pill or workspace from the published policy,
         # as main's _emit_session_info did after the live change.
-        from gateway.session_local import local_session_info
-        authority.sessions[ref.session_id].event_stream.publish(
-            ref.session_id, local_session_info(authority, ref), event_type='session.info')
+        from gateway.session_local import publish_local_session_info
+        publish_local_session_info(authority, ref)
     if operation == 'branch':
         from gateway.session_local_recovery import restore_local_session
         restore_local_session(authority, result['branched_session_id'])

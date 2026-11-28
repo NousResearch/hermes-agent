@@ -18,6 +18,9 @@ from typing import Any
 
 import hermes_yaml as yaml
 
+if os.name != "nt":
+    import fcntl
+
 # Named for the package, not this module: log configs and log readers know the ``utils`` logger.
 logger = logging.getLogger("utils")
 
@@ -302,6 +305,35 @@ def fsync_directory(path: str | Path) -> None:
             os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def publish_new_file(temporary: str | Path, path: str | Path) -> bool:
+    """Move the complete, synced *temporary* to *path* unless a file is already there; False when
+    one is, and the caller then reads that winner and removes *temporary*.
+
+    The hard-link-free way to publish a file exactly once (Termux's Python has no ``os.link``;
+    FAT, exFAT and some SMB shares refuse links): a reader only ever sees no file or the whole
+    content, and racing first writers agree on one winner. Windows ``rename`` never replaces an
+    existing file. POSIX ``rename`` does, so a sibling ``<name>.lock`` flock covers the check and
+    the replace.
+    """
+    path = Path(path)
+    if os.name == "nt":
+        try:
+            os.rename(temporary, path)
+        except FileExistsError:
+            return False
+        return True
+    fd = os.open(path.with_name(f"{path.name}.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        if path.exists():
+            return False
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+        return True
+    finally:
+        os.close(fd)  # closing the fd releases the flock
 
 
 def unlink_files_older_than(directory: str | Path, pattern: str, max_age_seconds: float, *,

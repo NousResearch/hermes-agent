@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("gateway.run")
 # What adapters' ``get_chat_info`` reports for a chat every member reads (a handoff home that is no DM).
 _HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "supergroup", "thread"})
+# Re-arm interval for waiting ledger rows: a row that failed while its platform session was not ready never
+# re-arms by itself, so a silently revived session would leave it stranded until the next restart.
+_LEDGER_ARM_INTERVAL_SECONDS = 600.0
 
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
@@ -330,6 +333,7 @@ class GatewayStartupMixin:
         """
         from gateway.run import _startup_restore_drain_timeout_secs
         claimed = await self._claim_pending_obligations()
+        self._start_periodic_ledger_arm()
 
         async def _boot_sends() -> None:
             await self._send_restart_notification()
@@ -478,6 +482,24 @@ class GatewayStartupMixin:
         from gateway.delivery_ledger import pending_retries
         for row in await asyncio.to_thread(pending_retries):
             self._schedule_flood_redelivery(row["platform"], profile=row["profile"])
+
+    def _start_periodic_ledger_arm(self) -> None:
+        """Re-arm waiting ledger rows every ``_LEDGER_ARM_INTERVAL_SECONDS`` while running.
+        Idempotent; shutdown cancels it (``_background_tasks``); no-op when the ledger is off."""
+        live = getattr(self, "_periodic_ledger_arm_task", None)
+        from gateway.delivery_ledger import ledger_enabled
+        if (live is not None and not live.done()) or not ledger_enabled():
+            return
+
+        async def _loop() -> None:
+            while getattr(self, "_running", False):
+                await asyncio.sleep(_LEDGER_ARM_INTERVAL_SECONDS)
+                if getattr(self, "_running", False):
+                    with _log_suppressed(logging.DEBUG, "periodic ledger arm failed", exc_info=True):
+                        await self._arm_flood_timers_for_waiting_rows()
+
+        self._periodic_ledger_arm_task = self._retain_background_task(
+            asyncio.create_task(_loop(), name="periodic-ledger-arm"))
 
     async def _redeliver_claimed_obligations(self, claimed: list) -> int:
         """Redeliver final responses for claimed rows (network half of the split): runs inside the

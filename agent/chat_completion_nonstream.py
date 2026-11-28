@@ -34,6 +34,7 @@ class _NonStreamRequest:
                 last_event_ts=None,
                 last_progress_ts=None,
                 retry_started_ts=None,
+                last_wire_ts=None,  # raw bytes incl. SSE keepalive comments (#151280)
                 phase_aware=self.wd.idle_requires_progress,
             )
             if self.codex_token is not None
@@ -131,6 +132,15 @@ class _NonStreamRequest:
             return (state.last_event_ts, state.last_progress_ts, retry_started_ts,
                     retry_started_ts if retry_started_ts is not None else self.call_start)
 
+    def _stretched(self, timeout: float, now: float) -> float:
+        """``timeout``, or KEEPALIVE_PATIENCE_FACTOR x it while raw bytes (SSE keepalive comments)
+        arrived within it: a thinking backend behind a pinging proxy gets more time, a backend
+        that only ever pings is still cut (#151280)."""
+        from agent.stream_wire_activity import KEEPALIVE_PATIENCE_FACTOR
+
+        wire = getattr(self.codex_watchdog_state, "last_wire_ts", None)
+        return timeout * KEEPALIVE_PATIENCE_FACTOR if wire is not None and now - wire < timeout else timeout
+
     def _pre_progress(self, last_event_ts, last_progress_ts) -> bool:
         """Stream open on this attempt, but no substantive model progress yet."""
         return self.wd.progress_timeout > 0 and last_event_ts is not None and last_progress_ts is None
@@ -165,11 +175,13 @@ class _NonStreamRequest:
                 phase = "reconnect"
             elif last_event_ts is not None:
                 phase = "post_event"
+            now = self.call_start + elapsed  # same stretched cutoffs as the kill loop in run()
             watchdog = wn.codex_watchdog_deadline(stale_timeout=wd.stale_timeout,
-                ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=wd.ttfb_timeout,
+                ttfb_enabled=wd.ttfb_enabled, ttfb_timeout=self._stretched(wd.ttfb_timeout, now),
                 last_event_ts=last_event_ts, last_progress_ts=last_progress_ts,
                 retry_started_ts=retry_started_ts,
-                call_start=self.call_start, idle_enabled=wd.idle_enabled, idle_timeout=wd.idle_timeout,
+                call_start=self.call_start, idle_enabled=wd.idle_enabled,
+                idle_timeout=self._stretched(wd.idle_timeout, now),
                 idle_requires_progress=wd.idle_requires_progress, progress_timeout=wd.progress_timeout,
                 elapsed=elapsed)
             # One neutral notice per silence; repeating it every heartbeat made
@@ -293,7 +305,7 @@ class _NonStreamRequest:
             self._emit_wait_notice(elapsed, heartbeat=poll_count % 100 == 0)
             last_event_ts, last_progress_ts, retry_started_ts, attempt_started_ts = self._codex_watchdog_snapshot()
             attempt_elapsed = now - attempt_started_ts
-            if (wd.ttfb_enabled and last_event_ts is None and attempt_elapsed > wd.ttfb_timeout):
+            if (wd.ttfb_enabled and last_event_ts is None and attempt_elapsed > self._stretched(wd.ttfb_timeout, now)):
                 self._ttfb_kill(attempt_elapsed)
                 break
             if (self._pre_progress(last_event_ts, last_progress_ts)
@@ -303,7 +315,7 @@ class _NonStreamRequest:
             idle_elapsed = now - last_event_ts if last_event_ts is not None else None
             if (retry_started_ts is None and wd.idle_enabled and idle_elapsed is not None
                     and (not wd.idle_requires_progress or last_progress_ts is not None)
-                    and idle_elapsed > wd.idle_timeout):
+                    and idle_elapsed > self._stretched(wd.idle_timeout, now)):
                 self._idle_kill(idle_elapsed)
                 break
             if elapsed > wd.stale_timeout:

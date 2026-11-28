@@ -1400,6 +1400,18 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     safe_name = (Path(filename).name if filename else "document").replace("\x00", "").strip()
     if not safe_name or safe_name in {".", ".."}:
         safe_name = "document"
+    # Bound the name to the filesystem's per-component limit (255 bytes on APFS/ext4/NTFS)
+    # BEFORE the doc_ uuid prefix is prepended. Display names arriving from chat platforms
+    # can be long and are often percent-encoded (one ASCII byte per CJK codepoint, tripling
+    # size); a naive write raised ENAMETOOLONG mid-ingest and dropped the file message.
+    # Truncate the stem on a UTF-8 byte budget with errors="ignore" so no codepoint is cut
+    # in half, keep the extension intact so MIME/preview heuristics still fire.
+    stem, dot, ext = safe_name.rpartition(".")
+    if not dot:
+        stem, ext = safe_name, ""
+    stem = stem.encode("utf-8")[:180].decode("utf-8", errors="ignore").rstrip() or "document"
+    ext = ext.encode("utf-8")[:32].decode("utf-8", errors="ignore")
+    safe_name = f"{stem}.{ext}" if ext else stem
     filepath = cache_dir / f"doc_{uuid.uuid4().hex[:12]}_{safe_name}"
     # Final safety check: ensure path stays inside cache dir
     if not filepath.resolve().is_relative_to(cache_dir.resolve()):

@@ -47,6 +47,23 @@ export async function steerQueuedPrompt(
   })
 }
 
+/** Move a server-queued admission directly ahead of `beforeAdmissionId` (null: to the back of the
+ *  FIFO). Only queued rows change place; the pending fanout repaints every viewer's queue in the
+ *  owner's new order. Same owner routing as discardLostPrompt. */
+export async function moveQueuedPrompt(
+  sessionId: string | null | undefined,
+  queueSessionKey: string,
+  admissionId: string,
+  beforeAdmissionId: null | string,
+  request: GatewayRequest
+): Promise<unknown> {
+  return requestForOwnedSession(queueSessionKey, request, 'prompt.move_queued', {
+    session_id: sessionId ?? queueSessionKey,
+    admission_id: admissionId,
+    before_admission_id: beforeAdmissionId
+  })
+}
+
 /** Replace a server-queued admission with edited text: the authority cancels it and admits the
  *  edit as a new admission at the back of the FIFO, in one write. `submissionId` is the edit's
  *  identity: a retry of an unconfirmed save reuses it, and the owner replays a committed one. */

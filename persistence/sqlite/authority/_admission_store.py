@@ -293,6 +293,45 @@ def steer_session_input(holder, *, epoch: int, admission_id: str, generation: in
     return holder._execute_write(write)
 
 
+def move_session_input(holder, *, epoch: int, admission_id: str, before_admission_id: str | None) -> list[str]:
+    """Move a still-queued admission in its session's FIFO, in one write: directly ahead of
+    ``before_admission_id`` (another queued row of the same session), or to the tail when None.
+
+    FIFO order IS ``seq``: the session's queued rows trade their existing ``seq`` values in the new
+    order, so the key set never changes. Started, unknown and terminal rows keep theirs, a later
+    admission still takes a higher ``seq`` (the tail), and every ``ORDER BY seq`` reader, the claim
+    included, sees the new order with no other change. Returns the queued ids in run order."""
+    if before_admission_id == admission_id:
+        raise AuthorityRefusal('invalid_params', field='before_admission_id')
+
+    def write(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        if row['status'] != 'queued':
+            raise AuthorityRefusal('admission_started')
+        queued = conn.execute("SELECT admission_id, seq FROM session_admissions WHERE target_session_id=? "
+                              "AND status='queued' ORDER BY seq", (row['target_session_id'],)).fetchall()
+        order = [r['admission_id'] for r in queued if r['admission_id'] != admission_id]
+        if before_admission_id is None:
+            order.append(admission_id)
+        elif before_admission_id in order:
+            order.insert(order.index(before_admission_id), admission_id)
+        else:
+            # Started, settled, or another session's row: the anchor is gone, nothing moves.
+            raise AuthorityRefusal('not_found', field='before_admission_id')
+        seqs = [r['seq'] for r in queued]
+        if order == [r['admission_id'] for r in queued]:
+            return order
+        # ``seq`` is the rowid (UNIQUE): park every queued row on a free negative key first.
+        for target, seq in zip(order, seqs):
+            conn.execute('UPDATE session_admissions SET seq=? WHERE admission_id=?', (-seq, target))
+        for target, seq in zip(order, seqs):
+            conn.execute('UPDATE session_admissions SET seq=? WHERE admission_id=?', (seq, target))
+        conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
+        return order
+    return holder._execute_write(write)
+
+
 def revert_steer_input(holder, *, epoch: int, admission_id: str, generation: int) -> bool:
     """A transfer whose text never reached the claim's agent: the admission is queued again, in its
     original FIFO place (its ``seq``). False when the claim's settlement already decided it."""

@@ -1,5 +1,8 @@
-import { useState } from 'react'
+import { KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
+import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable'
+import { type ReactNode, useState } from 'react'
 
+import { ReorderableList, useSortableBindings } from '@/app/chat/sidebar/reorderable-list'
 import { StatusRow } from '@/components/chat/status-row'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
@@ -9,6 +12,8 @@ import { type Translations, useI18n } from '@/i18n'
 import { CornerDownLeft, iconSize, Pencil, SteeringWheel } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { isSteerableEntry, type QueuedPromptEntry } from '@/store/composer-queue'
+
+import { canMoveQueuedEntry } from './queue-reorder'
 
 interface QueuePanelProps {
   busy: boolean
@@ -21,6 +26,9 @@ interface QueuePanelProps {
   onEdit: (entry: QueuedPromptEntry) => void
   /** Lift a park (explicit Stop/Esc halt) and let the queue flow again. */
   onResume: () => void
+  /** Persist a new queue order (drag or ▲/▼): every id, in the order the user left them. Absent:
+   *  the queue renders without reorder affordances. */
+  onReorder?: (ids: string[]) => void
   onSendNow: (id: string) => void
   /** Deliver an entry as a mid-turn redirect (no interrupt). Absent when the
    *  host has no steer path — the affordance hides rather than dead-clicks. */
@@ -45,6 +53,7 @@ export function QueuePanel({
   onDelete,
   onDiscardLost,
   onEdit,
+  onReorder,
   onResume,
   onSendNow,
   onSteerNow,
@@ -53,6 +62,13 @@ export function QueuePanel({
   const { t } = useI18n()
   const c = t.composer
   const [expandedIds, setExpandedIds] = useState<ReadonlySet<string>>(() => new Set())
+
+  // Same activation as the sidebar's lists: a press must travel before it lifts a row, so a click
+  // on the grip (or a tiny tremor) never reorders by accident.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
 
   const toggleExpanded = (id: string) => {
     setExpandedIds(current => {
@@ -72,8 +88,15 @@ export function QueuePanel({
     return null
   }
 
-  const renderRow = (entry: QueuedPromptEntry) => {
+  const ids = entries.map(entry => entry.id)
+  const reorderable = Boolean(onReorder) && entries.length > 1
+
+  const moveBy = (index: number, direction: -1 | 1) => onReorder?.(arrayMove(ids, index, index + direction))
+
+  const renderRow = (entry: QueuedPromptEntry, sortable?: SortableRowBindings) => {
     const isEditing = editingId === entry.id
+    const index = ids.indexOf(entry.id)
+    const movable = reorderable && Boolean(sortable) && canMoveQueuedEntry(entry)
     const attachmentsCount = entry.attachments.length
 
     // Steer only surfaces where it can actually deliver: a live turn to
@@ -99,9 +122,55 @@ export function QueuePanel({
         )}
         dismiss={{ label: c.queueDelete, onDismiss: () => onDelete(entry.id) }}
         key={entry.id}
-        leading={<Codicon className="text-muted-foreground/70" name="comment" size="0.8rem" />}
+        leading={
+          movable && sortable ? (
+            <Tip label={c.queueReorder}>
+              <span
+                aria-label={c.queueReorder}
+                className="flex cursor-grab touch-none items-center text-muted-foreground/70 hover:text-foreground/90 active:cursor-grabbing"
+                data-reorder-handle=""
+                data-slot="queue-reorder-handle"
+                {...sortable.dragHandleProps}
+              >
+                <Codicon name="gripper" size="0.8rem" />
+              </span>
+            </Tip>
+          ) : (
+            <Codicon className="text-muted-foreground/70" name="comment" size="0.8rem" />
+          )
+        }
         trailing={
           <>
+            {movable && (
+              <>
+                <Tip label={c.queueMoveUp}>
+                  <Button
+                    aria-label={c.queueMoveUp}
+                    className="size-5 rounded-md"
+                    disabled={index <= 0}
+                    onClick={() => moveBy(index, -1)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Codicon name="arrow-up" size={iconSize.xs} />
+                  </Button>
+                </Tip>
+                <Tip label={c.queueMoveDown}>
+                  <Button
+                    aria-label={c.queueMoveDown}
+                    className="size-5 rounded-md"
+                    disabled={index >= ids.length - 1}
+                    onClick={() => moveBy(index, 1)}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Codicon name="arrow-down" size={iconSize.xs} />
+                  </Button>
+                </Tip>
+              </>
+            )}
             {canExpand && (
               <Tip label={isExpanded ? c.queueCollapse : c.queueExpand}>
                 <Button
@@ -187,10 +256,42 @@ export function QueuePanel({
       }
       icon={<Codicon className="text-muted-foreground/70" name={paused ? 'debug-pause' : 'layers'} size="0.8rem" />}
       label={paused ? c.queuedPaused(entries.length) : c.queued(entries.length)}
-      preview={lostEntries.length > 0 ? lostEntries.map(renderRow) : undefined}
+      preview={lostEntries.length > 0 ? lostEntries.map(entry => renderRow(entry)) : undefined}
     >
-      {entries.map(renderRow)}
+      {reorderable && onReorder ? (
+        <ReorderableList ids={ids} onReorder={onReorder} sensors={sensors}>
+          {entries.map(entry => (
+            <SortableQueueRow disabled={!canMoveQueuedEntry(entry)} id={entry.id} key={entry.id}>
+              {sortable => renderRow(entry, sortable)}
+            </SortableQueueRow>
+          ))}
+        </ReorderableList>
+      ) : (
+        entries.map(entry => renderRow(entry))
+      )}
     </StatusSection>
+  )
+}
+
+type SortableRowBindings = ReturnType<typeof useSortableBindings>
+
+/** One queue row lifted into the panel's sortable list. A row that cannot move (a lost turn, a
+ *  server row its owner offers no `move` for) stays a drop position but never lifts. */
+function SortableQueueRow({
+  children,
+  disabled,
+  id
+}: {
+  children: (sortable: SortableRowBindings) => ReactNode
+  disabled: boolean
+  id: string
+}) {
+  const sortable = useSortableBindings(id, { disabled })
+
+  return (
+    <div className={cn(sortable.dragging && 'relative z-10 opacity-90')} ref={sortable.ref} style={sortable.style}>
+      {children(sortable)}
+    </div>
   )
 }
 

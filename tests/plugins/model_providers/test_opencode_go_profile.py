@@ -310,3 +310,28 @@ def test_opencode_go_plan_windows_reach_usage_through_profile_hook(opencode_go_p
     assert [(w.label, w.used_percent) for w in snapshot.windows] == [
         ("Rolling window", 3.0), ("Weekly", 2.0), ("Monthly", 2.0)]
     assert snapshot.windows[0].reset_at == datetime(2026, 9, 16, 21, 44, 55, 176000, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("model", ["deepseek-v4.1-flash", "deepseek-v4.1", "mimo-v2.5", "glm-5", "kimi-k2", ""])
+def test_go_keeps_list_tool_content_for_every_model(opencode_go_profile, model):
+    """The relay accepts an image part inside a ``role: tool`` message (verified live on
+    deepseek-v4.1-flash: HTTP 200, pixels read correctly), so the profile allows list-type tool
+    content provider-wide instead of forcing the aux text downgrade. A real rejection is still
+    caught downstream as multimodal tool-content damage and downgraded per model."""
+    from providers import routed_model_rejects_vision_tool_messages
+
+    assert opencode_go_profile.supports_vision_tool_messages is True
+    assert routed_model_rejects_vision_tool_messages("opencode-go", model) is False
+
+
+def test_direct_xiaomi_profile_keeps_its_own_veto():
+    """opencode-go proxying MiMo must not loosen the direct Xiaomi profile's stricter flag."""
+    import providers
+
+    xiaomi = providers.get_provider_profile("xiaomi")
+    if xiaomi is None:
+        pytest.skip("xiaomi profile not registered in this build")
+    from providers import routed_model_rejects_vision_tool_messages
+
+    assert routed_model_rejects_vision_tool_messages("xiaomi", "mimo-v2.5") is True
+

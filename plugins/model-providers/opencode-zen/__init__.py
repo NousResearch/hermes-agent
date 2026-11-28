@@ -1,7 +1,7 @@
 """OpenCode provider profiles (Zen + Go).
 
 Both route api_mode per model in core; these profiles carry the
-chat_completions reasoning translations (GLM-5.2, Kimi K2, DeepSeek, Ox Alpha).
+chat_completions reasoning translations (GLM-5.2, Kimi K2/K3, DeepSeek, Ox Alpha).
 """
 
 from typing import Any
@@ -109,6 +109,13 @@ class OpenCodeGoProfile(ProviderProfile):
                 return {}, {}
             clamped = re_.clamp_effort(effort, re_.GLM52_EFFORTS, re_.GLM52_OVERRIDES)
             return {}, {"reasoning_effort": clamped if clamped in re_.GLM52_EFFORTS else "high"}
+        if _flat_model_name(model).startswith("kimi-k3"):
+            if not isinstance(reasoning_config, dict):
+                return {}, {}
+            # K3's documented Go vocabulary is low/high/max (medium → high, xhigh → max).
+            return re_.thinking_toggle_extras(
+                reasoning_config, re_.KIMI_K3_EFFORTS, re_.KIMI_K3_OVERRIDES
+            )
         if _flat_model_name(model).startswith("kimi-k2"):
             if not isinstance(reasoning_config, dict):
                 return {}, {}

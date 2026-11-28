@@ -146,6 +146,67 @@ class TestOpenCodeGoKimiReasoning:
         assert top_level == {}
 
 
+class TestOpenCodeGoKimiK3Reasoning:
+    """Kimi K3 uses its documented low/high/max vocabulary on OpenCode Go."""
+
+    @pytest.mark.parametrize(
+        ("requested", "expected"),
+        [
+            ("low", "low"),
+            ("high", "high"),
+            ("max", "max"),
+            ("medium", "high"),  # declared K3 override, not a wire level
+            ("xhigh", "max"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_effort_reaches_the_wire(self, opencode_go_profile, requested, expected):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": requested},
+            model="kimi-k3.1-pro",
+        )
+        assert extra_body == {}
+        assert top_level == {"reasoning_effort": expected}
+
+    def test_disabled_turns_thinking_off_without_an_effort(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="moonshotai/kimi-k3.1-pro",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+
+    @pytest.mark.parametrize("model", ["kimi-k3", "kimi-k3.1-pro", "moonshotai/kimi-k3.1-pro"])
+    def test_model_spellings_are_recognized(self, opencode_go_profile, model):
+        _, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            model=model,
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+    def test_no_config_preserves_server_default(self, opencode_go_profile):
+        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+            reasoning_config=None,
+            model="kimi-k3.1-pro",
+        )
+        assert extra_body == {}
+        assert top_level == {}
+
+    def test_effort_reaches_chat_completions_request(self, opencode_go_profile):
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="kimi-k3.1-pro",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=opencode_go_profile,
+            reasoning_config={"enabled": True, "effort": "high"},
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        assert "extra_body" not in kwargs
+        assert kwargs["reasoning_effort"] == "high"
+
+
 class TestOpenCodeGoDeepSeekThinking:
     """DeepSeek V4 models use DeepSeek-style thinking controls on OpenCode Go."""
 

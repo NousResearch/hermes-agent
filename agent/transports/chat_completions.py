@@ -459,6 +459,32 @@ def _sanitize_message(
     return out_msg if strip_keys or remapped or copied_tool_calls is not None else None
 
 
+def _stringify_tool_content(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Serialize non-string tool-result content for strict OpenAI-compatible endpoints.
+
+    Hermes stores structured tool output as a dict. Providers that validate
+    ``messages[N].tool.content`` as ``str`` reject it with 422 before
+    generation. A JSON string is lossless and valid for every OpenAI-wire
+    provider; stored history keeps the original dict.
+    """
+    out = []
+    changed = False
+    for message in messages:
+        if (isinstance(message, dict) and message.get("role") == "tool"
+                and not isinstance(message.get("content"), str)):
+            content = message.get("content")
+            try:
+                text = "" if content is None else json.dumps(
+                    content, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                text = str(content)
+            out.append({**message, "content": text})
+            changed = True
+        else:
+            out.append(message)
+    return out if changed else messages
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'."""
 
@@ -475,6 +501,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
         Returns the input list unchanged when nothing needs sanitizing.
         """
+        messages = _stringify_tool_content(messages)
         profile = kwargs.get("provider_profile")
         provider = getattr(profile, "name", None) or kwargs.get("provider")
         strip_extra_content = not _model_consumes_thought_signature(kwargs.get("model"), kwargs.get("base_url"), provider)

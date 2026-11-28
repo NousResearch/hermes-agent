@@ -3,6 +3,10 @@ Bodies are rebound onto server.py's globals at install (method_ctx.bind_module).
 
 from __future__ import annotations
 
+import re
+
+from hermes_platform.host.runtime import is_wsl as _projects_host_is_wsl
+
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -130,13 +134,19 @@ def _(rid, params, pdb, conn) -> dict:
         "branch": git_probe.branch(cwd)})
 
 
-def _non_workspace_dirs() -> set[str]:
-    """Never-a-workspace dirs: ``/``, the user's home, the dir homes live in, plus both POSIX
-    spellings on every host (remote shells hand back Linux paths; promoting one mints a
-    catch-all project)."""
+_WSL_WINDOWS_PROFILE_DIR = re.compile(r"/mnt/[a-z]/(?ai:Users)/[^/]+")
+
+
+def _is_non_workspace_dir(real: str) -> bool:
+    """Exclude home directories from automatic grouping, including profiles mounted in WSL."""
+    # Match only the profile directory. A workspace below it is still eligible.
+    if _WSL_WINDOWS_PROFILE_DIR.fullmatch(real) and _projects_host_is_wsl():
+        return True
     home = os.path.realpath(os.path.expanduser("~"))
     candidates = (os.sep, home, os.path.dirname(home), "/home", "/Users")
-    return {os.path.normcase(os.path.realpath(path)) for path in candidates if path}
+    return os.path.normcase(real) in {
+        os.path.normcase(os.path.realpath(path)) for path in candidates if path
+    }
 
 
 def _is_repo_junk(root: str) -> bool:
@@ -148,7 +158,7 @@ def _is_repo_junk(root: str) -> bool:
     real = os.path.realpath(root)
     hermes_home = os.path.realpath(str(get_hermes_home()))
     return (
-        os.path.normcase(real) in _non_workspace_dirs()
+        _is_non_workspace_dir(real)
         or real == hermes_home
         or real.startswith(hermes_home + os.sep))
 
@@ -161,7 +171,7 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     from hermes_constants import get_hermes_home
     real = os.path.normcase(os.path.realpath(cwd))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
-    return real in _non_workspace_dirs() or real == hermes_home
+    return _is_non_workspace_dir(real) or real == hermes_home
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:

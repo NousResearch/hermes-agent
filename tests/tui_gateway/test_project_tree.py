@@ -7,6 +7,9 @@ break them.
 
 from __future__ import annotations
 
+import pytest
+
+from hermes_platform.host.runtime import is_wsl
 from tui_gateway import project_tree as pt
 
 _SID = 0
@@ -648,6 +651,34 @@ def test_home_bucket_leads_the_tree_and_is_lossless():
         cwdless["id"],
         junked["id"],
     }
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.skipif(not is_wsl(), reason="Windows profile mount policy applies in WSL")
+@pytest.mark.parametrize("home_is_repo", [False, True])
+def test_wsl_windows_home_is_not_an_automatic_project(home_is_repo):
+    """Regression for #159342: a mounted home should behave like the Linux home."""
+    from tui_gateway import server
+
+    home = "/mnt/c/Users/Hermes User"
+    workspace = f"{home}/Documents/example-project"
+    home_session = _session(home, repo_root=home if home_is_repo else "")
+    workspace_session = _session(workspace, repo_root=workspace)
+    options = {
+        "is_junk_root": server._is_repo_junk,
+        "is_junk_cwd": server._is_session_cwd_junk,
+        "hydrate": True,
+    }
+
+    tree = pt.build_tree([], [home_session, workspace_session], [], **options)
+
+    assert _home_session_ids(tree) == [home_session["id"]]
+    assert _real_project_ids(tree) == [workspace]
+
+    project = _project("p_home", "My folders", [home])
+    explicit_tree = pt.build_tree([project], [home_session], [], **options)
+    assert _real_project_ids(explicit_tree) == [project["id"]]
+    assert _home_session_ids(explicit_tree) == []
 
 
 def test_colliding_repo_basenames_disambiguate_labels():

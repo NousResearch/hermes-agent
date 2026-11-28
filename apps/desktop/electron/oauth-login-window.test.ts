@@ -5,12 +5,17 @@ import { type OauthLoginWindowLike, startOauthLoginWindow } from './oauth-login-
 
 const GATEWAY = 'https://fedora.example.ts.net'
 
-/** A login window double that records visibility and lets a test fire events. */
-function fakeWindow() {
+/** A queued load outcome that never settles: an edge holding the request open. */
+const HANG = Symbol('hang')
+
+/** A login window double that records visibility and lets a test fire events.
+ *  Each load rejects with the next queued failure (at once, or `{ after, error }` later; HANG
+ *  never settles), then succeeds. */
+function fakeWindow(loadFailures: unknown[] = []) {
   const closed: Array<() => void> = []
   const navigations: Array<(event: unknown, url: string) => void> = []
 
-  const state = { destroyed: false, focused: 0, loaded: '', shown: false, visible: false }
+  const state = { destroyed: false, focused: 0, loaded: '', loads: 0, shown: false, visible: false }
 
   const win: OauthLoginWindowLike = {
     destroy: () => {
@@ -19,10 +24,30 @@ function fakeWindow() {
     focus: () => {
       state.focused += 1
     },
+    hide: () => {
+      state.visible = false
+    },
     isDestroyed: () => state.destroyed,
     isVisible: () => state.visible,
     loadURL: async url => {
       state.loaded = url
+      state.loads += 1
+
+      if (loadFailures.length > 0) {
+        const failure = loadFailures.shift()
+
+        if (failure === HANG) {
+          return new Promise(() => {})
+        }
+
+        if (failure && typeof failure === 'object' && 'after' in failure) {
+          const { after, error } = failure as { after: number; error: Error }
+
+          return new Promise((_resolve, reject) => setTimeout(() => reject(error), after))
+        }
+
+        throw failure
+      }
     },
     on: (_event, listener) => closed.push(listener),
     show: () => {
@@ -46,13 +71,13 @@ function fakeWindow() {
   }
 }
 
-function harness(cookie = { present: false }) {
+function harness(cookie = { present: false }, loadFailures: unknown[] = []) {
   const windows: Array<ReturnType<typeof fakeWindow>> = []
   const created: Array<{ show: boolean; title: string }> = []
 
   const deps = {
     createWindow: (options: { session: string; show: boolean; title: string }) => {
-      const handle = fakeWindow()
+      const handle = fakeWindow(loadFailures)
       handle.state.visible = options.show
       windows.push(handle)
       created.push({ show: options.show, title: options.title })
@@ -156,6 +181,100 @@ test('a foreground silent sign-in reveals itself when auto-SSO does not finish',
 
   await vi.advanceTimersByTimeAsync(2_500)
   expect(h.windows[0].state.shown).toBe(true)
+})
+
+const reset = () => new Error("ERR_CONNECTION_RESET (-101) loading 'https://fedora.example.ts.net/'")
+
+test('a sleeping agent that resets the first loads is reloaded, hidden, until it answers', async () => {
+  const h = harness({ present: false }, [reset(), reset(), reset()])
+  const attempt = h.start({ silent: true, background: false })
+
+  await vi.advanceTimersByTimeAsync(3_000)
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, loads: 4, shown: false })
+
+  await vi.advanceTimersByTimeAsync(2_500)
+  expect(h.windows[0].state.shown).toBe(true)
+
+  h.cookie.present = true
+  h.windows[0].navigate()
+  await expect(attempt.result).resolves.toEqual({ baseUrl: GATEWAY, ok: true })
+})
+
+test('an agent that never wakes fails once the wake budget runs out', async () => {
+  const h = harness({ present: false }, Array.from({ length: 100 }, reset))
+  const attempt = h.start({ silent: true, background: false })
+  const outcome = attempt.result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(55_000)
+  expect(h.windows[0].state.destroyed).toBe(false)
+
+  await vi.advanceTimersByTimeAsync(6_000)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
+  expect(h.windows[0].state.destroyed).toBe(true)
+})
+
+test('a waking agent whose retry hangs still fails once the wake budget runs out', async () => {
+  const h = harness({ present: false }, [reset(), HANG])
+  const outcome = h.start({ silent: true, background: false }).result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(59_000)
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, loads: 2, shown: false })
+
+  await vi.advanceTimersByTimeAsync(1_000)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
+  expect(h.windows[0].state.destroyed).toBe(true)
+})
+
+test('an agent that answered is not cut off by the wake budget while the user signs in', async () => {
+  const h = harness({ present: false }, [reset()])
+  const attempt = h.start({ silent: true, background: false })
+
+  await vi.advanceTimersByTimeAsync(120_000)
+  expect(h.windows[0].state).toMatchObject({ destroyed: false, shown: true })
+
+  h.cookie.present = true
+  h.windows[0].navigate()
+  await expect(attempt.result).resolves.toEqual({ baseUrl: GATEWAY, ok: true })
+})
+
+test('a window revealed before the first reset hides while the agent wakes', async () => {
+  // The edge holds the first connection past the 2.5 s reveal, then resets it.
+  const h = harness({ present: false }, [{ after: 3_000, error: reset() }, reset()])
+  const attempt = h.start({ silent: true, background: false })
+
+  await vi.advanceTimersByTimeAsync(2_500)
+  expect(h.windows[0].state.visible).toBe(true)
+
+  await vi.advanceTimersByTimeAsync(500)
+  expect(h.windows[0].state).toMatchObject({ loads: 1, visible: false })
+
+  await vi.advanceTimersByTimeAsync(2_000)
+  expect(h.windows[0].state).toMatchObject({ loads: 3, visible: false })
+
+  await vi.advanceTimersByTimeAsync(2_500)
+  expect(h.windows[0].state.visible).toBe(true)
+
+  h.cookie.present = true
+  h.windows[0].navigate()
+  await expect(attempt.result).resolves.toEqual({ baseUrl: GATEWAY, ok: true })
+})
+
+test('a background sign-in does not wait for a waking gateway', async () => {
+  const h = harness({ present: false }, [reset()])
+  const outcome = h.start({ silent: true, background: true }).result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_RESET/) })
+  expect(h.windows[0].state.loads).toBe(1)
+})
+
+test('an interactive sign-in to a gateway that refuses the connection fails at once', async () => {
+  const h = harness({ present: false }, [new Error('ERR_CONNECTION_REFUSED (-102)')])
+  const outcome = h.start({ silent: false, background: false }).result.catch(error => error)
+
+  await vi.advanceTimersByTimeAsync(0)
+  expect(await outcome).toMatchObject({ message: expect.stringMatching(/ERR_CONNECTION_REFUSED/) })
+  expect(h.windows[0].state.loads).toBe(1)
 })
 
 test('an interactive sign-in opens visible on the provider chooser', () => {

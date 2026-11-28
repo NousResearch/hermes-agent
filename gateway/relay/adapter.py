@@ -1093,8 +1093,8 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         """Outbound metadata carrying the tenant discriminators (see _capture_scope).
         Both are attached when known and not already set; the connector tries scope_id
         first and only falls back to user_id on a route miss, so carrying both never
-        overrides routing-table resolution."""
-        meta: dict[str, Any] = dict(metadata or {})
+        overrides routing-table resolution. The ledger's internal ``idempotency_key`` never leaves."""
+        meta: dict[str, Any] = {k: v for k, v in (metadata or {}).items() if k != "idempotency_key"}
         # ``getattr``: relay tests build bare adapters via ``__new__`` without ``__init__``.
         for key, cache in (
             ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),

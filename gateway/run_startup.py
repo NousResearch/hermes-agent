@@ -487,6 +487,7 @@ class GatewayStartupMixin:
         # not due yet, and those still need their timer armed below.
         try:
             from gateway.delivery_ledger import RECOVERED_MARKER, mark_delivered, mark_failed
+            from gateway.platforms.base_delivery_ledger import idempotent_metadata
         except Exception:
             logger.debug("delivery ledger import failed", exc_info=True)
             return 0
@@ -502,7 +503,9 @@ class GatewayStartupMixin:
             content = row["content"]
             if row.get("needs_marker"):
                 content = row.get("marker", RECOVERED_MARKER) + content
-            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None
+            # The same idempotency key the original send carried, so a platform that dedups never shows two copies.
+            metadata = idempotent_metadata({"thread_id": row["thread_id"]} if row.get("thread_id") else None,
+                                           row["obligation_id"])
             try:
                 result = await adapter.send(chat_id=row["chat_id"], content=content, metadata=metadata)
             except Exception as send_err:

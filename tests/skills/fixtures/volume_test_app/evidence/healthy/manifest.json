@@ -1,0 +1,13 @@
+{
+  "run": "volume-70d70858d8f547b4abeeb7e148a27ec8",
+  "seed": 42,
+  "confirmed_products": 10000,
+  "categories_expected": 8,
+  "initial_counts": {
+    "products": 0,
+    "categories": 0,
+    "orphaned": 0,
+    "sentinel_intact": true
+  },
+  "confirmed_logical_prefix": 10000
+}

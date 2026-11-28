@@ -57,6 +57,29 @@ Common toolsets include `web`, `search`, `terminal`, `file`, `browser`, `vision`
 
 See [Toolsets Reference](../../reference/toolsets-reference.md) for the full set, including platform presets such as `hermes-cli`, `hermes-telegram`, and dynamic MCP toolsets like `mcp-<server>`.
 
+## Local usage analytics
+
+```bash
+hermes config set tools.analytics true
+hermes tools analytics
+hermes tools prune
+```
+
+These opt-in commands read the active profile's existing `state.db`; they do not
+install a second tracker, collect additional tool-result data, or send telemetry.
+The gate defaults to off and does not change the normal session-history policy.
+Analytics reports persisted tool-call counts, failures, distinct sessions, and
+an approximate output-token estimate from text length—not billed tokens or cost.
+It includes agent-owned tools when their results are present in session history.
+
+Prune is advisory: it compares enabled CLI toolsets against recorded use,
+including enabled tools with zero calls. It waits for at least ten recorded CLI
+sessions, then labels tools used in fewer than ten sessions as low-use. A whole
+toolset is suggested only when all its known members are low-use. The output
+shows supported `platform_toolsets.cli` list guidance; it never edits the config
+or disables a tool. Review suggestions against future needs before removing a
+toolset. Unrecognized/dynamic toolsets are retained in guidance, not guessed at.
+
 ## Tool result annotations
 
 A few tool behaviors are worth knowing when you read agent transcripts:

@@ -8,6 +8,7 @@ these assert the response shape as well as the on-disk outcome.
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import sys
 from pathlib import Path
 
@@ -88,3 +89,46 @@ def test_delete_default_board_is_refused(client):
     r = client.delete("/api/plugins/kanban/boards/default")
     assert r.status_code == 400
     assert "default" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("hard_delete", [False, True], ids=["archive", "hard-delete"])
+def test_delete_board_locked_dir_is_a_400_not_a_500(client, monkeypatch, hard_delete):
+    """#143908: a board dir held open (the gateway's kanban.db handle) must surface
+    as an actionable 400, not a raw 500 — and must not half-remove the board."""
+    from hermes_cli import kanban_db_boards as kbb
+
+    client.post("/api/plugins/kanban/boards", json={"slug": "locked", "name": "Locked"})
+    monkeypatch.setattr(kbb, "_DIR_OP_RETRY_DELAY_S", 0.0, raising=False)  # no wall-clock waits
+
+    real_rename, real_rmtree = Path.rename, shutil.rmtree
+    state = {"locked": True}
+
+    def flaky_rename(self, target):
+        if state["locked"]:
+            raise PermissionError(13, "The process cannot access the file", str(self))
+        return real_rename(self, target)
+
+    def flaky_rmtree(path, *args, **kwargs):
+        if state["locked"]:
+            raise PermissionError(13, "The process cannot access the file", str(path))
+        return real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rename", flaky_rename)  # archive branch
+    monkeypatch.setattr(shutil, "rmtree", flaky_rmtree)  # hard-delete branch
+
+    url = "/api/plugins/kanban/boards/locked" + ("?delete=true" if hard_delete else "")
+    r = client.delete(url)
+
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert f"could not {'delete' if hard_delete else 'archive'} board 'locked'" in detail
+    assert "hermes gateway restart" in detail
+    # Still there, still a live board: the failed removal changed nothing.
+    assert kb.board_dir("locked").is_dir()
+    assert kb.read_board_metadata("locked")["archived"] is False
+    assert "locked" in [b["slug"] for b in kb.list_boards(include_archived=False)]
+
+    # Lock released (what `hermes gateway restart` does): the same request works.
+    state["locked"] = False
+    r = client.delete(url)
+    assert r.status_code == 200, r.text

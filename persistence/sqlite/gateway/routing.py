@@ -38,6 +38,18 @@ __all__ = ["SQLiteRoutingRepository"]
 logger = logging.getLogger("hermes_state")
 
 
+def _topic_binding_from_row(row) -> TopicBinding:
+    """Build a ``TopicBinding`` from a ``SELECT *`` row, dropping columns this build does not know.
+
+    ``state.db`` is user-owned and may carry columns written by a newer or downstream schema.
+    Passing one to the frozen dataclass raises ``TypeError``; the gateway callers surface that
+    only at ``DEBUG`` and give up, so every binding verb (auto-rename, ``/topic restore``, heal
+    paths) silently stops working.
+    """
+    known = TopicBinding.__dataclass_fields__
+    return TopicBinding(**{key: value for key, value in dict(row).items() if key in known})
+
+
 class SQLiteRoutingRepository:
     """Routing index, routing peers and Telegram DM topic state of the bound profile's ``state.db``."""
 
@@ -608,7 +620,7 @@ class SQLiteRoutingRepository:
                     SELECT * FROM telegram_dm_topic_bindings
                     WHERE profile_name = ? AND chat_id = ? AND thread_id = ?
                     """, (profile_name, str(chat_id), str(thread_id)))
-        return TopicBinding(**dict(row)) if row else None
+        return _topic_binding_from_row(row) if row else None
 
     def list_topic_bindings_for_chat(self, *, chat_id: str, profile_name: str = "default") -> tuple[TopicBinding, ...]:
         profile_name = normalize_topic_profile_name(profile_name)
@@ -618,7 +630,7 @@ class SQLiteRoutingRepository:
                 "ORDER BY updated_at DESC",
                 (profile_name, str(chat_id)),
             )
-        return tuple(TopicBinding(**dict(row)) for row in rows)
+        return tuple(_topic_binding_from_row(row) for row in rows)
 
     def get_topic_binding_for_session(self, *, session_id: str) -> TopicBinding | None:
         with translated():
@@ -626,7 +638,7 @@ class SQLiteRoutingRepository:
                     SELECT * FROM telegram_dm_topic_bindings
                     WHERE session_id = ?
                     """, (str(session_id),))
-        return TopicBinding(**dict(row)) if row else None
+        return _topic_binding_from_row(row) if row else None
 
     def is_session_linked_to_topic(self, *, session_id: str) -> bool:
         with translated():

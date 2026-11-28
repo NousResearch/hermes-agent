@@ -380,6 +380,14 @@ class MCPServersReplace(BaseModel):
     servers: dict[str, dict[str, Any]] = {}
     profile: Optional[str] = None
 
+class MCPServerEdit(BaseModel):
+    url: Optional[str] = None
+    command: Optional[str] = None
+    args: Optional[list[str]] = None
+    env: Optional[dict[str, str | None]] = None
+    auth: Optional[Literal["none", "header", "oauth"]] = None
+    bearer_token: Optional[SecretStr] = None
+
 class MCPEnabledToggle(BaseModel):
     enabled: bool
     profile: Optional[str] = None

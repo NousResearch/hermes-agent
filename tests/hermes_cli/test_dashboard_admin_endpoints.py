@@ -88,6 +88,64 @@ class TestMcpEndpoints:
 
         assert _get_mcp_servers()["oauth-server"]["auth"] == "oauth"
 
+    def test_edit_http_server_keeps_bearer_and_unrelated_settings(self):
+        from hermes_cli.config import load_env, read_raw_config, save_config
+
+        secret = "dashboard-secret-value"
+        assert self.client.post("/api/mcp/servers", json={
+            "name": "remote", "url": "https://example.com/mcp", "auth": "header", "bearer_token": secret,
+        }).status_code == 200
+        config = read_raw_config()
+        config["mcp_servers"]["remote"].update(enabled=False, tools={"include": []}, timeout=42)
+        config["mcp_servers"]["other"] = {"command": "uvx"}
+        save_config(config)
+
+        response = self.client.patch("/api/mcp/servers/remote", json={"url": "https://example.com/new"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["url"] == "https://example.com/new"
+        assert secret not in response.text
+        servers = read_raw_config()["mcp_servers"]
+        assert servers == {
+            "remote": {
+                "url": "https://example.com/new", "headers": {"Authorization": "Bearer ${MCP_REMOTE_API_KEY}"},
+                "enabled": False, "tools": {"include": []}, "timeout": 42,
+            },
+            "other": {"command": "uvx"},
+        }
+        assert load_env()["MCP_REMOTE_API_KEY"] == secret
+
+        move = {"url": "https://next.example.com/mcp"}
+        assert self.client.patch("/api/mcp/servers/remote", json=move).status_code == 400
+        assert read_raw_config()["mcp_servers"] == servers
+        response = self.client.patch("/api/mcp/servers/remote", json={
+            **move, "auth": "header", "bearer_token": "Bearer dashboard-replacement-value",
+        })
+        assert response.status_code == 200, response.text
+        assert "dashboard-replacement-value" not in response.text
+        assert load_env()["MCP_REMOTE_API_KEY"] == "dashboard-replacement-value"
+        assert read_raw_config()["mcp_servers"]["remote"]["url"] == move["url"]
+
+    def test_edit_stdio_server_patches_only_requested_environment_values(self):
+        from hermes_cli.config import read_raw_config
+
+        secret = "dashboard-stdio-secret"
+        assert self.client.post("/api/mcp/servers", json={
+            "name": "local", "command": "uvx", "args": ["package", "one argument"],
+            "env": {"API_KEY": secret, "DEBUG": "1"},
+        }).status_code == 200
+
+        response = self.client.patch("/api/mcp/servers/local", json={
+            "args": ["other-package", "two words"], "env": {"DEBUG": None, "PORT": "8080"},
+        })
+
+        assert response.status_code == 200, response.text
+        assert secret not in response.text
+        assert read_raw_config()["mcp_servers"]["local"] == {
+            "command": "uvx", "args": ["other-package", "two words"], "env": {"API_KEY": secret, "PORT": "8080"},
+        }
+        assert self.client.patch("/api/mcp/servers/missing", json={"command": "uvx"}).status_code == 404
+
     @pytest.mark.parametrize(
         ("payload", "error"),
         [

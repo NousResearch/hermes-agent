@@ -7,11 +7,12 @@ secrets are redacted on read.
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:  # pragma: no cover - annotation only
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from hermes_cli.config import redact_key
-from hermes_cli.web_models import MCPServerCreate
+from hermes_cli.web_models import MCPServerCreate, MCPServerEdit
 
 
 def normalize_mcp_server_create(body: MCPServerCreate) -> tuple[str, dict[str, Any], Optional[str]]:
@@ -79,6 +80,88 @@ def _redact_mcp_env(env: dict[str, Any]) -> dict[str, str]:
         except Exception:
             out[str(k)] = "***"
     return out
+
+
+def _edit_http_mcp_server(name: str, cfg: dict[str, Any], body: MCPServerEdit) -> None:
+    from hermes_cli.mcp_config import _bearer_auth_headers, _strip_bearer_prefix
+
+    url = cfg["url"] if body.url is None else body.url.strip()
+    if not url:
+        raise ValueError("URL is required")
+
+    headers = dict(cfg.get("headers") or {})
+    authorization = next((key for key in headers if key.lower() == "authorization"), None)
+    if url != cfg["url"]:
+        old, new = urlsplit(cfg["url"]), urlsplit(url)
+        if new.scheme not in {"http", "https"} or not new.hostname:
+            raise ValueError("Enter an HTTP or HTTPS URL")
+        if (old.scheme, old.netloc) != (new.scheme, new.netloc):
+            if cfg.get("oauth") or set(headers) - {authorization}:
+                raise ValueError("Edit the configuration file to move a server with custom headers or OAuth settings to a different origin")
+            if authorization and body.bearer_token is None and body.auth not in {"none", "oauth"}:
+                raise ValueError("Enter a replacement bearer token for the new server URL")
+        cfg["url"] = url
+
+    if body.auth is not None:
+        if body.auth == "oauth":
+            cfg["auth"] = "oauth"
+        else:
+            cfg.pop("auth", None)
+        if body.auth != "header" and authorization is not None:
+            headers.pop(authorization)
+        if body.auth == "header" and authorization is None and body.bearer_token is None:
+            raise ValueError("Bearer token is required")
+
+    if body.bearer_token is not None:
+        if body.auth != "header":
+            raise ValueError("Bearer token requires header authentication")
+        token = _strip_bearer_prefix(body.bearer_token.get_secret_value())
+        if not token or token.lower() == "bearer":
+            raise ValueError("Bearer token is required")
+        if authorization is not None:
+            headers.pop(authorization, None)
+        headers.update(_bearer_auth_headers(name))
+
+    if headers:
+        cfg["headers"] = headers
+    else:
+        cfg.pop("headers", None)
+
+
+def edit_mcp_server_config(name: str, current: dict[str, Any], body: MCPServerEdit) -> dict[str, Any]:
+    """Apply only the supplied form fields to one existing connection."""
+    from hermes_cli.mcp_security import validate_mcp_server_entry
+
+    updated = dict(current)
+    if current.get("url"):
+        if body.command is not None or body.args is not None or body.env is not None:
+            raise ValueError("Command, arguments and environment are only supported for stdio MCP servers")
+        _edit_http_mcp_server(name, updated, body)
+    elif current.get("command"):
+        if body.url is not None or body.auth is not None or body.bearer_token is not None:
+            raise ValueError("URL and authentication are only supported for HTTP MCP servers")
+        if body.command is not None:
+            command = body.command.strip()
+            if not command:
+                raise ValueError("Command is required")
+            updated["command"] = command
+        if body.args is not None:
+            updated["args"] = body.args
+        if body.env is not None:
+            env = dict(current.get("env") or {})
+            for key, value in body.env.items():
+                if value is None:
+                    env.pop(key, None)
+                else:
+                    env[key] = value
+            updated["env"] = env
+    else:
+        raise ValueError("Unknown MCP transport")
+
+    issues = validate_mcp_server_entry(name, updated)
+    if issues:
+        raise ValueError(f"Server '{name}' rejected: {'; '.join(issues)}")
+    return updated
 
 
 def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = None) -> dict[str, Any]:

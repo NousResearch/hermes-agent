@@ -2,7 +2,7 @@
  "counts": {
   "http": {
    "keep-host-wide": 1,
-   "undecided": 355
+   "undecided": 356
   },
   "rpc": {
    "authority": 113,
@@ -209,6 +209,7 @@
   {"current_path": "fastapi.applications:FastAPI.setup.<locals>.redoc_html", "decision": "undecided", "handler": "GET HEAD /redoc", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:stream_managed_file", "decision": "undecided", "handler": "HEAD /api/files/stream", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.files:fs_download", "decision": "undecided", "handler": "HEAD /api/fs/download", "kind": "http", "ref": ""},
+  {"current_path": "hermes_cli.web_routers.mcp:edit_mcp_server", "decision": "undecided", "handler": "PATCH /api/mcp/servers/{name:path}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.profiles:rename_profile_endpoint", "decision": "undecided", "handler": "PATCH /api/profiles/{name}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.sessions:rename_session_endpoint", "decision": "undecided", "handler": "PATCH /api/sessions/{session_id}", "kind": "http", "ref": ""},
   {"current_path": "hermes_cli.web_routers.ui_preferences:patch_ui_preferences; surface: ui_preferences", "decision": "undecided", "handler": "PATCH /api/ui-preferences", "kind": "http", "ref": ""},

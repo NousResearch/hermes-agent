@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import selectors
 import subprocess
 import sys
 import threading
@@ -574,17 +573,18 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
     failures: list[str] = []
 
     def _drain(name: str) -> None:
-        stream, size = getattr(proc, name), 0
-        # POSIX: wait in short slices so a reader can notice ``stop`` while a quiet background helper
-        # still holds the pipe; selectors (epoll/poll) has no FD_SETSIZE limit, unlike select.select.
-        # Windows pipes cannot be selected, so a read there blocks until EOF.
-        selector = None if IS_WINDOWS else selectors.DefaultSelector()
+        stream, size, waiter = getattr(proc, name), 0, None
         try:
             fd = stream.fileno()
-            if selector is not None:
-                selector.register(fd, selectors.EVENT_READ)
+            # POSIX: wait in short slices so a reader can notice ``stop`` while a quiet background helper
+            # still holds the pipe. The shared waiter has no FD_SETSIZE ceiling and falls back to poll()
+            # at the fd limit. Windows pipes cannot be selected, so a read there blocks until EOF.
+            if not IS_WINDOWS:
+                from tools.environments.fd_wait import open_fd_waiter
+                if (waiter := open_fd_waiter(fd)) is None:
+                    return  # already closed: nothing to drain
             while not stop.is_set():
-                if selector is not None and not selector.select(timeout=0.1):
+                if waiter is not None and not waiter.wait(0.1):
                     continue
                 if not (chunk := os.read(fd, 65536)):
                     return
@@ -595,11 +595,11 @@ def _communicate_until_exit(proc: subprocess.Popen, stdin_json: str, timeout: in
                     return
                 chunks[name].append(chunk)
         except (OSError, ValueError) as exc:
-            if not stop.is_set():  # a lost answer must not read as an empty, successful one
+            if not stop.is_set():  # a lost answer (setup included) must not read as an empty, successful one
                 failures.append(f"{name}: {type(exc).__name__}: {exc}")
         finally:
-            if selector is not None:
-                selector.close()
+            if waiter is not None:
+                waiter.close()
 
     def _feed() -> None:
         with suppress(OSError, ValueError):  # the hook may exit without reading stdin

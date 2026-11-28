@@ -40,6 +40,16 @@ pytestmark = pytest.mark.platforms("linux")  # /proc ancestry and creation times
 MARKER_SH = POSIX.with_name("marker.sh")
 
 
+def _exited(pid: int) -> bool:
+    """Gone or a zombie. One read, not ``exists()`` then ``stat``: an orphan's reaper can take the
+    pid between the two, and the read then raises (ENOENT, or ESRCH on a half-torn-down entry)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:  # FileNotFoundError and ProcessLookupError alike
+        return True
+    return stat.rsplit(") ", 1)[1].startswith("Z")
+
+
 def _env(tmp_path: Path, home: Path, **extra: str) -> dict:
     env = {**os.environ, "HOME": str(tmp_path), "TMPDIR": str(tmp_path), "HERMES_HOME": str(home),
            "HANDOFF_CAPTURE": str(tmp_path / "calls.txt"), "HERMES_RUNTIME_DIR": str(tmp_path / "store"),
@@ -495,8 +505,7 @@ def test_script_killed_before_the_delegate_line_appears_runs_no_update(tmp_path)
         script.kill(); script.wait()
         time.sleep(1.0)
         assert _calls(tmp_path) == [] or not any(c.startswith("update") for c in _calls(tmp_path))
-        assert all(not Path(f"/proc/{pid}").exists() or "Z" in Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split(") ")[1][:1]
-                   for pid in gate)
+        assert all(_exited(pid) for pid in gate)
         assert "delegate:" not in marker.read_text(encoding="utf-8-sig")
     finally:
         if lock_fd is not None:
@@ -532,7 +541,7 @@ def test_timed_out_probe_is_killed_with_its_whole_process_tree(tmp_path, perl):
     assert "rc=124" in out.stdout, out
     grandchild = int(pidfile.read_text(encoding="utf-8-sig"))
     time.sleep(0.2)
-    assert not Path(f"/proc/{grandchild}").exists() or Path(f"/proc/{grandchild}/stat").read_text(encoding="utf-8").split(") ")[1].startswith("Z")
+    assert _exited(grandchild)
 
 
 @pytest.mark.parametrize("locale", ["C", "C.UTF-8"])
@@ -607,7 +616,7 @@ def test_old_desktop_stays_parked_after_the_orchestrator_is_killed_while_the_upd
             if phase == "delegate":
                 hold.touch()
                 deadline = time.monotonic() + 30
-                while Path(f"/proc/{delegate}").exists() and "Z" not in Path(f"/proc/{delegate}/stat").read_text(encoding="utf-8").rsplit(") ", 1)[1][:1]:
+                while not _exited(delegate):
                     assert time.monotonic() < deadline
                     time.sleep(0.05)
         probe = subprocess.run([bash, "-c", f"log() {{ :; }}; MARKER=/dev/null INSTALL_ROOT={shlex.quote(str(install))}; "

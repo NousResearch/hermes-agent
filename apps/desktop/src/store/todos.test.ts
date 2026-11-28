@@ -34,12 +34,46 @@ describe('setSessionTodos finished-list auto-clear', () => {
   })
 
   it('drops the list shortly after every item completes', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress'), todo('b', 'pending')])
     setSessionTodos('s1', [todo('a', 'completed'), todo('b', 'cancelled')])
 
     expect($todosBySession.get().s1).toHaveLength(2)
 
     vi.advanceTimersByTime(5_000)
 
+    expect($todosBySession.get().s1).toBeUndefined()
+  })
+
+  it('does not prolong a completed live checklist when its snapshot is replayed', () => {
+    const completed = [todo('a', 'completed')]
+    setSessionTodos('s1', [todo('a', 'in_progress')], 1)
+    setSessionTodos('s1', completed, 2)
+
+    for (let replay = 0; replay < 3; replay += 1) {
+      vi.advanceTimersByTime(1_000)
+      restoreSessionTodosFromSnapshot('s1', { revision: 2, todos: [todo('a', 'completed')] }, true)
+    }
+
+    vi.advanceTimersByTime(900)
+    expect($todosBySession.get().s1).toEqual(completed)
+
+    vi.advanceTimersByTime(200)
+    expect($todosBySession.get().s1).toBeUndefined()
+    expect($retainedTodosBySession.get().s1).toEqual(completed)
+  })
+
+  it('shows a changed finished snapshot for its own full linger', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')], 1)
+    setSessionTodos('s1', [todo('a', 'completed')], 2)
+    vi.advanceTimersByTime(3_000)
+
+    const changed = [todo('a', 'cancelled')]
+    restoreSessionTodosFromSnapshot('s1', { revision: 3, todos: changed }, true)
+
+    vi.advanceTimersByTime(3_900)
+    expect($todosBySession.get().s1).toEqual(changed)
+
+    vi.advanceTimersByTime(200)
     expect($todosBySession.get().s1).toBeUndefined()
   })
 
@@ -52,6 +86,7 @@ describe('setSessionTodos finished-list auto-clear', () => {
   })
 
   it('cancels the pending clear when a new active list arrives', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')])
     setSessionTodos('s1', [todo('a', 'completed')])
     vi.advanceTimersByTime(2_000)
 
@@ -82,6 +117,7 @@ describe('clearActiveSessionTodos (turn-end cleanup)', () => {
   })
 
   it('leaves a finished list to its normal linger instead of clearing immediately', () => {
+    setSessionTodos('s1', [todo('a', 'in_progress')])
     setSessionTodos('s1', [todo('a', 'completed')])
 
     clearActiveSessionTodos('s1')

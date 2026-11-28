@@ -20,6 +20,14 @@ export const $todosBySession = atom<Record<string, TodoItem[]>>({})
 export const $todoRevisionsBySession = atom<Record<string, number>>({})
 /** Last authoritative snapshot, separate from the transient live panel. */
 export const $retainedTodosBySession = atom<Record<string, TodoItem[]>>({})
+/** Sessions whose retained checklist the user opened. Lives beside the snapshot
+ *  so the choice survives the section's remounts and stays per session. */
+export const $retainedTodosExpanded = atom<Record<string, true>>({})
+
+export function setRetainedTodosExpanded(sid: string, expanded: boolean) {
+  const { [sid]: _drop, ...rest } = $retainedTodosExpanded.get()
+  $retainedTodosExpanded.set(expanded ? { ...rest, [sid]: true } : rest)
+}
 
 export const todoListActive = (todos: readonly TodoItem[]) =>
   todos.some(t => t.status === 'pending' || t.status === 'in_progress')
@@ -106,6 +114,7 @@ function retainSessionTodos(sid: string, todos: TodoItem[]) {
   } else if (sid in current) {
     const { [sid]: _drop, ...rest } = current
     $retainedTodosBySession.set(rest)
+    setRetainedTodosExpanded(sid, false)
   }
 }
 
@@ -121,6 +130,31 @@ export function setSessionTodos(sid: string, todos: TodoItem[], revision?: null 
   // An unversioned tool.start is optimistic, not a durable result.
   if (revision != null) {
     retainSessionTodos(sid, todos)
+  }
+
+  // The linger shows a live list's last checkmark landing. A list that is
+  // already settled when it arrives (resume, hydration, a same-revision re-read)
+  // is history: it stays in the retained disclosure instead of flashing the
+  // expanded live panel open and closed again.
+  if (!todoListActive(todos)) {
+    const live = getSessionTodos($todosBySession.get(), sid)
+
+    // Replayed terminal snapshots must not restart an existing linger.
+    const sameFinished =
+      live &&
+      !todoListActive(live) &&
+      live.length === todos.length &&
+      todos.every(
+        (item, index) =>
+          item.id === live[index]?.id &&
+          item.content === live[index]?.content &&
+          item.status === live[index]?.status &&
+          item.parent === live[index]?.parent
+      )
+
+    if (!live || sameFinished) {
+      return
+    }
   }
 
   clearTimers.cancel(sid)

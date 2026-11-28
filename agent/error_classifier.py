@@ -1043,9 +1043,11 @@ def _moa_special_cases(c: _Ctx) -> Optional[Verdict]:
     if c.provider_slug == "moa" and any(s in str(c.error) for s in _MOA_ADAPTER_SHAPE_BUGS):
         return _v(_R.format_error, retryable=False)
     # Persisted MoA preset name that was renamed/deleted — deterministic config error.
-    from agent.errors import InvalidProviderResponseError, MoAPresetNotFoundError
+    from agent.errors import InvalidProviderResponseError, MoAFanoutAbortedError, MoAPresetNotFoundError
     if isinstance(c.error, MoAPresetNotFoundError):
         return _v(_R.model_not_found, retryable=False)
+    if isinstance(c.error, MoAFanoutAbortedError):
+        return _v(_R.unknown, retryable=False, should_fallback=False)
     return _v(_R.incomplete_response, **_ABORT_FALLBACK) if isinstance(c.error, InvalidProviderResponseError) else None
 
 

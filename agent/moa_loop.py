@@ -919,6 +919,83 @@ def _guidance_inputs(
     return agg_refs, _degraded_notice(failed_labels, policy), bool(reference_outputs) and not successful
 
 
+_MAX_VERDICT_RETRIES = 25
+_VERDICT_SLEEP_SLICE_S = 0.1
+
+
+def _sleep_for_verdict_retry(delay_s: float, agent: Any = None) -> None:
+    if delay_s <= 0:
+        return
+    deadline = time.monotonic() + delay_s
+    while True:
+        if agent is not None and getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("MoA reference retry interrupted by user")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(_VERDICT_SLEEP_SLICE_S, remaining))
+
+
+def _run_fanout_with_verdict(
+    *,
+    preset_name: str | None,
+    preset_config: dict[str, Any],
+    aggregator: dict[str, Any],
+    initial_slots: list[dict[str, Any]],
+    agent: Any,
+    run_batch: Any,
+    on_batch_accounting: Any = None,
+) -> tuple[list[tuple[str, str, Any]], bool]:
+    """Run MoA reference fan-out and apply optional ``moa_fanout_verdict`` plugin directives."""
+    from agent.errors import MoAFanoutAbortedError
+    from hermes_cli.plugins import get_moa_fanout_verdict
+
+    active_slots = [dict(s) for s in initial_slots]
+    preserved_healthy: list[tuple[str, str, Any]] = []
+    attempt = 1
+
+    while True:
+        batch_outputs = run_batch(active_slots)
+        if callable(on_batch_accounting):
+            on_batch_accounting(batch_outputs)
+
+        combined_outputs = [*preserved_healthy, *batch_outputs] if preserved_healthy else list(batch_outputs)
+        structured = [
+            {"label": lbl, "text": txt, "failed": _is_failed_reference(txt)}
+            for lbl, txt, _acct in combined_outputs
+        ]
+        verdict = get_moa_fanout_verdict(
+            preset_name=preset_name,
+            preset_config=preset_config,
+            aggregator=aggregator,
+            active_slots=active_slots,
+            reference_outputs=structured,
+            attempt=attempt,
+        )
+        if verdict is None:
+            return combined_outputs, True
+
+        action = verdict["action"]
+        if action == "accept":
+            return combined_outputs, bool(verdict.get("cache", True))
+        if action == "abort":
+            raise MoAFanoutAbortedError(
+                verdict["message"],
+                preset_name=preset_name,
+                metadata=verdict.get("metadata"),
+            )
+        if action == "retry" and attempt <= _MAX_VERDICT_RETRIES:
+            if verdict.get("merge_healthy"):
+                preserved_healthy = [o for o in combined_outputs if not _is_failed_reference(o[1])]
+            else:
+                preserved_healthy = []
+            active_slots = list(verdict["slots"])
+            attempt += 1
+            _sleep_for_verdict_retry(float(verdict.get("delay_s") or 0.0), agent=agent)
+            continue
+        return combined_outputs, True
+
+
 def aggregate_moa_context(
     *, user_prompt: str, api_messages: list[dict[str, Any]], reference_models: list[dict[str, Any]],
     aggregator: dict[str, Any], temperature: float | None = None, aggregator_temperature: float | None = None,
@@ -938,9 +1015,25 @@ def aggregate_moa_context(
     ``reference_max_tokens`` to both calls here would silently reintroduce that regression.
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
-    reference_outputs = _run_references_parallel(
-        reference_models, _reference_messages(api_messages), temperature=temperature,
-        max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
+    ref_msgs = _reference_messages(api_messages)
+    preset_snapshot = {
+        "reference_models": reference_models,
+        "aggregator": aggregator,
+        "reference_temperature": temperature,
+        "aggregator_temperature": aggregator_temperature,
+        "reference_timeout": reference_timeout,
+        "degraded_reference_policy": degraded_reference_policy,
+    }
+    reference_outputs, _allow_cache = _run_fanout_with_verdict(
+        preset_name=None,
+        preset_config=preset_snapshot,
+        aggregator=aggregator,
+        initial_slots=reference_models,
+        agent=agent,
+        run_batch=lambda slots: _run_references_parallel(
+            slots, ref_msgs, temperature=temperature,
+            max_tokens=reference_max_tokens, reference_timeout=reference_timeout, agent=agent,
+        ),
     )
     privacy_full = False
     try:
@@ -1364,20 +1457,25 @@ class MoAChatCompletions:
         is never capped. None timeout = inherit auxiliary.moa_reference.timeout.
         """
         raw_reference_timeout = preset.get("reference_timeout")
-        reference_outputs = _run_references_parallel(
-            reference_models, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
-
-            progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
-            reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
-            agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
+        reference_outputs, allow_cache = _run_fanout_with_verdict(
+            preset_name=self.preset_name,
+            preset_config=preset,
+            aggregator=aggregator,
+            initial_slots=reference_models,
+            agent=self._agent,
+            run_batch=lambda slots: _run_references_parallel(
+                slots, ref_messages, temperature=_preset_temperature(preset, "reference_temperature"),
+                progress_callback=lambda done, total, label: self._emit("moa.progress", refs_done=done, refs_total=total, label=label),
+                reference_timeout=float(raw_reference_timeout) if raw_reference_timeout else None,
+                agent=self._agent, late_accounting_sink=self._record_late_reference_accounting,
+            ),
+            on_batch_accounting=lambda batch: self._fold_pending_accounting(*_sum_reference_accounting(batch)),
         )
-        # An interrupted fan-out is a partial snapshot: never cache it (a HIT would
-        # replay placeholder notes every iteration).
+        # An interrupted fan-out (or plugin cache=False verdict) is never cached.
         interrupted = any(text == _INTERRUPTED_REFERENCE_NOTE for _lbl, text, _acct in reference_outputs)
-        self._ref_cache_key = None if interrupted else cache_key
-        self._ref_cache_outputs = [] if interrupted else list(reference_outputs)
-        # Fold advisor spend into accounting exactly once per turn.
-        self._fold_pending_accounting(*_sum_reference_accounting(reference_outputs))
+        should_cache = bool(allow_cache and not interrupted)
+        self._ref_cache_key = cache_key if should_cache else None
+        self._ref_cache_outputs = list(reference_outputs) if should_cache else []
         # Stash the fan-out for trace persistence (aggregator parts filled in later).
         # Traces are persisted, so ANY active privacy mode redacts them.
         privacy_mode = self._privacy_mode
@@ -1450,12 +1548,18 @@ class MoAChatCompletions:
         return None
 
     def create(self, **api_kwargs: Any) -> Any:
+        from agent.errors import MoAFanoutAbortedError
+
         prepared_request = api_kwargs.pop("_moa_prepared_request", None)
         if prepared_request is not None:
             if not isinstance(prepared_request, dict):
                 raise TypeError("_moa_prepared_request must be a dict")
+            aborted = prepared_request.get("_moa_fanout_aborted")
+            if isinstance(aborted, BaseException):
+                raise aborted
             return self._call_prepared_aggregator(prepared_request, api_kwargs)
 
+        prepare_only = bool(api_kwargs.pop("_moa_prepare_only", False))
         preset, moa_raw = _resolve_preset_cached(self.preset_name)
         # Remembered on self so _call_prepared_aggregator redacts the trace consistently.
         self._privacy_mode = _moa_privacy_mode(moa_raw)
@@ -1482,7 +1586,18 @@ class MoAChatCompletions:
             reference_outputs = list(self._ref_cache_outputs)
             self._pending_trace = None
         else:
-            reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
+            try:
+                reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
+            except MoAFanoutAbortedError as aborted_exc:
+                if prepare_only:
+                    return {
+                        "messages": [dict(m) for m in messages],
+                        "guidance": None,
+                        "aggregator": aggregator,
+                        "aggregator_temperature": aggregator_temperature,
+                        "_moa_fanout_aborted": aborted_exc,
+                    }
+                raise
 
         agg_messages = [dict(m) for m in messages]
         guidance = self._build_guidance(
@@ -1496,7 +1611,7 @@ class MoAChatCompletions:
             "messages": agg_messages, "guidance": guidance, "aggregator": aggregator,
             "aggregator_temperature": aggregator_temperature,
         }
-        if api_kwargs.pop("_moa_prepare_only", False):
+        if prepare_only:
             return prepared_request
         return self._call_prepared_aggregator(prepared_request, api_kwargs)
 

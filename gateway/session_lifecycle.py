@@ -157,6 +157,22 @@ class SessionLifecycleMixin:
         except (*STORE_FAILURES, ValueError, KeyError, TypeError):
             return False
 
+    def _is_session_row_missing(self, session_id: str, session_key: Optional[str] = None) -> bool:
+        """True iff the owning DB holds no row for *session_id* — which is NOT the same as "gone".
+
+        ``_is_session_ended_in_db`` folds missing and ended together on purpose (#42422: reusing a
+        hard-deleted id lets ``run_agent``'s INSERT OR IGNORE resurrect it). The fold is wrong for a
+        route this process published a moment ago and has not INSERTed yet, so the routing self-heal
+        asks this first. DB errors / no DB -> False (never claim a row is missing on a failed lookup).
+        """
+        db = self._db_for_key(session_key) if session_key else self._db_for_session_id(session_id)
+        if not db or not session_id:
+            return False
+        try:
+            return db.get_session(session_id) is None
+        except Exception:
+            return False
+
     def _route_reset_reason(self, entry: SessionEntry) -> Optional[str]:
         """Only explicit suspension replaces a routed conversation; time never does."""
         return "suspended" if entry.suspended else None

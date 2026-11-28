@@ -1002,9 +1002,18 @@ class SessionStore(
             sid = observed.session_id
             # A local or API route the authority holds by receipt is never stale: a stamped row is
             # reopened by its next admitted turn, never replaced (#140642).
+            ended = self._is_session_ended_in_db(sid)
+            # A route this process published but has not INSERTed yet is a *pending create*, not a
+            # deleted session. reset_session() swaps sessions.json first and creates the row after,
+            # so any reader landing in that window used to see row=None, take the #42422 verdict
+            # ("missing == gone") and self-heal the route back to the predecessor — silently undoing
+            # the /new and re-attaching the chat to the very session it just left.
+            if ended and observed.is_fresh_reset and self._is_session_row_missing(sid):
+                ended = False
             checks = _RouteChecks(
                 sid, self._compression_tip_for_session_id(sid),
-                self._is_session_ended_in_db(sid) and self._local_receipt_target(observed) is None
+                ended
+                and self._local_receipt_target(observed) is None
                 and not self._api_bound(observed),
                 self._route_reset_reason(observed),
             )

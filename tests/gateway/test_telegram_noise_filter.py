@@ -399,6 +399,39 @@ def test_telegram_final_response_redacts_auth_secrets():
 
 
 
+def test_gateway_can_opt_out_of_outbound_secret_redaction(monkeypatch):
+    """An operator who intentionally echoes a key in a trusted chat asks for the reply unscrubbed."""
+    secret = "sk-ABCDEF0123456789abcdef0123"
+    raw = f"requested key: {secret}"
+
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_runtime_config",
+        lambda: {"security": {"redact_gateway_outbound_secrets": False}},
+    )
+
+    assert _sanitize_gateway_final_response(Platform.TELEGRAM, raw) == raw
+
+
+def test_gateway_outbound_redaction_opt_out_does_not_expose_provider_errors(monkeypatch):
+    """Provider failure bodies stay generic even when final-answer echo is allowed."""
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_runtime_config",
+        lambda: {"security": {"redact_gateway_outbound_secrets": False}},
+    )
+
+    raw = (
+        "API call failed after 3 retries: HTTP 401 Unauthorized — "
+        "Authorization: Bearer sk-ABCDEF0123456789abcdef0123"
+    )
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert sanitized != raw
+    assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
+    assert "HTTP 401" not in sanitized
+    assert "Authorization" not in sanitized
+
+
 # Synthetic credential shapes from #23810. Bodies are placeholder gibberish —
 # never real tokens — but they match the canonical redaction patterns. The
 # outbound gateway redactor previously used a narrow local pattern subset that

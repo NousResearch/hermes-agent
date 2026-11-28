@@ -514,6 +514,10 @@ class SessionQuery:
     include_hidden: bool = False
     include_subagents: bool = False
     local_created_sources: Optional[tuple[str, ...]] = None
+    #: Sources hidden only while they carry NO workspace cwd. Applied in SQL before LIMIT/OFFSET, so
+    #: a dropped row never consumes a window slot; a row from these sources that does carry a cwd is
+    #: a normal workspace session and stays listable.
+    cwdless_excluded_sources: tuple[str, ...] = ()
     #: Only rows in this workspace (``hermes -c``'s rule): the git repo root equals it, or a row without one has its cwd at or under it.
     workspace_key: Optional[str] = None
 
@@ -531,6 +535,8 @@ class SessionCountQuery:
     exclude_children: bool = False
     include_subagents: bool = False
     local_created_sources: Optional[tuple[str, ...]] = None
+    #: Sources hidden only while they carry no workspace cwd.
+    cwdless_excluded_sources: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -76,3 +76,37 @@ def test_rows_outside_the_page_are_ranked_but_not_projected(backend, scope_a, sc
     per_row_unprojected = (_vm_steps(large, 1) - _vm_steps(small, 1)) / 270
     per_row_projected = (_vm_steps(large, 300) - _vm_steps(small, 30)) / 270
     assert per_row_unprojected < 0.7 * per_row_projected, (per_row_unprojected, per_row_projected)
+
+
+def test_cwdless_excluded_sources_filter_before_listing_limit(backend, scope_a):
+    """Messaging rows without a cwd do not consume the project-tree page window."""
+    store = backend.open(scope_a)
+    for sid, source, cwd in (
+        ("tele-no-cwd", "telegram", None),
+        ("tele-empty-cwd", "telegram", ""),
+        ("tele-space-cwd", "telegram", "   "),
+        ("tele-with-cwd", "telegram", "/workspace/app"),
+        ("tele-root-only", "telegram", None),
+        ("local-row", "cli", "/workspace/other"),
+    ):
+        store.sessions.create(NewSession(sid, source, cwd=cwd))
+        store.messages.append(sid, NewMessage("user", sid))
+
+    # Put cwd-less messaging rows first. A post-LIMIT Python filter would return
+    # an incomplete/empty page; the SQL predicate must remove them before LIMIT.
+    with sqlite3.connect(store_for(scope_a)) as connection:
+        connection.execute("UPDATE sessions SET git_repo_root = ?, last_activity_at = ? WHERE id = ?", ("/workspace/app", 450, "tele-root-only"))
+        for last_active, sid in ((500, "tele-no-cwd"), (400, "tele-empty-cwd"), (300, "tele-space-cwd"), (200, "tele-with-cwd"), (100, "local-row")):
+            connection.execute("UPDATE sessions SET last_activity_at = ? WHERE id = ?", (last_active, sid))
+
+    query = SessionQuery(
+        order=SessionOrder.LAST_ACTIVE,
+        cwdless_excluded_sources=("telegram",),
+    )
+    rows = store.sessions.list_sessions(query, SessionWindow(limit=3))
+    ids = {row.session.session_id for row in rows}
+
+    assert ids == {"tele-root-only", "tele-with-cwd", "local-row"}
+    assert "tele-no-cwd" not in ids
+    assert "tele-empty-cwd" not in ids
+    assert "tele-space-cwd" not in ids

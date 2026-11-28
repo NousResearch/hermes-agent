@@ -340,12 +340,14 @@ class _SessionDB:
         search_query: "Optional[str]" = None, compact_rows: "bool" = False, include_pinned: "bool" = False,
         session_key: "Optional[str]" = None, include_hidden: "bool" = False, include_subagents: "bool" = False,
         local_created_sources: "Optional[list[str]]" = None, workspace_key: "Optional[str]" = None,
+        cwdless_excluded_sources: "Optional[list[str]]" = None,
     ) -> "list[dict[str, Any]]":
         from persistence.conversation.sessions import SessionOrder, SessionQuery, SessionWindow
 
         requested = [source] if source else sources
         query = SessionQuery(
             sources=tuple(requested) if requested else None, exclude_sources=tuple(exclude_sources or ()),
+            cwdless_excluded_sources=tuple(cwdless_excluded_sources or ()),
             cwd_prefix=cwd_prefix, include_children=include_children, min_message_count=min_message_count,
             project_compression_tips=project_compression_tips,
             order=SessionOrder.LAST_ACTIVE if order_by_last_active else SessionOrder.STARTED_AT,
@@ -366,12 +368,14 @@ class _SessionDB:
         archived_only: "bool" = False, exclude_children: "bool" = False,
         exclude_sources: "Optional[list[str]]" = None, include_subagents: "bool" = False,
         local_created_sources: "Optional[list[str]]" = None,
+        cwdless_excluded_sources: "Optional[list[str]]" = None,
     ) -> "int":
         from persistence.conversation.sessions import SessionCountQuery
 
         requested = [source] if source else sources
         return self._store.sessions.count_sessions(SessionCountQuery(
             sources=tuple(requested) if requested else None, exclude_sources=tuple(exclude_sources or ()),
+            cwdless_excluded_sources=tuple(cwdless_excluded_sources or ()),
             cwd_prefix=cwd_prefix, min_message_count=min_message_count, include_archived=include_archived,
             archived_only=archived_only, exclude_children=exclude_children, include_subagents=include_subagents,
             local_created_sources=tuple(local_created_sources) if local_created_sources else None))

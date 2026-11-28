@@ -1,4 +1,5 @@
 import asyncio
+import time
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
@@ -162,6 +163,17 @@ def test_changes_requested_send_failure_retries_without_event_loss(tmp_path, mon
     assert len(failing.sent) == 1
     assert len(_unseen(task_id)) == 1
 
+    # The failed send parked the sub on backoff — expire the window, then a
+    # healthy adapter redelivers without losing the event.
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET retry_after = ? WHERE task_id = ?",
+                (time.time() - 1.0, task_id),
+            )
+    finally:
+        conn.close()
     healthy = RecordingAdapter()
     asyncio.run(_run_one_tick(monkeypatch, _runner(healthy)))
     assert len(healthy.sent) == 1

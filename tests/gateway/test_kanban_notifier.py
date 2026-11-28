@@ -1,4 +1,6 @@
 import asyncio
+import sqlite3
+import time
 
 
 from gateway.config import Platform
@@ -49,7 +51,6 @@ def _make_runner(adapter):
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
-    runner._kanban_sub_fail_counts = {}
     # Most tests model the default gateway after its dispatcher acquired the
     # singleton lock. Tests for startup or non-owner gateways clear this.
     runner._kanban_dispatcher_lock_handle = object()
@@ -796,3 +797,327 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )
+
+
+# --- Durable parking of permanently-refused deliveries ----------------------
+
+
+def _park_row(tid):
+    conn = kbc.connect()
+    try:
+        return conn.execute(
+            "SELECT delivery_failures, retry_after, last_event_id, last_ping_event_id"
+            " FROM kanban_notify_subs WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def _board_data_version():
+    conn = kbc.connect()
+    try:
+        return conn.execute("PRAGMA data_version").fetchone()[0]
+    finally:
+        conn.close()
+
+
+class _BoardWriteObserver:
+    """Reads ``PRAGMA data_version`` from ONE connection held open across the
+    writes under test.
+
+    The counter only reports commits made by OTHER connections to a
+    connection that stays open; a fresh connection per read (the helper above)
+    re-reads the current value and detects nothing, which made the "parked
+    ticks must not write" assertion vacuous (critic t_e323f1ed finding 2)."""
+
+    def __init__(self):
+        self._conn = kbc.connect()
+
+    def data_version(self) -> int:
+        return self._conn.execute("PRAGMA data_version").fetchone()[0]
+
+    def inject_control_write(self, tid: str) -> None:
+        """Positive control: one real commit through a separate connection.
+
+        The value must actually change — SQLite skips the write for a no-op
+        UPDATE like ``SET title = title`` (probed: data_version 2→2), and a
+        skipped write would make the self-check vacuous in turn.
+        """
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET priority = COALESCE(priority, 0) + 1 WHERE id = ?",
+                    (tid,),
+                )
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def _backdate_park(tid):
+    conn = kbc.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET retry_after = ? WHERE task_id = ?",
+                (time.time() - 1.0, tid),
+            )
+    finally:
+        conn.close()
+
+
+class PermanentRefusalAdapter(RecordingAdapter):
+    """Wake leg refused with a final store code (dead destination), the same
+    classification ``run_notifications`` applies via PERMANENT_REFUSAL_REASONS."""
+
+    def __init__(self):
+        super().__init__()
+        self.wake_attempts = 0
+
+    async def handle_message(self, event):
+        self.wake_attempts += 1
+        from gateway.wake import WakeNotAccepted
+        raise WakeNotAccepted("no session behind the wake destination", reason="not_found")
+
+
+def test_permanent_wake_refusal_parks_with_backoff_and_zero_writes_while_parked(
+    tmp_path, monkeypatch,
+):
+    """A permanently-refused destination must stop re-attempting every tick:
+    one counted attempt parks the subscription (durable, backoff-scheduled);
+    parked ticks claim nothing and write nothing. Today the refusal rewinds
+    uncounted forever — a claim/rewind write pair every poll tick."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-permanent.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="park me", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                           chat_type="dm", delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
+
+    adapter = PermanentRefusalAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "the notify leg delivered its ping first"
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 1, "a permanent refusal is counted durably"
+    assert row["retry_after"] is not None and row["retry_after"] > time.time()
+    assert _unseen_terminal_events(tid), "claim must rewind so parked events redeliver later"
+    assert row["last_ping_event_id"] > 0, "the sent ping is checkpointed before the wake leg"
+
+    # Parked rows are excluded from claims: no send, no wake attempt, no DB
+    # write. data_version must be read from one observer connection held open
+    # across the three ticks — fresh-connection reads cannot detect another
+    # connection's writes, which made this equality vacuous before.
+    observer = _BoardWriteObserver()
+    try:
+        version = observer.data_version()
+        for _ in range(3):
+            asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+        assert adapter.wake_attempts == 1
+        assert len(adapter.sent) == 1
+        assert observer.data_version() == version, "parked ticks must not write to the board"
+        # Self-check: the equality above is only meaningful if this observer
+        # can see writes at all — prove the counter moves on an injected commit.
+        observer.inject_control_write(tid)
+        assert observer.data_version() != version, (
+            "observer self-check failed: a real write did not move data_version"
+        )
+    finally:
+        observer.close()
+    assert _park_row(tid)["delivery_failures"] == 1
+
+    # Backoff expiry: exactly one new attempt, count grows, delay doubles, ping
+    # checkpoint still holds (at-least-once wake, exactly-once ping).
+    previous_retry_after = _park_row(tid)["retry_after"]
+    _backdate_park(tid)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.wake_attempts == 2
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 2
+    assert row["retry_after"] > previous_retry_after
+    assert len(adapter.sent) == 1
+
+
+def test_transient_wake_refusal_keeps_uncounted_immediate_retry(tmp_path, monkeypatch):
+    """Startup / full queue is not a dead destination (bf1bf7515a): draining
+    refusals keep today's uncounted rewind — retried every tick, never parked."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-transient.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="transient", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                           chat_type="dm", delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
+
+    adapter = PermanentRefusalAdapter()
+
+    async def draining(event):
+        adapter.wake_attempts += 1
+        from gateway.wake import WakeNotAccepted
+        raise WakeNotAccepted("gateway is draining; retry after restart", reason="runtime_draining")
+
+    adapter.handle_message = draining
+    for _ in range(2):
+        asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert adapter.wake_attempts == 2, "transient refusals retry on every tick"
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 0, "transient refusals are not counted"
+    assert row["retry_after"] is None, "transient refusals never park"
+    assert _unseen_terminal_events(tid), "events stay claimed-pending until admission"
+
+
+def test_record_notify_failure_backoff_survives_the_exponent_cap(tmp_path, monkeypatch):
+    """At failures >= 1024 the unclamped exponent 2**(failures-1) overflows
+    float; the clamp keeps the park-write alive so a long-dead destination
+    stays parked at the cap instead of the raised write returning the row to
+    a claim/rewind attempt every tick."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-overflow.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="overflow", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="done once")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE kanban_notify_subs SET delivery_failures = 1023 WHERE task_id = ?",
+                (tid,),
+            )
+    finally:
+        conn.close()
+
+    conn = kbc.connect()
+    try:
+        before = time.time()
+        failures, retry_after = kbn.record_notify_failure(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1",
+            base_delay=5.0, cap_delay=3600.0,
+        )
+        assert failures == 1024
+        # Capped at 1h, not OverflowError — the delay clamps before the exponent does.
+        assert before + 3600.0 <= retry_after <= time.time() + 3600.0
+        row = _park_row(tid)
+        assert row["delivery_failures"] == 1024
+        assert row["retry_after"] == retry_after
+    finally:
+        conn.close()
+
+
+def test_consecutive_send_failures_park_capped_instead_of_dropping(tmp_path, monkeypatch):
+    """The counted send-failure path parks (durable, backoff capped at 1h) —
+    it no longer deletes the subscription after 12 in-memory strikes, and the
+    count survives a restart because it lives on the subscription row."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-send-cap.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="flappy send", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
+
+    adapter = FailingAdapter()
+    for attempt in range(1, 13):
+        _backdate_park(tid)  # no-op before the first failure (columns still default)
+        asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+        row = _park_row(tid)
+        assert row is not None, "parking must never delete the subscription row"
+        assert row["delivery_failures"] == attempt
+    assert adapter.attempts == 12
+    # 5s * 2**11 far exceeds the 1h cap — the 12th backoff is capped.
+    assert time.time() + 3599.0 <= _park_row(tid)["retry_after"] <= time.time() + 3601.0
+
+
+def test_resubscribe_rearms_a_parked_subscription(tmp_path, monkeypatch):
+    """Re-subscribing is the operator's re-arm gesture: the destination's own
+    session asking again proves it is reachable, so the park resets and the
+    next tick delivers normally."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-rearm.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="rearm", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                           chat_type="dm", delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
+
+    refusing = PermanentRefusalAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(refusing)))
+    assert _park_row(tid)["delivery_failures"] == 1
+
+    conn = kbc.connect()
+    try:
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                           chat_type="dm", delivery_mode="notify+wake")
+    finally:
+        conn.close()
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 0 and row["retry_after"] is None
+
+    healthy = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(healthy)))
+    assert len(healthy.handled) == 1, "rearmed sub delivers on the very next tick"
+    assert _unseen_terminal_events(tid) == []
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 0 and row["retry_after"] is None
+
+
+def test_ping_checkpoint_failure_is_counted_and_redelivers_at_least_once(
+    tmp_path, monkeypatch,
+):
+    """A ping whose durable checkpoint write fails consumes the failure budget
+    (park + rewind) and the ping is resent on the retry — no checkpoint, no
+    dedup. A later clean delivery resets the counters."""
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "park-pingfail.db"))
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="ping checkpoint", assignee="worker")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                           chat_type="dm", delivery_mode="notify+wake")
+        kb.complete_task(conn, tid, summary="done once")
+    finally:
+        conn.close()
+
+    real_record = kbn.record_notify_ping
+    state = {"failed_once": False}
+
+    def flaky_record(conn, **kwargs):
+        if not state["failed_once"]:
+            state["failed_once"] = True
+            raise sqlite3.OperationalError("disk I/O error (simulated)")
+        return real_record(conn, **kwargs)
+
+    monkeypatch.setattr(kbn, "record_notify_ping", flaky_record)
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1, "the ping itself was sent"
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 1, "checkpoint failure consumes the budget"
+    assert row["retry_after"] is not None
+    assert row["last_ping_event_id"] == 0, "checkpoint never landed"
+    assert _unseen_terminal_events(tid), "rewound for a later retry"
+
+    _backdate_park(tid)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+    assert len(adapter.sent) == 2, "no checkpoint → the ping is resent (at-least-once)"
+    assert len(adapter.handled) == 1, "wake delivered once the checkpoint holds"
+    row = _park_row(tid)
+    assert row["delivery_failures"] == 0 and row["retry_after"] is None, "success resets"
+    assert _unseen_terminal_events(tid) == []

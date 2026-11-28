@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- `gateway restart --user ACCOUNT`: a 3-line dispatch hook at the top of _cmd_restart; the feature lives in hermes_cli/gateway_user_restart.py
 """Gateway subcommand for hermes CLI.
 
 Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
@@ -5351,6 +5352,9 @@ def _restart_all_as_host(owner, system: bool, detach: bool = False, owe_online_n
 
 
 def _cmd_restart(args):
+    from hermes_cli.gateway_user_restart import dispatch_user_target_restart
+    if dispatch_user_target_restart(args):
+        return
     _refuse_from_inside_gateway("restart", "restart loops")
     from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     if profile_lifecycle("restart", args):

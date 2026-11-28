@@ -184,7 +184,13 @@ def build_gateway_parser(
     _flag(gateway_stop, "-y", "--yes", "--interrupt", dest="interrupt", help=_INTERRUPT_HELP.format(verb="stop"))
 
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
-    _add_system_flag(gateway_restart)
+    restart_scope = gateway_restart.add_mutually_exclusive_group()
+    restart_scope.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
+    restart_scope.add_argument(
+        "--user",
+        metavar="ACCOUNT",
+        help="Target ACCOUNT's Linux user-scope gateway for the explicit profile, otherwise ACCOUNT's active profile; cross-account use requires root and setpriv",
+    )
     _flag(gateway_restart, "--all",
         help="Kill ALL gateway processes across all profiles before restarting")
     _flag(gateway_restart, "--force", help=_FORCE_SERVED_PROFILE_HELP)

@@ -1151,7 +1151,14 @@ class GatewaySessionCommandsMixin:
                          order=SessionOrder.LAST_ACTIVE), SessionWindow(limit=10))
         titled = [{"id": e.session.session_id, "title": e.session.title, "preview": e.preview}
                   for e in entries if e.session.title][:10]
-        return [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
+        # Origin filter is the enumeration net for an UNSCOPED query only. With a real
+        # session_key the SQL already proved ownership, and re-checking origins would hide
+        # completed sessions whose origins were garbage-collected. A falsy session_key drops
+        # the SQL clause entirely (the sessions store's ``_session_filter_where``), so keep
+        # the net there; admin widen stays unfiltered via the allow_all pass-through.
+        if not session_key:
+            titled = [s for s in titled if await self._resume_row_visible(source, s, allow_all)]
+        return titled
 
     async def _resolve_resume_target(self, source, session_key: str, name: str, allow_all: bool):
         """``(target_id, name)`` for a numbered choice, session id or title; else the error reply."""
@@ -1189,6 +1196,14 @@ class GatewaySessionCommandsMixin:
             if self._same_matrix_room(source, target_origin) or allow_cross_room:
                 return None
             if target_origin is None:
+                # Origin garbage-collected (completed session). Fall through
+                # to DB-level ownership check instead of blocking or blindly
+                # allowing — prevents IDOR while still permitting the caller
+                # to resume their own completed sessions.
+                if await self._resume_target_allowed(
+                    source, target_id, allow_override=False
+                ):
+                    return None
                 return t("gateway.resume.matrix_blocked_no_origin", name=name)
             return t("gateway.resume.matrix_blocked_other_room", name=name,
                      room=target_origin.chat_name or target_origin.chat_id)
@@ -1349,7 +1364,11 @@ class GatewaySessionCommandsMixin:
             # Cron runs mint a session per tick, so an active scheduler buries human rows in both the
             # browse and search pages; they have their own surface (/cron, CLI ``--source cron``).
             limit=50 if search_query else 10, exclude_sources=["tool", "cron"])
-        if not cross_origin:
+        # Same net as _list_titled_sessions: filter only an unscoped query. cross_origin is
+        # admin `all` (DB returns cross-origin rows ON PURPOSE — filtering it would defeat
+        # the feature), and a session_key-scoped query already proved ownership, so it must
+        # not hide completed sessions with GC'd origins.
+        if not cross_origin and not session_key:
             rows = [row for row in rows if await self._resume_row_visible(source, row, allow_all=False)]
         rows = rows[:10]
         if search_query:

@@ -71,7 +71,7 @@ function SheetContent({
         {showCloseButton && (
           <SheetPrimitive.Close
             aria-label={t.common.close}
-            className="absolute top-3 right-3 rounded-md p-1 text-(--ui-text-tertiary) opacity-70 ring-offset-background transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary"
+            className="absolute top-3 end-3 rounded-md p-1 text-(--ui-text-tertiary) opacity-70 ring-offset-background transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary"
           >
             <Codicon name="close" size="1rem" />
             <span className="sr-only">{t.common.close}</span>

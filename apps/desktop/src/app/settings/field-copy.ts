@@ -18,6 +18,20 @@ export function fieldCopyForSchemaKey(copy: Record<string, string>, schemaKey: s
   return copy[schemaKeyToFieldCopyKey(schemaKey)] ?? copy[schemaKey]
 }
 
+/**
+ * Resolve the localized option-value label map for a field, mirroring
+ * `fieldCopyForSchemaKey`'s camelCase-then-raw key lookup. Accepts `undefined`
+ * (locales that omit `optionLabels`, e.g. `en`) and returns `undefined` so the
+ * caller falls through to `prettyName`. The outer key may be written either raw
+ * (`'agent.image_input_mode'`) or in fieldCopy camelCase (`'agent.imageInputMode'`).
+ */
+export function optionLabelsForSchemaKey(
+  copy: Record<string, Record<string, string>> | undefined,
+  schemaKey: string
+): Record<string, string> | undefined {
+  return copy?.[schemaKeyToFieldCopyKey(schemaKey)] ?? copy?.[schemaKey]
+}
+
 export function defineFieldCopy(copy: FieldCopyTree): Record<string, string> {
   const result: Record<string, string> = {}
 

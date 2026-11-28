@@ -1211,11 +1211,13 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _create_titled_session(title: str) -> Optional[str]:
+def _create_titled_session(title: str, args=None) -> Optional[str]:
     """Create a fresh titled session (``chat -c <title> --create-if-missing``).
 
     The gateway is the single writer: it creates the session and records the title with user
     provenance, so auto-titling never overwrites it (gateway_session_store.create_titled_session).
+    ``args`` carries the run's ``-t``/``-m``/... onto the create, because the resume that follows
+    may only repeat the session's creation policy.
 
     Used by ``chat -c <title> --create-if-missing`` (#86794): programmatic callers (plugins, scripts) that
     want "send to this named thread, making it if needed" get a deterministic outcome instead of a silent
@@ -1223,7 +1225,7 @@ def _create_titled_session(title: str) -> Optional[str]:
     """
     try:
         from hermes_cli.gateway_session_store import create_titled_session
-        return create_titled_session(title)
+        return create_titled_session(title, args)
     except Exception:
         # Programmatic callers rely on --create-if-missing being deterministic;
         # swallow the failure but log the cause so it lands in errors.log
@@ -1256,10 +1258,10 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
                 # and proceed. See #86794. The classic CLI's gateway writes it (the single writer);
                 # the TUI keeps main's local row.
                 if use_tui:
-                    new_sid = _create_titled_session(continue_val)
+                    new_sid = _create_titled_session(continue_val, args)  # born with the run's -t/-m
                 else:
                     from hermes_cli.gateway_session_store import create_titled_session
-                    new_sid = create_titled_session(continue_val)
+                    new_sid = create_titled_session(continue_val, args)  # born with the run's -t/-m
                 if new_sid:
                     args.resume = new_sid
                 else:

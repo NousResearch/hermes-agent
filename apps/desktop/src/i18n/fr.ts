@@ -3806,6 +3806,7 @@ export const frOverrides = {
     switchingProfileSlow: 'Connexion en cours. Les messages envoyés maintenant attendront et iront à cet agent.',
     switchProfileFailed: profile => `Impossible de passer à ${profile}`,
     willSendTo: profile => `Sera envoyé à ${profile}`,
+    loadingLocalModel: model => `Chargement de ${model}…`,
     placeholderStarting: 'Démarrage de Hermes…',
     placeholderReconnecting: 'Reconnexion à Hermes…',
     placeholderFollowUp: 'Envoyer un suivi',

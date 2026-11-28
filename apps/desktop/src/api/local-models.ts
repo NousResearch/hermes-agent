@@ -138,6 +138,20 @@ export function ejectLocalModel(modelId: string, scope?: LocalModelsScope): Prom
   })
 }
 
+export interface PreloadResponse {
+  ok: boolean
+  status: 'at_cap' | 'disabled' | 'held' | 'no_supervisor' | 'started'
+}
+
+export function preloadLocalModel(modelId: string, scope?: LocalModelsScope): Promise<PreloadResponse> {
+  return hermesApi<PreloadResponse>({
+    ...(scope ?? profileScoped()),
+    body: { model_id: modelId },
+    method: 'POST',
+    path: '/api/local-models/preload'
+  })
+}
+
 export function setLocalServer(action: 'start' | 'stop', scope?: LocalModelsScope): Promise<{ ok: boolean }> {
   return hermesApi<{ ok: boolean }>({
     ...(scope ?? profileScoped()),

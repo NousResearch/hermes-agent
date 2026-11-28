@@ -2331,6 +2331,7 @@ export const jaOverrides = {
     switchingProfileSlow: 'まだ接続中です。今送信したメッセージは接続を待ってからこのエージェントに届きます。',
     switchProfileFailed: profile => `${profile} に切り替えられませんでした`,
     willSendTo: profile => `${profile} に送信します`,
+    loadingLocalModel: model => `${model} を読み込み中…`,
     placeholderStarting: 'Hermes を起動中...',
     placeholderReconnecting: 'Hermes に再接続中…',
     placeholderFollowUp: 'フォローアップを送信',

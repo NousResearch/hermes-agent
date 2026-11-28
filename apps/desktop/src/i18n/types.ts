@@ -2962,6 +2962,7 @@ export interface Translations extends NoticeTranslations {
     switchingProfileSlow: string
     switchProfileFailed: (profile: string) => string
     willSendTo: (profile: string) => string
+    loadingLocalModel: (model: string) => string
     placeholderStarting: string
     placeholderReconnecting: string
     placeholderFollowUp: string

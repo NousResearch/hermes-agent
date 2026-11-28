@@ -2659,8 +2659,8 @@ DEFAULT_CONFIG = {
         "backend": "auto",
         "models_max": 4,  # Router process: how many models may be resident at once.
         "port": 0,  # Port for the managed server. 0 = pick a free port at spawn.
-        # Extra ports detection probes for an external llama-server (besides 8080).
-        "detect_ports": [],
+        "detect_ports": [],  # Extra ports detection probes for an external llama-server (besides 8080).
+        "preload": False,  # Load the selected model when the user types in a new chat (never evicts).
     },
     "_config_version": 54,  # Config schema version - bump this when adding new required fields
 }

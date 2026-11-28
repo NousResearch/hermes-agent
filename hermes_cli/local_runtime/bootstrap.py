@@ -10,8 +10,10 @@ from __future__ import annotations
 from contextlib import contextmanager, suppress
 import logging
 import os
+import threading
 import time
 from pathlib import Path
+from typing import Literal
 
 from hermes_cli.local_runtime.binaries import runtimes_root
 from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
@@ -338,6 +340,68 @@ def _any_holds_memory(sup) -> bool:
     return any(status in _HOLDS_MEMORY for status in sup.models(timeout_s=5).values())
 
 
+PreloadVerdict = Literal["started", "held", "at_cap", "no_supervisor", "not_staged"]
+
+# Models a preload has asked the router to load but the router may not report as ``loading`` yet.
+_PRELOADING: set[str] = set()
+_PRELOAD_LOCK = threading.Lock()
+
+
+def preload_model(model_id: str) -> PreloadVerdict:
+    """Decide and, if allowed, start a preload; the verdict is logged so a silent skip is visible."""
+    verdict = _preload(model_id)
+    logger.info("preload of %s: %s", model_id, verdict)
+    return verdict
+
+
+def _preload(model_id: str) -> PreloadVerdict:
+    """Start loading ``model_id`` in the background, unless that would evict a resident model.
+
+    Residency is demand-driven; this is the opt-in exception, so it must never cost a model another
+    chat is using: at the router's cap (``models_max``, the hardware-admitted count) it does nothing,
+    because the router would unload its least-recently-used model to make room. Only this process's
+    supervisor knows that cap, so a server owned by another process is left alone.
+
+    A process that has not booted the server yet boots it first (``local_runtime.enabled`` still
+    gates that; an empty router holds no memory). The load itself runs on a daemon thread and is
+    logged, never raised, so the caller (a keystroke) is never blocked for a 20 GB read.
+    """
+    with _PRELOAD_LOCK:
+        # Booted under the lock: a second request racing the first would otherwise find the server
+        # the first one is starting ("already running, another process") and be told it has none.
+        sup = _SUPERVISOR
+        if sup is None:
+            from hermes_cli.config import load_config
+
+            sup = ensure_local_runtime(load_config())
+            if sup is None:
+                return "no_supervisor"
+        statuses = sup.models(timeout_s=5)
+        if model_id not in statuses:
+            return "not_staged"
+        holders = {mid for mid, status in statuses.items() if status in _HOLDS_MEMORY} | _PRELOADING
+        if model_id in holders:
+            return "held"
+        if len(holders) >= sup.models_max:
+            return "at_cap"
+        _PRELOADING.add(model_id)
+
+    def _load() -> None:
+        try:
+            sup.load_model(model_id)
+            logger.info("preload of %s: load requested; the router loads it in the background", model_id)
+        except (OSError, ValueError) as exc:  # router unreachable, refused, or a malformed reply
+            logger.warning("preload of %s failed: %s", model_id, exc)
+        finally:
+            with _PRELOAD_LOCK:
+                _PRELOADING.discard(model_id)
+
+    from agent.memory_provider import spawn_context_thread
+
+    spawn_context_thread(_load, name="local-runtime-preload").start()
+    return "started"
+
+
 def _try_lock_boot_fd(fd: int) -> bool:
     """Non-blocking exclusive attempt; portable across fcntl/msvcrt."""
     if os.name == "nt":
@@ -514,8 +578,6 @@ def _start_idle_sweeper(sup) -> None:
     """Idle-residency loop: every couple of minutes, unload models idle past the supervisor's
     threshold; every 30 s with nothing loaded, re-plan launch windows against free GPU memory.
     Daemon thread tied to the supervisor's lifetime — exits when the server stops."""
-    import threading
-
     def _loop():
         last_sweep = time.monotonic()
         while sup.proc is not None and sup.proc.poll() is None:

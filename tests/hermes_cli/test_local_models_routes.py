@@ -784,3 +784,30 @@ def test_download_failure_releases_resume_handle(client, monkeypatch):
     status = _poll_job(client, job_id)
     assert status["status"] == "error", status
     assert job_id not in lm._RUNNING
+
+
+def _set_preload_flag(tmp_path, enabled: bool) -> None:
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(f"local_runtime:\n  preload: {str(enabled).lower()}\n", encoding="utf-8")
+
+
+def test_preload_route_is_inert_unless_the_config_flag_is_set(client, tmp_path, monkeypatch):
+    """local_runtime.preload defaults off: the route answers without touching the runtime."""
+
+    def never(model_id):
+        raise AssertionError("preload_model must not run while local_runtime.preload is off")
+
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.preload_model", never)
+    r = client.post("/api/local-models/preload", json={"model_id": "a"})
+    assert (r.status_code, r.json()) == (200, {"ok": True, "status": "disabled"})
+
+
+def test_preload_route_reports_the_decision_and_404s_an_unknown_model(client, tmp_path, monkeypatch):
+    _set_preload_flag(tmp_path, True)
+    verdicts = {"a": "started", "b": "at_cap", "ghost": "not_staged"}
+    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.preload_model", lambda model_id: verdicts[model_id])
+    for model_id in ("a", "b"):
+        r = client.post("/api/local-models/preload", json={"model_id": model_id})
+        assert (r.status_code, r.json()) == (200, {"ok": True, "status": verdicts[model_id]})
+    assert client.post("/api/local-models/preload", json={"model_id": "ghost"}).status_code == 404

@@ -2592,6 +2592,7 @@ export const ruOverrides = {
     switchingProfileSlow: 'Подключение ещё идёт. Сообщения, отправленные сейчас, дождутся его и уйдут этому агенту.',
     switchProfileFailed: profile => `Не удалось переключиться на ${profile}`,
     willSendTo: profile => `Будет отправлено в ${profile}`,
+    loadingLocalModel: model => `Загрузка ${model}…`,
     placeholderStarting: 'Запуск Hermes...',
     placeholderReconnecting: 'Переподключение к Hermes…',
     placeholderFollowUp: 'Отправить продолжение',

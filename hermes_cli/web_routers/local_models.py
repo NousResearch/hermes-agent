@@ -87,6 +87,10 @@ class ModelEjectBody(BaseModel):
     model_id: str
 
 
+class ModelPreloadBody(BaseModel):
+    model_id: str
+
+
 class ModelActivateBody(BaseModel):
     model_id: str               # exact variant id (a staged .gguf stem)
 
@@ -959,6 +963,20 @@ def local_models_eject(body: ModelEjectBody):
     with _http_error(502):
         _router_request(endpoint, "/models/unload", timeout=120, payload={"model": body.model_id})
     return {"ok": True}
+
+
+@router.post("/api/local-models/preload")
+def local_models_preload(body: ModelPreloadBody):
+    """Warm a model while the user is still typing (``local_runtime.preload``, off by default). Answers at once
+    with what it decided; the load runs in the background and never evicts a resident model (see
+    ``bootstrap.preload_model``). Sync def: it asks the router for model statuses — threadpool."""
+    if not _runtime_section().get("preload"):
+        return {"ok": True, "status": "disabled"}
+    with _http_error(502):
+        status = bootstrap.preload_model(body.model_id)
+    if status == "not_staged":
+        raise HTTPException(status_code=404, detail=f"{body.model_id} is not downloaded")
+    return {"ok": True, "status": status}
 
 
 @router.post("/api/local-models/activate")

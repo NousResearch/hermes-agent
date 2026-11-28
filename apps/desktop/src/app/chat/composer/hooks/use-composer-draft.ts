@@ -70,6 +70,8 @@ import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 import { useComposerVisible } from '../visibility'
 
+import { useLocalModelPreload } from './use-local-model-preload'
+
 /** A draft as this window last loaded or stashed it; attachments by occurrence. */
 interface SavedDraft {
   attachments: string[]
@@ -140,6 +142,9 @@ export function useComposerDraft({
   // steerable-vs-slash), so typing within a line costs no render.
   const hasText = useAuiState(s => s.composer.text.trim().length > 0)
   const isHelpHint = useAuiState(s => s.composer.text === '?')
+
+  // The new-chat draft has no backend session until its first send, so a surface without one is it.
+  useLocalModelPreload(hasText && !sessionId && !inputDisabled && paneVisible && !floating)
 
   const isSteerableText = useAuiState(s => {
     const trimmed = s.composer.text.trim()

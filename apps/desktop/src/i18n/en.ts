@@ -3361,6 +3361,7 @@ export const en: Translations = {
     switchingProfileSlow: 'Still connecting. Messages you send now will wait and go to this agent.',
     switchProfileFailed: profile => `Couldn’t switch to ${profile}`,
     willSendTo: profile => `Will send to ${profile}`,
+    loadingLocalModel: model => `Loading ${model}…`,
     placeholderStarting: 'Starting Hermes...',
     placeholderReconnecting: 'Reconnecting to Hermes…',
     placeholderFollowUp: 'Send follow-up',

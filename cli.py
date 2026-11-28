@@ -238,6 +238,19 @@ try:
     del _pt_extras
 except Exception:
     pass
+
+try:
+    # Decode the extended-key grammars rather than relying on the tables above having a
+    # cell for every key x modifier x lock-state. Installed last and consulted only after
+    # ANSI_SEQUENCES misses, so every mapping above wins -- including the application
+    # decisions the protocol has no opinion about. Its own try/except because a failure
+    # here must not take the alias installers down with it.
+    from hermes_cli import pt_input_extras_parser as _csi_u
+
+    _csi_u.install()
+    del _csi_u
+except Exception:
+    logger.debug("extended-key parser not installed; the alias tables still apply", exc_info=True)
 import threading
 import queue
 from hermes_cli._startup_fast import project_root_str

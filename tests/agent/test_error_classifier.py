@@ -994,6 +994,33 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.reasoning_mandatory
         assert result.retryable is True and result.should_fallback is False
 
+    def test_adaptive_thinking_only_model_is_reasoning_mandatory(self):
+        """An Anthropic-5-family model behind a relay rejects a *graded* reasoning effort and names
+        its own required shape: "claude-opus-5-5 requires adaptive thinking; omit thinking or use
+        thinking.type=adaptive and output_config.effort". Nothing in the wording says "unsupported"
+        next to the field, so before this rule the 400 classified as a non-retryable client error
+        and the turn died instead of dropping the effort and retrying (route default = adaptive).
+        Informational mentions of adaptive thinking are not rejections."""
+        body = {"message": "claude-opus-5-5 requires adaptive thinking; omit thinking or use "
+                           "thinking.type=adaptive and output_config.effort",
+                "type": "upstream_error", "retryable": False, "upstream_status": 400}
+        msg = f"Error code: 400 - {body}"
+        assert is_reasoning_field_rejection(msg)
+        for msg in (
+            msg,
+            "Error code: 400 - thinking.type 'enabled' rejected: adaptive thinking is required for this model",
+            "Error code: 400 - This model only supports adaptive thinking",
+        ):
+            result = classify_api_error(MockAPIError(msg, status_code=400), provider="custom",
+                                        model="claude-opus-5-5")
+            assert result.reason == FailoverReason.reasoning_mandatory, msg
+            assert result.retryable is True and result.should_fallback is False
+        benign = classify_api_error(
+            MockAPIError("upstream timeout while adaptive thinking was enabled", status_code=500),
+            provider="custom", model="claude-opus-5-5",
+        )
+        assert benign.reason != FailoverReason.reasoning_mandatory
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

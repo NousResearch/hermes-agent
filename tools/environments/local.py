@@ -1292,10 +1292,26 @@ class LocalEnvironment(BaseEnvironment):
         if login:
             cmd_string = _append_dropped_path_entries(cmd_string, run_env.get("PATH", ""))
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
-        args = [bash, *(["-l"] if login else []), "-c", cmd_string]
-        # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
-        # its group to the owner-death supervisor and _wait_for_process releases it.
+        command_file = None
         try:
+            # Git Bash can silently truncate -c at 8,186 Unicode code points.
+            # Leave some headroom and count the complete script, including login init.
+            if _IS_WINDOWS and len(cmd_string) > 8_000:
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", newline="\n", delete=False,
+                    dir=self.get_temp_dir(), prefix="hermes-command-", suffix=".sh",
+                ) as script:
+                    command_file = script.name
+                    quoted = self._quote_shell_path(command_file)
+                    # Bash reads the whole file before eval. Unlink before user
+                    # code can exit, exec, replace traps, or be interrupted.
+                    script.write(f"command rm -f -- {quoted}\n{cmd_string}")
+                # Keep stdin available for the caller and preserve bash -c's
+                # positional parameters and top-level return semantics.
+                cmd_string = f'eval "$(< {quoted})"'
+            args = [bash, *(["-l"] if login else []), "-c", cmd_string]
+            # Not spawn_owned: an awaited command needs no spawn-ledger entry; own_process_groups below hands
+            # its group to the owner-death supervisor and _wait_for_process releases it.
             proc = subprocess.Popen(
                 args, text=True, env=run_env, encoding="utf-8", errors="replace",
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -1304,10 +1320,16 @@ class LocalEnvironment(BaseEnvironment):
                 start_new_session=True, cwd=self._spawn_cwd(),
                 pass_fds=tuple(fd for fd in (secret_fd, source_fd, restore_fd) if fd >= 0),
                 creationflags=windows_hide_flags() if _IS_WINDOWS else 0)
+        except (OSError, UnicodeEncodeError):
+            if command_file is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(command_file)
+            raise
         finally:
             for fd in (secret_fd, source_fd, restore_fd):
                 if fd >= 0:
                     os.close(fd)  # the child holds its copy; the reader sees EOF once it is gone
+        proc._hermes_command_file = command_file
         proc._hermes_secret_reader = secret_reader
         if not _IS_WINDOWS:
             # The command dies with this process however it dies: a SIGKILLed / OOM-killed host left a
@@ -1335,6 +1357,11 @@ class LocalEnvironment(BaseEnvironment):
         try:
             return super()._wait_for_process(proc, *args, **kwargs)
         finally:
+            # A failed shell startup may never have evaluated its unlink prefix.
+            command_file = getattr(proc, "_hermes_command_file", None)
+            if command_file is not None and proc.poll() is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(command_file)
             if (reader := getattr(proc, "_hermes_secret_reader", None)) is not None:
                 reader.join(timeout=2)
             if (owned_pgid := getattr(proc, "_hermes_owned_pgid", None)) is not None:

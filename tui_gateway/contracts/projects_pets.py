@@ -50,6 +50,7 @@ class ProjectsPayload(Result):
 
     projects: list[ProjectInfo]
     active_id: str | None = None
+    default_id: str | None = None
 
 
 class ProjectResult(Result):
@@ -146,6 +147,15 @@ class ActiveIdResult(Result):
 
 method("projects.set_active", params=ProjectsSetActiveParams, result=ActiveIdResult,
        doc="Switch (or clear) the active project for the profile.")
+
+
+class DefaultIdResult(Result):
+    default_id: str | None = None
+
+
+method("projects.set_default", params=ProjectsSetActiveParams, result=DefaultIdResult,
+       doc="The default project for FUTURE chats (independent of active); accepts id or null, "
+           "refuses unknown (5062) or archived (5063) projects.")
 
 
 class ProjectsForCwdParams(ProfileParams):
@@ -290,6 +300,7 @@ class ProjectsTreeParams(ProfileParams):
 class ProjectsTreeResult(Result):
     projects: list[ProjectTreeNode]
     active_id: str | None = None
+    default_id: str | None = None
     scoped_session_ids: list[str] = Field(default_factory=list)
 
 

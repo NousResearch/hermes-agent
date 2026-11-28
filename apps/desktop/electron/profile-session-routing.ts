@@ -1613,6 +1613,7 @@ function mergeProjectInto(existing: any, project: any, previewLimit: number) {
 function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
   const merged = new Map<string, any>()
   const scopedSessionIds: unknown[] = []
+  const defaultIds: Record<string, null | string> = {}
   const errors: SessionScanError[] = []
 
   for (const read of reads) {
@@ -1623,6 +1624,11 @@ function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
     }
 
     scopedSessionIds.push(...(Array.isArray(read.data?.scoped_session_ids) ? read.data.scoped_session_ids : []))
+
+    if (typeof read.data?.default_id === 'string' || read.data?.default_id === null) {
+      defaultIds[read.profile] = read.data.default_id
+    }
+
     errors.push(...(errorsOf(read.data) ?? []))
 
     for (const incoming of Array.isArray(read.data?.projects) ? read.data.projects : []) {
@@ -1647,7 +1653,7 @@ function mergeProfileProjectTrees(reads: ProfileRead[], previewLimit: number) {
 
   const projects = [...merged.values()].sort((a, b) => (b.lastActive || 0) - (a.lastActive || 0))
 
-  return { projects, active_id: null, scoped_session_ids: scopedSessionIds, errors }
+  return { projects, active_id: null, default_ids: defaultIds, scoped_session_ids: scopedSessionIds, errors }
 }
 
 function mergeProfilePullRequests(reads: ProfileRead[]) {

@@ -66,6 +66,7 @@ import { QuickEntrySettings } from './quick-entry-settings'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { WorkspaceProjectsSettings } from './workspace-projects-settings'
 
 export function ConfigSettings({
   activeSectionId,
@@ -101,6 +102,19 @@ interface ConfigSettingsProps {
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
+}
+
+function configSectionVisibility(activeSectionId: string, subpage: string | undefined) {
+  const fullSection = subpage === undefined
+
+  return {
+    showAttachments: activeSectionId === 'chat' && (fullSection || subpage === 'attachments'),
+    showDesktopSettings: activeSectionId === 'advanced' && (fullSection || subpage === 'desktop'),
+    showModelSettings:
+      activeSectionId === 'model' && (fullSection || ['main', 'auxiliary', 'moa'].includes(subpage)),
+    showSharedMetrics: activeSectionId === 'safety' && subpage === 'privacy',
+    showWorkspaceProjects: activeSectionId === 'workspace' && subpage === 'projects'
+  }
 }
 
 function ConfigSettingsInner({
@@ -325,12 +339,15 @@ function ConfigSettingsInner({
     ([key]) => subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
   )
 
-  const showModelSettings =
-    activeSectionId === 'model' && (subpage === undefined || ['main', 'auxiliary', 'moa'].includes(subpage))
-
-  const showDesktopSettings = activeSectionId === 'advanced' && (subpage === undefined || subpage === 'desktop')
-  const showAttachments = activeSectionId === 'chat' && (subpage === undefined || subpage === 'attachments')
-  const showSharedMetrics = activeSectionId === 'safety' && subpage === 'privacy'
+  const {
+    showAttachments,
+    showDesktopSettings,
+    showModelSettings,
+    showSharedMetrics,
+    showWorkspaceProjects
+  } = configSectionVisibility(activeSectionId, subpage)
+  // The Projects manager owns the workspace+projects page's top; the
+  // terminal.cwd / repo-scan fields stay below it.
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.
@@ -467,10 +484,11 @@ function ConfigSettingsInner({
     visibleFields.length === 0 &&
     (subpage === undefined
       ? activeSectionId !== 'chat'
-      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics)
+      : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics && !showWorkspaceProjects)
 
   return renderPage(
     <>
+      {showWorkspaceProjects && <WorkspaceProjectsSettings />}
       {/* Device-local desktop prefs (not config.yaml) — they live here since
           keeping the machine awake and the global Quick Entry chord are both
           power-user, this-computer-only knobs. */}

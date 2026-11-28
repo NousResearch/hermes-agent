@@ -1249,6 +1249,8 @@ export interface ProjectInfo {
 export interface ProjectsPayload {
   projects: ProjectInfo[]
   active_id: null | string
+  /** Per-profile default project for FUTURE chats (absent on old backends). */
+  default_id?: null | string
 }
 
 export interface ProfileSoul {

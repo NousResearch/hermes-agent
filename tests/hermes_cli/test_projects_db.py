@@ -144,3 +144,51 @@ def test_per_profile_isolation(tmp_path):
         b.close()
 
 
+
+
+def test_set_default_persists_independently_of_active(conn):
+    pid = pdb.create_project(conn, name="Default", folders=["/www/default"])
+    other = pdb.create_project(conn, name="Other", folders=["/www/other"])
+
+    # Fresh installs have no default; active is untouched by set_default.
+    assert pdb.get_default_id(conn) is None
+    pdb.set_default(conn, pid)
+    assert pdb.get_default_id(conn) == pid
+    assert pdb.get_active_id(conn) is None
+
+    pdb.set_active(conn, other)
+    assert pdb.get_default_id(conn) == pid
+    assert pdb.get_active_id(conn) == other
+
+    # Clearing default leaves active alone; clearing active leaves default alone.
+    pdb.set_default(conn, None)
+    assert pdb.get_default_id(conn) is None
+    assert pdb.get_active_id(conn) == other
+
+
+def test_set_default_validates_existing_usable_project(conn):
+    pid = pdb.create_project(conn, name="P", folders=["/www/p"])
+
+    with pytest.raises(ValueError, match="no such project"):
+        pdb.set_default(conn, "p_missing")
+    with pytest.raises(ValueError, match="archived"):
+        pdb.archive_project(conn, pid)
+        pdb.set_default(conn, pid)
+
+    # Restore makes it usable again.
+    pdb.restore_project(conn, pid)
+    pdb.set_default(conn, pid)
+    assert pdb.get_default_id(conn) == pid
+
+
+def test_delete_and_archive_clear_default_pointer(conn):
+    pid = pdb.create_project(conn, name="Doomed", folders=["/www/doomed"])
+    keep = pdb.create_project(conn, name="Keep", folders=["/www/keep"])
+
+    pdb.set_default(conn, pid)
+    pdb.delete_project(conn, pid)
+    assert pdb.get_default_id(conn) is None
+
+    pdb.set_default(conn, keep)
+    pdb.archive_project(conn, keep)
+    assert pdb.get_default_id(conn) is None

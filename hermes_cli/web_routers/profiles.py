@@ -685,6 +685,7 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     merged: dict[str, dict[str, Any]] = {}
     scoped_session_ids: list[str] = []
     errors: list[dict[str, str]] = []
+    default_ids: dict[str, Optional[str]] = {}
 
     for name, home in _scoped_profile_targets("GET /api/profiles/projects/tree", profile):
         def _read(store, name=name, home=home):
@@ -694,12 +695,16 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
                     include_discovered=False, persistence=store)
                 _merge_profile_tree(merged, tree["projects"], name, preview_limit)
                 scoped_session_ids.extend(tree["scoped_session_ids"])
+                default_ids[name] = tree.get("default_id")
         _read_profile_db(name, home, errors, _read)
 
     # active_id is None: ownership is per profile, so no project is "the active one" here.
     projects = sorted(merged.values(), key=lambda p: p.get("lastActive") or 0, reverse=True)
-    return {"projects": projects, "active_id": None, "scoped_session_ids": scoped_session_ids,
-            "errors": errors}
+    payload: dict[str, Any] = {"projects": projects, "active_id": None, "default_ids": default_ids,
+                               "scoped_session_ids": scoped_session_ids, "errors": errors}
+    if profile in default_ids:
+        payload["default_id"] = default_ids[profile]
+    return payload
 
 
 # `gh pr create` prints the PR url and nothing else, so a tool result whose whole output IS a

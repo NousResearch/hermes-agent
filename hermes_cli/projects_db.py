@@ -78,6 +78,7 @@ _OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
 # Nullable TEXT columns that may be absent from a legacy row.
 _OPTIONAL_ROW_FIELDS = ("description", "icon", "color", "board_slug", "primary_path")
 _ACTIVE_META_KEY = "active_id"
+_DEFAULT_META_KEY = "default_id"
 _DISCOVERY_POLICY_META_KEY = "repo_discovery_policy"
 
 
@@ -360,7 +361,11 @@ def set_primary(conn: sqlite3.Connection, project_id: str, path: str) -> bool:
 
 
 def archive_project(conn: sqlite3.Connection, project_id: str) -> bool:
-    return _execute_rowcount(conn, "UPDATE projects SET archived = 1 WHERE id = ?", (project_id,)) > 0
+    with write_txn(conn):
+        cur = conn.execute("UPDATE projects SET archived = 1 WHERE id = ?", (project_id,))
+        if cur.rowcount > 0:
+            _clear_default_if_locked(conn, project_id)
+    return cur.rowcount > 0
 
 
 def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
@@ -368,8 +373,12 @@ def restore_project(conn: sqlite3.Connection, project_id: str) -> bool:
 
 
 def delete_project(conn: sqlite3.Connection, project_id: str) -> bool:
-    """Hard-delete a project and its folders (cascade)."""
-    return _execute_rowcount(conn, "DELETE FROM projects WHERE id = ?", (project_id,)) > 0
+    """Hard-delete a project and its folders (cascade); drops a default pointer aimed at it."""
+    with write_txn(conn):
+        cur = conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        if cur.rowcount > 0:
+            _clear_default_if_locked(conn, project_id)
+    return cur.rowcount > 0
 
 
 # --- Active-project pointer + discovery policy (project_meta KV) --------------
@@ -388,7 +397,8 @@ def _get_meta(conn: sqlite3.Connection, key: str) -> Optional[str]:
 
 
 def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
-    """Set (or clear, when ``None``) the active project pointer."""
+    """Set (or clear, when ``None``) the active project pointer.``active`` follows the project
+    the user entered; it is NOT the default for future chats — see ``set_default``."""
     with write_txn(conn):
         if project_id is None:
             conn.execute("DELETE FROM project_meta WHERE key = ?", (_ACTIVE_META_KEY,))
@@ -398,6 +408,33 @@ def set_active(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
 
 def get_active_id(conn: sqlite3.Connection) -> Optional[str]:
     return _get_meta(conn, _ACTIVE_META_KEY)
+
+
+def _clear_default_if_locked(conn: sqlite3.Connection, project_id: str) -> None:
+    """Drop the default pointer when it names ``project_id`` (caller already holds a write txn),
+    so an archived/deleted project never stays the unusable default."""
+    if _get_meta(conn, _DEFAULT_META_KEY) == project_id:
+        conn.execute("DELETE FROM project_meta WHERE key = ?", (_DEFAULT_META_KEY,))
+
+
+def set_default(conn: sqlite3.Connection, project_id: Optional[str]) -> None:
+    """Set (or clear, when ``None``) the per-profile default project — the project NEW chats
+    start in. Validates the project exists and is not archived; independent of the active
+    pointer, so entering a project never silently re-targets future chats."""
+    with write_txn(conn):
+        if project_id is None:
+            conn.execute("DELETE FROM project_meta WHERE key = ?", (_DEFAULT_META_KEY,))
+            return
+        row = conn.execute("SELECT archived FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"no such project: {project_id}")
+        if row["archived"]:
+            raise ValueError(f"project is archived: {project_id}")
+        _upsert_meta_locked(conn, _DEFAULT_META_KEY, project_id)
+
+
+def get_default_id(conn: sqlite3.Connection) -> Optional[str]:
+    return _get_meta(conn, _DEFAULT_META_KEY)
 
 
 def get_discovery_policy_key(conn: sqlite3.Connection) -> Optional[str]:

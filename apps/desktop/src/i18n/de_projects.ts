@@ -82,5 +82,16 @@ export const deProjects: NonNullable<TranslationOverrides['sidebar']>['projects'
   reorder: label => `${label} neu anordnen`,
   toggle: (label, open) => `${open ? 'Anzeigen' : 'Ausblenden'} ${label} Sessions`,
   showAllCount: (count: number) => `Alle ${count} Sessions anzeigen`,
-  back: 'Alle Projekte'
+  back: 'Alle Projekte',
+  switchCurrentChat: 'Aktuellen Chat wechseln',
+  openProject: 'Projekt öffnen',
+  newChat: 'Neuer Chat',
+  defaultForNewChats: 'Standard für neue Chats',
+  setDefaultFailed: 'Standardprojekt konnte nicht gesetzt werden',
+  manageProjects: 'Projekte verwalten…',
+  chooseFolder: 'Ordner wählen',
+  noProjects: 'Keine Projekte',
+  removeFolderConfirm: 'Diesen Ordner aus dem Projekt entfernen? Dateien auf der Festplatte bleiben unverändert.',
+  removeFolderFailed: 'Ordner konnte nicht entfernt werden',
+  setPrimaryFailed: 'Hauptordner konnte nicht gesetzt werden'
 }

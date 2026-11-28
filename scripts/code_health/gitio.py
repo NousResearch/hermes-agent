@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from hermes_agent.compat.paths import PathMoves, moves_from_source
 
@@ -173,6 +173,18 @@ def tracked_files(repo: Path, tree: str | None) -> list[str]:
     if tree is None:
         return [p for p in git(repo, "ls-files", "-z").split("\0") if p]
     return [p for p in git(repo, "ls-tree", "-r", "--name-only", "-z", tree).split("\0") if p]
+
+
+def first_party_names(repo: Path, tree: str | None) -> frozenset[str]:
+    """Top-level import names a tree ships: ``NAME/__init__.py`` or ``NAME.py`` at its root."""
+    names = set()
+    for path in tracked_files(repo, tree):
+        parts = PurePosixPath(path).parts
+        if len(parts) == 1 and path.endswith(".py"):
+            names.add(path[:-3])
+        elif len(parts) == 2 and parts[1] == "__init__.py":
+            names.add(parts[0])
+    return frozenset(names)
 
 
 def known_env_names(repo: Path, tree: str | None) -> set[str]:

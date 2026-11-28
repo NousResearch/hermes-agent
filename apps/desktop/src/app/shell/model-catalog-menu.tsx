@@ -165,7 +165,8 @@ export interface ModelMenuController {
    *  need to batch it. Values are already capability-gated by the menu. */
   applyPreset: (
     preset: { effort?: string; fast?: boolean; serviceTier?: string },
-    row: { model: string; provider: string }
+    row: { model: string; provider: string },
+    options?: { inheritEffort: boolean }
   ) => void
   current: ModelChoice
   presetFor: (provider: string, model: string) => { effort?: string; fast?: boolean; serviceTier?: string }
@@ -462,7 +463,8 @@ export function ModelCatalogMenu({
         effort: (caps?.reasoning ?? true) ? (preset.effort ?? defaultEffort) : undefined,
         ...(controller.allowSpeed !== false ? { serviceTier: tier, fast: tier !== 'normal' } : {})
       },
-      { model: family.id, provider: provider.slug }
+      { model: family.id, provider: provider.slug },
+      { inheritEffort: preset.effort === undefined }
     )
 
     return true

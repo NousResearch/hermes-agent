@@ -26,6 +26,7 @@ import {
 } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { rescopeComposerReasoningEffort } from './composer-reasoning-effort'
 import { $removedSessionIds, isSessionRemovalPending, tombstoneRowIds } from './session-removal'
 import type { SessionOwnerRoute, SessionOwnerScope } from './session-request-router'
 import { clearUnreadOnOpen } from './session-unread-remote'
@@ -1475,7 +1476,12 @@ export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
 export const $sessionPickerOpen = atom(false)
 
-function rescopeComposerSelection(nextScope: string | null): void {
+function rescopeComposerSelection(nextScope: string | null, profile = $connection.get()?.profile || 'default'): void {
+  rescopeComposerReasoningEffort(
+    nextScope === '' ? `.registry.local.${encodeURIComponent(profile)}` : nextScope,
+    profile
+  )
+
   if (nextScope === composerSelectionScope) {
     return
   }
@@ -1494,7 +1500,7 @@ export const composerScopeForOwner = (connectionId: string, profile: string): st
   `.registry.${encodeURIComponent(connectionId)}.${encodeURIComponent(profile.trim() || 'default')}`
 
 export function setComposerSelectionOwner(connectionId: string, profile: string): void {
-  rescopeComposerSelection(composerScopeForOwner(connectionId, profile))
+  rescopeComposerSelection(composerScopeForOwner(connectionId, profile), profile.trim() || 'default')
 }
 
 /** Fail closed while a successful legacy profile activation has no descriptor. */

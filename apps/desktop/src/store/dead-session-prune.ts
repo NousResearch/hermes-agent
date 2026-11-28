@@ -6,9 +6,11 @@
  * (`hermes:composer-drafts:v4`, mirrored to v3), queued prompts
  * (`hermes.desktop.composerQueue.v1`) and interrupted sends
  * (`hermes:composer-outbox:v1:*`) are keyed by session id and re-asserted
- * or probed at boot. When a session is removed from state.db (retention purge,
- * manual delete, another surface pruning it), those keys go stale: nothing
- * ever drops them, so every boot re-requests the dead ids and the gateway
+ * or probed at boot. Unread markers (`hermes.desktop.unreadFinishedSessions`)
+ * are keyed the same way and, worse, are COUNTED: the profile rail paints
+ * every marker with no loaded row as an unread session. When a session is
+ * removed from state.db (retention purge, manual delete, another surface
+ * pruning it), those keys go stale: nothing ever drops them, so every boot re-requests the dead ids and the gateway
  * answers `404 {"detail":"Session not found"}` once per stale reference,
  * forever.
  *
@@ -28,6 +30,7 @@ import { $queuedPromptsBySession, clearQueuedPrompts } from '@/store/composer-qu
 import { $pinnedSessionIds, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $sessions } from '@/store/session'
+import { $unreadFinishedMarkers, forgetSessionUnread } from '@/store/session-unread'
 
 import { forgetPinSyncState } from './session-pin-sync'
 
@@ -156,6 +159,14 @@ function collectCandidates(): string[] {
     }
   }
 
+  for (const ids of Object.values($unreadFinishedMarkers.get())) {
+    for (const id of ids) {
+      if (!covered.has(id)) {
+        candidates.add(id)
+      }
+    }
+  }
+
   // Fresh-chat keys are never session references (they expire with the outbox entry instead).
   for (const scope of interruptedSendScopes()) {
     if (!covered.has(scope) && !isFreshDraftScope(scope)) {
@@ -199,6 +210,13 @@ function dropDeadId(id: string): void {
   }
 
   dropInterruptedSends(id)
+
+  // Dead on every profile, so every bucket holding the id is stale.
+  for (const [profile, ids] of Object.entries($unreadFinishedMarkers.get())) {
+    if (ids.includes(id)) {
+      forgetSessionUnread([id], profile)
+    }
+  }
 }
 
 async function sweepOnce(requireLoaded = true): Promise<void> {

@@ -19,6 +19,7 @@ import { $queuedPromptsBySession, enqueueQueuedPrompt, getQueuedPrompts } from '
 import { $pinnedSessionIds } from '@/store/layout'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import { $sessions } from '@/store/session'
+import { $unreadFinishedMarkers } from '@/store/session-unread'
 
 import { __runDeadSessionPrunePass, resetDeadSessionPrune, watchDeadSessionPrune } from './dead-session-prune'
 
@@ -48,6 +49,7 @@ beforeEach(() => {
   $sessions.set([])
   $pinnedSessionIds.set([])
   $queuedPromptsBySession.set({})
+  $unreadFinishedMarkers.set({})
   $profiles.set([profile('default'), profile('work')])
   $activeGatewayProfile.set('default')
   getSessionMock.mockReset()
@@ -60,6 +62,7 @@ afterEach(() => {
   $sessions.set([])
   $pinnedSessionIds.set([])
   $queuedPromptsBySession.set({})
+  $unreadFinishedMarkers.set({})
 })
 
 describe('__runDeadSessionPrunePass', () => {
@@ -111,6 +114,52 @@ describe('__runDeadSessionPrunePass', () => {
     await __runDeadSessionPrunePass()
 
     expect($pinnedSessionIds.get()).toEqual([])
+  })
+
+  it('drops unread markers for a dead session from every bucket and keeps live ones', async () => {
+    $sessions.set([row('unrelated')])
+    $unreadFinishedMarkers.set({ default: ['dead-unread', 'hidden-live'], work: ['dead-unread'] })
+    // `hidden-live` 404s on the active profile and exists only on `work`: a miss
+    // in one profile must not erase a marker for a session alive in another.
+    getSessionMock.mockImplementation(async (id, profileName) => {
+      if (id === 'hidden-live' && profileName === 'work') {
+        return row(id, { profile: 'work' })
+      }
+
+      throw notFound()
+    })
+
+    await __runDeadSessionPrunePass()
+
+    expect(getSessionMock).toHaveBeenCalledWith('hidden-live', undefined)
+    expect(getSessionMock).toHaveBeenCalledWith('hidden-live', 'work')
+    expect($unreadFinishedMarkers.get()).toEqual({ default: ['hidden-live'] })
+  })
+
+  it('keeps an unread marker on an inconclusive probe, then drops it once the session is gone', async () => {
+    $sessions.set([row('unrelated')])
+    $unreadFinishedMarkers.set({ work: ['flaky-unread'] })
+    getSessionMock.mockRejectedValue(new Error('gateway restarting'))
+
+    await __runDeadSessionPrunePass()
+
+    expect($unreadFinishedMarkers.get()).toEqual({ work: ['flaky-unread'] })
+
+    getSessionMock.mockRejectedValue(notFound())
+    await __runDeadSessionPrunePass()
+
+    expect($unreadFinishedMarkers.get()).toEqual({})
+  })
+
+  it('never probes an unread marker that a loaded row covers', async () => {
+    $sessions.set([row('loaded-unread')])
+    $unreadFinishedMarkers.set({ default: ['loaded-unread'] })
+    getSessionMock.mockRejectedValue(notFound())
+
+    await __runDeadSessionPrunePass()
+
+    expect(getSessionMock).not.toHaveBeenCalled()
+    expect($unreadFinishedMarkers.get()).toEqual({ default: ['loaded-unread'] })
   })
 
   it('discards drafts for dead sessions but never the new-chat draft', async () => {

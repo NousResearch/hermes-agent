@@ -568,6 +568,18 @@ def _apply_timeout(result: dict[str, Any], timeout_msg: str) -> None:
     result["output"] = _with_timeout_notice(result["output"], timeout_msg)
 
 
+def _resolve_rpc_session_id(session_id: Optional[str]) -> str:
+    """Return the explicit session id, falling back to legacy session context."""
+    if session_id is not None:
+        return session_id
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        logger.warning("Could not resolve the RPC session context", exc_info=True)
+        return ""
+
+
 def _finish_remote_kernel_result(kernel_result: dict[str, Any], *,
                                  timeout: int, exec_start: float, env: Any = None) -> str:
     """Post-process a remote-kernel cell result into the tool's JSON reply. Timeout messaging
@@ -625,10 +637,12 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
         # See #30882.
+        # Resolve on the parent thread for explicit forwarding (#51931).
+        _rpc_session_id = _resolve_rpc_session_id(session_id)
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, tool_call_log, tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token, session_id, turn_id, conversation_id))
+                  max_tool_calls, sandbox_tools, stop_event, rpc_token, _rpc_session_id, turn_id, conversation_id))
         rpc_thread.start()
         # The token travels in a sourced env file, never in argv. No umask on
         # the launch command: the 700 dirs + explicit 0600 writes cover Hermes'
@@ -683,6 +697,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     env, env_type = _get_or_create_env(effective_task_id)
     with _call_in_flight(_resolve_container_task_id(effective_task_id)):
         exec_start = time.monotonic()
+        _rpc_session_id = _resolve_rpc_session_id(session_id)
         try:
             py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
             if "OK" not in py_check.get("output", ""):
@@ -701,7 +716,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                     sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
                     max_tool_calls=max_tool_calls, reset=bool(reset),
                     idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
-                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                    session_id=_rpc_session_id, turn_id=turn_id, conversation_id=conversation_id,
                 )
             except Exception:
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
@@ -713,7 +728,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
             return _remote_failure(exc, exec_start, 0)
         return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
                                     timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
-                                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+                                    session_id=_rpc_session_id, turn_id=turn_id, conversation_id=conversation_id)
 
 
 # ---- Main entry point ----
@@ -805,7 +820,7 @@ def execute_code(
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
-        session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+        session_id=_resolve_rpc_session_id(session_id), turn_id=turn_id, conversation_id=conversation_id,
     ))
 
 

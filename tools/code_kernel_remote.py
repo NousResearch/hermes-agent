@@ -412,6 +412,10 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     tool_call_counter, tool_call_log, stop_event = [0], [], threading.Event()
     # Per-cell RPC thread carrying THIS call's approval/session context — the remote analogue
     # of CellAuthority: authority lives exactly as long as the cell's poll loop.
+    # Resolve the session_id here (on the parent thread) so it can be passed explicitly to
+    # the RPC thread — handle_function_call reads session_id as a parameter, not from a
+    # ContextVar, so without explicit forwarding nested tool hooks see an empty session_id
+    # (#51931).
     rpc_thread = threading.Thread(
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
         args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, tool_call_log, tool_call_counter,

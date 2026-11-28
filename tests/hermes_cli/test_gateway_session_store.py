@@ -89,6 +89,74 @@ def test_a_finite_run_creates_mains_oneshot_session_so_bare_c_finds_it(store, mo
     assert client.calls[-1][1]["source"] == "cli"
 
 
+class ContractClient(FakeClient):
+    """A gateway whose ``runtime.describe`` answers with the real create contract (the surfaces
+    and parameters it accepts), like ``gateway/session_controls.py``'s ``describe``."""
+
+    SOURCES = ["acp", "cli", "gui", "oneshot", "tool", "tui"]
+
+    async def rpc(self, method, *, _timeout=None, **params):
+        if method == "runtime.describe":
+            self.calls.append((method, params))
+            return {"session_create": {"sources": self.SOURCES,
+                                       "parameters": ["client_env", "cwd", "row_cwd", "model"]}}
+        return await FakeClient.rpc(self, method, _timeout=_timeout, **params)
+
+
+def _contract_store(client_cls=ContractClient):
+    client = client_cls()
+
+    @asynccontextmanager
+    async def connect():
+        yield client
+    conn = GatewayConnection(connect=connect)
+    conn.start(5)
+    return GatewaySessionStore(conn), client, conn
+
+
+def test_inherited_automation_source_is_demoted_to_a_gateway_surface(store, monkeypatch):
+    """``HERMES_SESSION_SOURCE`` is bridged into every child of an automation session
+    (kanban, cron), and those labels are NOT creatable surfaces (the create contract's closed
+    Literal refuses them with a bare ``invalid_params``, host-wide, for any `hermes chat -q` run
+    from a worker terminal). An inherited label the gateway does not serve falls back to the thin
+    client's own rule — the label the run would have had with no env at all."""
+    db, client, conn = _contract_store()
+    try:
+        monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+        monkeypatch.delenv("HERMES_SESSION_SOURCE_EXPLICIT", raising=False)
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        db.open_session(cli(), {})
+        assert client.calls[-1][1]["source"] == "oneshot"
+        # Interactive (not a finite run): the fallback is `cli`, as the thin client's default.
+        monkeypatch.delenv("HERMES_SINGLE_QUERY_SESSION")
+        GatewaySessionStore(db.connection).open_session(cli(), {})
+        assert client.calls[-1][1]["source"] == "cli"
+        # An explicit `--source` the gateway does not serve is a real error, with the thin
+        # client's copy — never the opaque refusal.
+        monkeypatch.setenv("HERMES_SESSION_SOURCE_EXPLICIT", "1")
+        with pytest.raises(GatewayClientError, match="does not support source 'kanban'"):
+            GatewaySessionStore(db.connection).open_session(cli(), {})
+    finally:
+        conn.close()
+
+
+def test_inherited_source_untouched_when_gateway_serves_it(store, monkeypatch):
+    """No contract (an older gateway) or a served label: the store passes main's label through
+    exactly as before — the demotion only fires on a label the contract refuses."""
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "kanban")
+    monkeypatch.delenv("HERMES_SESSION_SOURCE_EXPLICIT", raising=False)
+    db, client = store  # the plain fixture's describe carries no create contract: pass through
+    db.open_session(cli(), {})
+    assert client.calls[-1][1]["source"] == "kanban"
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "tool")  # served by ContractClient's SOURCES
+    db2, client2, conn2 = _contract_store()
+    try:
+        db2.open_session(cli(), {})
+        assert client2.calls[-1][1]["source"] == "tool"
+    finally:
+        conn2.close()
+
+
 def test_resume_attaches_and_unknown_target_is_left_to_mains_not_found_path(store):
     db, client = store
     assert db.open_session(cli("local-old", resumed=True)) == "local-old"

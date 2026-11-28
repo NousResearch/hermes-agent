@@ -65,6 +65,40 @@ class TestToolsList:
         assert "github" in out
         assert "create_issue" in out
 
+    @staticmethod
+    def _mcp_line(out: str, server: str) -> str:
+        section = out.split("MCP servers", 1)[1]
+        return next(line for line in section.splitlines() if f"  {server}  " in line)
+
+    def test_list_marks_mcp_servers_per_platform(self, capsys):
+        """Each MCP server shows whether this platform's sessions load it, not one global list."""
+        config = {
+            "platform_toolsets": {"cli": ["memory", "github"], "cron": ["memory"]},
+            "mcp_servers": {
+                "github": {"command": "npx"},
+                "linear": {"command": "npx", "tools": {"include": ["list_issues"]}},
+                "notion": {"command": "npx", "enabled": False},
+            },
+        }
+        with patch("hermes_cli.tools_config.load_config", return_value=config):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cli"))
+        out = capsys.readouterr().out
+        assert "MCP servers (cli):" in out
+        assert "✓ enabled" in self._mcp_line(out, "github")
+        assert "✗ disabled" in self._mcp_line(out, "linear")
+        assert "not in platform_toolsets.cli" in self._mcp_line(out, "linear")
+        assert "disabled in config" in self._mcp_line(out, "notion")
+
+        # cron names no MCP server, so its sessions load every enabled one.
+        with patch("hermes_cli.tools_config.load_config", return_value=config):
+            tools_disable_enable_command(Namespace(tools_action="list", platform="cron"))
+        out = capsys.readouterr().out
+        assert "MCP servers (cron):" in out
+        assert "✓ enabled" in self._mcp_line(out, "github")
+        assert "✓ enabled" in self._mcp_line(out, "linear")
+        assert "include only: list_issues" in self._mcp_line(out, "linear")
+        assert "disabled in config" in self._mcp_line(out, "notion")
+
 
 # ── Validation ───────────────────────────────────────────────────────────────
 

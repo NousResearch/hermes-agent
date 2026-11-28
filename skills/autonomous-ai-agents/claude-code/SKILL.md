@@ -17,14 +17,57 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 
 ## Prerequisites
 
-- **Install:** `npm install -g @anthropic-ai/claude-code`
+- **Install:** `npm install -g @anthropic-ai/claude-code` — **unless the host pins its toolchain with mise, in which case use mise and read [Install and update on a mise-managed host](#install-and-update-on-a-mise-managed-host) first.**
 - **Auth:** run `claude` once to log in (browser OAuth for Pro/Max, or set `ANTHROPIC_API_KEY`)
 - **Console auth:** `claude auth login --console` for API key billing
 - **SSO auth:** `claude auth login --sso` for Enterprise
 - **Check status:** `claude auth status` (JSON) or `claude auth status --text` (human-readable)
 - **Health check:** `claude doctor` — checks auto-updater and installation health
 - **Version check:** `claude --version` (requires v2.x+)
-- **Update:** `claude update` or `claude upgrade`
+- **Update:** `claude update` or `claude upgrade` — **on a mise-managed host, use `mise upgrade` instead; `claude update` re-enables the self-updater that fights mise.**
+
+## Install and update on a mise-managed host
+
+**Check this BEFORE installing.** Claude Code ships its own auto-updater, and on a host where the toolchain is pinned with mise the two fight each other: the updater resolves `installMethod=npm` and runs `npm install -g @anthropic-ai/claude-code@latest` into the node-prefix bin dir, which sits at **PATH position 2 — ahead of mise's copy at position 12**. The result is a second, unmanaged binary shadowing the managed one.
+
+**Install with mise, not npm:**
+
+```toml
+# ~/.config/mise/config.toml
+[tools]
+"npm:@anthropic-ai/claude-code" = { version = "2", allow_builds = true }
+```
+
+`allow_builds = true` is **not optional**. Without it mise skips npm lifecycle scripts, so the package's postinstall never downloads the native binary — the install reports success but `claude` fails with `Error: claude native binary not installed.` The fix is the pin, not a reinstall: set `allow_builds = true`, then `mise install npm:@anthropic-ai/claude-code`.
+
+**Disable the self-updater in Claude Code's OWN config:**
+
+```json
+{
+  "env": {
+    "DISABLE_AUTOUPDATER": "1"
+  }
+}
+```
+
+mise's top-level `[env]` block is **not** sufficient — it is honoured by `mise exec` but not by the bare mise shim, which is how the tool is actually invoked.
+
+**Update with mise, not `claude update`:**
+
+```bash
+mise upgrade npm:@anthropic-ai/claude-code   # correct: stays under the pin
+claude update                                # wrong: re-enables the self-updater
+```
+
+**Verify:**
+
+```bash
+claude --version
+# 2.1.316 (Claude Code)
+claude doctor
+# Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)
+```
+
 
 ## Two Orchestration Modes
 
@@ -739,6 +782,7 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
 11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
 12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
+13. **On a mise-managed host, `npm install -g` and `claude update` both break the pin** — the self-updater reinstalls Claude Code into the node-prefix bin dir at PATH position 2, ahead of mise's copy at position 12, leaving a second unmanaged binary that shadows the managed one. Install with `mise install npm:@anthropic-ai/claude-code` (with `allow_builds = true`), set `DISABLE_AUTOUPDATER=1` in `~/.claude/settings.json`, and update with `mise upgrade`. See [Install and update on a mise-managed host](#install-and-update-on-a-mise-managed-host).
 
 ## Rules for Hermes Agents
 

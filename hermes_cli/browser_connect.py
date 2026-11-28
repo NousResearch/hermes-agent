@@ -688,6 +688,56 @@ def _locked_profile_error(browser: str) -> str:
     return _PROFILE_LOCKED_PREFIX + msg
 
 
+def _strip_extension_registry(dst: str) -> None:
+    """Remove the user's extension registry and shortcut bindings from the snapshot.
+
+    Chrome keeps the extension REGISTRY (not the extension code) in ``Secure Preferences``, and
+    the keyboard-shortcut bindings in ``Preferences``. The snapshot's ignore list drops the
+    ``Extensions/`` tree, so store extensions never arrive — but developer/unpacked extensions
+    (``location: 4``) live outside it and are registered by ABSOLUTE PATH into the user's real
+    filesystem. A copied registry therefore re-registers those extensions in the snapshot browser,
+    which then loads the user's own unpacked code and inherits their global keyboard shortcuts
+    (a ``global: true`` command is broadcast per macOS USER, so a background/headless instance
+    steals the keystroke from the visible browser).
+
+    Strip both halves, in both files:
+      * ``Secure Preferences`` -> ``extensions.settings`` (the registry that makes Chrome load
+        them at all).
+      * ``Preferences`` -> ``extensions.commands`` (the bindings, so nothing can claim a global
+        key). This file is re-synced from the live profile on EVERY launch, so it must be
+        stripped on every launch too — a one-shot strip would be undone by the next refresh.
+
+    Best-effort: a missing/unreadable file is not an error, the snapshot simply keeps whatever
+    Chrome wrote for itself.
+    """
+    for rel, keys in (("Secure Preferences", ("settings",)),
+                      ("Preferences", ("commands",))):
+        path = os.path.join(dst, "Default", rel)
+        try:
+            with open(path, encoding="utf-8-sig", errors="replace") as fh:
+                prefs = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        ext = prefs.get("extensions")
+        if not isinstance(ext, dict):
+            continue
+        removed = {key: len(ext.get(key) or {}) for key in keys if ext.get(key)}
+        if not removed:
+            continue
+        for key in keys:
+            ext.pop(key, None)
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(prefs, fh)
+        except OSError as e:
+            logger.debug("real-profile snapshot: could not strip %s: %s", rel, e)
+            continue
+        logger.info(
+            "real-profile snapshot: stripped %s from the copy (%s) so the snapshot browser "
+            "cannot load the user's extensions or claim their global shortcuts",
+            rel, ", ".join(f"{n} {k}" for k, n in removed.items()))
+
+
 def _copy_profile_tree(src: str, dst: str, source_profile: str) -> None:
     """Fresh (or torn-and-rebuilding) copy of the ACTIVE profile dir into the copy's Default,
     minus caches AND the SQLite auth DBs (raw copytree of a Chrome-held file raises on Windows);
@@ -776,6 +826,10 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             _copy_profile_tree(src, dst, source_profile)
         # Both paths: lock-aware auth DB copy into Default — also the per-launch re-sync.
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
+        # Strip the extension registry + shortcut bindings AFTER the auth mirror: the mirror
+        # re-copies Preferences from the live profile on EVERY launch, so a one-shot strip
+        # would be undone by the next refresh.
+        _strip_extension_registry(dst)
         if failed_dbs:  # no session cookies: a "real profile" launch would be signed out
             return None, _unavailable_auth_dbs_error(browser, failed_dbs)
         _drop_singleton_leftovers(dst)

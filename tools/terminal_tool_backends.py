@@ -329,7 +329,9 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 #   binary=(finder, version_arg, missing_log_or_None) runs ``<binary> <arg>``, ok iff rc == 0;
 #   module=(find_spec name, log message when absent);  post(config) -> bool.
 def _check_vercel(config: dict[str, Any]) -> bool:
-    """Runtime -> disk -> SDK -> auth (OIDC token, else the full TOKEN/PROJECT_ID/TEAM_ID tuple)."""
+    """Runtime -> disk -> SDK -> auth. A routed profile needs its own full TOKEN/PROJECT_ID/TEAM_ID
+    triple, checked by the backend constructor's own rule; a single-profile Hermes accepts an OIDC
+    token, else the full triple."""
     runtime = (config.get("vercel_runtime") or "").strip()
     disk = config.get("container_disk", 51200)
     if not _is_supported_vercel_runtime(runtime):
@@ -341,7 +343,14 @@ def _check_vercel(config: dict[str, Any]) -> bool:
     if importlib.util.find_spec("vercel") is None:
 
         return _reject("vercel is required for the Vercel Sandbox terminal backend. Run hermes setup terminal and select Vercel Sandbox.")
-    from agent.secret_scope import get_secret
+    from agent.secret_scope import get_secret, serves_routed_profile
+    if serves_routed_profile():
+        from tools.environments.vercel_sandbox import _routed_credentials
+        try:
+            _routed_credentials()
+        except ValueError as exc:
+            return _reject(str(exc))
+        return True
     if get_secret("VERCEL_OIDC_TOKEN"):
         return True
     present = [bool(get_secret(k)) for k in ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID")]

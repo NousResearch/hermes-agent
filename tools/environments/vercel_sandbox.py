@@ -38,6 +38,8 @@ _DEFAULT_CONTAINER_DISK_MB = 51200
 _CREATE_RETRY_ATTEMPTS = 3
 _TRANSIENT_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 _RUNNING_WAIT_TIMEOUT = timedelta(seconds=30)
+_VERCEL_MB_PER_VCPU = 2048
+_TOKEN_VARS = ("VERCEL_TOKEN", "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID")
 
 
 def _ensure_vercel_sdk() -> None:
@@ -149,6 +151,47 @@ def _sandbox_status_type() -> type[SandboxStatus]:
     return SandboxStatus
 
 
+def _sandbox_resources(cpu: float, memory: int) -> Any:
+    """The SDK resource request for Hermes' ``container_cpu``/``container_memory``.
+
+    Vercel sizes memory from the vCPU count (2048 MB each) and offers 1 or an even number of vCPUs;
+    the SDK rejects anything else, so with a CPU count only the vCPUs are sent, rounded down to an
+    offered count (at least 1); ``container_memory`` is used only without one.
+    """
+    from vercel.sandbox import Resources
+
+    vcpus = max(1, math.floor(cpu) // 2 * 2) if cpu > 0 else None
+    if vcpus is not None:
+        if memory > 0 and memory != vcpus * _VERCEL_MB_PER_VCPU:
+            logger.info("Vercel: container_memory=%d ignored; %d vCPU sandboxes get %d MB",
+                        memory, vcpus, vcpus * _VERCEL_MB_PER_VCPU)
+        return Resources(vcpus=vcpus)
+    return Resources(memory=memory) if memory > 0 else None
+
+
+def _routed_credentials() -> dict[str, str]:
+    """``Sandbox.create`` credentials for a routed profile: its own token, project and team.
+
+    A single-profile process passes none and keeps the SDK's own resolution (an OIDC token, else the
+    process env). Without them the SDK reads ``os.environ``, which holds the launch profile's
+    credentials, so a routed profile that lacks any of the three is refused before a request is sent.
+    Read once per ``_create_sandbox`` call: its snapshot restore, the restore's retries, the fresh
+    fallback and that create's retries all send the values captured then. A recreated sandbox reads
+    them again, so a rotated token takes effect on the next sandbox. Every later call on a sandbox
+    (commands, files, refresh, snapshot, stop) reuses the client ``Sandbox.create`` built from them.
+    """
+    from agent.secret_scope import get_secret_str, serves_routed_profile
+
+    if not serves_routed_profile():
+        return {}
+    token, project_id, team_id = (get_secret_str(name).strip() for name in _TOKEN_VARS)
+    if not (token and project_id and team_id):
+        raise ValueError("VERCEL_TOKEN, VERCEL_PROJECT_ID and VERCEL_TEAM_ID are not all set for this profile: add "
+                         "them to this profile's .env (or its secret source). Another profile's Vercel credentials "
+                         "are never used for it, and VERCEL_OIDC_TOKEN serves only a single-profile Hermes.")
+    return {"token": token, "project_id": project_id, "team_id": team_id}
+
+
 def _is_terminal(status: Any) -> bool:
     S = _sandbox_status_type()
     return status in {S.ABORTED, S.FAILED, S.STOPPED}
@@ -177,8 +220,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
         self._workspace_root = self._remote_home = DEFAULT_VERCEL_CWD
         self._sync_manager: FileSyncManager | None = None
         _ensure_vercel_sdk()
-        from vercel.sandbox import Resources
-        vcpus, memory_mb = (math.floor(cpu) if cpu > 0 else None), (memory if memory > 0 else None)
+        resources = _sandbox_resources(cpu, memory)
         # Vercel rejects runtime+image together; runtimes are deprecated (Aug 2026), so a runtime is
         # only sent when the user still pins one, and then the image is dropped.
         if runtime:
@@ -188,7 +230,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
             "timeout": max(timedelta(seconds=max(self.timeout, 0)), timedelta(minutes=5)),
             "runtime": runtime or None,
             "image": None if runtime else (image or DEFAULT_VERCEL_IMAGE),
-            "resources": Resources(vcpus=vcpus, memory=memory_mb) if (vcpus, memory_mb) != (None, None) else None}
+            "resources": resources}
         self._attach_fresh_sandbox(cwd)
         self._sync_manager.sync(force=True)
         self.init_session()
@@ -204,13 +246,14 @@ class VercelSandboxEnvironment(BaseEnvironment):
     def _create_sandbox(self) -> Sandbox:
         _ensure_vercel_sdk()
         from vercel.sandbox import Sandbox
+        create_kwargs = {**self._create_kwargs, **_routed_credentials()}
         snapshot_id = _load_snapshots().get(self._task_id) if self._persistent and self._task_id else None
         if isinstance(snapshot_id, str) and snapshot_id:
             try:
                 source = {"type": "snapshot", "snapshot_id": snapshot_id}
                 # A snapshot carries its own filesystem: Vercel refuses runtime with a snapshot
                 # source, and the image would describe a base the snapshot already replaced.
-                restore_kwargs = {k: v for k, v in self._create_kwargs.items() if k not in ("runtime", "image")}
+                restore_kwargs = {k: v for k, v in create_kwargs.items() if k not in ("runtime", "image")}
                 return _retry_vercel_call(
                     "sandbox restore", lambda: Sandbox.create(**restore_kwargs, source=source),
                     attempts=_CREATE_RETRY_ATTEMPTS)
@@ -218,7 +261,7 @@ class VercelSandboxEnvironment(BaseEnvironment):
                 logger.warning("Vercel: failed to restore snapshot %s for task %s; falling back to a fresh sandbox: %s",
                                snapshot_id, self._task_id, exc)
                 _delete_snapshot(self._task_id, snapshot_id)
-        return _retry_vercel_call("sandbox create", lambda: Sandbox.create(**self._create_kwargs),
+        return _retry_vercel_call("sandbox create", lambda: Sandbox.create(**create_kwargs),
                                   attempts=_CREATE_RETRY_ATTEMPTS)
 
     def _attach_fresh_sandbox(self, requested_cwd: str) -> None:

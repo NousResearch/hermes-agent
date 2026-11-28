@@ -248,6 +248,40 @@ class TestRemove:
         assert "keep" in subs
         assert "drop" not in subs
 
+
+class TestEnableDisable:
+
+    def test_disable_and_enable_existing_subscription(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="pause-me"))
+        webhook_command(_make_args(webhook_action="disable", name=" pause me "))
+        assert _load_subscriptions()["pause-me"]["enabled"] is False
+
+        webhook_command(_make_args(webhook_action="enable", name="pause-me"))
+        assert _load_subscriptions()["pause-me"]["enabled"] is True
+        assert "Enabled webhook subscription: pause-me" in capsys.readouterr().out
+
+    def test_missing_subscription_does_not_create_entry(self, capsys):
+        webhook_command(_make_args(webhook_action="disable", name="missing"))
+
+        assert _load_subscriptions() == {}
+        assert "No subscription named 'missing'" in capsys.readouterr().out
+
+    def test_rotate_secret_replaces_secret_and_keeps_route(self, capsys):
+        webhook_command(_make_args(webhook_action="subscribe", name="rekey", secret="old-operator-secret"))
+        webhook_command(_make_args(webhook_action="disable", name="rekey"))
+        before = _load_subscriptions()["rekey"]
+        capsys.readouterr()
+
+        webhook_command(_make_args(webhook_action="rotate-secret", name="rekey"))
+
+        after = _load_subscriptions()["rekey"]
+        out = capsys.readouterr().out
+        assert after["secret"] != "old-operator-secret" and len(after["secret"]) > 20
+        assert {k: v for k, v in after.items() if k != "secret"} == {k: v for k, v in before.items() if k != "secret"}
+        assert after["secret"] in out and "/webhooks/rekey" in out
+        assert webhook_command(_make_args(webhook_action="rotate-secret", name="absent")) == 1
+        assert "absent" not in _load_subscriptions()
+
 class TestPersistence:
 
     def test_corrupted_file(self):

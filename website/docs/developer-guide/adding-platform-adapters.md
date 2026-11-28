@@ -221,7 +221,7 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Webhook cross-platform delivery | Registry checked for known platforms |
 | `/update` command access | `allow_update_command` flag |
 | Channel directory | Plugin platforms included in enumeration |
-| System prompt hints | `platform_hint` injected into LLM context; `platform_hint_tool_notes` (`{tool: sentence}`) appended only when the session has that tool |
+| System prompt hints | `platform_hint` injected into LLM context; `platform_hint_tool_notes` (`{tool: sentence}`) appended only when the session has that tool; `platform_hint_extra_notes` (`{extra_key: sentence}`) appended only when `platforms.<name>.extra.<extra_key>` is on |
 | Message chunking | `max_message_length` for smart splitting |
 | PII redaction | `pii_safe` flag |
 | `hermes status` | Lists plugin platforms alongside built-ins, one row each, using the gateway's own configured check |

@@ -10,3 +10,12 @@ PLATFORM_HINT = (
     ".webp) are uploaded as photo attachments, audio as file attachments. You can also include image URLs in "
     "markdown format ![alt](url) and they will be uploaded as attachments."
 )
+
+# Appended (``PlatformEntry.platform_hint_extra_notes``) when ``markdown_blocks`` or ``rich_blocks`` is on: both
+# render GFM pipe tables as real Slack tables, so the base hint's no-tables advice would make the model hand-build
+# fixed-width tables inside ``` fences instead, which Slack shows as raw monospace text.
+BLOCK_TABLES_NOTE = (
+    "Block Kit rendering is on for this workspace, so the no-tables advice above does not apply: for tabular data "
+    "write a GFM pipe table (a header row, then a |---| separator row) and Slack renders it as a real table. Never "
+    "put a table inside a ``` code block or align columns with spaces; that shows up as raw monospace text."
+)

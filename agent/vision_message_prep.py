@@ -6,11 +6,13 @@ image stripping, and provider quirks (Anthropic dot preservation, Qwen portal me
 import logging
 import asyncio
 import base64
+from collections import OrderedDict
 import copy
 import hashlib
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -26,6 +28,25 @@ _TEXT_PART_TYPES = {"text", "input_text"}
 _DATA_URL_SUFFIXES = {
     "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/jpeg": ".jpg", "image/jpg": ".jpg"
 }
+_SHARED_IMAGE_FALLBACK_CACHE_MAX = 256
+_SHARED_IMAGE_FALLBACK_CACHE: "OrderedDict[str, str]" = OrderedDict()
+_SHARED_IMAGE_FALLBACK_CACHE_LOCK = threading.Lock()
+
+
+def _shared_image_fallback_get(key: str) -> Optional[str]:
+    with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+        note = _SHARED_IMAGE_FALLBACK_CACHE.get(key)
+        if note is not None:
+            _SHARED_IMAGE_FALLBACK_CACHE.move_to_end(key)
+        return note
+
+
+def _shared_image_fallback_put(key: str, note: str) -> None:
+    with _SHARED_IMAGE_FALLBACK_CACHE_LOCK:
+        _SHARED_IMAGE_FALLBACK_CACHE[key] = note
+        _SHARED_IMAGE_FALLBACK_CACHE.move_to_end(key)
+        while len(_SHARED_IMAGE_FALLBACK_CACHE) > _SHARED_IMAGE_FALLBACK_CACHE_MAX:
+            _SHARED_IMAGE_FALLBACK_CACHE.popitem(last=False)
 
 
 def _is_image_part(part: Any) -> bool:
@@ -90,12 +111,13 @@ class VisionMessagePrepMixin:
         return tmp.name, Path(tmp.name)
 
     def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
-        cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
-        cached = self._anthropic_image_fallback_cache.get(cache_key)
+        role_label = {"assistant": "assistant", "tool": "tool result"}.get(role, "user")
+        cache_key = hashlib.sha256(f"{role_label}:{image_url or ''}".encode()).hexdigest()
+        cached = self._anthropic_image_fallback_cache.get(cache_key) or _shared_image_fallback_get(cache_key)
         if cached:
+            self._anthropic_image_fallback_cache[cache_key] = cached
             return cached
 
-        role_label = {"assistant": "assistant", "tool": "tool result"}.get(role, "user")
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
             "Include any text, code, UI, data, objects, people, layout, colors, "
@@ -127,7 +149,9 @@ class VisionMessagePrepMixin:
         if vision_source and not is_data_url:
             note += f"\n[If you need a closer look, use vision_analyze with image_url: {vision_source}]"
 
-        self._anthropic_image_fallback_cache[cache_key] = note
+        if description and not description.startswith("Image analysis failed"):
+            self._anthropic_image_fallback_cache[cache_key] = note
+            _shared_image_fallback_put(cache_key, note)
         return note
 
     def _model_supports_vision(self) -> bool:

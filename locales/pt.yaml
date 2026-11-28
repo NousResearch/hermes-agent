@@ -42,6 +42,15 @@ approval:
     second_one: "{count} segundo"
     second_other: "{count} segundos"
 gateway:
+  workspace:
+    source_session: "session override"
+    source_global: "global default"
+    status: "📁 **Workspace:** `{cwd}` ({source})\nGlobal default: `{global_cwd}`\nUse `/workspace /absolute/path` to bind this chat, or `/workspace clear` to return to the global default."
+    set: "✅ Workspace set for this chat: `{cwd}`\nFuture turns in this chat will use this directory for project context, file tools, terminal commands, @ references, and rollback."
+    cleared: "Workspace override cleared. Future turns will use the global default: `{cwd}`"
+    relative_rejected: "Use an absolute path, e.g. `/workspace /home/me/project`."
+    not_dir: "Workspace path is not an existing directory: `{path}`"
+    save_failed: "Failed to save workspace: {error}"
   approval_expired: "⚠️ A aprovação expirou (o agente já não está à espera). Peça ao agente para tentar novamente."
   draining: "⏳ A aguardar que {count} agente(s) ativo(s) terminem antes de reiniciar..."
   goal_cleared: "✓ Objetivo removido."
@@ -378,6 +387,7 @@ gateway:
     kept_oversize: "↷ Mantido (grande demais para os checkpoints, sem cópia guardada para reverter): {files}"
     failed_deletes: "⚠️ Não foi possível remover (mantido no lugar): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "Os checkpoints não estão ativados, então não há linha de base da sessão.\nAtive em config.yaml:\n```\ncheckpoints:\n  enabled: true\n```\nO /diff simples continua funcionando — ele usa git diretamente."
     no_changes: "Sem alterações."

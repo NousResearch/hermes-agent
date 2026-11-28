@@ -1068,8 +1068,8 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
             if _is_destructive_command(command):
                 from tools.file_tools_paths import container_backend_for_task
                 if container_backend_for_task(effective_task_id or "default") is None:
-                    from agent.runtime_cwd import scope_terminal_cwd
-                    cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
+                    from tools.file_tools_paths import _authoritative_workspace_root  # the command's own cwd
+                    cwd = function_args.get("workdir") or _authoritative_workspace_root(effective_task_id or "default") or os.getcwd()
                     agent._checkpoint_mgr.ensure_checkpoint(cwd, f"before terminal: {command[:60]}")
 
 

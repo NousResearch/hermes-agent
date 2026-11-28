@@ -42,6 +42,15 @@ approval:
     second_one: "{count} saniye"
     second_other: "{count} saniye"
 gateway:
+  workspace:
+    source_session: "session override"
+    source_global: "global default"
+    status: "📁 **Workspace:** `{cwd}` ({source})\nGlobal default: `{global_cwd}`\nUse `/workspace /absolute/path` to bind this chat, or `/workspace clear` to return to the global default."
+    set: "✅ Workspace set for this chat: `{cwd}`\nFuture turns in this chat will use this directory for project context, file tools, terminal commands, @ references, and rollback."
+    cleared: "Workspace override cleared. Future turns will use the global default: `{cwd}`"
+    relative_rejected: "Use an absolute path, e.g. `/workspace /home/me/project`."
+    not_dir: "Workspace path is not an existing directory: `{path}`"
+    save_failed: "Failed to save workspace: {error}"
   approval_expired: "⚠️ Onay süresi doldu (ajan artık beklemiyor). Ajanın tekrar denemesini isteyin."
   draining: "⏳ Yeniden başlatmadan önce {count} aktif ajan bekleniyor..."
   goal_cleared: "✓ Hedef temizlendi."
@@ -378,6 +387,7 @@ gateway:
     kept_oversize: "↷ Korundu (denetim noktaları için çok büyük, geri dönülecek kayıtlı kopya yok): {files}"
     failed_deletes: "⚠️ Kaldırılamadı (yerinde bırakıldı): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "Kontrol noktaları etkin değil, bu yüzden oturum temel çizgisi yok.\nconfig.yaml içinde etkinleştirin:\n```\ncheckpoints:\n  enabled: true\n```\nDüz /diff yine de çalışır — doğrudan git kullanır."
     no_changes: "Değişiklik yok."

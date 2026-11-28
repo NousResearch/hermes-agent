@@ -42,6 +42,15 @@ approval:
     second_one: "{count}초"
     second_other: "{count}초"
 gateway:
+  workspace:
+    source_session: "session override"
+    source_global: "global default"
+    status: "📁 **Workspace:** `{cwd}` ({source})\nGlobal default: `{global_cwd}`\nUse `/workspace /absolute/path` to bind this chat, or `/workspace clear` to return to the global default."
+    set: "✅ Workspace set for this chat: `{cwd}`\nFuture turns in this chat will use this directory for project context, file tools, terminal commands, @ references, and rollback."
+    cleared: "Workspace override cleared. Future turns will use the global default: `{cwd}`"
+    relative_rejected: "Use an absolute path, e.g. `/workspace /home/me/project`."
+    not_dir: "Workspace path is not an existing directory: `{path}`"
+    save_failed: "Failed to save workspace: {error}"
   approval_expired: "⚠️ 승인이 만료되었습니다 (에이전트가 더 이상 대기하지 않습니다). 에이전트에게 다시 시도하도록 요청하세요."
   draining: "⏳ 재시작 전에 활성 에이전트 {count}명을 정리하는 중..."
   goal_cleared: "✓ 목표가 삭제되었습니다."
@@ -378,6 +387,7 @@ gateway:
     kept_oversize: "↷ 유지됨 (체크포인트에 저장하기엔 너무 커서 되돌릴 저장본이 없습니다): {files}"
     failed_deletes: "⚠️ 제거할 수 없었습니다 (그대로 남아 있음): {files}"
     restore_failed: "❌ {error}"
+    pick_repo: "This thread has one worktree per repository: use `/rollback <repo> <N>` (repositories: {repos})."
   diff:
     not_enabled: "체크포인트가 활성화되지 않아 세션 기준선이 없습니다.\nconfig.yaml에서 활성화하세요:\n```\ncheckpoints:\n  enabled: true\n```\n일반 /diff는 여전히 작동합니다 — git을 직접 사용합니다."
     no_changes: "변경 사항이 없습니다."

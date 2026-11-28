@@ -47,6 +47,7 @@ starting that workflow, the body below only routes.
 | Carry an ISSUE to a verified PR (full delivery loop) | `references/issue-to-pr.md` |
 | Review someone's PR: diffs, inline comments, verdict | `references/code-review.md` |
 | Clone/create/fork repos, remotes, releases | `references/repo-management.md` |
+| Work in a chat-thread workspace fork; clone a listed repo on demand | `references/thread-workspaces.md` |
 
 Supporting assets: `scripts/gh-env.sh` + `scripts/git-credential-token.py`
 (auth helpers), `templates/` (PR bodies, bug report, feature request),

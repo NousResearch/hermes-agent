@@ -25,6 +25,7 @@
   "/cron": "terminal",
   "/ctx": null,
   "/curator": "advanced",
+  "/cwd": "terminal",
   "/debug": null,
   "/deny": null,
   "/diff": null,
@@ -128,6 +129,7 @@
   "/voice": "composer-voice",
   "/wake": null,
   "/whoami": null,
+  "/workspace": "terminal",
   "/worktree": "terminal",
   "/yolo": null
 }

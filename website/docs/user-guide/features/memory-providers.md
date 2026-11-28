@@ -23,7 +23,7 @@ Or set manually in `~/.hermes/config.yaml`:
 ```yaml
 memory:
   provider: retaindb  # or byterover,
-                      # or honcho / hindsight / supermemory / mem0 / openviking / holographic
+                      # or honcho / hindsight / supermemory / mem0 / openviking / holographic / agentmemory
                       # (plugin catalog — run `hermes plugins install <name>` first)
 ```
 
@@ -790,6 +790,34 @@ If the installer does not support PM-managed directory-provider admission, ask
 the publisher for that integration rather than inventing a `hermes pm install`
 package command. Restart Hermes after successful dependency preparation.
 
+### AgentMemory
+
+Plugin catalog
+
+AgentMemory is maintained by [rohitg00](https://github.com/rohitg00/agentmemory) and installed from the [plugin catalog](./plugins.md). Setup details live in the upstream [Hermes integration guide](https://github.com/rohitg00/agentmemory/blob/main/integrations/hermes/README.md).
+
+Local-first memory server shared with other coding agents. The provider recalls before each turn, captures each completed turn in the background, mirrors built-in memory writes, and adds scoped context before compression. Memory is scoped to the active Hermes profile and project, and on a messaging gateway to the author of each turn.
+
+| | |
+|---|---|
+| **Best for** | Local, self-hosted memory shared by Hermes and other coding agents, with per-profile isolation |
+| **Requires** | `hermes plugins install agentmemory`; a running AgentMemory server (`npx -y @agentmemory/agentmemory`, Node.js 20+) |
+| **Data storage** | Local AgentMemory server (`~/.agentmemory`) or your own remote server |
+| **Cost** | Free (open-source, Apache-2.0) |
+
+**Tools:** `memory_save` (store a memory), `memory_recall` (keyword recall), `memory_search` (search that can also use vector and graph matches)
+
+**Setup:**
+
+```bash
+npx -y @agentmemory/agentmemory   # in a separate terminal; serves http://localhost:3111
+hermes plugins install agentmemory
+hermes memory setup                 # select "agentmemory"
+hermes memory status
+```
+
+The setup wizard asks for the server URL (default `http://localhost:3111`) and its secret. Hermes stores the secret in its own credential store. Recall without embeddings uses keyword search; set `EMBEDDING_PROVIDER=local` in `~/.agentmemory/.env` for on-device semantic search.
+
 ---
 
 ## Provider Comparison
@@ -805,6 +833,7 @@ package command. Restart Hermes after successful dependency preparation.
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** (plugin catalog) | Cloud/Self-hosted | Free/Paid | 4 | `hermes plugins install supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **AgentMemory** (plugin catalog) | Local/Self-hosted | Free | 3 | `hermes plugins install agentmemory` + server | Profile- and author-scoped memory shared with other coding agents |
 
 ## Profile Isolation
 

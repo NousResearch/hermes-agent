@@ -9,20 +9,28 @@ helpers are reached via the late-binding seam so monkeypatching keeps working.
 import asyncio
 import contextlib
 import json
+import math
 import re
+import stat
 import sqlite3
 import time
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, Union
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from agent.redact import redact_bearer_credentials, redact_sensitive_text
+from agent.think_scrubber import THINK_TAG_NAMES
 
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_gateway import _strip_session_list_rows
-from hermes_cli.web_server_sessions import _listing_filters, _session_latest_descendant, _session_rows
+from hermes_cli.web_server_sessions import (
+    _listing_filters, _session_db_path_for_profile, _session_latest_descendant, _session_rows,
+)
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
 from hermes_cli.web_routers._common import (
@@ -34,7 +42,7 @@ from persistence.conversation.sessions import SessionCountQuery, SessionOrder, S
 from persistence.core.errors import CorruptStoreError, PersistenceError, SearchIndexCorrupt, StoreReplaced
 from persistence.core.health import StorageState
 from persistence.housekeeping.maintenance import PruneCriteria
-from persistence_assembly import profile_scope, storage_health, store_location
+from persistence_assembly import open_persistence_reader, profile_scope, storage_health, store_location
 from storage_errors import is_malformed_db_error
 
 list_router = APIRouter()
@@ -198,6 +206,224 @@ def _resolve_session_id(store, session_id: str) -> Optional[str]:
         # Same 503 payload as the analytics reads (#110054).
         with corrupt_store_as_status(store_location(store.scope)):
             raise
+
+
+_SESSION_ACTIVITY_CAPABILITIES = ("sessions.activity.read_model.v1",)
+_SESSION_ACTIVITY_SCHEMA = "sessions.activity.read_model.v1"
+_SESSION_ACTIVITY_CONTENT_LIMIT = 500
+_SESSION_ACTIVITY_BEARER_SENTINEL = "Bearer «redacted-secret»"
+_SESSION_ACTIVITY_PUBLIC_BLOCK_TYPES = frozenset({"text", "input_text", "output_text"})
+_SESSION_ACTIVITY_PATH_HINT_RE = re.compile(
+    r"(?i)(?:\bfile://|(?:^|[\s:(])(?:~[/\\]|[A-Z]:[/\\]|\\\\|\.{0,2}[/\\]|/)"
+    r"|(?:^|[\s:(])[^\s:/\\]+[/\\][^\s]+)"
+)
+# Every shared reasoning tag name (agent.think_scrubber), opening or orphan closing, plus ``analysis``.
+_SESSION_ACTIVITY_REASONING_TAG_RE = re.compile(
+    r"(?i)</?(?:"
+    + "|".join(re.escape(name) for name in sorted({*THINK_TAG_NAMES, "analysis"}, key=len, reverse=True))
+    + r")(?=[\s/>])"
+)
+
+
+class _StrictSessionActivityModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class SessionActivityCapabilitiesResponse(_StrictSessionActivityModel):
+    capabilities: list[Literal["sessions.activity.read_model.v1"]]
+
+
+class SessionActivitySessionResponse(_StrictSessionActivityModel):
+    session_id: str
+    profile_id: str
+    source: str
+    started_at: Optional[str | int | float] = None
+    last_activity_at: Optional[str | int | float] = None
+    ended_at: Optional[str | int | float] = None
+    state: Literal["open", "ended"]
+
+
+class SessionActivityMessageResponse(_StrictSessionActivityModel):
+    message_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    occurred_at: Optional[str | int | float] = None
+    truncated: bool
+
+
+class SessionActivityWindowResponse(_StrictSessionActivityModel):
+    limit: int = Field(ge=1, le=200)
+    order: Literal["latest"]
+    source_rows: int = Field(ge=0, le=200)
+    returned: int = Field(ge=0, le=200)
+
+
+class SessionActivityResponse(_StrictSessionActivityModel):
+    schema_id: Literal["sessions.activity.read_model.v1"] = Field(alias="schema")
+    capabilities: list[Literal["sessions.activity.read_model.v1"]]
+    requested_session_id: str
+    session: SessionActivitySessionResponse
+    messages: list[SessionActivityMessageResponse]
+    window: SessionActivityWindowResponse
+
+
+def _session_activity_representation(request: Request, response: JSONResponse) -> Response:
+    if request.method == "HEAD":
+        return Response(status_code=response.status_code, headers=dict(response.headers))
+    return response
+
+
+def _session_activity_headers() -> dict[str, str]:
+    return {
+        "Cache-Control": "private, no-store",
+        "X-Hermes-Session-Capabilities": ", ".join(
+            _SESSION_ACTIVITY_CAPABILITIES
+        ),
+    }
+
+
+def _validate_session_activity_query(request: Request) -> None:
+    pairs = list(request.query_params.multi_items())
+    counts: dict[str, int] = {}
+    for key, _value in pairs:
+        counts[key] = counts.get(key, 0) + 1
+    unknown = sorted(set(counts) - {"profile", "limit"})
+    duplicates = sorted(key for key, count in counts.items() if count != 1)
+    if unknown or duplicates:
+        raise HTTPException(
+            status_code=400,
+            detail="invalid_query",
+            headers=_session_activity_headers(),
+        )
+    raw_limit = request.query_params.get("limit", "100")
+    # int() also takes Unicode digits, "_" separators, signs and padding, which FastAPI's own parse
+    # then refuses with the raw value echoed: a limit is plain ASCII decimal digits only.
+    valid_limit = re.fullmatch(r"[0-9]{1,3}", raw_limit) is not None and 1 <= int(raw_limit) <= 200
+    if not valid_limit:
+        raise HTTPException(status_code=422, detail="invalid_limit", headers=_session_activity_headers())
+
+
+def _session_activity_public_text(content: Any) -> Optional[str]:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    chunks = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        block_type = part.get("type")
+        if not isinstance(block_type, str) or block_type not in _SESSION_ACTIVITY_PUBLIC_BLOCK_TYPES:
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            chunks.append(text)
+    return "\n".join(chunks) if chunks else None
+
+
+def _session_activity_redact_paths(text: str) -> str:
+    if _SESSION_ACTIVITY_PATH_HINT_RE.search(text):
+        return "[REDACTED: path-like content]"
+    return text
+
+
+def _session_activity_message(row: dict[str, Any]) -> Optional[dict[str, Any]]:
+    role = row.get("role")
+    if role not in {"user", "assistant"}:
+        return None
+    message_id = row.get("id")
+    if isinstance(message_id, bool) or not isinstance(message_id, (int, str)):
+        return None
+    if not str(message_id):
+        return None
+    oversized = row.get("content_oversized") is True or row.get("content_oversized") == 1
+    text = (
+        "[REDACTED: message exceeds public read limit]"
+        if oversized
+        else (_session_activity_public_text(row.get("content")) or "")
+    ).strip()
+    if not text:
+        return None
+    if role == "assistant" and _SESSION_ACTIVITY_REASONING_TAG_RE.search(text):
+        text = "[REDACTED: reasoning content]"
+    else:
+        try:
+            # file_read: non-reusable sentinels. secret_file: transcript text is secret-bearing, so the
+            # ENV/JSON/YAML assignment passes that file_read alone skips (it implies code_file) still run.
+            # A prefix-less ``Bearer <opaque>`` value has no vendor shape: sweep it before the pattern
+            # list (which would keep a head/tail mask on an Authorization header) and again after.
+            text = redact_bearer_credentials(text, _SESSION_ACTIVITY_BEARER_SENTINEL)
+            text = redact_sensitive_text(
+                text,
+                force=True,
+                file_read=True,
+                secret_file=True,
+                redact_url_credentials=True,
+            )
+            text = redact_bearer_credentials(text, _SESSION_ACTIVITY_BEARER_SENTINEL)
+            text = _session_activity_redact_paths(text)
+        except Exception:
+            text = "[REDACTED: content unavailable]"
+    truncated = oversized or len(text) > _SESSION_ACTIVITY_CONTENT_LIMIT
+    return {
+        "message_id": str(message_id),
+        "role": role,
+        "content": text[:_SESSION_ACTIVITY_CONTENT_LIMIT],
+        "occurred_at": _session_activity_time(row.get("timestamp")),
+        "truncated": truncated,
+    }
+
+
+def _session_activity_time(value: Any) -> Optional[float]:
+    if type(value) not in (int, float) or not math.isfinite(value):
+        return None
+    return value
+
+
+def _session_activity_label(value: Any) -> str:
+    """Identifiers and sources are imported user data too, not trusted metadata."""
+    message = _session_activity_message({"id": 1, "role": "user", "content": value})
+    return message["content"] if message is not None else ""
+
+
+def _session_activity_model(
+    *,
+    requested_session_id: str,
+    session_id: str,
+    profile_id: str,
+    session: dict[str, Any],
+    source_rows: list[dict[str, Any]],
+    limit: int,
+) -> dict[str, Any]:
+    messages = []
+    for row in source_rows:
+        message = _session_activity_message(row)
+        if message is not None:
+            messages.append(message)
+    last_activity_at = session.get("last_activity_at")
+    if last_activity_at is None:
+        last_activity_at = session.get("last_active")
+    return {
+        "schema": _SESSION_ACTIVITY_SCHEMA,
+        "capabilities": list(_SESSION_ACTIVITY_CAPABILITIES),
+        "requested_session_id": _session_activity_label(requested_session_id),
+        "session": {
+            "session_id": _session_activity_label(session_id),
+            "profile_id": _session_activity_label(profile_id),
+            "source": _session_activity_label(session.get("source")),
+            "started_at": _session_activity_time(session.get("started_at")),
+            "last_activity_at": _session_activity_time(last_activity_at),
+            "ended_at": _session_activity_time(session.get("ended_at")),
+            "state": "ended" if session.get("ended_at") is not None else "open",
+        },
+        "messages": messages,
+        "window": {
+            "limit": limit,
+            "order": "latest",
+            "source_rows": len(source_rows),
+            "returned": len(messages),
+        },
+    }
 
 
 # ``le=100`` on limit: an unbounded limit lets one request drag every session
@@ -586,6 +812,32 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     return {"ok": True, "deleted": deleted}
 
 
+@manage_router.get(
+    "/api/sessions/capabilities",
+    response_model=SessionActivityCapabilitiesResponse,
+)
+def get_session_capabilities(request: Request):
+    if request.query_params:
+        raise HTTPException(status_code=400, detail="invalid_query", headers=_session_activity_headers())
+    response = JSONResponse(
+        {"capabilities": list(_SESSION_ACTIVITY_CAPABILITIES)},
+        headers=_session_activity_headers(),
+    )
+    return _session_activity_representation(request, response)
+
+
+@manage_router.head("/api/sessions/capabilities", response_class=Response)
+def head_session_capabilities(request: Request):
+    return get_session_capabilities(request)
+
+
+@manage_router.api_route("/api/sessions/capabilities", methods=["PATCH", "DELETE"], include_in_schema=False)
+def refuse_session_capability_mutation():
+    # Reserve the discovery literal before /sessions/{session_id}'s mutation routes.
+    raise HTTPException(status_code=405, detail="Method Not Allowed",
+                        headers={"Allow": "GET, HEAD", **_session_activity_headers()})
+
+
 @manage_router.get("/api/sessions/stats")
 async def get_session_stats(profile: Optional[str] = None):
     """Session-store statistics (mirrors `hermes sessions stats`)."""
@@ -798,6 +1050,107 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
                 projected.pop("display_kind", None)
         projected_messages.append(projected)
     return project_history_commentary(projected_messages, home=home)
+
+
+@contextlib.contextmanager
+def _open_activity_store(profile: Optional[str]):
+    """Use the owned reader directly: browsing's drift-healing path is not read-only."""
+    try:
+        path = _session_db_path_for_profile(profile)
+    except HTTPException as exc:
+        raise HTTPException(status_code=exc.status_code, detail="Profile unavailable",
+                            headers=_session_activity_headers()) from exc
+    try:
+        info = path.stat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+            raise HTTPException(status_code=503, detail="Session store unavailable", headers=_session_activity_headers())
+        with open_persistence_reader(path, check_drift=True) as store:
+            store.ready()
+            yield store
+    except (OSError, sqlite3.Error, PersistenceError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="Session store unavailable",
+                            headers=_session_activity_headers()) from exc
+
+
+async def _session_activity_http_response(
+    request: Request,
+    session_id: str,
+    profile: Optional[str],
+    limit: int,
+):
+    def _read():
+        with _open_activity_store(profile) as db:
+            requested_session_id = db.sessions.resolve_id(session_id)
+            if not requested_session_id:
+                return None
+            resolved_session_id = (
+                db.lineage.resolve_resume_target(requested_session_id)
+                or requested_session_id
+            )
+            entry = db.sessions.list_row(resolved_session_id)
+            session = ({"source": entry.source, "started_at": entry.started_at,
+                        "last_activity_at": db.sessions.last_active(resolved_session_id),
+                        "ended_at": entry.ended_at} if entry else None)
+            if not session:
+                return None
+            source_rows = db.messages.read_activity(
+                resolved_session_id,
+                limit=limit,
+            )
+            profile_id = db.scope.name
+            return _session_activity_model(
+                requested_session_id=requested_session_id,
+                session_id=resolved_session_id,
+                profile_id=profile_id,
+                session=session,
+                source_rows=[row.as_wire_row() for row in source_rows],
+                limit=limit,
+            )
+
+    model = await asyncio.to_thread(_read)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Session not found", headers=_session_activity_headers())
+    headers = _session_activity_headers()
+    response = JSONResponse(model, headers=headers)
+    return _session_activity_representation(request, response)
+
+
+@manage_router.get(
+    "/api/sessions/{session_id}/activity",
+    response_model=SessionActivityResponse,
+    dependencies=[Depends(_validate_session_activity_query)],
+)
+async def get_session_activity(
+    request: Request,
+    session_id: str,
+    profile: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=200),
+):
+    return await _session_activity_http_response(
+        request,
+        session_id,
+        profile,
+        limit,
+    )
+
+
+@manage_router.head(
+    "/api/sessions/{session_id}/activity",
+    response_class=Response,
+    dependencies=[Depends(_validate_session_activity_query)],
+)
+async def head_session_activity(
+    request: Request,
+    session_id: str,
+    profile: Optional[str] = None,
+    limit: int = Query(100, ge=1, le=200),
+):
+    return await _session_activity_http_response(
+        request,
+        session_id,
+        profile,
+        limit,
+    )
 
 
 @manage_router.get("/api/sessions/{session_id}/messages")

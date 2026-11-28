@@ -37,6 +37,18 @@ def _effective(raw: dict[str, Any]) -> dict[str, Any]:
     return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
 
 
+def _effective_cache_hit(path_key: str, cache_sig: Any) -> Optional[tuple[Any, ...]]:
+    """The cached entry for ``path_key`` if its file signatures equal ``cache_sig`` and every ``${VAR}`` it was
+    expanded against still has the same value, else ``None``. Shared by the lock-free and the locked lookup."""
+    cached = _EFFECTIVE_CACHE.get(path_key)
+    if cached is None or cache_sig is None:
+        return None
+    n = len(cache_sig)
+    if cached[:n] != cache_sig or not all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
+        return None
+    return cached
+
+
 def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> dict[str, Any]:
     """Last-known-good raw user mapping after a parse failure: this process's last good parse,
     else the newest ``good`` copy in backups/config/, else ``{}`` (warned as defaults)."""
@@ -72,19 +84,30 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     if config_path is None:
         config_path = _config.get_config_path()
     path_key = str(config_path)
+    if not fail_closed:
+        # Lock-free fast path for cache hits, the publication contract of ``_load_config_impl``: an entry is ONE
+        # tuple replaced wholesale, so a reader sees a complete old or new entry; ``_CONFIG_LOCK`` only serializes
+        # rebuilds and writers. Every database connection open reads this (PRAGMAs, persistence provider), so a
+        # hit must not queue behind ``save_config()``. A lost race or any surprise falls through to the lock.
+        try:
+            _, fast_sig = _config._load_config_cache_sig(config_path)
+            hit = _effective_cache_hit(path_key, fast_sig)
+            if hit is not None:
+                return copy.deepcopy(hit[len(fast_sig)])
+        except Exception:  # health: allow BLE001 -- the locked path below is the fully defensive one
+            pass
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
-        cached = _EFFECTIVE_CACHE.get(path_key)
-        n = len(cache_sig) if cache_sig is not None else 0
-        if cached is not None and cache_sig is not None and cached[:n] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[n + 1].items()):
-                if fail_closed and cached[n + 2] is not True:
-                    # A previous non-strict read may have erased an invalid YAML root.
-                    loaded = read_config_doc(config_path)
-                    if loaded is not None and not isinstance(loaded, dict):
-                        raise TypeError("config.yaml root is not a mapping")
-                    _EFFECTIVE_CACHE[path_key] = (*cached[:n + 2], True)
-                return copy.deepcopy(cached[n])
+        cached = _effective_cache_hit(path_key, cache_sig)
+        if cached is not None:
+            n = len(cache_sig)
+            if fail_closed and cached[n + 2] is not True:
+                # A previous non-strict read may have erased an invalid YAML root.
+                loaded = read_config_doc(config_path)
+                if loaded is not None and not isinstance(loaded, dict):
+                    raise TypeError("config.yaml root is not a mapping")
+                _EFFECTIVE_CACHE[path_key] = (*cached[:n + 2], True)
+            return copy.deepcopy(cached[n])
 
         raw: dict[str, Any] = {}
         recovered = False

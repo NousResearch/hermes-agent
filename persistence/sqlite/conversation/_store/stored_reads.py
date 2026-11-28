@@ -7,9 +7,16 @@ and the segments a picker reads."""
 from __future__ import annotations
 
 import json
+import sqlite3
+
+from persistence.conversation.messages import ActivityMessage
+from persistence.core.identity import MessageId
 from typing import Any, Iterable, Optional
 
-from session_rules.turns import flatten_message_text, project_compaction_message_for_display
+from session_rules.turns import (
+    SYNTHETIC_PROMPT_RE, SYSTEM_NOTE_PREFIX, flatten_message_text, is_display_hidden_marker,
+    project_compaction_message_for_display, user_originated_turn_view,
+)
 
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import _sql_json_extract
@@ -35,8 +42,9 @@ from persistence.sqlite.conversation._store.sql_common import (
 # key, then the copies of their uids, live ones on idx_messages_session_uid, archived or removed ones on
 # idx_messages_session_active, and (a legacy nullable column read before an open healed it) NULL ones;
 # ``active`` holds nothing else. Each copy is paired with the shown rows after it in Python.
+_HANDOFF_MARKERS = ("[CONTEXT COMPACTION", "[CONTEXT SUMMARY]")
 _HANDOFF_ROW_SQL = (" g.role IN ('user', 'assistant') AND (g._compressed_summary = 1"
-                    " OR instr(g.content, '[CONTEXT COMPACTION') > 0 OR instr(g.content, '[CONTEXT SUMMARY]') > 0)")
+                    + "".join(f" OR instr(g.content, '{marker}') > 0" for marker in _HANDOFF_MARKERS) + ")")
 _SHOWN_ROWS_SQL = (
     "SELECT g.id AS _shown_id, g.message_uid AS _shown_uid, g.session_id IN (SELECT value FROM json_each(:segments))"
     " AND" + _HANDOFF_ROW_SQL + " AS _holds FROM messages g WHERE g.id IN (SELECT value FROM json_each(:shown))")
@@ -89,6 +97,55 @@ _LAST_REPLIES_SQL = (
 
 def _ids(values: Iterable[str]) -> str:
     return json.dumps(sorted(set(values)))
+
+
+def _activity_conversation_row(role: str, stored: str, content: Any) -> bool:
+    """Whether a read row is conversation the display projections show, judged as they judge untyped rows.
+
+    Fails closed on a compaction handoff marker anywhere in the stored text (the rule ``_HANDOFF_ROW_SQL``
+    finds carriers by, so a legacy or variant handoff without ``_compressed_summary`` never passes), on a
+    row the display projection drops, and on a synthetic user row: not a human-originated turn (background
+    process notices, task-list and continuation nudges), a completion prompt, a ``[System: …]`` notice or a
+    ``[System note: …]`` recovery note."""
+    if any(marker in stored for marker in _HANDOFF_MARKERS):
+        return False
+    message = {"role": role, "content": content}
+    if project_compaction_message_for_display(message) is None:
+        return False
+    if role != "user":
+        return True
+    text = flatten_message_text(content).lstrip()
+    return (user_originated_turn_view(message) is not None and not SYNTHETIC_PROMPT_RE.match(text)
+            and not is_display_hidden_marker(role, text) and not text.startswith(SYSTEM_NOTE_PREFIX))
+
+
+def activity_messages(holder: StoreHolder, session_id: str, *, limit: int = 100) -> tuple[ActivityMessage, ...]:
+    """Inspect BLOB size without transferring its bytes; a small row is read in one snapshot. Untyped
+    synthetic rows are dropped like typed ones; an oversized row is never read, so it is never classified
+    and stays a content-free marker."""
+    def read(conn):
+        result = []
+        rows = conn.execute(
+            "SELECT id, role, timestamp, content IS NULL AS content_is_null FROM messages"
+            " WHERE session_id = ? AND active = 1 AND role IN ('user', 'assistant')"
+            " AND COALESCE(display_kind, '') = '' AND COALESCE(_compressed_summary, 0) = 0"
+            " ORDER BY id DESC LIMIT ?", (session_id, max(1, min(int(limit), 200)))).fetchall()
+        for row in reversed(rows):
+            content, oversized, stored = None, False, ""
+            if not row["content_is_null"]:
+                try:
+                    with conn.blobopen("messages", "content", row["id"], readonly=True) as blob:
+                        oversized = len(blob) > 8192
+                        if not oversized:
+                            stored = blob.read(8192).decode("utf-8")
+                            content = _decode_content(stored)
+                except (sqlite3.Error, UnicodeDecodeError):
+                    oversized = True
+            if not oversized and not _activity_conversation_row(row["role"], stored, content):
+                continue
+            result.append(ActivityMessage(MessageId(row["id"]), row["role"], content, row["timestamp"], oversized))
+        return tuple(result)
+    return _in_one_read(holder, read)
 
 
 # -- session.transcript ------------------------------------------------------------------------------

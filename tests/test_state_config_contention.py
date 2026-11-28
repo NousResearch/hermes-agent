@@ -154,6 +154,52 @@ def test_existing_database_does_not_wait_for_config_writer(
         assert conn.execute("SELECT COUNT(*) FROM retained").fetchone()[0] == 2
 
 
+@pytest.mark.parametrize("reader", ["apply_database_pragmas", "provider_for_home"])
+def test_connection_config_reads_do_not_wait_for_config_writer_or_bootstrap(tmp_path, monkeypatch, reader):
+    """Every connection open reads ``database.*`` (pragmas) and ``persistence.provider``: with a warm cache
+    neither may queue behind a writer holding ``_CONFIG_LOCK``, and neither may bootstrap the home (SOUL.md)."""
+    import persistence_assembly
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    atomic_yaml_write(home / "config.yaml", {"database": {"cache_size": -4321}, "persistence": {"provider": "bogus"}})
+
+    def read():
+        if reader == "provider_for_home":
+            try:
+                persistence_assembly._provider_for_home(home)
+            except ValueError as exc:  # the configured value was read: an unknown provider refuses
+                return "bogus" in str(exc)
+            return False
+        with closing(sqlite3.connect(":memory:")) as conn:
+            sqlite_support.apply_database_pragmas(conn)
+            return conn.execute("PRAGMA cache_size").fetchone()[0] == -4321
+
+    assert read()  # the cold read: fills the cache without bootstrapping the home
+    entered, release = Event(), Event()
+
+    def writer():
+        with config._CONFIG_LOCK:
+            entered.set()
+            assert release.wait(10)
+
+    worker = Thread(target=writer)
+    worker.start()
+    assert entered.wait(5)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(read)
+        try:
+            assert future.result(timeout=2)
+        finally:
+            release.set()
+            worker.join(5)
+    assert not worker.is_alive()
+    assert not (home / "SOUL.md").exists()
+
+
 @pytest.mark.parametrize("state", ["empty", "unknown", "required_wal"])
 def test_unestablished_or_strict_modes_still_wait_for_real_policy(tmp_path, monkeypatch, state):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

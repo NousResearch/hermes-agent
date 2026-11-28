@@ -1781,6 +1781,15 @@ _BEARER_RESIDUE_RE = re.compile(
 )
 
 
+def redact_bearer_credentials(text: str, replacement: str = "Bearer [redacted]") -> str:
+    """Replace every ``Bearer <opaque>`` credential (and an already-masked ``Bearer [..]`` residue)
+    with ``replacement``. A prefix-less bearer value has no vendor shape for the pattern list to key on,
+    so readers that must not echo credentials run this alongside ``redact_sensitive_text``."""
+    if "earer" not in text.lower():  # IGNORECASE regex; the gate must fold case too (#108807)
+        return text
+    return _BEARER_RESIDUE_RE.sub(replacement, text)
+
+
 def redact_for_egress(text: str, *, urls: bool = False, keep_phone_numbers: bool = False) -> str:
     """The one scrub for text leaving the process for a remote reader (chat platforms, A2A peers,
     telemetry). ``redact_sensitive_text(force=True)`` — the only secret-pattern list — plus a bearer
@@ -1797,9 +1806,7 @@ def redact_for_egress(text: str, *, urls: bool = False, keep_phone_numbers: bool
                                      keep_phone_numbers=keep_phone_numbers)
     except Exception:
         return REDACTION_UNAVAILABLE
-    if "earer" in text.lower():  # IGNORECASE regex; the gate must fold case too (#108807)
-        text = _BEARER_RESIDUE_RE.sub("Bearer [redacted]", text)
-    return text
+    return redact_bearer_credentials(text)
 
 
 def redact_terminal_output(output: str, command: str | None = None, *, force: bool = False) -> str:

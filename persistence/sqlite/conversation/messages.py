@@ -11,7 +11,7 @@ from persistence import (
     CooldownRestoreRefused, PersistenceError, RewindRefused, RowVisibility, SessionRowMissing,
 )
 from persistence.conversation.messages import (
-    AnchoredView, AnchoredWindow, BatchAppendProgress, BatchAppendResult, CompactionResult, CompressionCooldown, ConversationMessage,
+    ActivityMessage, AnchoredView, AnchoredWindow, BatchAppendProgress, BatchAppendResult, CompactionResult, CompressionCooldown, ConversationMessage,
     ConversationPeer, ConversationRequest, ConversationRevision, CooldownSnapshot, DelegationDelivery,
     HeldCoverage, HeldMessage, MarkerPurgeReport, MessageRecord, MessageStorageState, NewMessage, PagedMessage, PromptPage,
     PrUrlHit, PrunedRowChange, PruneRewriteResult, Reaction, ReadCheck, ReplaceMode, ReplaceResult, ResumeConversations,
@@ -491,6 +491,11 @@ class SQLiteMessageRepository:
                      for p in pending)
 
     # ── reads ──
+
+    def read_activity(self, session_id: SessionId, *, limit: int = 100) -> tuple[ActivityMessage, ...]:
+        holder = self._store.holder()
+        with _refusals(holder, session_id):
+            return stored_reads.activity_messages(holder, session_id, limit=limit)
 
     def read_transcript(self, session_id: SessionId, request: TranscriptRead = TranscriptRead()) -> tuple[TranscriptRow, ...]:
         holder = self._store.holder()

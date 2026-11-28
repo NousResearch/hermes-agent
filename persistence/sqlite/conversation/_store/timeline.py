@@ -2,20 +2,12 @@
 
 
 from __future__ import annotations
-import re
 from contextlib import contextmanager
+from session_rules.turns import SYNTHETIC_PROMPT_RE as _SYNTHETIC_PROMPT
 from session_rules.turns import project_compaction_message_for_display, user_originated_turn_view
 from persistence.sqlite.conversation._store.compaction_display import not_a_later_tool_copy_sql
 from persistence.sqlite.conversation._store.messages import _decode_content, _encode_content, _row_to_message_dict
 from persistence.sqlite.conversation._store.messages_sql import DISPLAY_VISIBLE_SQL
-
-
-_SYNTHETIC_PROMPT = re.compile(
-    r"^\s*(?:\[IMPORTANT: Background process |\[ASYNC (?:DELEGATION )?(?:BATCH )?COMPLETE\b|"
-    r"A background fan-out of \d+ subagent\(s\) you dispatched earlier has finished\.|"
-    r"A background subagent you dispatched earlier has finished\.)",
-    re.IGNORECASE,
-)
 
 
 def _prompt_preview(db, content, display_kind, summary):

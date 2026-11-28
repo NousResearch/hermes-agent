@@ -144,9 +144,10 @@ def _provider_for_home(home: Path) -> str:
 
     section: Any = None
     if hermes_home_key(home) == hermes_home_key(get_hermes_home()):
-        from hermes_cli.config import load_config_readonly
+        from hermes_cli.config_effective import load_user_config_effective
 
-        section = load_config_readonly().get("persistence")
+        # Provider selection must not bootstrap a home, even on a failed reader open.
+        section = load_user_config_effective().get("persistence")
     else:
         config_path = home / "config.yaml"
         if config_path.exists():

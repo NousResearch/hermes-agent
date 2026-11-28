@@ -23,6 +23,7 @@ __all__ = [
     "CONTENT_REFUSED_NOTICE",
     "DB_PERSISTED_MARKER_KEY",
     "QUEUED_PROMPT_METADATA_KEY",
+    "ActivityMessage",
     "AnchoredView",
     "AnchoredWindow",
     "BatchAppendProgress",
@@ -132,6 +133,21 @@ def _json_text(value: Any, empty: Any) -> Any:
         return json.loads(value)
     except ValueError:
         return empty
+
+
+@dataclass(frozen=True, slots=True)
+class ActivityMessage:
+    """A bounded activity projection; no tool, replay or reasoning sidecars are loaded."""
+
+    id: MessageId
+    role: str
+    content: JsonValue
+    timestamp: float
+    content_oversized: bool = False
+
+    def as_wire_row(self) -> dict[str, Any]:
+        return {"id": self.id, "role": self.role, "content": self.content,
+                "timestamp": self.timestamp, "content_oversized": self.content_oversized}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1052,6 +1068,10 @@ class MessageRepository(Protocol):
 
     def take_unseen_reactions(self, session_id: SessionId, *, author: str = "user") -> tuple[UnseenReaction, ...]:
         """Return ``author``'s not yet announced reactions on the active and compaction-archived rows of the session's resume lineage, in row order, and mark them seen in the same transaction."""
+        ...
+
+    def read_activity(self, session_id: SessionId, *, limit: int = 100) -> tuple[ActivityMessage, ...]:
+        """The latest 1–200 active user/assistant rows, chronological. Never load tool/reasoning columns or read a content BLOB larger than 8 KiB; oversized or unreadable content is marked, not partially read."""
         ...
 
     def read_transcript(self, session_id: SessionId, request: TranscriptRead = TranscriptRead()) -> tuple[TranscriptRow, ...]:

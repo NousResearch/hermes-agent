@@ -132,10 +132,10 @@ def test_close_stores_under_sweeps_and_the_handle_reacquires():
 
 def _record_resolution(monkeypatch) -> list[tuple]:
     """Every provider resolution and process-config read the assembly makes from here on."""
-    import hermes_cli.config
+    import hermes_cli.config_effective
 
     calls: list[tuple] = []
-    provider_for_home, load_config_readonly = persistence_assembly._provider_for_home, hermes_cli.config.load_config_readonly
+    provider_for_home, load_effective = persistence_assembly._provider_for_home, hermes_cli.config_effective.load_user_config_effective
 
     def recorded_provider(home):
         calls.append(("provider", home))
@@ -143,10 +143,10 @@ def _record_resolution(monkeypatch) -> list[tuple]:
 
     def recorded_config(*args, **kwargs):
         calls.append(("config",))
-        return load_config_readonly(*args, **kwargs)
+        return load_effective(*args, **kwargs)
 
     monkeypatch.setattr(persistence_assembly, "_provider_for_home", recorded_provider)
-    monkeypatch.setattr(hermes_cli.config, "load_config_readonly", recorded_config)
+    monkeypatch.setattr(hermes_cli.config_effective, "load_user_config_effective", recorded_config)
     return calls
 
 
@@ -207,9 +207,9 @@ def test_an_unknown_provider_raises_at_first_use_and_at_ready(monkeypatch):
         with pytest.raises(ValueError, match=unknown):
             reader.state_meta.get("k")
     assert not (home / "state.db").exists()
-    import hermes_cli.config
+    import hermes_cli.config_effective
 
-    monkeypatch.setattr(hermes_cli.config, "load_config_readonly", lambda: {"persistence": {"provider": "bogus"}})
+    monkeypatch.setattr(hermes_cli.config_effective, "load_user_config_effective", lambda: {"persistence": {"provider": "bogus"}})
     with persistence_assembly.open_persistence(persistence_assembly.profile_scope()) as current:
         with pytest.raises(ValueError, match=unknown):
             current.ready()

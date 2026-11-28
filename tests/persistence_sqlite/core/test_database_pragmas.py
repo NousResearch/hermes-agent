@@ -99,7 +99,7 @@ class TestApplyDatabasePragmas:
     @staticmethod
     def _patch_cfg(monkeypatch, cfg):
         monkeypatch.setattr(
-            "hermes_cli.config.load_config_readonly",
+            "hermes_cli.config_effective.load_user_config_effective",
             lambda: cfg,
         )
 

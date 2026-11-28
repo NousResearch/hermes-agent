@@ -1,0 +1,30 @@
+name: a2a-async
+repo: https://github.com/davewilliamson/hermes-a2a-extended
+sha: d267431f400b286d8e9916848d0affd060038b06
+subdir: a2a-async
+description: >-
+  Mutually authenticated, asynchronous agent-to-agent (A2A) task admission and
+  status for the A2A protocol v1.0: a kind=platform mTLS JSON-RPC listener that
+  admits tasks from trusted peers, records a durable receipt, and lets callers
+  poll for results via the a2a_extended_dispatch and a2a_extended_status tools.
+  Disclosure — opens an inbound mTLS listener and reads its own CA/server
+  certificate, private key, and per-peer client-certificate SHA-256 fingerprints
+  plus directional bearer-token files from paths in config.yaml; stores a local
+  SQLite receipt/idempotency journal; makes no outbound calls except to the
+  configured A2A peer; runs in-process on the gateway event loop (no background
+  process); ships no telemetry. Requires operator approval before enabling.
+maintainer: davewilliamson
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - a2a_extended_dispatch
+    - a2a_extended_status
+  provides_hooks:
+    - pre_approval_request
+  provides_middleware: []
+  requires_env: []

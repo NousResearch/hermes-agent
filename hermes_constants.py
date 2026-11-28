@@ -249,6 +249,15 @@ def hermes_home_key(path: str | Path | None = None) -> str:
     return key
 
 
+def same_profile_id(a: str | Path | None, b: str | Path | None) -> bool:
+    """True when *a* and *b* identify the same profile directory, tolerating symlinks and directory junctions."""
+    if a == b:
+        return True
+    if a is None or b is None:
+        return False
+    return hermes_home_key(a) == hermes_home_key(b)
+
+
 def reset_hermes_home_key_cache() -> None:
     """Forget every remembered home key (for tests that move a home dir on disk)."""
     _HOME_KEY_CACHE.clear()

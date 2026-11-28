@@ -222,7 +222,8 @@ class SessionAuthority:
         deeper in the handler."""
         from gateway.session_authorities import require_serving
         require_serving(self)
-        if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
+        from hermes_constants import same_profile_id
+        if not same_profile_id(actor.profile_id, self.profile_id) or not same_profile_id(ref.profile_id, self.profile_id):
             raise AuthorityRefusal('profile_mismatch')
         if capability not in actor.capabilities:
             raise AuthorityRefusal('permission_denied')

@@ -172,8 +172,11 @@ class AuthorityConnection:
                 or identity.get('instance_id', authority.instance_id) != authority.instance_id):
             capabilities = frozenset()
         from gateway.owner_identity import principal_subject
+        from hermes_constants import same_profile_id
+        claimed_profile = identity.get('profile_id', authority.profile_id)
+        actor_profile = authority.profile_id if same_profile_id(claimed_profile, authority.profile_id) else claimed_profile
         self.actor = SessionActor(principal_subject(identity),
-                               identity.get('profile_id', authority.profile_id),
+                               actor_profile,
                                capabilities, uuid.uuid4().hex)
         from gateway.session_local_migration import bind_native_transport
         bind_native_transport(authority, self.actor, identity)

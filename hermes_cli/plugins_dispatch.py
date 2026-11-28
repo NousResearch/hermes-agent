@@ -49,6 +49,9 @@ _HOOK_TIMEOUT_BOUNDED_HOOKS: set[str] = {
     "pre_command",
     # Fires inside the compression commit window (lease held): a hung plugin must not wedge the session.
     "post_compaction",
+    # Fail-open result-delivery directive (cron + kanban): a hung plugin must not stall delivery;
+    # a timeout degrades to a normal send.
+    "pre_result_delivery",
 }
 # Hooks whose calls are told apart by another payload field: one session's commands are one
 # sequence, so a still-running callback skips that session's next command, not another session's.

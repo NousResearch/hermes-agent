@@ -104,7 +104,7 @@ Every auxiliary task defaults to `auto` — meaning Hermes tries your main model
 | **Approval** | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
 | **Review** | The `/review` reviewer subagent. `auto` uses the main model; pin a different (often stronger) model for reviews. See [Review model](./features/delegation.md#review-model). |
 | **MCP** | MCP tool routing. Usually fine at `auto`. |
-| **Voice Chat** | Spoken voice-chat replies. Point it at a faster model than your main one; reasoning is off on voice turns by default, and GPT-Live voice chat ignores this slot. See [Voice chat model](./features/voice-mode.md#voice-chat-model). |
+| **Voice Chat** | Spoken voice-chat replies. Unset model and effort follow the live session; optionally select a faster model or explicit effort. GPT-Live voice chat ignores this slot. See [Voice chat model](./features/voice-mode.md#voice-chat-model). |
 | **Triage Specifier** | Routes the Kanban triage specifier (`hermes kanban specify`) that expands a rough one-liner into a concrete spec. A cheap, capable model works well. |
 | **Kanban Decomposer** | Routes Kanban task decomposition — splits a triage task into a graph of child tasks for specialist profiles. |
 | **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |

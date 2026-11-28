@@ -36,6 +36,7 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         monkeypatch.setenv("HERMES_HOME", str(home))
         agent = _agent(home, main.base_url)
 
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
         first = agent.run_conversation("typed question")
         # Verdicts the main route earned: the voice route starts without them, main gets them back.
         agent._stream_options_unsupported = True
@@ -52,9 +53,9 @@ def test_voice_turn_routes_then_restores(tmp_path, monkeypatch, voice_window_ok)
         if voice_window_ok:
             assert voice_models == ["voice-model"]
             assert "stream_options" in voice.main_requests()[0]
-            # Unconfigured effort: the voice turn goes out with reasoning off, the main turns untouched.
-            assert voice.main_requests()[0]["reasoning_effort"] == "none"
-            assert {r["reasoning_effort"] for r in main.main_requests()} == {"medium"}
+            # Unconfigured voice effort inherits the live session, not the disk default (medium).
+            assert voice.main_requests()[0]["reasoning_effort"] == "high"
+            assert {r["reasoning_effort"] for r in main.main_requests()} == {"high"}
             assert main_models == ["fake-model", "fake-model"]
             assert spoken["model"] == "voice-model"
         else:  # too large for the voice model's window: the main model answers, nothing compacts
@@ -121,30 +122,41 @@ def test_voice_usage_never_becomes_the_session_route(tmp_path):
 
 
 @pytest.mark.parametrize("separate_voice_model", [False, True])
-def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, separate_voice_model):
+@pytest.mark.parametrize("voice_effort", [None, "low", "none"])
+def test_mid_voice_turn_reports_the_sessions_own_route(tmp_path, monkeypatch, separate_voice_model, voice_effort):
     """Desktop adopts session.info's effort/model into the composer that seeds new chats: a live
-    voice turn's reasoning-off (and voice model) must never be reported or persisted as the chat's."""
+    voice turn's explicit effort (and voice model) must never become the chat's own setting."""
     from agent.voice_turn_route import begin_voice_turn_route, end_voice_turn_route
+    from agent.chat_completion_helpers import build_api_kwargs
     from tui_gateway.server import _runtime_model_config, _session_info
 
     with FakeLLMServer([]) as main, FakeLLMServer([]) as voice:
-        extra = ("auxiliary:\n  voice_chat:\n    provider: custom\n"
-                 f"    base_url: {voice.base_url}\n    model: voice-model\n    api_key: sk-fake-voice\n"
-                 if separate_voice_model else "")
+        extra = "auxiliary:\n  voice_chat:\n"
+        if separate_voice_model:
+            extra += ("    provider: custom\n"
+                      f"    base_url: {voice.base_url}\n    model: voice-model\n    api_key: sk-fake-voice\n")
+        if voice_effort is not None:
+            extra += f"    reasoning_effort: {voice_effort}\n"
+        elif not separate_voice_model:
+            extra = ""  # exercise a truly unconfigured voice slot
         home = write_hermes_home(tmp_path / ".hermes", main.base_url, extra_config=extra)
         monkeypatch.setenv("HERMES_HOME", str(home))
         agent = _agent(home, main.base_url)
-        agent.reasoning_config = {"enabled": True, "effort": "low"}
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
         agent._voice_turn_pending = True
         begin_voice_turn_route(agent, [{"role": "user", "content": "hi"}], "system")
         try:
-            assert agent.reasoning_config == {"enabled": False}  # the voice turn itself still runs off
+            expected = ({"enabled": False} if voice_effort == "none" else
+                        {"enabled": True, "effort": voice_effort or "high"})
+            assert agent.reasoning_config == expected
+            wire = build_api_kwargs(agent, [{"role": "user", "content": "hi"}], [])
+            assert wire["reasoning_effort"] == (voice_effort or "high")
             assert agent.model == ("voice-model" if separate_voice_model else "fake-model")
             info = _session_info(agent, {})
             persisted = _runtime_model_config(agent)
-            assert (info["reasoning_effort"], info["model"]) == ("low", "fake-model")
-            assert persisted["reasoning_config"] == {"enabled": True, "effort": "low"}
+            assert (info["reasoning_effort"], info["model"]) == ("high", "fake-model")
+            assert persisted["reasoning_config"] == {"enabled": True, "effort": "high"}
             assert persisted["model"] == "fake-model"
         finally:
             end_voice_turn_route(agent)
-        assert _session_info(agent, {})["reasoning_effort"] == "low"
+        assert _session_info(agent, {})["reasoning_effort"] == "high"

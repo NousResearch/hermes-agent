@@ -119,7 +119,6 @@ class _WireAgent(_Agent):
         self.reasoning_config = reasoning_config
         self.notices = []
         # ``_Agent.__getattr__`` fabricates callables for unknown names; wire flags must read False.
-        self._ephemeral_reasoning_off = False
         self._reasoning_effort_rejected = False
         self._fast_until = 0.0
         self.service_tier = None
@@ -162,11 +161,11 @@ def test_rejected_reasoning_level_retries_without_the_effort():
     assert any("rejects reasoning effort max" in n for n in agent.notices)
     assert not any("rejects disabling reasoning" in n for n in agent.notices)
 
-    # Control: a rejected DISABLE keeps the existing contract — the user's own enabled config
-    # goes out verbatim on the retry and the notice names the disable.
-    agent = _WireAgent({"enabled": True, "effort": "high"})
-    agent._ephemeral_reasoning_off = True
+    # Control: an explicitly configured disable can still be rejected. Omit it on retry;
+    # continuation no longer synthesizes a disable on behalf of an enabled session.
+    agent = _WireAgent({"enabled": False, "effort": "none"})
     assert _wire_reasoning_config(agent) == {"enabled": False, "effort": "none"}  # the request that 400ed
     _recover(agent, _REVERSED_400)
-    assert _wire_reasoning_config(agent) == {"enabled": True, "effort": "high"}
+    assert _wire_reasoning_config(agent) is None
+    assert agent.reasoning_config == {"enabled": False, "effort": "none"}
     assert any("rejects disabling reasoning" in n for n in agent.notices)

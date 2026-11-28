@@ -617,23 +617,23 @@ def unregister_live_transport(transport: Transport | None) -> None:
     _server_requests.forget(transport)
 
 
-def _broadcast_global_event(event: str, payload: dict | None = None, *, skip=frozenset()) -> None:
+def _broadcast_global_event(event: str, payload: dict | None = None, *, skip=frozenset()) -> bool:
     """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
     emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
-    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
+    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink). True if a client took it."""
     with _live_transports_lock:
         targets = [transport for transport in _live_transports if transport not in skip]
     if not targets and not skip:
-        if _stdio_is_rpc_channel:
-            return _emit(event, "", payload)
-        logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
-        return None
-    frame = _event_frame(event, "", payload)
+        if not _stdio_is_rpc_channel:
+            logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
+        return _stdio_is_rpc_channel and _emit(event, "", payload)
+    frame, accepted = _event_frame(event, "", payload), False
     for transport in targets:
         try:
-            transport.write(frame)
+            accepted = transport.write(frame) or accepted
         except Exception:  # one wedged peer must not stall the rest; disconnect teardown unregisters it
             logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
+    return accepted
 
 
 def _approval_request_payload(data: dict | None) -> dict:

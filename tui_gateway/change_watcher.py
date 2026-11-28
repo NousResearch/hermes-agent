@@ -487,13 +487,23 @@ _CHANGE_BROADCAST_FLOOR_S = {"sessions.changed": 2.0, "platforms.changed": 5.0, 
 _change_sigs: dict[str, Any] = {}
 _change_checked_at: dict[str, float] = {}
 _change_broadcast_at: dict[str, float] = {}
+_SKILLS_BASELINE_DEFERRED = object()
 
 
 def _broadcast_watched_changes(now: float | None = None) -> None:
     """One pass: recompute due signatures, broadcast events whose signature moved.
-    First sighting seeds silently so a gateway boot never fires a refresh storm."""
+    First sighting seeds silently unless the skills baseline was deferred."""
     now = time.monotonic() if now is None else now
     for event, (interval, sig_fn, payload_fn, *diff_fn) in _CHANGE_WATCHES.items():
+        if event == "skills.changed":
+            # The catalog is read on demand. Skip its tree walks without a viewer,
+            # but keep group polling and room-driver wakeups running independently.
+            with _live_transports_lock:
+                if not _stdio_is_rpc_channel and not _live_transports:
+                    # A returning viewer can read the catalog before the next scan.
+                    # With no baseline, invalidate it once instead of silently seeding.
+                    _change_sigs.setdefault(event, _SKILLS_BASELINE_DEFERRED)
+                    continue
         if now - _change_checked_at.get(event, -interval) < interval:
             continue
         _change_checked_at[event] = now
@@ -509,6 +519,14 @@ def _broadcast_watched_changes(now: float | None = None) -> None:
             continue
         if floor and now - _change_broadcast_at.get(event, -floor) < floor:
             continue  # floored: old signature stays so it re-fires when the window opens
+        if event == "skills.changed":
+            # A last peer can leave during the scan. Retry on reconnect rather
+            # than marking an undelivered catalog refresh as consumed.
+            with contextlib.suppress(Exception):
+                if _broadcast_global_event(event, payload_fn()):
+                    _change_sigs[event] = sig
+                    _change_broadcast_at[event] = now
+            continue
         before, _change_sigs[event] = _change_sigs[event], sig
         _change_broadcast_at[event] = now
         with contextlib.suppress(Exception):

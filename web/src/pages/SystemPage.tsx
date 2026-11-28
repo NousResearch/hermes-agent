@@ -28,6 +28,8 @@ import {
   X,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
+
+import { ConfigSchemaDriftBadge } from "@/components/ConfigSchemaDriftBadge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
@@ -986,7 +988,7 @@ export default function SystemPage() {
                       </Badge>
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">latest</Badge>
-                    ) : null)}
+                    ) : null)}<ConfigSchemaDriftBadge status={status} />
                 </div>
               </div>
               <div>

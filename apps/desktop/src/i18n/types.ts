@@ -31,6 +31,7 @@ import type { NotificationSettingsTranslations } from './types_notifications'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { PluginPreviewAccessTranslations } from './types_plugin_preview_access'
 import type { PluginUpdateAllTranslations, PluginUpdateTranslations } from './types_plugin_update'
+import type { PluginsTabCopy } from './types_plugins_tab'
 import type { SidebarProjectsTranslations } from './types_projects'
 import type { RightSidebarTranslations } from './types_right_sidebar'
 import type { SandboxCopy } from './types_sandbox'
@@ -1928,6 +1929,7 @@ export interface Translations extends NoticeTranslations {
     tabPlugins: string
     plugins: PluginUpdateTranslations &
       PluginUpdateAllTranslations &
+      PluginsTabCopy &
       PluginPreviewAccessTranslations & {
         agentTitle: string
         agentBlurb: string
@@ -1943,10 +1945,6 @@ export interface Translations extends NoticeTranslations {
         installAgentHere: string
         installAgentHereTip: (profile: string) => string
         installAgentHereNoOrigin: string
-        desktopHalfPending: string
-        desktopHalfPendingTip: string
-        desktopHalfRemote: string
-        desktopHalfRemoteTip: string
         emptyAll: string
         empty: string
         emptyHint: string
@@ -1957,17 +1955,6 @@ export interface Translations extends NoticeTranslations {
         toolsetToggleFailed: (name: string) => string
         legacyBackend: string
         portableBadge: string
-        serverStates: {
-          connected: string
-          app_not_running: string
-          hermes_not_connected: string
-          endpoint_unavailable: string
-          no_interactive_session: string
-          version_too_old: string
-          missing_app: string
-          unsupported_gpu: string
-          unknown: string
-        }
         alreadyInstalled: (name: string) => string
         catalogProvenance: (sha: string) => string
         pinnedProvenance: (sha: string) => string

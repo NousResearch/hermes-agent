@@ -1,0 +1,30 @@
+name: hermes-tingle
+repo: https://github.com/marcodallagatta/hermes-tingle
+sha: 99b39f242d48b95dcc9cd10e956f9b689d4b9923
+description: "Profile-scoped commitment tracking and follow-up with owner-controlled source review. Disclosure — with owner consent, bounded Gmail/Calendar/chat content may reach the configured model, Hermes session history and messaging destination; optional default-off private evaluation makes raw model requests whose buffered EUR 5/month cap is an estimate, not an invoice; installs create no jobs until separately approved setup, which creates two recurring Hermes Cron jobs; local SQLite stores tracked items; Google helpers use an existing Workspace OAuth token; no Tingle-operated telemetry."
+maintainer: marcodallagatta
+tier: community
+category: automation
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/marcodallagatta/hermes-tingle
+version: "0.9.19"
+image: https://raw.githubusercontent.com/marcodallagatta/hermes-tingle/99b39f242d48b95dcc9cd10e956f9b689d4b9923/docs/images/tingle-banner-1200x600.png
+readme: true
+platforms: []
+title: Hermes Tingle
+onboarding: false
+default: false
+known_issues:
+  - "Public pre-1.0 beta; approvals record decisions only and execute nothing."
+  - "Private Hermes-core imports remain for evaluator routing/pricing, session context, cron reads and install metadata; Catalog rule 9 warnings remain and future compatibility is not guaranteed."
+  - "The optional evaluator still resolves the provider key through private APIs and sends a direct HTTPS request; no public one-shot/no-retry/no-fallback route has been verified."
+  - "The Gmail batch helper still reads and sends the Workspace bearer token directly; no credential-safe multipart route is available through the inspected CLI/helper."
+  - "Chat route discovery lists full active session records for the selected messaging platform before filtering to the chat, including stored prompt/config fields; Tingle uses only routing fields, and per-chat caps limit transcript reads rather than the listing."
+  - "Live evaluator inference and provider billing have not been verified; spend figures are buffered estimates, not invoices."
+capabilities:
+  provides_tools:
+    - hermes_tingle
+  provides_hooks:
+    - post_gateway_admission
+  provides_middleware: []
+  requires_env: []

@@ -99,16 +99,18 @@ class _FakeAgent:
         self._ensure_db_prompt_at_call = "<unset>"
 
     def _warn_context_overflow_blocked(self, reason, preflight_tokens, threshold_tokens):
-        # Mirror the real AIAgent helper so tests can assert the warning fired.
-        _warn_kind = (reason or "unknown").split(":", 1)[0]
-        _warn_key = ("ctx_overflow_blocked", _warn_kind)
-        if self._last_ctx_overflow_warn != _warn_key:
-            self._last_ctx_overflow_warn = _warn_key
-            self._emit_warning(
-                f"⚠ Context is over the compression threshold "
-                f"(~{preflight_tokens:,} tokens >= {threshold_tokens:,}) "
-                f"but compression is currently blocked ({reason})."
-            )
+        # Mirror the real AIAgent helper by delegating to the same mixin the
+        # real agent uses, so tests exercise the production warning text
+        # (including the trailing compression-error detail).
+        from agent.status_output import StatusOutputMixin
+
+        StatusOutputMixin._warn_context_overflow_blocked(
+            self, reason, preflight_tokens, threshold_tokens
+        )
+
+    def _touch_activity(self, *args, **kwargs):
+        # No-op: the real mixin reports activity to the gateway; tests don't care.
+        pass
 
     def _clear_context_overflow_warn(self):
         self._last_ctx_overflow_warn = None

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 # ``mask_secret`` (``sk-p...7890``, ``_mask_token``'s ``sk-pro...WXYZ``: a short head, ``...``,
 # then exactly four tail chars) and hand-truncated previews of it (``sk-...``).
@@ -171,6 +171,92 @@ def _credential_leaves(doc: Any, path: tuple[str, ...] = (),
             yield from _credential_leaves(child, path + (key,), where + (loc,))
 
 
+def _header_unsafe_char(value: str) -> Optional[tuple[int, str]]:
+    """First character in *value* that cannot travel in an HTTP header, or None.
+
+    Header values must be printable ASCII (0x20-0x7E); anything else later dies as a bare
+    UnicodeEncodeError inside the HTTP client, far from the file that introduced it."""
+    for i, ch in enumerate(value):
+        o = ord(ch)
+        if o < 0x20 or o > 0x7E:
+            return i, ch
+    return None
+
+
+def _describe_char(ch: str) -> str:
+    return f"U+{ord(ch):04X} {ch!r}"
+
+
+def _non_ascii_credential_leaves(
+    doc: Any,
+) -> list[tuple[str, tuple[str, ...], Any, str]]:
+    """``(path, location, value, problem)`` for non-password credential leaves carrying a
+    character an HTTP header cannot hold. Password-named leaves are exempt: passphrases may
+    legitimately be non-ASCII (basic auth base64-encodes them)."""
+    bad = []
+    for path, where, value in _credential_leaves(doc):
+        if not isinstance(value, str) or _is_password_name(path):
+            continue
+        found = _header_unsafe_char(value)
+        if found:
+            i, ch = found
+            bad.append((path, where, value, f"{_describe_char(ch)} at position {i}"))
+    return bad
+
+
+def suspect_credential_leaves(doc: Any) -> list[tuple[str, str]]:
+    """``(path, issue)`` for credential leaves that cannot work as stored: unsendable
+    characters, or a value shaped like a redacted display mask. Used by ``hermes doctor``."""
+    issues = [
+        (path, f"non-ASCII/control character {problem}")
+        for path, _w, _v, problem in _non_ascii_credential_leaves(doc)
+    ]
+    issues.extend(
+        (path, "looks like a redacted display value, not the real credential")
+        for path, _w, value in _credential_leaves(doc)
+        if is_redacted_credential_value(value)
+    )
+    return issues
+
+
+def refuse_unusable_config_credentials(new: Any, read_old: Callable[[], Any]) -> None:
+    """Both write-time refusals in one call: redacted masks and unsendable (non-header-safe)
+    credential values. Split for callers that can only afford one line at the call site."""
+    refuse_redacted_config_credentials(new, read_old)
+    refuse_non_ascii_config_credentials(new, read_old)
+
+
+def refuse_non_ascii_config_credentials(new: Any, read_old: Callable[[], Any]) -> None:
+    """As :func:`refuse_redacted_config_credentials`, but for values an HTTP header cannot
+    carry (the 2026-11-26 field report: a U+2026-bearing ``api_key`` persisted fine, then every
+    request died in the httpx header encoder and compression's summarizer failed with it).
+    Pre-existing bad values on disk are reported by ``hermes doctor``, not refused here, so an
+    unrelated save is never wedged by a config the user has not fixed yet."""
+    bad = _non_ascii_credential_leaves(new)
+    if not bad:
+        return
+    on_disk: dict[tuple[str, ...], list[Any]] = {}
+    for _, where, value in _credential_leaves(read_old()):
+        on_disk.setdefault(where, []).append(value)
+    fresh = [
+        (path, problem)
+        for path, where, value, problem in bad
+        if value not in on_disk.get(where, ())
+    ]
+    if fresh:
+        from hermes_cli.config_backend import ConfigValueError
+
+        shown = "; ".join(f"{path} ({problem})" for path, problem in fresh[:5])
+        if len(fresh) > 5:
+            shown += f", +{len(fresh) - 5} more"
+        raise ConfigValueError(
+            f"Refusing to save unusable credential(s) at {shown}: API keys are sent as an HTTP "
+            "header and must be printable ASCII. Look for lookalike characters copied from a "
+            "PDF/web page (e.g. U+2026, U+2018, Cyrillic homoglyphs) or a redacted display "
+            "value. Re-enter the real key, or reference it as ${ENV_VAR}."
+        )
+
+
 def refuse_redacted_config_credentials(new: Any, read_old: Callable[[], Any]) -> None:
     """Raise ``ConfigValueError`` when ``new`` sets a credential key to a redacted mask that the
     config on disk (``read_old()``, read only when a mask is present) did not already hold there.
@@ -203,6 +289,26 @@ def _holds_mask(value: Any, key: str) -> bool:
     if isinstance(value, list):
         return any(_holds_mask(v, key) for v in value)
     return _may_be_mask(key, value)
+
+
+def refuse_non_ascii_config_sets(
+    sets: Mapping[str, Any], read_old: Callable[[], Any]
+) -> None:
+    """:func:`refuse_non_ascii_config_credentials` for a keyed write (``write_config_keys``):
+    the dotted ``sets`` are checked as the nested document they write."""
+    if not any(isinstance(v, str) and not v.isascii() for v in sets.values()):
+        return  # nothing non-ASCII; skip the import and the old-file read
+    from hermes_cli.config import _split_key_path
+
+    doc: dict[str, Any] = {}
+    for dotted, value in sets.items():
+        *parents, leaf = _split_key_path(dotted) or [dotted]
+        node = doc
+        for part in parents:
+            child = node.setdefault(part, {})
+            node = child if isinstance(child, dict) else {}
+        node[leaf] = value
+    refuse_non_ascii_config_credentials(doc, read_old)
 
 
 def refuse_redacted_config_sets(sets: Mapping[str, Any], read_old: Callable[[], Any]) -> None:

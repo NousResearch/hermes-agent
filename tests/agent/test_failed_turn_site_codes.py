@@ -167,3 +167,56 @@ def test_cause_gloss_substitutes_the_subject_and_skips_unknown_reasons():
     assert "the job's" in failure_cause_gloss("context_overflow", subject="this job", possessive="the job's")
     assert failure_cause_gloss("model_not_found")
     assert failure_cause_gloss("unknown") is None and failure_cause_gloss(None) is None
+
+
+def test_overflow_exhaustion_with_credential_error_names_the_credential():
+    """When compression died on a header-encode failure, the terminal copy must say the
+    credential is the problem — not that the conversation grew too long (#160524)."""
+    from agent.conversation_loop import _provider_overflow_exhausted_result
+
+    err = "'ascii' codec can't encode character '\\u2026' in position 15: ordinal not in range(128)"
+    agent = SimpleNamespace(
+        model="gpt-5",
+        log_prefix="",
+        _flush_status_buffer=lambda: None,
+        _persist_session=lambda *a, **k: None,
+        context_compressor=SimpleNamespace(_last_summary_error=err),
+    )
+    out = _provider_overflow_exhausted_result(agent, [], None, 3, 90_000, 3)
+    assert (
+        out["failure_reason"] == "context_overflow"
+        and out["failure_retryable"] is False
+    )
+    assert "credential" in out["final_response"].lower()
+    assert "grown too long" not in out["final_response"]
+    assert "position 15" in out["final_response"]
+
+
+def test_overflow_exhaustion_without_credential_error_keeps_context_copy():
+    from agent.conversation_loop import _provider_overflow_exhausted_result
+
+    agent = SimpleNamespace(
+        model="gpt-5",
+        log_prefix="",
+        _flush_status_buffer=lambda: None,
+        _persist_session=lambda *a, **k: None,
+        context_compressor=SimpleNamespace(_last_summary_error=None),
+    )
+    out = _provider_overflow_exhausted_result(agent, [], None, 3, 90_000, 3)
+    assert "grown too long" in out["final_response"]
+
+
+def test_looks_like_credential_failure_is_narrow():
+    from agent.turn_failure_copy import looks_like_credential_failure
+
+    assert looks_like_credential_failure(
+        "'ascii' codec can't encode character '\u2026'"
+    )
+    assert looks_like_credential_failure(
+        "UnicodeEncodeError: 'utf-8' codec can't encode"
+    )
+    assert not looks_like_credential_failure("429 quota exceeded for your api_key")
+    assert not looks_like_credential_failure("401 unauthorized")
+    assert not looks_like_credential_failure("provider returned 500: invalid encoding of response body")
+    assert not looks_like_credential_failure(None)
+    assert not looks_like_credential_failure("")

@@ -47,7 +47,7 @@ from utils import atomic_replace, fast_safe_load, file_cache_version, file_signa
 from hermes_cli.config_set_scalars import _SCALAR_WORDS, _coerce_float, _coerce_int, _quoted_bool
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_credential_values import (
-    _check_non_ascii_credential, refuse_redacted_config_credentials, refuse_redacted_env_value)
+    _check_non_ascii_credential, refuse_unusable_config_credentials, refuse_redacted_env_value)
 from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
@@ -1829,7 +1829,7 @@ def _write_config_state(
     """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
     _refuse_failed_read(config_path, data)
     from hermes_cli.config_backend import keeping_read_base
-    refuse_redacted_config_credentials(data, lambda: keeping_read_base(lambda: read_user_config_raw(config_path)))
+    refuse_unusable_config_credentials(data, lambda: keeping_read_base(lambda: read_user_config_raw(config_path)))
     if not allow_omissions:
         # A guard read, not the caller's read: *data* came from the caller's own earlier read, so a
         # Remote Config save must still be diffed against THAT read, not a poll that landed since.

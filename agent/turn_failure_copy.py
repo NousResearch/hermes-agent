@@ -9,6 +9,7 @@ trailing "Provider said:" / "Details:" line.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Dict, NamedTuple, Optional, Tuple
 
@@ -411,6 +412,36 @@ _ONE_OFF_COPY: dict[str, str] = {
         "a backup provider with `hermes fallback add`."
     ),
 }
+_CREDENTIAL_FAILURE_RE = re.compile(
+    r"(unicodeencodeerror|unicodedecodeerror|codec can't|ordinal not in range)",
+    re.IGNORECASE,
+)
+
+
+def looks_like_credential_failure(error: object) -> bool:
+    """True when *error* carries a codec/encode signature — a redacted display mask or a
+    lookalike Unicode char persisted to config.yaml dies as a bare UnicodeEncodeError inside the
+    HTTP header encoder, and the only hint in the message is the codec failure itself. Only
+    codec keywords match: a 401/quota error naming the key is a different failure with different advice."""
+    return bool(error) and bool(_CREDENTIAL_FAILURE_RE.search(str(error)))
+
+
+def credential_failure_copy(error: object) -> str:
+    """Copy for the overflow-exhausted turn when the recorded compression failure is a
+    credential/encode problem: say so, instead of blaming the conversation length."""
+    detail = str(error).strip()
+    if len(detail) > 200:
+        detail = detail[:197] + "..."
+    return (
+        "Compression couldn't shrink this conversation because the API credential stored in the "
+        "config cannot be sent to the provider — most often a masked or non-ASCII value copied "
+        "into config.yaml (it dies in the HTTP header encoder before the request leaves). "
+        f"Underlying error: {detail}. Re-enter the real key (`hermes config set model.api_key <key>`), "
+        "check custom_providers/fallback_providers for masked or non-ASCII values, then run "
+        "`hermes doctor` and /compress again. The conversation itself is fine."
+    )
+
+
 _SITE_COPY: dict[str, str] = {**_FAILURE_CODE_COPY, **_ONE_OFF_COPY}
 
 

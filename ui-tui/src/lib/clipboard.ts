@@ -4,6 +4,11 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
 
+// One budget for a whole fallback chain. A Wayland helper waiting on compositor focus
+// (GNOME without data-control) never exits; unbounded, it froze paste and leaked a
+// helper per copy. Past the budget the caller falls back (OSC 52 / image paste).
+export const CLIPBOARD_TIMEOUT_MS = 5000
+
 // PowerShell read: base64-encode the clipboard content to avoid ANSI codepage
 // corruption (same problem as the write path — see comment at line 94).
 const POWERSHELL_READ_ARGS = [
@@ -78,13 +83,24 @@ function readClipboardCommands(
 export async function readClipboardText(
   platform: NodeJS.Platform = process.platform,
   run: ClipboardRun = execFileAsync,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  timeoutMs: number = CLIPBOARD_TIMEOUT_MS
 ): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs
+
   for (const attempt of readClipboardCommands(platform, env)) {
+    const remaining = deadline - Date.now()
+
+    if (remaining <= 0) {
+      break
+    }
+
     try {
       const result = await run(attempt.cmd, [...attempt.args], {
         encoding: 'utf8',
+        killSignal: 'SIGKILL',
         maxBuffer: CLIPBOARD_MAX_BUFFER,
+        timeout: remaining,
         windowsHide: true
       })
 
@@ -158,35 +174,45 @@ export async function writeClipboardText(
   text: string,
   platform: NodeJS.Platform = process.platform,
   start: typeof spawn = spawn,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  timeoutMs: number = CLIPBOARD_TIMEOUT_MS
 ): Promise<boolean> {
-  const candidates = writeClipboardCommands(platform, env)
+  const deadline = Date.now() + timeoutMs
 
-  for (const cmdEntry of candidates) {
+  for (const cmdEntry of writeClipboardCommands(platform, env)) {
+    const remaining = deadline - Date.now()
+
+    if (remaining <= 0) {
+      return false
+    }
+
     try {
       const ok = await new Promise<boolean>(resolve => {
+        const args = cmdEntry.stdin
+          ? [...cmdEntry.args]
+          : [...cmdEntry.args, '-Command', _powershellWriteScript(Buffer.from(text, 'utf8').toString('base64'))]
+
+        const child = start(cmdEntry.cmd, args, {
+          stdio: [cmdEntry.stdin ? 'pipe' : 'ignore', 'ignore', 'ignore'],
+          windowsHide: true
+        })
+
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL')
+          resolve(false)
+        }, remaining)
+
+        const settle = (ok: boolean) => {
+          clearTimeout(timer)
+          resolve(ok)
+        }
+
+        child.unref()
+        child.once('error', () => settle(false))
+        child.once('close', (code: number | null) => settle(code === 0))
+
         if (cmdEntry.stdin) {
-          const child = start(cmdEntry.cmd, [...cmdEntry.args], {
-            stdio: ['pipe', 'ignore', 'ignore'],
-            windowsHide: true
-          })
-
-          child.unref()
-          child.once('error', () => resolve(false))
-          child.once('close', (code: number | null) => resolve(code === 0))
           child.stdin?.end(text)
-        } else {
-          const b64 = Buffer.from(text, 'utf8').toString('base64')
-          const script = _powershellWriteScript(b64)
-
-          const child = start(cmdEntry.cmd, [...cmdEntry.args, '-Command', script], {
-            stdio: ['ignore', 'ignore', 'ignore'],
-            windowsHide: true
-          })
-
-          child.unref()
-          child.once('error', () => resolve(false))
-          child.once('close', (code: number | null) => resolve(code === 0))
         }
       })
 

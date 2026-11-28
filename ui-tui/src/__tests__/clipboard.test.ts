@@ -1,3 +1,6 @@
+import { execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import { isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
@@ -389,5 +392,47 @@ describe('writeClipboardText', () => {
     const script = calledArgs[commandIdx + 1]
     expect(script).toContain(Buffer.from(cjkText, 'utf8').toString('base64'))
     expect(script).toContain('UTF8.GetString')
+  })
+})
+
+// A Wayland helper stuck waiting on compositor focus never exits. Stand it in with a real
+// `sleep` child so the deadline is proven against an actual process, not a mock promise.
+describe.skipIf(process.platform === 'win32')('clipboard helpers that never exit', () => {
+  const wayland = { WAYLAND_DISPLAY: 'wayland-1' } as NodeJS.ProcessEnv
+
+  it('readClipboardText gives up on the whole chain within the budget', async () => {
+    const execFileAsync = promisify(execFile)
+    const pids: string[] = []
+
+    const run = ((_cmd: string, _args: string[], opts: object) => {
+      const pending = execFileAsync('sleep', ['30'], opts)
+      pids.push(String(pending.child.pid))
+
+      return pending
+    }) as unknown as typeof execFileAsync
+
+    const t0 = Date.now()
+
+    await expect(readClipboardText('linux', run, wayland, 300)).resolves.toBeNull()
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(pids).toHaveLength(1)
+  })
+
+  it('writeClipboardText reports failure and kills the stuck helper', async () => {
+    const children: ReturnType<typeof spawn>[] = []
+
+    const start = ((_cmd: string, _args: string[], opts: object) => {
+      const child = spawn('sleep', ['30'], opts)
+      children.push(child)
+
+      return child
+    }) as typeof spawn
+
+    const t0 = Date.now()
+
+    await expect(writeClipboardText('hi', 'linux', start, wayland, 300)).resolves.toBe(false)
+    expect(Date.now() - t0).toBeLessThan(2000)
+    expect(children).toHaveLength(1)
+    expect(children[0]!.killed).toBe(true)
   })
 })

@@ -1,7 +1,7 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki: build/query interlinked markdown KB."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -32,6 +32,8 @@ Use this skill when the user:
 - Asks a question and an existing wiki is present at the configured path
 - Asks to lint, audit, or health-check their wiki
 - References their wiki, knowledge base, or "notes" in a research context
+- Asks for typed relations, multi-hop questions, or merging duplicate entities in their
+  wiki (opt-in graph mode, see Core Operations § 4)
 
 ## Wiki Location
 
@@ -364,6 +366,15 @@ wiki = "<WIKI_PATH>"
    severity (broken links > orphans > source drift > contested pages > stale content > style issues).
 
 ⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+
+### 4. Typed Graph (opt-in)
+
+Only when the user asks for graph-shaped work: typed relations ("who ACQUIRED whom"),
+multi-hop questions, merging duplicate entities, or event timelines. Read
+`references/typed-graph.md` first. It adds an optional `relations:` frontmatter field and
+a `## Relations` section in `SCHEMA.md` (written only after the user approves it); it never
+changes ordinary ingest, and every entity merge is proposed to the user before it is applied.
+Wikis without that schema section are not in graph mode.
 
 ## Working with the Wiki
 

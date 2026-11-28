@@ -16,6 +16,7 @@ from typing import Callable, Iterable, List, Optional
 from hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,
     bounded_probe_run,
+    git_failure_line,
     noninteractive_git_env,
     windows_hide_flags,
 )
@@ -903,9 +904,8 @@ def convert_treeless_checkout_first(repo_root: Path) -> None:
             print("  ✓ Fetched this checkout's directory history once; updates stop re-downloading it",
                   flush=True)
     except (OSError, subprocess.SubprocessError) as exc:
-        detail = (getattr(exc, "stderr", None) or str(exc)).strip().splitlines()[-1:] or [type(exc).__name__]
-        print(f"  ⚠ Could not fetch this checkout's directory history ({detail[0]}); retrying next update",
-              flush=True)
+        print(f"  ⚠ Could not fetch this checkout's directory history ({git_failure_line(exc)}); "
+              "retrying next update", flush=True)
 
 
 def _git_version(**run_kwargs) -> tuple:

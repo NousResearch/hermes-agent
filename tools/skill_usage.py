@@ -646,10 +646,14 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
     return True, f"{action}d to {dest}"
 
 
-def archive_skill(skill_name: str) -> tuple[bool, str]:
+def archive_skill(skill_name: str, *, expected_dir: Optional[Path] = None) -> tuple[bool, str]:
     """Move a curator-eligible skill dir to ``.archive/`` (flattened; timestamp suffix on collision). Never hub;
-    bundled built-ins only with ``curator.prune_builtins`` (and then suppressed from re-seeding)."""
+    bundled built-ins only with ``curator.prune_builtins`` (and then suppressed from re-seeding).
+    If the caller guarded a directory, require archive lookup to agree before moving it."""
     skill_dir = _find_skill_dir(skill_name)
+    # Compare the directory paths, not their resolved targets: the move acts on the directory entry.
+    if expected_dir is not None and (skill_dir is None or skill_dir.parts != expected_dir.parts):
+        return False, f"Archive lookup for skill '{skill_name}' did not match the validated directory."
     if skill_dir is None and _find_external_skill_dir(skill_name) is not None:
         return False, _external_read_only_message(skill_name)
     if not is_curation_eligible(skill_name, skill_dir):

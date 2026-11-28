@@ -29,13 +29,14 @@ from agent.skill_utils import (
     parse_frontmatter as _parse_frontmatter,
     SKILL_PROMPT_DESC_LIMIT)
 from tools.skill_manager_guards import (
+    _approved_background_review, _is_curator_write,
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
-    _validate_delete_target, _is_background_review, _refusal as _err)
+    _validate_delete_target, _refusal as _err)
 from tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
 from tools.skill_manager_scan import (
-    _background_origin, _introduced_findings, _replaying_background_write, _scan_baseline)
+    _introduced_findings, _scan_baseline)
 from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 from tools.skills_tool import _skills_dir
 
@@ -54,7 +55,7 @@ def _guard_agent_created_enabled() -> bool:
 def _scan_required() -> bool:
     """Opt-in for foreground writes, always on for the background-review fork: the fork's whitelist
     is memory+skills, so the terminal() rationale for the opt-in does not apply to it."""
-    return _guard_agent_created_enabled() or _background_origin()
+    return _guard_agent_created_enabled() or _is_curator_write()
 
 
 def _security_scan_skill(skill_dir: Path, baseline: Optional[Counter] = None,
@@ -598,10 +599,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
     # Curator consolidations must be RECOVERABLE (`hermes curator restore`): archive instead
     # of rmtree. Foreground deletes keep hard-delete semantics.
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
-    if _is_background_review():
+    if _is_curator_write():
         try:
             from tools.skill_usage import archive_skill
-            ok, archive_msg = archive_skill(name)
+            ok, archive_msg = archive_skill(name, expected_dir=skill_dir)
         except Exception as e:
             return _err(f"failed to archive '{name}': {e}")
         if not ok:
@@ -717,17 +718,13 @@ def _skill_manage_from(payload: dict[str, Any], **extra) -> str:
 
 
 def apply_skill_pending(payload: dict[str, Any], origin: str = "foreground") -> str:
-    """Replay a staged skill write, bypassing the gate (the /skills approve handler). A write the
-    background-review fork staged keeps its mandatory scan; only the scan, not the fork's other
-    guards, follows it, since the approving user has not skill_view'd the target."""
+    """Replay an approved write with its scan and durable policy, but not transient read marks."""
     from tools.skill_provenance import BACKGROUND_REVIEW
-    token = _skill_gate_bypass.set(True)
-    bg_token = _replaying_background_write.set(origin == BACKGROUND_REVIEW)
-    try:
+
+    with ExitStack() as scope:
+        scope.callback(_skill_gate_bypass.reset, _skill_gate_bypass.set(True))
+        scope.callback(_approved_background_review.reset, _approved_background_review.set(origin == BACKGROUND_REVIEW))
         return _skill_manage_from(payload)
-    finally:
-        _replaying_background_write.reset(bg_token)
-        _skill_gate_bypass.reset(token)
 
 
 def _act_patch(a):
@@ -816,7 +813,12 @@ def skill_manage(
     # A mutation is read-modify-write even when its action eventually delegates
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
-    with _skill_mutation_lock(name):
+    with _skill_mutation_lock(name), ExitStack() as audit_scope:
+        # Approved curator creates keep the caller's audit actor, even in a mixed batch.
+        # Scan policy is independent of this per-operation ledger override.
+        if action != "create" and _approved_background_review.get():
+            from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+            audit_scope.callback(reset_ledger_actor, set_ledger_actor("curator"))
         # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
         # destroys the whole package (consolidation may have re-homed support files first), so
         # complete it from the newest curator backup or a restore is hollow.

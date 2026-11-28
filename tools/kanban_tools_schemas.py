@@ -66,8 +66,11 @@ KANBAN_LIST_SCHEMA = _schema(
     (
         "List Kanban task summaries so an orchestrator can discover work to route. Supports the same core filters as the CLI: assignee, "
         "status, tenant, include_archived, and limit. Returns compact rows "
-        "with ids, title, status, assignee, priority, parent/child ids, and "
-        "counts. Bounded to 50 rows by default, 200 max, with truncation "
+        "with ids, title, status, assignee, priority, parent/child ids, "
+        "counts, and — for a card that waits — its block_kind (a dependency "
+        "block clears itself; needs_input/capability means a human owes an "
+        "answer; the full reason stays in kanban_show). Summary rows are "
+        "bounded to 50 by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
         "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
         "this tool."

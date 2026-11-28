@@ -2015,20 +2015,17 @@ def _run_agent_with_watchdog(
 
 
 def _final_response_from_result(result: dict, job_id: str, job_name: str, AIAgent) -> str:
-    """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError on
-    `failed=True`/`completed=False`: the error text may sit in `final_response` and would otherwise
-    be delivered as the reply with the job marked ok."""
-    # If the agent itself reported failure (e.g. all retries exhausted on API errors, model abort, mid-run
-    # interrupt), do not silently mark the job as successful. run_agent populates
-    # `failed=True`/`completed=False` on these paths and may put the error into `final_response`, which
-    # would otherwise be delivered as if it were the agent's reply and the job's `last_status` set to "ok".
-    # Raise so the except handler below builds the proper failure tuple. (issue #17855)
+    """Deliverable final response from a ``run_conversation`` result. Raises RuntimeError when
+    ``failed_run_error`` calls the run failed: the error text may sit in `final_response` and would
+    otherwise be delivered as the reply with the job marked ok."""
+    from cron.scheduler_failure_copy import failed_run_error
+
+    # Raise so the except handler in run_job builds the proper failure tuple. (issue #17855)
+    run_error = failed_run_error(result)
+    if run_error:
+        raise RuntimeError(run_error)
     turn_exit_reason = str(result.get("turn_exit_reason") or "")
-    final_response_text = (result.get("final_response") or "").strip()
-    max_iteration_summary = is_max_iteration_handoff(result)
-    if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
-        raise RuntimeError(result.get("error") or final_response_text or "agent reported failure")
-    if max_iteration_summary:
+    if is_max_iteration_handoff(result):
         logger.warning(
             "Job '%s' reached the iteration limit but produced a final fallback response; "
             "delivering the response instead of failing the cron run",

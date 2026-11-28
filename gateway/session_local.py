@@ -315,6 +315,16 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         raise AuthorityRefusal('profile_mismatch')
     if 'session:create' not in actor.capabilities:
         raise AuthorityRefusal('permission_denied')
+    params = dict(params)
+    if params.get('desktop_project_id') is not None:
+        from hermes_cli.desktop_project_authority import prepare_desktop_project_request
+        try:
+            params, _desktop_project = prepare_desktop_project_request(
+                params,
+                db_path=authority.persistence.scope.profile_dir / 'projects.db',
+            )
+        except (TypeError, ValueError) as exc:
+            raise AuthorityRefusal('invalid_params', field='desktop_project_id', detail=str(exc)) from exc
     from gateway.session_policy import build_policy, BYPASS_FIELDS, FOLLOW_ADOPTED, LOCAL_DESKTOP_CHAT
     from gateway.run import _resolve_gateway_model
     from dataclasses import replace

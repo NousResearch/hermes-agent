@@ -724,6 +724,157 @@ class TestSteerSurvivesRedirectRebuild:
         assert result.get("pending_steer") is None
         assert result["completed"] is True
 
+    _PRIOR_TOOL_HISTORY = [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": None, "tool_calls": [{
+            "id": "prior_call", "type": "function",
+            "function": {"name": _STEER_SURVIVAL_TOOL, "arguments": "{}"},
+        }]},
+        {"role": "tool", "tool_call_id": "prior_call", "content": "previous result"},
+        {"role": "assistant", "content": "previous final answer"},
+    ]
+
+    def _fail_first_call(self, agent, monkeypatch, *, steer_during_call=False, interrupt_in_routing=False):
+        """Run one turn whose only API call fails with a 401 (a terminal early exit)."""
+        from copy import deepcopy
+        from unittest.mock import MagicMock
+
+        from agent import turn_api_error
+
+        class _Rejected(Exception):
+            status_code = 401
+
+        def model_call(api_kwargs):
+            if steer_during_call:
+                assert agent.steer(self.STEER_TEXT) is True
+            raise _Rejected("HTTP 401: rejected")
+
+        if interrupt_in_routing:
+            real_route = turn_api_error.route_classified_error
+
+            def route_after_message(*args, **kwargs):
+                agent.interrupt("a new message arrived")  # not a Stop: after the handler's own check
+                return real_route(*args, **kwargs)
+
+            monkeypatch.setattr(turn_api_error, "route_classified_error", route_after_message)
+        agent._interruptible_api_call = model_call
+        for method in ("_flush_messages_to_session_db", "_persist_session", "_save_trajectory", "_cleanup_task_resources"):
+            monkeypatch.setattr(agent, method, MagicMock())
+        return agent.run_conversation("new question", conversation_history=deepcopy(self._PRIOR_TOOL_HISTORY))
+
+    def test_steer_requeued_before_a_failed_first_call_stays_buffered(self, monkeypatch):
+        """The pre-API drain requeues a steer when this turn has no tool result yet. If the first call
+        then fails terminally, the steer stays buffered on the agent (as base keeps a steer accepted
+        during a failing call) instead of being handed back as pending_steer, which hosts that ignore
+        or replace the result would lose. The next turn on the same agent delivers it."""
+        agent = self._loop_agent()
+        assert agent.steer(self.STEER_TEXT) is True
+        result = self._fail_first_call(agent, monkeypatch)
+        assert result["failed"] is True and result.get("pending_steer") is None
+        assert agent._drain_pending_steer() == self.STEER_TEXT
+
+    def test_a_steer_accepted_during_a_failed_call_stays_buffered(self, monkeypatch):
+        agent = self._loop_agent()
+        result = self._fail_first_call(agent, monkeypatch, steer_during_call=True)
+        assert result["failed"] is True and result.get("pending_steer") is None
+        assert agent._drain_pending_steer() == self.STEER_TEXT
+
+    def test_a_late_non_stop_interrupt_keeps_the_steer(self, monkeypatch):
+        """Only a user's Stop may drop a steer: an incoming-message interrupt published after the error
+        handler's check leaves it buffered."""
+        agent = self._loop_agent()
+        result = self._fail_first_call(agent, monkeypatch, steer_during_call=True, interrupt_in_routing=True)
+        assert result.get("pending_steer") is None
+        agent.clear_interrupt()
+        assert agent._drain_pending_steer() == self.STEER_TEXT
+
+    @pytest.mark.parametrize(
+        ("previous_turn_used_tool", "current_turn_uses_tool"),
+        [(True, True), (True, False), (False, False)],
+        ids=["next-tool-delivery", "leftover-with-old-tool", "leftover-without-old-tool"],
+    )
+    def test_first_iteration_steer_preserves_previous_turn(
+        self, previous_turn_used_tool, current_turn_uses_tool, monkeypatch,
+    ):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from tests.agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        history = [{"role": "user", "content": "previous question"}]
+        if previous_turn_used_tool:
+            history.extend([
+                {"role": "assistant", "content": None, "tool_calls": [{
+                    "id": "prior_call", "type": "function",
+                    "function": {"name": _STEER_SURVIVAL_TOOL, "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": "prior_call", "content": "previous result"},
+            ])
+        history.append({"role": "assistant", "content": "previous final answer"})
+        first_request_tail = deepcopy(history) + [{"role": "user", "content": "new question"}]
+        requests = []
+
+        def model_call(api_kwargs):
+            requests.append(deepcopy(api_kwargs["messages"]))
+            if current_turn_uses_tool and len(requests) == 1:
+                tool_call = SimpleNamespace(
+                    id="current_call", type="function",
+                    function=SimpleNamespace(name=_STEER_SURVIVAL_TOOL, arguments="{}"),
+                )
+                return _mock_response(content=None, finish_reason="tool_calls", tool_calls=[tool_call])
+            return _mock_response(content="new final answer", finish_reason="stop")
+
+        agent._interruptible_api_call = model_call
+        for method in ("_flush_messages_to_session_db", "_persist_session", "_save_trajectory", "_cleanup_task_resources"):
+            monkeypatch.setattr(agent, method, MagicMock())
+
+        assert agent.steer(self.STEER_TEXT) is True
+        result = agent.run_conversation("new question", conversation_history=history)
+
+        assert result["completed"] is True
+        assert requests[0][1:] == first_request_tail
+        if current_turn_uses_tool:
+            first, second = requests
+            assert second[:len(first)] == first
+            tool_call, tool_result, steer = second[len(first):]
+            assert tool_call["tool_calls"][0]["id"] == "current_call"
+            assert tool_result["role"] == "tool" and tool_result["tool_call_id"] == "current_call"
+            assert steer == {"role": "user", "content": format_steer_marker(self.STEER_TEXT).lstrip()}
+            assert result.get("pending_steer") is None
+        else:
+            assert len(requests) == 1
+            assert result["pending_steer"] == self.STEER_TEXT
+
+
+    def test_pre_api_drain_reanchors_a_stale_turn_index(self):
+        """A rebuild that shrank the list leaves the turn index past this turn's user row; the
+        drain re-anchors by content and still delivers after this turn's tool result."""
+        from agent.turn_iteration_prep import prepare_iteration
+
+        agent = self._loop_agent()
+        tool_row = {"role": "tool", "tool_call_id": "current_call", "content": "current result"}
+        messages = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous final answer"},
+            {"role": "user", "content": "new question"},
+            {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "current_call", "type": "function",
+                "function": {"name": _STEER_SURVIVAL_TOOL, "arguments": "{}"},
+            }]},
+            tool_row,
+        ]
+        assert agent.steer(self.STEER_TEXT) is True
+        prep = prepare_iteration(
+            agent, messages=messages, api_call_count=2, user_message="new question",
+            current_turn_user_idx=len(messages) + 3,
+        )
+
+        assert prep.messages[-2] is tool_row
+        assert prep.messages[-1]["role"] == "user" and self.STEER_TEXT in prep.messages[-1]["content"]
+        assert agent._drain_pending_steer() is None
+
 
 class TestPreApiCallSteerDrain:
     """Test that steers arriving during an API call are drained before the
@@ -748,13 +899,36 @@ class TestPreApiCallSteerDrain:
             tool_row,
         ]
         agent.steer("focus on error handling")
-        _inject_steer_after_newest_tool_result(agent, messages, agent._drain_pending_steer())
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=0,
+        )
         assert tool_row == before
         assert messages[-2] is tool_row
         assert messages[-1]["role"] == "user"
         assert STEER_MARKER_OPEN in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
+
+    def test_pre_api_drain_requeues_without_a_current_turn_anchor(self):
+        """No user-originated row to anchor on (index -1): an older turn's tool row is never a target."""
+        from agent.turn_iteration_prep import _inject_steer_after_newest_tool_result
+
+        agent = _bare_agent()
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "output here", "tool_call_id": "tc1"},
+            {"role": "assistant", "content": "done"},
+        ]
+        before = [dict(m) for m in messages]
+        agent.steer("focus on error handling")
+        _inject_steer_after_newest_tool_result(
+            agent, messages, agent._drain_pending_steer(), current_turn_user_idx=-1,
+        )
+        assert messages == before
+        assert agent._drain_pending_steer() == "focus on error handling"
 
 
 

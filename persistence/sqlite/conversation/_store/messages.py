@@ -14,7 +14,8 @@ from session_rules.turns import (
 from persistence.sqlite._state.common import _ended_by_compression, _json_or
 from persistence.sqlite._holder import StoreHolder
 from persistence.sqlite._schema_ddl import (
-    _MERGE_DISPLAY_META, _RESET_END_REASONS, _RESET_END_REASONS_SQL, _legacy_reset_child_sql, _sql_json_extract,
+    COMPRESSED_FROM_KEY, _MERGE_DISPLAY_META, _RESET_END_REASONS, _RESET_END_REASONS_SQL,
+    _legacy_reset_child_sql, _sql_json_extract, _tool_fork_sql,
 )
 from persistence.sqlite.conversation._store.sql_common import _COMPRESSION_LOCK_ROW_SQL, _ENDED_ROW_SQL, _in_one_read, _placeholders
 from functools import partial
@@ -1453,7 +1454,7 @@ def resolve_resume_session_id(holder: StoreHolder, session_id: str) -> str:
                     f"  AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
                     f"  AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
                     f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
-                    "  AND COALESCE(child.source, '') != 'tool' "
+                    f"  AND NOT {_tool_fork_sql('child.')} "
                     "ORDER BY child.started_at DESC, child.id DESC LIMIT 1", (current,)).fetchone()
             except Exception:  # health: allow BLE001 -- a failed lookup resumes the id reached
                 return session_id
@@ -1901,21 +1902,23 @@ def _is_explicit_fork_child_row(holder: StoreHolder, session: dict[str, Any], *,
     """True when *session* is a branch, delegate, or tool child of its parent (``include_reset``: also a
     reset fork). Markers only count when they point at ``parent_session_id``: compression copies
     ``model_config`` onto the continuation, so presence-only matching would misclassify it (same binding
-    as ``_NON_CONTINUATION_CHILD_FILTER_SQL``)."""
-    if session.get("source") == "tool":
-        return True
+    as ``_NON_CONTINUATION_CHILD_FILTER_SQL``). A tool continuation must name its own parent in
+    ``COMPRESSED_FROM_KEY`` and still honours fork markers. SQL twin: ``_tool_fork_sql``."""
     cfg = session.get("model_config")
     if isinstance(cfg, str):
         try:
             cfg = json.loads(cfg)
         except json.JSONDecodeError:
-            return False
+            cfg = None
+    parent_id = session.get("parent_session_id")
+    if session.get("source") == "tool" and not (
+            parent_id and isinstance(cfg, dict) and cfg.get(COMPRESSED_FROM_KEY) == parent_id):
+        return True
     if not isinstance(cfg, dict):
         return False
     markers = (cfg.get("_branched_from"), cfg.get("_delegate_from"))
     if include_reset:
         markers += (cfg.get("_reset_from"),)
-    parent_id = session.get("parent_session_id")
     return parent_id in markers if parent_id else any(m is not None for m in markers)
 
 

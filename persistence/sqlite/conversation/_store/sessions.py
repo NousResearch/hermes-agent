@@ -12,7 +12,7 @@ from session_rules.activity import ActivityProvenance, bound_activity_descriptio
 from persistence.sqlite._state.errors import SessionActiveWriteGuardError
 from persistence.sqlite._state.common import _shape_preview
 from persistence.sqlite._holder import StoreHolder
-from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _sql_json_extract
+from persistence.sqlite._schema_ddl import _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _sql_json_extract, _tool_fork_sql
 from persistence.sqlite.conversation._store.sql_common import (
     _LISTABLE_CHILD_SQL, _RECOVERABLE_END_REASONS, _RECOVERABLE_END_REASONS_SQL, _non_continuation_child_sql,
     _sql_preview_raw, QUEUED_PROMPT_METADATA_KEY, _sql_in_window, _sql_session_last_active,
@@ -172,7 +172,7 @@ def _expand_compression_lineage_ids(conn, frontier: list[str]) -> list[str]:
     """One both-direction compression-edge step from *frontier*: forward through every
     continuation child and backward through the compression parent, using the SAME edge
     definition as ``_CHAIN_STEP_SQL`` / the list-projection CTE (parent ended with
-    ``reason='compression'``, child is not a branch / reset / delegate / tool session).
+    ``reason='compression'``, child is not a branch / reset / delegate / tool fork).
     Branch/reset children are NOT continuations — they are their own conversations."""
     ids = [sid for sid in frontier if sid]
     if not ids:
@@ -184,7 +184,7 @@ def _expand_compression_lineage_ids(conn, frontier: list[str]) -> list[str]:
             f"{_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
             f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
             f"AND NOT ({_RESET_CHILD_SQL.format(a='child')}) "
-            "AND COALESCE(child.source, '') != 'tool'"
+            f"AND NOT {_tool_fork_sql('child.')}"
         )
         out.extend(row["id"] for row in conn.execute(
             # forward: every continuation of a compression-ended frontier row
@@ -1147,7 +1147,7 @@ def list_recent_sessions_bounded(
                 COALESCE(child.model_config, '{{}}'), '$._branched_from'
             ) IS NULL
             AND {_delegate_from_json('child.model_config')} IS NULL
-            AND COALESCE(child.source, '') != 'tool'
+            AND NOT {_tool_fork_sql('child.')}
         """
 
     query = f"""
@@ -1364,7 +1364,7 @@ def list_sessions_rich(
                       AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
                       AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                      AND COALESCE(child.source, '') != 'tool'
+                      AND NOT {_tool_fork_sql('child.')}
                 ),
                 chain_max AS (
                     SELECT

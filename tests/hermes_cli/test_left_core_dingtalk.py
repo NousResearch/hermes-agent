@@ -310,3 +310,25 @@ def test_cron_reports_the_dingtalk_target_it_missed_with_the_install_command(mon
     error = _deliver_result({"id": "j1", "name": "report", **job}, "hello")
     assert [chat for _, chat in sent] == ["123"]
     assert error is not None and "dingtalk" in error and "hermes plugins install dingtalk" in error
+
+
+@pytest.mark.parametrize("plugins, says", [
+    ("", "hermes plugins enable dingtalk"),
+    ("plugins:\n  disabled: [dingtalk]\n", "hermes plugins enable dingtalk"),
+    ("plugins:\n  enabled: [dingtalk]\n", "hermes logs"),
+], ids=["never-enabled", "disabled", "enabled-not-loaded"])
+def test_cron_names_the_enable_command_for_an_installed_dingtalk_that_is_off(monkeypatch, plugins, says):
+    """The plugin is in the home but off (its install's enable prompt was declined, or plugins.disabled names
+    it): a missed DingTalk target names `hermes plugins enable dingtalk`, never an install the installer
+    refuses because the plugin is already there. Enabled but not loaded points at the logs."""
+    from cron.scheduler_delivery import _deliver_result
+    from hermes_constants import get_hermes_home
+
+    home = get_hermes_home()
+    (home / "plugins" / "dingtalk").mkdir(parents=True)
+    (home / "config.yaml").write_text(f"_config_version: 55\n{plugins}", encoding="utf-8")
+    monkeypatch.setenv("DINGTALK_HOME_CHANNEL", "cidHome==")
+    sent = _telegram_sends(monkeypatch)
+    error = _deliver_result({"id": "j1", "name": "report", "deliver": "dingtalk,telegram:123"}, "hello")
+    assert [chat for _, chat in sent] == ["123"]
+    assert error is not None and says in error and "plugins install" not in error, error

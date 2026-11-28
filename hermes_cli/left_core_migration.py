@@ -809,9 +809,20 @@ def _install_sentence(feature: LeftCoreFeature) -> str:
 
 def platform_install_hint(platform: str) -> str:
     """For an unknown platform name that left core: the sentence that names its install command for
-    the active home, else ``""``. Appended to "unknown platform" errors (``send_message``)."""
+    the active home (its enable command when installed but off), else ``""``. Appended to "unknown
+    platform" errors (``send_message``, cron delivery)."""
+    from hermes_constants import get_hermes_home
     feature = next((f for f in LEFT_CORE if f.platform and f.platform == platform), None)
-    return f". {_install_sentence(feature)}" if feature else ""
+    home = Path(get_hermes_home())
+    if feature is None or not plugin_present(feature.plugin, home):
+        return f". {_install_sentence(feature)}" if feature else ""
+    enabled, disabled = _plugin_lists(home, feature.plugin)
+    if enabled and not disabled:
+        return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin, which is enabled but "
+                "did not load: see `hermes logs` for the cause")
+    enable = _install_command(feature.plugin, home).replace(" install ", " enable ")
+    return (f". {feature.label} moved out of core into the '{feature.plugin}' plugin, which is installed but "
+            f"off: run `{enable}`")
 
 
 def terminal_backend_install_hint(backend: str) -> str:

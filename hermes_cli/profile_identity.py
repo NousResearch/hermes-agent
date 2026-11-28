@@ -3,7 +3,8 @@
 ``rename_profile`` moves ``profiles/<old>/`` to ``profiles/<new>/`` so row DATA travels with the
 directory, but several identities are derived from the old name or absolute path and do not:
 ``agent:<old>:*`` session-key namespaces (routing index + the profile's own ``sessions`` rows),
-``sessions.profile_name``, ``gateway_heartbeats.profile``, ``delivery_obligations``, and checkpoint
+``sessions.profile_name``, ``gateway_heartbeats.profile``, ``delivery_obligations``, the legacy
+``sessions/sessions.json`` routing mirror, and checkpoint
 project refs/metadata/ledgers keyed by the absolute workdir path. Left alone, routing resolves to a
 profile that no longer exists and profile-local `/rollback` history disappears under the new path.
 
@@ -22,6 +23,7 @@ Checkpoint project state has no live in-memory owner and is rekeyed locally afte
 from __future__ import annotations
 
 import contextlib
+import json
 import sys
 from pathlib import Path
 
@@ -245,7 +247,67 @@ def _migrate_profile_identity(old_canon: str, new_canon: str, live_mux: bool) ->
             if store is not None:
                 with contextlib.suppress(Exception):
                     store.close()
+    if migrated and not _rekey_sessions_json_mirror(root, old_canon, new_canon):
+        migrated = False
     return migrated
+
+
+def _rekey_sessions_json_mirror(root: Path, old_canon: str, new_canon: str) -> bool:
+    """Rekey the legacy ``sessions/sessions.json`` routing mirror on a durable rename (#157580).
+
+    The mirror is a second routing copy: at the next gateway boot
+    ``SessionStore._import_legacy_sessions_json`` folds every mirror key the DB lacks back into
+    the live index, so a durable-only rename that rekeys ``state.db`` but not the mirror leaves
+    ``agent:<old>:*`` keys to be re-imported (and warned about) on every boot. A live gateway
+    needs no help here — its ``rekey_profile_routing`` save rewrites the mirror from the index.
+
+    Only the key namespace and the entry's runtime profile (``session_key`` / ``origin.profile``)
+    move; ``transport_profile`` names the receiving bot, not the runtime profile, and stays.
+    ``_``-prefixed sentinels and other profiles' entries are preserved verbatim. When the mirror
+    already carries the new key, the old copy is dropped — the rekeyed DB is authoritative and a
+    gateway save will rewrite the mirror from it. Returns False (with a warning naming the file)
+    when the mirror could not be read or written, so the rename reports the settlement as pending
+    instead of a clean success.
+    """
+    sessions_file = root / "sessions" / "sessions.json"
+    if not sessions_file.exists():
+        return True
+    try:
+        data = json.loads(sessions_file.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError("sessions.json root is not an object")
+        from gateway.session import _session_key_namespace
+        from utils import atomic_json_write
+
+        old_ns, new_ns = f"{_session_key_namespace(old_canon)}:", f"{_session_key_namespace(new_canon)}:"
+        rekeyed: dict = {}
+        changed = False
+        for key, value in data.items():
+            if key.startswith("_") or not key.startswith(old_ns):
+                rekeyed[key] = value
+                continue
+            changed = True
+            new_key = new_ns + key[len(old_ns):]
+            if new_key in rekeyed or new_key in data:
+                continue  # already migrated copy wins; the DB rekey is authoritative
+            if isinstance(value, dict):
+                value = dict(value)
+                session_key = value.get("session_key")
+                if isinstance(session_key, str) and session_key.startswith(old_ns):
+                    value["session_key"] = new_ns + session_key[len(old_ns):]
+                origin = value.get("origin")
+                if isinstance(origin, dict) and origin.get("profile") == old_canon:
+                    value["origin"] = {**origin, "profile": new_canon}
+            rekeyed[new_key] = value
+        if changed:
+            atomic_json_write(sessions_file, rekeyed, mode=0o600)
+    except Exception as exc:  # health: allow BLE001 -- a mirror read/write failure reports the rename as pending, never crashes it
+        print(
+            f"⚠ Profile was renamed, but the sessions.json routing mirror could not be rekeyed "
+            f"for {sessions_file}: {type(exc).__name__}: {exc}",
+            file=sys.stderr)
+        return False
+    return True
 
 
 def _record_profile_rename(new_dir: Path, old_canon: str) -> None:

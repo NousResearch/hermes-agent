@@ -94,6 +94,13 @@ def _normalize_temperature_ranges(text: str) -> str:
     return text
 
 
+_MONTH_ABBREVS = {
+    "JAN": "January", "FEB": "February", "MAR": "March", "APR": "April",
+    "JUN": "June", "JUL": "July", "AUG": "August", "SEPT": "September",
+    "SEP": "September", "OCT": "October", "NOV": "November", "DEC": "December",
+}
+
+
 def normalize_symbols_for_tts(text: str) -> str:
     """Expand common symbols/shorthand into words a TTS engine reads well."""
     if not text:
@@ -122,6 +129,16 @@ def normalize_symbols_for_tts(text: str) -> str:
     for symbol, word, flags in _CURRENCY_WORDS:
         text = re.sub(symbol + r"\s*([\d,]*\d(?:\.\d+)?)", r"\1 " + word, text, flags=flags)
     text = re.sub(r"(?<=\d)\s*%", " percent", text)
+    # Month abbreviations ("Nov. 3" -> "November 3") — engines read the bare
+    # abbreviation as a foreign word ("nov"), never as the month. Gated on a
+    # following day/year number: whole-word collisions ("Jan said", "mar the
+    # launch", "the APR is") are ordinary English and stay untouched (#139320).
+    # The abbreviation's period/comma/spaces are consumed by the match so
+    # "Nov.3" and "Nov, 2026" expand with a single space before the number.
+    text = re.sub(
+        r"(?<!\w)(" + "|".join(_MONTH_ABBREVS) + r")\.?\s*,?\s*(?=\d)",
+        lambda m: _MONTH_ABBREVS[m.group(1).upper()] + " ", text, flags=re.IGNORECASE,
+    )
     # Operators and separators that commonly leak from formatted answers.
     text = re.sub("[•◦▪▫]", " ", text.replace("&", " and "))  # bullet glyphs
     for symbol, word in (("→", " to "), ("⇒", " to "), ("≈", " about "), ("~", " about ")):

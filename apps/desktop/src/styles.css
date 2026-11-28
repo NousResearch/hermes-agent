@@ -1493,12 +1493,9 @@ button,
   user-select: text;
 }
 
-[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'],
-[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-expand'] {
+[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'] {
   -webkit-user-select: none;
   user-select: none;
-  min-width: 44px;
-  min-height: 44px;
 }
 
 img,
@@ -1968,6 +1965,41 @@ body.guest-pointer-lock :is(webview, iframe) {
 .sticky-human-clamp[data-clamped='true'] {
   -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
+}
+
+/* Touch: the pinned prompt clamps to two lines (four on desktop). Its buttons sit
+   in the bubble's right gutter (TouchUserBubble), so it adds no row below.
+   useUserBubbleClamp reads the clamp's computed max-height, so the fade follows. */
+@media (pointer: coarse) {
+  .sticky-human-clamp {
+    max-height: calc(2 * var(--human-msg-line-height) * var(--conversation-text-font-size) + 0.15rem);
+  }
+}
+
+/* Short viewports (a phone with the on-screen keyboard up: the Webapp sets
+   interactive-widget=resizes-content, so the layout height shrinks with it; or a
+   landscape phone): a pinned prompt would take most of what is left, and the
+   composer the user is typing in gets squeezed out of view. Let the prompt scroll
+   with the transcript instead. With `top: auto` useStickyPromptClip reads a zero
+   sticky offset and clips nothing. */
+@media (max-height: 520px) {
+  [data-slot='aui_user-message-root'] {
+    position: relative;
+    top: auto;
+  }
+
+  /* Composer: never a full-width input row with controls under it. With text the
+     buttons stack in a narrow right column ("+" over Send) and the input gets that
+     column's height, scrolling inside it; the branch strip hides while the keyboard
+     is up. See controlRowGridClass in app/chat/composer/index.tsx and
+     lib/short-viewport.ts. */
+  :root {
+    --composer-input-max-height: calc(2 * var(--composer-control-size) + var(--composer-row-gap));
+  }
+
+  .coding-status-bar {
+    display: none;
+  }
 }
 
 /* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring

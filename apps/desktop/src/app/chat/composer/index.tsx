@@ -120,10 +120,25 @@ import {
 } from './url-refs'
 import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
+type ShortComposerLayout = 'row' | 'column' | null
+
 /** Grid areas for the menu / input / controls row: one row when roomy, input
  *  above menu + controls when stacked, and one area per row once two touch-size
  *  controls no longer fit side by side. */
-function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
+function controlRowGridClass(singleColumn: boolean, stacked: boolean, short: ShortComposerLayout = null): string {
+  // Short viewport (phone keyboard up): never a full-width input row with the
+  // controls under it. Empty: one inline row. With text: the input takes the whole
+  // width but a narrow right-hand column, where "+" sits above Send, so the text
+  // gets the column's height (several lines) instead of a row of mostly empty
+  // controls.
+  if (short === 'column' && !singleColumn) {
+    return 'grid-cols-[minmax(0,1fr)_auto] gap-x-(--composer-control-gap) gap-y-(--composer-row-gap) [grid-template-areas:"input_menu"_"input_controls"]'
+  }
+
+  if (short === 'row' && !singleColumn) {
+    return 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+  }
+
   if (singleColumn) {
     return 'grid-cols-[minmax(0,1fr)] gap-(--composer-row-gap) [grid-template-areas:"input"_"menu"_"controls"]'
   }
@@ -428,7 +443,7 @@ export function ChatBar({
     return onCancel()
   }, [activeQueueSessionKeyRef, onCancel])
 
-  const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
+  const { compactPill, foldVoice, minimal, short, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
     composerRef,
     composerSurfaceRef,
@@ -437,6 +452,7 @@ export function ChatBar({
   })
 
   const hasComposerPayload = hasText || attachments.length > 0
+  const shortLayout: ShortComposerLayout = short ? (hasText ? 'column' : 'row') : null
   const { cardWaiting } = useCardWaitingSubmit(sessionId ?? null, busy, hasComposerPayload)
   const replyPaused = useReplyPaused(activeQueueSessionKey, sessionId)
 
@@ -1174,7 +1190,8 @@ export function ChatBar({
       foldVoice={foldVoice}
       hasComposerPayload={hasComposerPayload}
       hideModelPill={guidedChat}
-      minimal={minimal || chatOnboardingSolo}
+      // Short viewport: Send only (no model pill, no voice row); the model is in Settings.
+      minimal={minimal || chatOnboardingSolo || short}
       onDictate={dictate}
       onQueue={() => {
         // Queueing clears the draft too, so the list over it closes with it.
@@ -1506,7 +1523,7 @@ export function ChatBar({
                   <VoicePlaybackActivity />
                   {queueEdit && editingQueuedPrompt && <QueuedEditBanner onExit={exitQueuedEdit} />}
                   {attachments.length > 0 && <AttachmentList attachments={attachments} onRemove={onRemoveAttachment} />}
-                  <div className={cn('grid w-full', controlRowGridClass(singleColumn, stacked))}>
+                  <div className={cn('grid w-full', controlRowGridClass(singleColumn, stacked, shortLayout))}>
                     <div className="flex translate-y-[3px] items-start gap-(--composer-control-gap) self-start [grid-area:menu]">
                       {contextMenu}
                       <ContribSlot area={COMPOSER_AREAS.leading} />
@@ -1517,7 +1534,12 @@ export function ChatBar({
                       `ml-auto`: in the stacked layout the auto margin absorbs the
                       row's free space and pins a contributed action to the row
                       start, detached from the cluster (#116332). */}
-                    <div className="flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]">
+                    <div
+                      className={cn(
+                        'flex min-w-0 items-center justify-end gap-(--composer-control-gap) [grid-area:controls]',
+                        shortLayout === 'column' && 'self-end'
+                      )}
+                    >
                       <ContribSlot area={COMPOSER_AREAS.actions} />
                       {controls}
                     </div>

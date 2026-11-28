@@ -23,6 +23,13 @@ def handlers(connection):
     return {'shell.exec': partial(shell_exec, connection)}
 
 
+def _refused(command):
+    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+    # No prompt here, so anything the agent's gate would ask about is refused, including a command
+    # the scanners could not read to the end (detect_dangerous_command reports that too).
+    return detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]
+
+
 async def shell_exec(connection, ref, params):
     command = params.get('command')
     if (set(params) - {'session_id', 'profile', 'command'} or not isinstance(ref.session_id, str)
@@ -48,10 +55,11 @@ async def shell_exec(connection, ref, params):
     backend = str(json.loads(policy.terminal_json).get('TERMINAL_ENV') or '').strip().lower()
     if backend not in _LOCAL_BACKENDS:
         raise AuthorityRefusal('unsupported_terminal_backend', field='terminal.backend', detail=backend)
-    from tools.approval_detection import detect_dangerous_command, detect_hardline_command
-    # No prompt here, so anything the agent's gate would ask about is refused, including a command
-    # the scanners could not read to the end (detect_dangerous_command reports that too).
-    if detect_hardline_command(command)[0] or detect_dangerous_command(command)[0]:
+    # The scan is pure Python and takes seconds on some inputs (#140091), so it runs off the loop:
+    # inline it stalled every session this owner serves. Admission can close while it runs.
+    refused = await asyncio.to_thread(_refused, command)
+    authority._require_admission_open()
+    if refused:
         raise AuthorityRefusal('dangerous_command')
     return await asyncio.to_thread(_run, command, policy.cwd)
 

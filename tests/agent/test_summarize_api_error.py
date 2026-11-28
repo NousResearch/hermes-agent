@@ -93,3 +93,18 @@ def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_me
     summary = AIAgent._summarize_api_error(err)
     assert "HTTP 429" in summary
     assert "Gemini HTTP 429: quota exceeded" in summary
+
+
+@pytest.mark.parametrize("raw, reason", [
+    ("Access denied by security policy", "Access denied by security policy"),
+    ('{"error": {"message": "image exceeds 8000 pixels"}}', "image exceeds 8000 pixels"),
+])
+def test_openrouter_provider_error_names_upstream_and_reason(raw, reason):
+    """OpenRouter wraps upstream refusals as "Provider returned error" with the real
+    reason in error.metadata.raw: the summary must name the upstream and why."""
+    err = Exception("Error code: 403")
+    err.status_code = 403
+    err.body = {"message": "Provider returned error", "code": 403,
+                "metadata": {"raw": raw, "provider_name": "Azure"}}
+    summary = AIAgent._summarize_api_error(err)
+    assert summary == f"HTTP 403: Provider returned error: Azure: {reason}"

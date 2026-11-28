@@ -753,7 +753,12 @@ def _resolve_single_delivery_target(
             "thread_id": origin.get("thread_id"),
         }
     if not _is_known_delivery_platform(platform_name):
-        _note_unloaded_homes([n for n in _unloaded_home_platforms() if n == platform_name.lower()], skipped)
+        if saved := [n for n in _unloaded_home_platforms() if n == platform_name.lower()]:
+            _note_unloaded_homes(saved, skipped)
+        elif (hint := moved_platform_hint(platform_name)) and skipped is not None:
+            # A bare route to a platform that left core (its home in DINGTALK_HOME_CHANNEL-style env, not
+            # config.yaml) is reported like a platform:chat route, not dropped without a word.
+            skipped.append(f"delivery target '{deliver_value}' skipped: no loaded plugin provides it{hint}")
         return None
     chat_id = _get_home_target_chat_id(platform_name)
     return _home_target(platform_name, chat_id, home_provenance) if chat_id else None

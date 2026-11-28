@@ -298,10 +298,12 @@ def _telegram_sends(monkeypatch) -> list:
 @pytest.mark.parametrize("job", [
     {"deliver": "dingtalk:cidAbC123==,telegram:123"},
     {"deliver": "origin,telegram:123", "origin": {"platform": "dingtalk", "chat_id": "cidAbC123=="}},
-], ids=["explicit-target", "saved-origin"])
+    {"deliver": "dingtalk,telegram:123"},
+], ids=["explicit-target", "saved-origin", "bare-home-route"])
 def test_cron_reports_the_dingtalk_target_it_missed_with_the_install_command(monkeypatch, job):
     """A DingTalk target saved while core shipped it is a failed send with the install hint in the run
     result, even when another target of the same job was reached."""
+    monkeypatch.setenv("DINGTALK_HOME_CHANNEL", "cidHome==")
     from cron.scheduler_delivery import _deliver_result
 
     sent = _telegram_sends(monkeypatch)

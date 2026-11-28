@@ -23,7 +23,7 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 | `browser_exec` | Drive a real web browser by running Python with pre-imported helpers (`new_tab`, `goto_url`, `wait_for_load`, `page_info`, `js`, `fill_input`, `click_at_xy`, `capture_screenshot`, `cdp`, `ensure_real_tab`). Browser state persists across calls; Python variables do not. `session` isolates concurrent work; `timeout_s` defaults to 300 (max 1800). | `terminal` toolset |
 | `browser_cdp` | Send a raw Chrome DevTools Protocol command. Escape hatch for browser operations the `browser_exec` helpers don't cover. See https://chromedevtools.github.io/devtools-protocol/ | CDP endpoint |
 | `browser_dialog` | Respond to a native JavaScript dialog (alert / confirm / prompt / beforeunload) blocking the page: `browser_dialog(action='accept'\|'dismiss')`, with `prompt_text` for `prompt()` and `dialog_id` when several are queued. | CDP endpoint |
-| `browser_vault` | Use saved logins, passwords, cards, addresses and one-time codes on the current page without secrets entering the conversation. Actions: `list`, `fill`, `save_login`, `enter_code`, `unlock`. | — |
+| `browser_vault` | Use saved logins, passwords, cards, addresses and one-time codes on the current page without secrets entering the conversation. Actions: `list`, `check`, `fill`, `save_login`, `enter_code`, `unlock`. | — |
 
 ## `clarify` toolset
 

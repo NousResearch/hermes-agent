@@ -43,6 +43,7 @@ from cron.jobs_normalize import (
 from cron import jobs_time
 from cron.scheduler_ownership import _claim_owner_is_dead
 from cron import extra_fire, jobs_error_text, store_health
+from cron.job_idempotency import creation_fingerprint, idempotent_creation
 from typing import Optional, Dict, List, Any, Callable, Set, Tuple, Union, Collection
 
 logger = logging.getLogger(__name__)
@@ -319,12 +320,17 @@ def _jobs_lock():
         # See #80703.
         _jobs_lock_state.load_stamp = None
         lock_fd = None
+        _jobs_lock_state.crossprocess_locked = False
+        _jobs_lock_state.crossprocess_lock_path = None
         try:
             try:
                 ensure_dirs()
                 lock_fd = open(_jobs_lock_file(), "a+", encoding="utf-8-sig")
                 lock_fd.seek(0)
-                if _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS) is False:
+                acquired = _acquire_flock(lock_fd, _JOBS_LOCK_TIMEOUT_SECONDS)
+                _jobs_lock_state.crossprocess_locked = acquired is True
+                _jobs_lock_state.crossprocess_lock_path = _jobs_lock_file().resolve() if acquired is True else None
+                if acquired is False:
                     logger.error(
                         "Timed out after %.0fs waiting for the cron "
                         "jobs lock (%s) — another process is holding "
@@ -346,6 +352,8 @@ def _jobs_lock():
         finally:
             _jobs_lock_state.depth = 0
             _jobs_lock_state.load_stamp = None
+            _jobs_lock_state.crossprocess_locked = False
+            _jobs_lock_state.crossprocess_lock_path = None
 
 
 @contextlib.contextmanager
@@ -429,7 +437,7 @@ def fire_claim_fence(job_id: str, *, expected_owner: str):
 
 # Fields that must never change after creation: ``id`` is a path component under OUTPUT_DIR, so an
 # update could leak ``../escape``/absolute/nested values into output writes/deletes.
-_IMMUTABLE_JOB_FIELDS = frozenset({"id"})
+_IMMUTABLE_JOB_FIELDS = frozenset({"id", "external_idempotency_key", "external_idempotency_fingerprint"})
 
 
 def _job_output_dir(job_id: str) -> Path:
@@ -1772,6 +1780,7 @@ def _next_run_or_reject_past_oneshot(
     return next_run_at
 
 
+@idempotent_creation
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1802,6 +1811,7 @@ def create_job(
     timezone: Optional[str] = None,
     grace_minutes: Optional[int] = None,
     wrap_response: Optional[bool] = None,
+    external_idempotency_key: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1815,6 +1825,7 @@ def create_job(
     (a venv can be rebuilt or moved after creation). timezone: IANA key pinning the schedule's
     wall clock (None/'' = inherit the profile zone). grace_minutes: catch-up window override
     (0 = never catch up). wrap_response: None inherits cron.wrap_response, a bool overrides it."""
+    fingerprint = creation_fingerprint(locals()) if external_idempotency_key is not None else None
     if not isinstance(paused, bool):
         raise ValueError("paused must be a boolean.")
     if paused_reason is not None and not isinstance(paused_reason, str):
@@ -1910,6 +1921,9 @@ def create_job(
         if value is not None:
             job[key] = value
 
+    if external_idempotency_key is not None:
+        job["external_idempotency_key"] = external_idempotency_key
+        job["external_idempotency_fingerprint"] = fingerprint
     with _jobs_lock():
         save_jobs(load_jobs() + [job])
     return job

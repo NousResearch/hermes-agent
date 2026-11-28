@@ -618,3 +618,53 @@ class TestCronPromptScanParity:
                 assert "Blocked" in data["error"] or "threat" in data["error"].lower()
                 mock_create.assert_not_called()
 
+
+class TestCreateJobIdempotencyKey:
+    """POST /api/jobs with ``Idempotency-Key`` against the real job store (temp HERMES_HOME)."""
+
+    @staticmethod
+    def _body(prompt="check the build"):
+        return {"name": "nightly", "schedule": "every 2h", "prompt": prompt, "paused": True}
+
+    @pytest.mark.asyncio
+    async def test_a_retried_create_returns_the_first_job(self, adapter):
+        from cron.jobs import load_jobs
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            first = await cli.post("/api/jobs", json=self._body(), headers={
+                "Idempotency-Key": "client-7f3a", "X-Forwarded-For": "198.51.100.7", "User-Agent": "app/1"})
+            # Same plan over a new connection: different peer address and user agent.
+            retry = await cli.post("/api/jobs", json=self._body(), headers={
+                "Idempotency-Key": "client-7f3a", "X-Forwarded-For": "203.0.113.9", "User-Agent": "app/2"})
+            assert first.status == retry.status == 200
+            assert (await first.json())["job"]["id"] == (await retry.json())["job"]["id"]
+            assert len(load_jobs()) == 1
+
+            reused = await cli.post("/api/jobs", json=self._body("something else"),
+                                    headers={"Idempotency-Key": "client-7f3a"})
+            assert reused.status == 422
+            assert (await reused.json())["code"] == "cron_idempotency_conflict"
+            unkeyed = await cli.post("/api/jobs", json=self._body())
+            assert unkeyed.status == 200
+            assert len(load_jobs()) == 2
+
+    @pytest.mark.asyncio
+    async def test_keyed_create_fails_closed_without_the_store_lock(self, adapter, monkeypatch):
+        from cron import jobs
+
+        monkeypatch.setattr(jobs, "_acquire_flock", lambda *args: False)
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post("/api/jobs", json=self._body(), headers={"Idempotency-Key": "client-7f3a"})
+            assert resp.status == 503
+            assert (await resp.json())["code"] == "cron_idempotency_lock_unavailable"
+        assert jobs.load_jobs() == []
+
+    @pytest.mark.asyncio
+    async def test_an_invalid_key_is_rejected_not_normalized(self, adapter):
+        from cron.jobs import load_jobs
+
+        async with TestClient(TestServer(_create_app(adapter))) as cli:
+            resp = await cli.post("/api/jobs", json=self._body(), headers={"Idempotency-Key": "has space"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "cron_idempotency_invalid_key"
+        assert load_jobs() == []

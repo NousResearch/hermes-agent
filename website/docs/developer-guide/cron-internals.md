@@ -139,6 +139,10 @@ shows "finished; delivery is still in progress".
 | `completed` | Repeat count exhausted or one-shot that has fired |
 | `running` | Currently executing (transient state) |
 
+### Keyed creation
+
+`create_job(..., external_idempotency_key=...)` makes creation retry-safe for a caller that may submit the same plan twice (a client retry after a dropped connection, a confirmation answered twice). The key is an opaque caller string (`[A-Za-z0-9._:-]{1,128}`, never normalized). The first call stores the key and a fingerprint of the original arguments on the job; a later call with the same key and the same arguments returns that job unchanged (no schedule re-parse, no reactivation), and different arguments raise `ValueError("cron_idempotency_conflict")`. Request-transport facts on `origin` (peer and forwarded addresses, user agent) are left out of the fingerprint, so a retry over a new connection still matches. Lookup and write happen under the cross-process jobs lock, and keyed creation fails closed (`RuntimeError("cron_idempotency_lock_unavailable")`) when `_jobs_lock()` could only take its in-process fallback. Both fields are immutable through `update_job`; removing the job removes its key. `POST /api/jobs` exposes it as the `Idempotency-Key` header, namespaced `api:`.
+
 ### Backward Compatibility
 
 Older jobs may have a single `skill` field instead of the `skills` array. The scheduler normalizes this at load time — single `skill` is promoted to `skills: [skill]`.

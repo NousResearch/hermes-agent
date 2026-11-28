@@ -20,6 +20,12 @@ def _no_live_builtin_provider_probes(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.models.provider_model_ids", lambda *_a, **_kw: []
     )
+    # Native Ollama discovery probes ``/api/tags`` on the endpoint itself, so a developer
+    # machine running Ollama on the default port would replace the fixture's catalog with
+    # the real local one. Fail the native probe so the generic (mocked) catalog is used.
+    monkeypatch.setattr(
+        "hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None
+    )
 
 
 # =============================================================================

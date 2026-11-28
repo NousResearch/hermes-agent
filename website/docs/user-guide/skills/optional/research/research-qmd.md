@@ -288,8 +288,9 @@ mcp_servers:
 
 #### macOS (launchd)
 
-```bash
-cat > ~/Library/LaunchAgents/com.qmd.daemon.plist << 'EOF'
+`write_file` `~/Library/LaunchAgents/com.qmd.daemon.plist`:
+
+```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -314,17 +315,17 @@ cat > ~/Library/LaunchAgents/com.qmd.daemon.plist << 'EOF'
   <string>/Users/YOU/.hermes/cache/scratch/qmd-daemon.log</string>
 </dict>
 </plist>
-EOF
+```
 
+```bash
 launchctl load ~/Library/LaunchAgents/com.qmd.daemon.plist
 ```
 
 #### Linux (systemd user service)
 
-```bash
-mkdir -p ~/.config/systemd/user
+`write_file` `~/.config/systemd/user/qmd-daemon.service` (it creates the directory):
 
-cat > ~/.config/systemd/user/qmd-daemon.service << 'EOF'
+```ini
 [Unit]
 Description=QMD MCP Daemon
 After=network.target
@@ -337,8 +338,9 @@ Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
-EOF
+```
 
+```bash
 systemctl --user daemon-reload
 systemctl --user enable --now qmd-daemon
 systemctl --user status qmd-daemon

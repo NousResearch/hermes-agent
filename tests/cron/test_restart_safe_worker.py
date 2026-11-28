@@ -1075,12 +1075,12 @@ def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(
     monkeypatch.setattr(
         scheduler,
         "_resolve_delivery_targets",
-        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+        lambda job, for_failure=False, skipped=None: [{"platform": "telegram", "chat_id": "123"}],
     )
     monkeypatch.setattr(
         scheduler_delivery,
         "_resolve_delivery_targets",
-        lambda job, for_failure=False: [{"platform": "telegram", "chat_id": "123"}],
+        lambda job, for_failure=False, skipped=None: [{"platform": "telegram", "chat_id": "123"}],
     )
 
     def _standalone(*_args, **_kwargs):

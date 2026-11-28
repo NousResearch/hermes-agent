@@ -1,0 +1,25 @@
+name: hermes-gatekeeper
+title: Gatekeeper
+repo: https://github.com/percyhendrux123-prog/hermes-gatekeeper
+sha: "e6fb3d7547e5398df9ef72418ee4441386386c3a"
+subdir: ""
+version: "0.1.0"
+maintainer: percyhendrux123-prog
+tier: community
+category: automation
+requires_hermes: ">=0.22.5"
+platforms: [linux, macos]
+readme: true
+description: "Gatekeeper enforces rules the owner configures; not legal advice and not a compliance guarantee. A deterministic pre_tool_call gate for recognized outbound sends: literal `hermes send` and `imsg send` terminal commands (including terminal calls made from execute_code), and a send_message call if one ever traverses the hook, are checked in full. Hermes registers no model-callable send_message tool. Other tools whose names look like a send (connectors__*, mcp tools, plain names, and a cronjob_manage create/update/run with a delivery target) are not parsed: they only require owner approval, because consent, STOP and quiet hours cannot be checked for them. Browser and computer-use driving of an app and scripts that send through a subprocess are not inspected. Rules: absolute suppression, per-channel consent and recipient-local quiet hours (block), and native Hermes approval requests for unanswered threads, minimum gaps and unapproved wording (the host auto-approves these under --yolo, approvals off and hermes -z). Uses the public post_gateway_admission hook to record observed STOP keywords and DM replies (excludes control, approval, steering and slash-command traffic). Reads tool arguments, results and normalized inbound snapshots; writes only profile-local SQLite (owner-only permissions) with recipient/thread hashes, message SHA-256, decision metadata, consent source/date, timezone/region and owner template variables. No raw message-body log; hashes are not anonymity. No network, subprocess, model calls, telemetry, credential reads, external file scans or core patches. Invalid settings or storage errors block recognized sends. Disclosure — gates only the outbound sends it recognizes (literal `hermes send` / `imsg send` terminal commands and send_message calls) and asks owner approval for other send-looking tools; a whole-message STOP, STOPALL, UNSUBSCRIBE, CANCEL, END or QUIT from any admitted gateway sender silently suppresses that sender and is consumed without reaching the agent or getting a reply; a storage or inbound-observation failure blocks every recognized send until the owner repairs records and reloads; writes only a profile-local SQLite ledger of hashes and decision metadata, with no network, subprocess or credential access."
+known_issues:
+  - "Not an egress firewall. Send-looking connector/MCP/plain tools and cron deliveries get an owner-approval request only; consent, STOP and quiet hours are not checked for them, and a differently named sender is not seen (add extra_send_tool_patterns)."
+  - "Browser/computer-use driving of an app, scripts sending via subprocess or python -c, direct delivery and later argument rewrites are not governed."
+  - "The agent-visible send path is the terminal tool; Hermes has no model-callable send_message tool."
+  - "approve rules, including unrecognized-send-tool escalation, are host-owned: --yolo, approvals.mode off and hermes -z auto-approve them; block rules still apply."
+  - "Inbound hook omits control/approval/steering/slash traffic; manually record unseen optouts/replies."
+  - "No address-book or alias/group-membership resolution; use stable target identities."
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_tool_call, post_tool_call, post_gateway_admission]
+  provides_middleware: []
+  requires_env: []

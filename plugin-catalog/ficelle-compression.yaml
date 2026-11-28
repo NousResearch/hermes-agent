@@ -1,0 +1,25 @@
+name: ficelle-compression
+title: Ficelle compression retrieval
+repo: https://github.com/TheBlueHouse75/ficelle-open-core
+sha: cc4944df23da94a91a82fbf5616133c425af73d0
+subdir: src/ficelle/assets/hermes-plugin/ficelle-compression
+description: "Optional companion to the ficelle entry: one tool, ficelle_retrieve_compressed, that fetches the original content behind a <<ficelle:compressed:<hash>>> marker. Ficelle emits those markers only when its native live-zone compression is turned on; that compression is part of the paid Ficelle Pro edition and is off by default. Disclosure — when the model calls the tool, it sends one request to the local Ficelle router (http://127.0.0.1:8646 by default, or FICELLE_ROUTER_URL, or the providers.ficelle address read through Hermes' configuration API); no other host, no telemetry, no credential. On load it only registers the tool: it installs, starts and writes nothing, and never installs Ficelle (select Ficelle in hermes model through the ficelle entry for that). Removing it leaves Ficelle and the ficelle provider untouched."
+maintainer: TheBlueHouse75
+tier: community
+category: tools
+version: "0.3.15"
+requires_hermes: ">=0.22.6"
+platforms:
+  - linux
+  - macos
+docs_url: https://ficelle.ai/integrations/hermes/
+readme: true
+known_issues:
+  - Useful only with a running Ficelle Pro whose compression mode is live_zone; with Ficelle Core the tool reports that Ficelle Pro is not installed.
+  - Without a running Ficelle the tool reports that the router is unreachable.
+capabilities:
+  provides_tools:
+    - ficelle_retrieve_compressed
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

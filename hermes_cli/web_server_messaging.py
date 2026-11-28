@@ -2,6 +2,7 @@
 and Telegram onboarding state.
 """
 
+import functools
 import logging
 import os
 import subprocess
@@ -10,173 +11,21 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Optional
-from hermes_cli.config import OPTIONAL_ENV_VARS, write_platform_config_field
+from hermes_cli.config_provider_env import core_declared_env_names
+from hermes_cli.config import (
+    OPTIONAL_ENV_VARS, _manifest_env_info, _platform_plugin_manifests, write_platform_config_field)
 from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
-from hermes_cli.version_info import get_version_info
+from hermes_cli.version_info import hermes_user_agent
 
 # Same logger the code used before extraction (record parity).
 _log = logging.getLogger("hermes_cli.web_server")
 
 
-# Entries omit fields they don't need to override; the catalog builder fills
-# in env_vars from OPTIONAL_ENV_VARS via prefix matching when not specified,
-# and pulls required_env from a plugin's PlatformEntry when available.
+# Card metadata for core-only platforms (no plugin, so no PlatformEntry to declare it). Plugin
+# platforms declare theirs on their PlatformEntry (``dashboard_*`` / ``docs_url``, see
+# :func:`_plugin_card_fields`). Entries omit fields they don't need; the catalog builder fills in
+# env_vars from OPTIONAL_ENV_VARS via prefix matching when not specified.
 _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
-    "telegram": {
-        "name": "Telegram", "description": "Run Hermes from Telegram DMs, groups, and topics.",
-        "docs_url": "https://core.telegram.org/bots/features#botfather",
-        "env_vars": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS", "TELEGRAM_PROXY"),
-        "required_env": ("TELEGRAM_BOT_TOKEN",),
-    },
-    "discord": {
-        "name": "Discord", "description": "Connect Hermes to Discord DMs, channels, and threads.",
-        "docs_url": "https://discord.com/developers/applications",
-        "env_vars": ("DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USERS"),
-        "required_env": ("DISCORD_BOT_TOKEN",),
-    },
-    "slack": {
-        "name": "Slack",
-        "description": "Use Hermes from Slack via Socket Mode. Add allowed Slack member IDs so connected bots can respond.",
-        "docs_url": "https://api.slack.com/apps",
-        "env_vars": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"),
-        "required_env": ("SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"),
-    },
-    "mattermost": {
-        "name": "Mattermost",
-        "description": "Connect Hermes to Mattermost channels and direct messages.",
-        "docs_url": "https://mattermost.com/deploy/",
-        "env_vars": ("MATTERMOST_URL", "MATTERMOST_TOKEN", "MATTERMOST_ALLOWED_USERS"),
-        "required_env": ("MATTERMOST_URL", "MATTERMOST_TOKEN"),
-    },
-    "matrix": {
-        "name": "Matrix", "description": "Use Hermes in Matrix rooms and direct messages.",
-        "docs_url": "https://matrix.org/ecosystem/servers/",
-        "env_vars": (
-            "MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID", "MATRIX_ALLOWED_USERS",
-        ),
-        "required_env": ("MATRIX_HOMESERVER", "MATRIX_ACCESS_TOKEN", "MATRIX_USER_ID"),
-    },
-    "signal": {
-        "name": "Signal", "description": "Connect through a signal-cli REST bridge.",
-        "docs_url": "https://github.com/bbernhard/signal-cli-rest-api",
-        "env_vars": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT", "SIGNAL_ALLOWED_USERS"),
-        "required_env": ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"),
-    },
-    "whatsapp": {
-        "name": "WhatsApp",
-        "description": "Use Hermes through the bundled WhatsApp bridge with QR-based auth.",
-        "docs_url": "https://github.com/tulir/whatsmeow",
-        "env_vars": (
-            "WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_DM_POLICY", "WHATSAPP_ALLOWED_USERS",
-        ),
-        "required_env": (),
-    },
-    "email": {
-        "name": "Email", "description": "Talk to Hermes through an IMAP/SMTP mailbox.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/",
-        "env_vars": ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
-        "required_env": ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
-    },
-    "sms": {
-        "name": "SMS (Twilio)", "description": "Send and receive text messages via Twilio.",
-        "docs_url": "https://www.twilio.com/console",
-        "env_vars": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
-        "required_env": ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN"),
-    },
-    "dingtalk": {
-        "name": "DingTalk", "description": "Connect Hermes to DingTalk groups (钉钉).",
-        "docs_url": "https://open.dingtalk.com/document/orgapp/the-robot-development-process",
-        "env_vars": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
-        "required_env": ("DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"),
-    },
-    "feishu": {
-        "name": "Feishu / Lark", "description": "Use Hermes inside Feishu / Lark.",
-        "docs_url": "https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/intro",
-        "env_vars": (
-            "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
-        ),
-        "required_env": ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
-    },
-    "google_chat": {
-        "name": "Google Chat", "description": "Connect Hermes to Google Chat via Cloud Pub/Sub.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/google_chat",
-    },
-    "wecom": {
-        "name": "WeCom (group bot)", "description": "Send-only WeCom group bot via webhook.",
-        "docs_url": "https://developer.work.weixin.qq.com/document/path/91770",
-        "env_vars": ("WECOM_BOT_ID", "WECOM_SECRET"), "required_env": ("WECOM_BOT_ID",),
-    },
-    "wecom_callback": {
-        "name": "WeCom (app)", "description": "Two-way WeCom integration via callback app.",
-        "docs_url": "https://developer.work.weixin.qq.com/document/path/90930",
-        "env_vars": (
-            "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
-            "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
-        ),
-        "required_env": (
-            "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
-        ),
-    },
-    "weixin": {
-        "name": "Weixin / WeChat (Personal)",
-        "description": "Connect a personal WeChat account through Tencent's iLink Bot API.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/weixin/",
-        "env_vars": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL"),
-        "required_env": ("WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN"),
-    },
-    "bluebubbles": {
-        "name": "BlueBubbles (iMessage)",
-        "description": "Use Hermes through iMessage via a BlueBubbles server.",
-        "docs_url": "https://bluebubbles.app/",
-        "env_vars": (
-            "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD", "BLUEBUBBLES_ALLOWED_USERS",
-        ),
-        "required_env": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"),
-    },
-    "qqbot": {
-        "name": "QQ Bot", "description": "Connect Hermes to a QQ Bot from the QQ Open Platform.",
-        "docs_url": "https://q.qq.com",
-        "env_vars": ("QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_ALLOWED_USERS"),
-        "required_env": ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
-    },
-    # Teams ships as a platform plugin, so its name/env vars come from the
-    # plugin registry. Only the docs link needs an override here so the
-    # Channels page can point at the Microsoft Teams setup guide.
-    "teams": {
-        "description": "Connect Hermes to Microsoft Teams chats via the Bot Framework.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
-    },
-    # Bundled platform plugins: name comes from the plugin registry label;
-    # give each a human description (the registry's install_hint is a
-    # dependency note, not a description) and a docs link.
-    "irc": {
-        "description": "Relay messages between an IRC channel (or DMs) and Hermes.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/irc",
-    },
-    "line": {
-        "description": "Use Hermes from LINE via the LINE Messaging API webhook.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/line",
-    },
-    "ntfy": {
-        "description": "Chat with Hermes over ntfy push topics (ntfy.sh or self-hosted).",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/ntfy",
-    },
-    "photon": {
-        "description": "Use Hermes through iMessage via Photon's managed Spectrum platform.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/photon",
-    },
-    "raft": {
-        "description": "Join a Raft workspace as an external agent.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/raft",
-    },
-    "simplex": {
-        "description": "Talk to Hermes over SimpleX Chat via a local simplex-chat daemon.",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/simplex",
-    },
-    "yuanbao": {
-        "name": "Yuanbao (元宝)", "description": "Connect Hermes to Tencent Yuanbao.", "docs_url": "",
-        "required_env": (),
-    },
     "api_server": {
         "name": "API server",
         "description": "Expose Hermes as an OpenAI-compatible HTTP API for tools like Open WebUI.",
@@ -199,11 +48,6 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/msgraph-webhook",
         "required_env": (),
     },
-    "whatsapp_cloud": {
-        "name": "WhatsApp Cloud API",
-        "description": "Use Hermes via Meta's hosted WhatsApp Cloud API (no local bridge).",
-        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/whatsapp-cloud",
-    },
     "relay": {
         "name": "Relay (experimental)",
         "description": "Generic relay adapter fronted by the Hermes Relay connector.",
@@ -216,8 +60,23 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
 _PLATFORM_ORDER: tuple[str, ...] = (
     "telegram", "discord", "slack", "mattermost", "matrix", "whatsapp", "signal", "bluebubbles",
     "email", "sms", "dingtalk", "feishu", "google_chat", "wecom", "wecom_callback",
-    "weixin", "qqbot", "yuanbao", "api_server", "webhook",
+    "weixin", "qqbot", "api_server", "webhook",
 )
+
+
+@functools.cache
+def _core_env_keys() -> frozenset[str]:
+    """Env vars core or a bundled platform plugin declares: fixed for the life of the process."""
+    return core_declared_env_names() | _manifest_env_info(_platform_plugin_manifests(source="bundled")).keys()
+
+
+def _card_env_table() -> dict[str, dict[str, Any]]:
+    """Env-var metadata for the bound home's cards: its own user platform plugin manifests read now,
+    under the core and bundled declarations (a user manifest cannot unmask a core secret).
+    ``OPTIONAL_ENV_VARS``'s other entries came from the LAUNCH home's user plugins at import, so they
+    are left out: another profile may carry a different version of that plugin."""
+    core = {k: v for k, v in OPTIONAL_ENV_VARS.items() if k in _core_env_keys()}
+    return {**_manifest_env_info(_platform_plugin_manifests(source="user")), **core}
 
 
 def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
@@ -225,7 +84,8 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
 
     Built-ins come from ``gateway.config.Platform`` (LOCAL excluded); plugin platforms from
     ``platform_registry.plugin_entries()`` so new adapters appear without a code change here.
-    UI metadata lives in :data:`_PLATFORM_OVERRIDES`; the rest is derived from id/required_env.
+    UI metadata comes from each plugin's PlatformEntry, or :data:`_PLATFORM_OVERRIDES` for core-only
+    platforms; the rest is derived from id/required_env.
     """
     from gateway.config import Platform
 
@@ -234,16 +94,20 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     # first would claim them with no plugin metadata (nameless "Irc"/"Ntfy" cards).
     plugin_map: dict[str, Any] = {}
     try:
-        # Plugin discovery normally runs as a side effect of importing model_tools, which this
-        # server process doesn't do — trigger it explicitly (idempotent).
-        from hermes_cli.plugins import discover_plugins
-        discover_plugins()
+        # This server process does not import model_tools (whose import discovers plugins), and it
+        # outlives installs made elsewhere (the gateway's background default install, another
+        # terminal): refresh against the plugin tree on every read, not once per process.
+        from hermes_cli.catalog_platform_listing import refresh_platform_plugins
+        refresh_platform_plugins()
         from gateway.platform_registry import platform_registry
         for plugin_entry in platform_registry.plugin_entries():
             plugin_map[plugin_entry.name] = plugin_entry
     except Exception:
         _log.debug("plugin platform registry unavailable", exc_info=True)
 
+    # A plugin installed after this process imported config (Desktop/dashboard install, the
+    # background default install, another profile's) is described from its manifest, read now.
+    env_table = _card_env_table()
     seen: set[str] = set()
     entries: list[dict[str, Any]] = []
     builtin = [m.value for m in Platform.__members__.values() if m.value != "local"]
@@ -251,7 +115,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
         if pid in seen:
             continue
         seen.add(pid)
-        entries.append(_build_catalog_entry(pid, plugin_map.get(pid)))
+        entries.append(_build_catalog_entry(pid, plugin_map.get(pid), env_table))
 
     order = {pid: idx for idx, pid in enumerate(_PLATFORM_ORDER)}
     entries.sort(key=lambda e: (order.get(e["id"], len(_PLATFORM_ORDER)), e["name"].lower()))
@@ -282,21 +146,22 @@ def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
     return platform_env_prefixes(platform_id)
 
 
-def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
+def _discover_platform_env_vars(platform_id: str, env_table: dict[str, dict[str, Any]]) -> tuple[str, ...]:
     """All messaging-category env vars for a platform (override + plugin + prefix)."""
     prefixes = _platform_env_prefixes(platform_id)
     return tuple(sorted({
-        name for name, info in OPTIONAL_ENV_VARS.items()
+        name for name, info in env_table.items()
         if info.get("category") == "messaging"
         and name not in _MESSAGING_KEYS_PAGE_KEYS
         and not _is_setup_hidden_env(name)
         and any(name.startswith(prefix) for prefix in prefixes)}))
 
 
-def _merge_platform_env_vars(platform_id: str, override: dict[str, Any], plugin_entry: Any | None) -> tuple[str, ...]:
+def _merge_platform_env_vars(platform_id: str, override: dict[str, Any], plugin_entry: Any | None,
+                             env_table: dict[str, dict[str, Any]]) -> tuple[str, ...]:
     """Canonical env-var list for a platform card. Required credentials always survive: hiding a
     required field would make the platform unconfigurable."""
-    discovered = _discover_platform_env_vars(platform_id)
+    discovered = _discover_platform_env_vars(platform_id, env_table)
     if "env_vars" in override:
         explicit = tuple(key for key in override["env_vars"] if not _is_setup_hidden_env(key))
         return tuple(dict.fromkeys((*explicit, *discovered)))
@@ -305,20 +170,39 @@ def _merge_platform_env_vars(platform_id: str, override: dict[str, Any], plugin_
     return discovered
 
 
-def _build_catalog_entry(platform_id: str, plugin_entry: Any | None = None) -> dict[str, Any]:
-    override = _PLATFORM_OVERRIDES.get(platform_id, {})
+def _plugin_card_fields(plugin_entry: Any) -> dict[str, Any]:
+    """A plugin's declared card metadata in override shape; undeclared fields are left out so
+    the builder falls back exactly as for a platform with no metadata."""
+    fields: dict[str, Any] = {
+        "name": plugin_entry.dashboard_label, "description": plugin_entry.dashboard_description,
+        "docs_url": plugin_entry.docs_url,
+    }
+    if plugin_entry.dashboard_env_vars:
+        fields["env_vars"] = plugin_entry.dashboard_env_vars
+    if plugin_entry.dashboard_required_env is not None:
+        fields["required_env"] = plugin_entry.dashboard_required_env
+    return fields
+
+
+def _build_catalog_entry(platform_id: str, plugin_entry: Any | None = None,
+                         env_table: dict[str, dict[str, Any]] = OPTIONAL_ENV_VARS) -> dict[str, Any]:
+    """One card. ``env_info`` carries each field's declaration from ``env_table`` (labels, secrecy)."""
+    override = _PLATFORM_OVERRIDES.get(platform_id) or (
+        _plugin_card_fields(plugin_entry) if plugin_entry is not None else {})
     if "required_env" in override:
         required_env = tuple(override["required_env"])
     else:
         required_env = tuple(plugin_entry.required_env or ()) if plugin_entry is not None else ()
     plugin_label = plugin_entry.label if plugin_entry is not None else None
     plugin_hint = (plugin_entry.install_hint or "") if plugin_entry is not None else None
+    env_vars = _merge_platform_env_vars(platform_id, override, plugin_entry, env_table)
     return {
         "id": platform_id,
         "name": override.get("name") or plugin_label or platform_id.replace("_", " ").title(),
         "description": override.get("description") or plugin_hint or "",
         "docs_url": override.get("docs_url", ""),
-        "env_vars": _merge_platform_env_vars(platform_id, override, plugin_entry),
+        "env_vars": env_vars,
+        "env_info": {key: env_table[key] for key in env_vars if key in env_table},
         "required_env": required_env,
     }
 
@@ -342,6 +226,9 @@ class _WhatsAppOnboardingSession:
     account_name: str | None = None
     account_phone: str | None = None
     error: str | None = None
+    starting_process: bool = False
+    session_reserved: bool = False
+    expiry_timer: threading.Timer | None = None
 
 
 _whatsapp_onboarding_sessions: dict[str, _WhatsAppOnboardingSession] = {}
@@ -368,7 +255,6 @@ def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) ->
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
-_TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{get_version_info().base_version}"
 
 
 @dataclass
@@ -408,7 +294,7 @@ def _telegram_onboarding_request_sync(
     method: str, path: str, *, body: dict[str, Any] | None = None, bearer_token: str | None = None
 ) -> dict[str, Any]:
     import httpx
-    headers = {"Accept": "application/json", "User-Agent": _TELEGRAM_ONBOARDING_USER_AGENT}
+    headers = {"Accept": "application/json", "User-Agent": hermes_user_agent("HermesDashboard")}
     request_kwargs: dict[str, Any] = {}
     if body is not None:
         headers["Content-Type"] = "application/json"

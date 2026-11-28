@@ -22,6 +22,8 @@ from pm.filesystem import (
     durable_write_bytes as _atomic_bytes,
     file_digest as _digest,
     lock_fd as _lock,
+    long_root,
+    moved_lock,
     read_bytes_or_none as _bytes,
 )
 
@@ -44,19 +46,16 @@ def runtime_lock(project: Path, *, timeout: float | None = INSTALL_LOCK_TIMEOUT_
     (``activate_dependencies`` still selects and leases the committed generation), writers that
     cannot be skipped pass ``timeout=None`` — an install the user asked for is theirs to wait on.
     """
-    state = install_state_dir(project)
-    state.mkdir(parents=True, exist_ok=True)
-    fd = os.open(state / ".install.lock", os.O_CREAT | os.O_RDWR, 0o600)
-    try:
-        if not _lock(fd, wait=True, timeout=timeout):
-            LOG.warning(
-                "dependency lock still held after %ss; continuing without it (%s)",
-                timeout, state / ".install.lock")
-            yield False
-            return
-        yield True
-    finally:
-        os.close(fd)
+    old, new = install_lock_paths(install_state_dir(project))
+    with moved_lock(old, new, timeout=timeout) as held:
+        if not held:
+            LOG.warning("dependency lock still held after %ss; continuing without it (%s)", timeout, new)
+        yield held
+
+
+def install_lock_paths(state: Path) -> tuple[Path, Path]:
+    """The install lock where releases before ``locks/`` existed take it, and where it lives now."""
+    return state / ".install.lock", state / "locks" / "install.lock"
 
 
 def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
@@ -71,7 +70,7 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
     committed = row.get("committed") or _digest(runtime_facts_path(project)) != row["facts_before"]
     if committed:
         if backup.exists():
-            rmtree_force(backup)
+            rmtree_force(long_root(backup))
     else:
         old = base64.b64decode(row["metadata_before"], validate=True) if row["metadata_before"] is not None else None
         current = _bytes(metadata)
@@ -80,10 +79,10 @@ def _recover_plugin_publication(project: Path, row: dict, journal: Path) -> None
             raise ValueError("plugin metadata changed after publication; preserve it for manual recovery")
         if backup.exists():
             if target.exists():
-                rmtree_force(target)
+                rmtree_force(long_root(target))
             os.replace(backup, target)
         elif not row["target_existed"] and target.exists():
-            rmtree_force(target)
+            rmtree_force(long_root(target))
         if old is None:
             metadata.unlink(missing_ok=True)
         else:
@@ -146,12 +145,28 @@ def lease_generation(environment: Path) -> Callable[[], None]:
     return lease_directory(environment.parent)
 
 
+def lease_dirs(generation: Path) -> list[Path]:
+    """Where *generation*'s leases are taken now, then where releases before that took them.
+
+    An install's generations lease from ``installs/<key>/leases/<kind>/<generation>``, outside the
+    dependency tree, so that tree can be mounted read-only. Processes started on an earlier
+    release still lease ``<generation>/.leases`` until they exit.
+    """
+    old = generation / ".leases"
+    parent = generation.parent
+    if parent.name == "environments":
+        return [parent.parent / "leases" / "environments" / generation.name, old]
+    if parent.name == "generations" and parent.parent.name == "pm-runtime":
+        return [parent.parent.parent / "leases" / "pm-runtime" / generation.name, old]
+    return [old]
+
+
 def lease_directory(generation: Path) -> Callable[[], None]:
     """Pin a lease-managed generation directory for this process's lifetime."""
     if not (generation / ".lease-managed").is_file():
         return lambda: None  # Generations produced before leases stay conservatively retained.
-    leases = generation / ".leases"
-    leases.mkdir(exist_ok=True)
+    leases = lease_dirs(generation)[0]
+    leases.mkdir(parents=True, exist_ok=True)
     _prune_unlocked_leases(leases)
     while True:
         lease = leases / uuid.uuid4().hex
@@ -203,14 +218,58 @@ def collect_generations(project: Path, *, min_age_seconds: float = 86400) -> lis
             if not marker.is_file() or time.time() - marker.stat().st_mtime < min_age_seconds:
                 continue
             if not leases_held(generation):
-                shutil.rmtree(generation)
+                shutil.rmtree(long_root(generation))
                 removed.append(generation)
+        collect_lease_dirs(root / "leases" / "environments", generations)
     return removed
 
 
 def leases_held(generation: Path) -> bool:
     """True while any process still holds a lease taken by ``lease_directory``."""
-    return _prune_unlocked_leases(generation / ".leases")
+    return any([_prune_unlocked_leases(leases) for leases in lease_dirs(generation)])
+
+
+def collect_lease_dirs(leases: Path, generations: Path) -> None:
+    """Remove the lease directories under *leases* whose generation is gone and nothing holds."""
+    if not leases.is_dir():
+        return
+    for directory in leases.iterdir():
+        if not (generations / directory.name).exists() and not _prune_unlocked_leases(directory):
+            with suppress(OSError):
+                directory.rmdir()  # a lease taken since the prune keeps it
+
+
+def _open_lease_probe(lease: Path) -> int:
+    """Let a Windows pruner unlink while still holding its exclusion lock.
+
+    Creator handles deliberately keep their ordinary sharing: an open creator
+    between O_EXCL and locking must still prevent a peer from deleting its lease.
+    """
+    if os.name != "nt":
+        return os.open(lease, os.O_RDWR)
+
+    import ctypes
+    from ctypes import wintypes
+    import msvcrt
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    # GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | WRITE | DELETE, OPEN_EXISTING.
+    handle = kernel32.CreateFileW(str(lease), 0xC0000000, 0x7, None, 3, 0x80, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        # The CRT owns the handle after conversion; os.close releases it and its lock.
+        return msvcrt.open_osfhandle(handle, os.O_RDWR | os.O_BINARY | os.O_NOINHERIT)
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
 
 
 def _prune_unlocked_leases(leases: Path) -> bool:
@@ -220,13 +279,12 @@ def _prune_unlocked_leases(leases: Path) -> bool:
     ``atexit``. Cleaning those unlocked files whenever a reader arrives bounds leaks in
     the selected generation too, which generation GC intentionally never visits.
 
-    Fail closed: a lease this user cannot open (root-owned 0o600 from a ``sudo hermes`` on the
-    same checkout) is held, never a boot failure.
+    Fail closed: a lease this user cannot open or remove is held, never a boot failure.
     """
     held = False
     for lease in leases.glob("*"):
         try:
-            fd = os.open(lease, os.O_RDWR)
+            fd = _open_lease_probe(lease)
         except FileNotFoundError:
             continue
         except OSError:
@@ -236,8 +294,12 @@ def _prune_unlocked_leases(leases: Path) -> bool:
             if not _lock(fd, wait=False):
                 held = True
             else:
-                with suppress(OSError):
+                try:
                     lease.unlink()
+                except FileNotFoundError:
+                    pass  # A peer already removed it.
+                except OSError:
+                    held = True
         finally:
             os.close(fd)
     return held

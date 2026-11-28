@@ -1,11 +1,12 @@
-import { forceRedraw, useInput } from '@hermes/ink'
+import { forceRedraw, type Key, useInput } from '@hermes/ink'
+import { sharedControlParams } from '@hermes/shared/gateway-canonical'
+import type { ConfigSetResponse, SharedControlRespondResponse, VoiceRecordResponse } from '@hermes/shared/gateway-types'
+import { applyCompletion } from '@hermes/shared/slash-input'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { DASHBOARD_TUI_MODE } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, NATIVE_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
-import { applyCompletion } from '../domain/slash.js'
-import type { ConfigSetResponse, VoiceRecordResponse } from '../gatewayTypes.js'
 import { t } from '../i18n/runtime.js'
 import { isAction, isCopyShortcut, isMac, isMacActionFallback, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
@@ -13,19 +14,32 @@ import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { $agentDockCollapsed } from './agentRoster.js'
+import { $backtrackPrime, $pendingRewind, cancelBacktrackPrime, cancelPendingRewind, primeBacktrack } from './backtrackStore.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
+  type ComposerActions,
+  type ComposerState,
   type GatewayRpc,
+  type GatewayServices,
   type InputHandlerActions,
   type InputHandlerContext,
   type InputHandlerResult,
-  type OverlayState
+  type OverlayState,
+  type UiState
 } from './interfaces.js'
-import { $isBlocked, $overlayState, hasSensitivePrompt, patchOverlayState, SENSITIVE_PROMPTS } from './overlayStore.js'
+import {
+  $isBlocked,
+  $overlayState,
+  capturePromptResponseGuard,
+  hasSensitivePrompt,
+  patchOverlayState,
+  SENSITIVE_PROMPTS
+} from './overlayStore.js'
+import { togglePasteSections } from './pasteStore.js'
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState } from './uiStore.js'
+import { $uiState, getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
@@ -109,6 +123,136 @@ export function resolveDoubleEscAction(opts: {
   return 'none'
 }
 
+/** An Esc on an idle, empty composer with no overlay is a backtrack Esc: the first primes, the
+ * second opens transcript browsing (`/rewind`). Never mid-turn (that Esc Esc interrupts) or with a
+ * draft (that one discards it). */
+export function shouldOpenRewindOnDoubleEsc(opts: {
+  blocked: boolean
+  busy: boolean
+  canonical: boolean
+  hasDraft: boolean
+  hasSession: boolean
+}): boolean {
+  return opts.canonical && opts.hasSession && !opts.busy && !opts.hasDraft && !opts.blocked
+}
+
+/** The second Esc of a double-Esc: interrupt a busy turn or discard a draft. True when it acted. */
+function runDoubleEsc(o: {
+  actions: InputHandlerContext['actions']
+  cActions: ComposerActions
+  cState: ComposerState
+  gw: GatewayServices['gw']
+  isBlocked: boolean
+  live: UiState
+}): boolean {
+  const { actions, cActions, cState, gw, isBlocked, live } = o
+  const hasDraft = Boolean(cState.input || cState.inputBuf.length)
+  const escAction = resolveDoubleEscAction({ busy: live.busy, hasDraft, hasSession: Boolean(live.sid) })
+
+  // Draft discard keeps its above-isBlocked placement (#116443): the prompt overlays must not
+  // swallow discarding an unsent draft. The interrupt does NOT — an approval/clarify overlay owns
+  // Esc/Ctrl+C until answered, so it only fires with no overlay up.
+  if (escAction === 'interrupt' && live.sid && !isBlocked) {
+    void turnController.interruptTurn({ appendMessage: actions.appendMessage, gw, sid: live.sid, sys: actions.sys })
+
+    return true
+  }
+
+  if (escAction === 'clear') {
+    if (cState.input.trim()) {
+      cActions.pushHistory(cState.input)
+    }
+
+    cActions.clearIn()
+    // Esc Esc over the prefilled prompt also drops the armed edit.
+    cancelPendingRewind(actions.sys)
+
+    return true
+  }
+
+  return false
+}
+
+/** Backtrack Esc: the second one while primed opens browsing (or says there is nothing to edit);
+ * otherwise an eligible Esc primes. True when it acted. */
+function runBacktrackEsc(o: {
+  actions: InputHandlerContext['actions']
+  cState: ComposerState
+  gw: GatewayServices['gw']
+  hasSelection: boolean
+  isBlocked: boolean
+  live: UiState
+}): boolean {
+  const { actions, cState, gw, live } = o
+
+  // A transcript selection and a queue edit (even one whose text was erased) keep their Esc below:
+  // clear the selection, cancel the queue edit.
+  const eligible = shouldOpenRewindOnDoubleEsc({
+    blocked: o.isBlocked || o.hasSelection || cState.queueEditIdx !== null,
+    busy: live.busy,
+    canonical: gw.isCanonical,
+    hasDraft: Boolean(cState.input || cState.inputBuf.length),
+    hasSession: Boolean(live.sid)
+  })
+
+  if (!eligible || !live.sid) {
+    cancelBacktrackPrime()
+
+    return false
+  }
+
+  const prime = $backtrackPrime.get()
+  // An armed edit whose text was erased: the second Esc cancels it, never opens browsing (the
+  // next ordinary message would otherwise still rewind). Its hint stays up meanwhile.
+  const armed = Boolean($pendingRewind.get())
+
+  if (prime?.sid !== live.sid) {
+    // Counted from the transcript already on screen (no RPC on a reflex key), so the hint only
+    // shows with an earlier prompt to go back to; browsing itself still reads the owner's rows.
+    primeBacktrack(live.sid, armed ? 0 : actions.countPrompts())
+
+    return true
+  }
+
+  cancelBacktrackPrime()
+
+  if (armed) {
+    cancelPendingRewind(actions.sys)
+
+    return true
+  }
+
+  // `/rewind` reads the owner's rows and says `No previous message to edit.` when there are none.
+  actions.openBacktrack()
+
+  return true
+}
+
+/** Esc: voice binding, then the double-Esc interrupt/discard, then backtrack. Any other key ends a
+ * primed backtrack (and then acts normally). True when the key was consumed. */
+export function handleEscBacktrack(
+  o: Parameters<typeof runDoubleEsc>[0] & {
+    hasSelection: boolean
+    isDouble: boolean
+    isEsc: boolean
+    isVoiceKey: boolean
+  }
+): boolean {
+  if (!o.isEsc || o.isVoiceKey) {
+    cancelBacktrackPrime()
+
+    return false
+  }
+
+  if (o.isDouble && runDoubleEsc(o)) {
+    cancelBacktrackPrime()
+
+    return true
+  }
+
+  return runBacktrackEsc(o)
+}
+
 /**
  * Approval / clarify / confirm overlays mount their own `useInput` handlers
  * for the in-prompt keys (arrows, numbers, Enter, sometimes Esc).  The global
@@ -121,6 +265,12 @@ export function resolveDoubleEscAction(opts: {
  * Modifier-held wheel (precision mode) is included — a user who wants to
  * scroll a single line at a time during a prompt expects it to work.
  */
+/** ↑/k and ↓/j (no modifiers) while browsing: one transcript row. */
+export const browseScrollRow = (
+  ch: string,
+  key: { ctrl: boolean; downArrow: boolean; meta: boolean; shift: boolean; upArrow: boolean }
+) => (key.ctrl || key.meta || key.shift ? 0 : key.upArrow || ch === 'k' ? -1 : key.downArrow || ch === 'j' ? 1 : 0)
+
 export function shouldFallThroughForScroll(key: {
   downArrow: boolean
   pageDown: boolean
@@ -203,6 +353,80 @@ export function shouldDetachEditedHistoryInput(historyIdx: null | number, histor
   return historyIdx !== null && value !== history[historyIdx]
 }
 
+/** Ctrl+<letter> chords that act without disturbing a typed draft. */
+const CTRL_CHORDS: Record<string, (composer: InputHandlerContext['composer']) => void> = {
+  // Ctrl+O opens the model picker — the same overlay `/model` opens, but
+  // reachable without clearing what you've typed to run the command. Works
+  // mid-stream: picking a model writes the session model (config.set), which
+  // the next turn reads while the in-flight turn keeps streaming.
+  o: () => patchOverlayState({ modelPicker: true }),
+  // Ctrl+P expands the paste chip at the cursor into editable text, or folds
+  // it back. With no chip in the composer it opens/closes the paste sections
+  // of messages already sent.
+  p: ({ actions, state }) =>
+    void (actions.togglePaste(getInputSelection()?.cursor ?? state.input.length) || togglePasteSections()),
+  t: () => patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
+}
+
+/** Keys while the text pager (`overlay.pager`) is open: scroll, page, jump, close. */
+function handlePagerKey(ch: string, key: Key, pagerPageSize: number) {
+  if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
+    return patchOverlayState({ pager: null })
+  }
+
+  const move = (delta: number | 'top' | 'bottom') =>
+    patchOverlayState(prev => {
+      if (!prev.pager) {
+        return prev
+      }
+
+      const { lines, offset } = prev.pager
+      const max = Math.max(0, lines.length - pagerPageSize)
+      const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
+      const next = Math.max(0, Math.min(offset + step, max))
+
+      return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
+    })
+
+  if (key.upArrow || ch === 'k') {
+    return move(-1)
+  }
+
+  if (key.downArrow || ch === 'j') {
+    return move(1)
+  }
+
+  if (key.pageUp || ch === 'b') {
+    return move(-pagerPageSize)
+  }
+
+  if (ch === 'g') {
+    return move('top')
+  }
+
+  if (ch === 'G') {
+    return move('bottom')
+  }
+
+  if (key.return || ch === ' ' || key.pageDown) {
+    patchOverlayState(prev => {
+      if (!prev.pager) {
+        return prev
+      }
+
+      const { lines, offset } = prev.pager
+      const max = Math.max(0, lines.length - pagerPageSize)
+
+      // Auto-close only when already at the last page — otherwise clamp
+      // to `max` so the offset matches what the line/page-back handlers
+      // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
+      return offset >= max
+        ? { ...prev, pager: null }
+        : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
+    })
+  }
+}
+
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
@@ -249,10 +473,32 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.cancelClarify()
     }
 
+    if (overlay.rewind) {
+      return patchOverlayState({ rewind: null })
+    }
+
     if (overlay.approval) {
+      const fresh = capturePromptResponseGuard('approval', overlay.approval)
+
+      if (!fresh()) {
+        return
+      }
+
+      const settle = () => {
+        patchOverlayState({ approval: null })
+        patchTurnState({ outcome: t('session.approval.denied') })
+      }
+
+      // Canonical shared controls deny through the generation-bound RPC; a
+      // legacy server→client request resolves its response frame locally.
+      if (overlay.approval.sharedControl) {
+        return gateway
+          .rpc<SharedControlRespondResponse>('approval.respond', { choice: 'deny', ...sharedControlParams(overlay.approval) })
+          .then(r => r && fresh() && settle())
+      }
+
       respondToServerRequest(overlay.approval.requestId, { choice: 'deny' })
-      patchOverlayState({ approval: null })
-      patchTurnState({ outcome: t('session.approval.denied') })
+      settle()
 
       return
     }
@@ -324,7 +570,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   }
 
   const cycleQueue = (dir: 1 | -1) => {
-    const len = cRefs.queueRef.current.length
+    const len = cState.queuedDisplay.length
 
     if (!len) {
       return false
@@ -332,9 +578,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     const index = cState.queueEditIdx === null ? (dir > 0 ? 0 : len - 1) : (cState.queueEditIdx + dir + len) % len
 
+    // A queue edit replaces the composer text and Enter resends that queue item: an armed backtrack
+    // edit no longer applies, or Enter would rewind history and send the queued text in its place.
+    cancelPendingRewind(actions.sys)
     cActions.setQueueEdit(index)
     cActions.setHistoryIdx(null)
-    cActions.setInput(cRefs.queueRef.current[index]?.display ?? '')
+    cActions.setInput(cActions.queueDraft(index))
 
     return true
   }
@@ -419,53 +668,53 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // sits above the isBlocked early-return so a prompt overlay cannot swallow
   // it. Ctrl+C now clears a non-empty composer even mid-stream; Esc Esc is
   // still the dedicated discard (pushes the draft to history so Up recalls it).
+  // On an idle, empty composer Esc primes backtrack and a second Esc browses.
   const lastEscRef = useRef(0)
+
+  // A primed backtrack ends when a turn starts; a session switch also drops an armed edit.
+  useEffect(
+    () =>
+      $uiState.listen((next, prev) => {
+        if (next.sid !== prev.sid) {
+          cancelPendingRewind()
+        }
+
+        if (next.busy || next.sid !== prev.sid) {
+          cancelBacktrackPrime()
+        }
+      }),
+    []
+  )
 
   useInput((ch, key, event) => {
     const live = getUiState()
+    const isVoiceKey = key.escape && isVoiceToggleKey(key, ch, voice.recordKey)
+    const now = Date.now()
+    // Escape-configured voice bindings (ctrl/alt/super+escape PTT) must win
+    // over the double-Esc interrupt, exactly as they win over the generic
+    // Esc handlers below — two quick PTT presses are a stop/start pair,
+    // not an interrupt.
+    const isDouble = key.escape && !isVoiceKey && now - lastEscRef.current <= DOUBLE_ESC_MS
 
     if (key.escape) {
-      // Escape-configured voice bindings (ctrl/alt/super+escape PTT) must win
-      // over the double-Esc interrupt, exactly as they win over the generic
-      // Esc handlers below — two quick PTT presses are a stop/start pair,
-      // not an interrupt.
-      if (isVoiceToggleKey(key, ch, voice.recordKey)) {
-        lastEscRef.current = 0
-      } else {
-        const now = Date.now()
-        const isDouble = now - lastEscRef.current <= DOUBLE_ESC_MS
+      lastEscRef.current = isDouble || isVoiceKey ? 0 : now
+    }
 
-        lastEscRef.current = isDouble ? 0 : now
+    const escHandled = handleEscBacktrack({
+      actions,
+      cActions,
+      cState,
+      gw: gateway.gw,
+      hasSelection: terminal.hasSelection,
+      isBlocked,
+      isDouble,
+      isEsc: key.escape,
+      isVoiceKey,
+      live
+    })
 
-        if (isDouble) {
-          const escAction = resolveDoubleEscAction({
-            busy: live.busy,
-            hasDraft: Boolean(cState.input || cState.inputBuf.length),
-            hasSession: Boolean(live.sid)
-          })
-
-          // Draft discard keeps its above-isBlocked placement (#116443): the
-          // prompt overlays must not swallow discarding an unsent draft. The
-          // interrupt does NOT — an approval/clarify overlay owns Esc/Ctrl+C
-          // until answered, so it only fires with no overlay up.
-          if (escAction === 'interrupt' && live.sid && !isBlocked) {
-            return turnController.interruptTurn({
-              appendMessage: actions.appendMessage,
-              gw: gateway.gw,
-              sid: live.sid,
-              sys: actions.sys
-            })
-          }
-
-          if (escAction === 'clear') {
-            if (cState.input.trim()) {
-              cActions.pushHistory(cState.input)
-            }
-
-            return cActions.clearIn()
-          }
-        }
-      }
+    if (escHandled) {
+      return
     }
 
     if (isBlocked) {
@@ -487,9 +736,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         overlay.clarify ||
         overlay.confirm ||
         overlay.connection ||
+        overlay.rewind ||
         overlay.subscription
 
       const fallThroughForScroll = promptOverlay && shouldFallThroughForScroll(key)
+
+      // Default-mode backtrack browses the real transcript: ↑↓/jk scroll it a row.
+      const browseRow = overlay.rewind && !NATIVE_MODE ? browseScrollRow(ch, key) : 0
+
+      if (browseRow) {
+        return scrollTranscript(browseRow)
+      }
 
       if (promptOverlay && !fallThroughForScroll) {
         if (isCtrl(key, ch, 'c')) {
@@ -500,63 +757,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
 
       if (overlay.pager) {
-        if (key.escape || isCtrl(key, ch, 'c') || ch === 'q') {
-          return patchOverlayState({ pager: null })
-        }
-
-        const move = (delta: number | 'top' | 'bottom') =>
-          patchOverlayState(prev => {
-            if (!prev.pager) {
-              return prev
-            }
-
-            const { lines, offset } = prev.pager
-            const max = Math.max(0, lines.length - pagerPageSize)
-            const step = delta === 'top' ? -lines.length : delta === 'bottom' ? lines.length : delta
-            const next = Math.max(0, Math.min(offset + step, max))
-
-            return next === offset ? prev : { ...prev, pager: { ...prev.pager, offset: next } }
-          })
-
-        if (key.upArrow || ch === 'k') {
-          return move(-1)
-        }
-
-        if (key.downArrow || ch === 'j') {
-          return move(1)
-        }
-
-        if (key.pageUp || ch === 'b') {
-          return move(-pagerPageSize)
-        }
-
-        if (ch === 'g') {
-          return move('top')
-        }
-
-        if (ch === 'G') {
-          return move('bottom')
-        }
-
-        if (key.return || ch === ' ' || key.pageDown) {
-          patchOverlayState(prev => {
-            if (!prev.pager) {
-              return prev
-            }
-
-            const { lines, offset } = prev.pager
-            const max = Math.max(0, lines.length - pagerPageSize)
-
-            // Auto-close only when already at the last page — otherwise clamp
-            // to `max` so the offset matches what the line/page-back handlers
-            // can reach (prevents a snap-back jump on the next ↑/↓/PgUp).
-            return offset >= max
-              ? { ...prev, pager: null }
-              : { ...prev, pager: { ...prev.pager, offset: Math.min(offset + pagerPageSize, max) } }
-          })
-        }
-
-        return
+        return handlePagerKey(ch, key, pagerPageSize)
       }
 
       // Widget apps (SDK): the active app owns every key while open. This
@@ -727,17 +928,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    // Ctrl+O opens the model picker without disturbing a typed draft — the
-    // same overlay `/model` opens, but reachable without clearing what you've
-    // typed to run the command. Works mid-stream: picking a model writes the
-    // session model (config.set), which the next turn reads while the in-flight
-    // turn keeps streaming.
-    if (isCtrl(key, ch, 't')) {
-      return patchOverlayState({ agents: true, agentsInitialHistoryIndex: 0 })
-    }
+    const chord = key.ctrl ? CTRL_CHORDS[ch.toLowerCase()] : undefined
 
-    if (isCtrl(key, ch, 'o')) {
-      return patchOverlayState({ modelPicker: true })
+    if (chord) {
+      return chord(composer)
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
@@ -748,6 +942,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
 
       if (ctrlC === 'clear') {
+        cancelPendingRewind(actions.sys)
+
         return cActions.clearIn()
       }
 
@@ -758,6 +954,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           sid: live.sid,
           sys: actions.sys
         })
+      }
+
+      // An armed edit whose text was erased: this press cancels it and never exits.
+      if (cancelPendingRewind(actions.sys)) {
+        return
       }
 
       return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
@@ -839,7 +1040,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'k') && cRefs.queueRef.current.length && live.sid) {
-      const next = cActions.dequeue()
+      const next = cActions.dequeue(true)
 
       if (next) {
         cActions.setQueueEdit(null)

@@ -8,16 +8,19 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
 import {
   Archive,
   BarChart3,
   Bell,
+  CloudUpload,
   Cpu,
   Download,
   Globe,
   Info,
   Keyboard,
   KeyRound,
+  Network,
   RefreshCw,
   Search,
   Settings2,
@@ -45,6 +48,7 @@ import { OverlayView } from '../overlays/overlay-view'
 
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
+import { BackupSettings } from './backup-settings'
 import { BILLING_VIEWS, BillingSettings, type BillingSubView } from './billing'
 import { deriveBillingView, useBillingState, useSubscriptionState } from './billing/use-billing-state'
 import { ConfigSettings } from './config-settings'
@@ -68,11 +72,13 @@ import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { useWebAccessAvailable, WebAccessSettings } from './web-access-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  'web-access',
   // Legacy alias: the Connections page merged into Gateways. Kept in the enum
   // so saved `?tab=connections` deep links still resolve (redirected below).
   'connections',
@@ -82,6 +88,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'notifications',
   'billing',
   'sessions',
+  'backup',
   'plugins',
   'about'
 ]
@@ -241,6 +248,15 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }
 
+  const webAccessAvailable = useWebAccessAvailable()
+
+  // Where the nav hides Web Access, its deep link lands on Gateways, like the Connections alias.
+  useEffect(() => {
+    if (activeView === 'web-access' && !webAccessAvailable) {
+      setActiveView('gateway')
+    }
+  }, [activeView, setActiveView, webAccessAvailable])
+
   const navGroups: OverlayNavGroup[] = useMemo(
     () =>
       (
@@ -360,6 +376,18 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             label: t.settings.nav.gateway,
             onSelect: () => setActiveView('gateway')
           },
+          // Serving the Webapp from THIS machine: only the native app on its local connection.
+          ...(webAccessAvailable
+            ? [
+                {
+                  active: activeView === 'web-access',
+                  icon: Network,
+                  id: 'web-access',
+                  label: t.settings.gateway.webAccess.title,
+                  onSelect: () => setActiveView('web-access')
+                }
+              ]
+            : []),
           {
             active: activeView === 'keybinds',
             icon: Keyboard,
@@ -396,6 +424,14 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             id: 'sessions',
             label: t.settings.nav.sessions,
             onSelect: () => setActiveView('sessions')
+          },
+          // On a Webapp Hermes Cloud serves, the page is backup only: that tab IS a cloud agent.
+          {
+            active: activeView === 'backup',
+            icon: servedByHermesCloud() ? Archive : CloudUpload,
+            id: 'backup',
+            label: servedByHermesCloud() ? t.settings.nav.backupOnly : t.settings.nav.backup,
+            onSelect: () => setActiveView('backup')
           },
           {
             active: activeView === 'plugins',
@@ -441,6 +477,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       providerView,
       subpage,
       t,
+      webAccessAvailable,
       setActiveView,
       openProviderView,
       openKeysView,
@@ -560,6 +597,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     <KeysSettings view={keysView} />
   ) : activeView === 'billing' ? (
     <BillingSettings />
+  ) : activeView === 'web-access' ? (
+    <WebAccessSettings />
   ) : activeView === 'plugins' ? (
     <PluginSettingsPane
       entries={plugins.entries}
@@ -570,6 +609,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     />
   ) : activeView === 'vault' ? (
     <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
+  ) : activeView === 'backup' ? (
+    <BackupSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} />
   ) : (
     <SessionsSettings subpage={subpage} />
   )

@@ -15,6 +15,7 @@ import shutil
 import sys
 import uuid
 
+from pm.filesystem import long_root
 from pm.package import InstallError
 
 
@@ -39,7 +40,7 @@ def build_environment(
     Failure removes only the destination exclusively created by this invocation.
     Sealed builds prune only the .pth files that refer to build-time state.
     """
-    from pm.environment import _fresh_build, managed_environment
+    from pm.environment import _fresh_build, managed_environment  # noqa: TID251
     from pm.native_build import source_build_environment
 
     source, out = Path(source).absolute(), Path(out).absolute()
@@ -59,7 +60,7 @@ def build_environment(
         cache=Path(cache) if cache is not None else None, env=env,
         offline=offline, explicit=explicit, output=sys.stderr,
     )
-    with _fresh_build(environment, sealed=sealed):
+    with _fresh_build(environment, sealed=sealed, lock=source / "uv.lock"):
         environment.sync(source, extras=extras, groups=groups, all_extras=all_extras,
                          no_install_project=no_install_project, frozen=frozen, timeout=timeout)
     return environment.executable
@@ -71,7 +72,7 @@ def lock_project(
     offline: bool = False, explicit: bool = False,
 ) -> None:
     """Refresh the project's resolution without creating or selecting a venv."""
-    from pm.environment import managed_environment
+    from pm.environment import managed_environment  # noqa: TID251
 
     source = Path(source).absolute()
     if not (source / "pyproject.toml").is_file():
@@ -90,8 +91,8 @@ def stage_manager_runtime(
     offline: bool = False, wheelhouse: Path | None = None, cache: Path | None = None,
 ) -> Path:
     """Stage PM's independent dependency graph using its private toolchain."""
-    from pm._uv import _toolchain
-    from pm.runtime_stage import stage_runtime
+    from pm._uv import _toolchain  # noqa: TID251
+    from pm.runtime_stage import stage_runtime  # noqa: TID251
 
     destination, python = Path(destination).absolute(), Path(python).absolute()
     if destination.exists() or destination.is_symlink():
@@ -111,7 +112,7 @@ def stage_manager_runtime(
         _write(destination / "pm-runtime.json", {})
         return executable
     except BaseException:
-        shutil.rmtree(destination, ignore_errors=True)
+        shutil.rmtree(long_root(destination), ignore_errors=True)
         raise
 
 
@@ -255,7 +256,7 @@ def _ensure_generation(
     The prior generation survives both successful replacement and failed builds.
     """
     from pm.filesystem import lock_fd, native
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.install import _refuse_lazy, lazy_installs_allowed
     from pm.lock import Lockfile, _write
     from pm import paths
@@ -315,7 +316,7 @@ def _ensure_generation(
             _write(root / "active.json", {"generation": generation.name,
                                            "inputs": identity(base_python), **record})
         except BaseException:
-            shutil.rmtree(generation, ignore_errors=True)
+            shutil.rmtree(long_root(generation), ignore_errors=True)
             raise
     return python
 

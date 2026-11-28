@@ -1,0 +1,34 @@
+name: rapid-mlx
+title: Rapid-MLX
+repo: https://github.com/raullenchai/hermes-plugin-rapid-mlx
+sha: 0287a4482bc18ae81d6308330ceb40f26b6e5d23
+description: >-
+  Managed Rapid-MLX runtime and model library for Hermes Desktop/CLI on Apple Silicon.
+  Derived from omlx. Disclosure — explicit setup installs Rapid-MLX 1.0.2 and
+  SHA-256-locked PyPI wheels in HERMES_HOME/plugin-data/rapid-mlx using an existing
+  Python 3.12; runs a long-running authenticated 127.0.0.1 server; invokes
+  rapid-mlx pull for public aliases/repositories using models.rapidmlx.com and
+  Hugging Face/CDNs with the standard shared HF cache; generates a local API key
+  stored as HERMES_RAPID_MLX_LOCAL_API_KEY in the profile's .env; Use validates
+  generation then rewrites the profile default in config.yaml. Remove forgets
+  library records and never deletes shared model weights. Telemetry is disabled.
+maintainer: raullenchai
+tier: community
+category: models
+version: "0.1.0"
+requires_hermes: ">=0.23.0"
+platforms:
+  - macos
+docs_url: https://github.com/raullenchai/hermes-plugin-rapid-mlx/blob/0287a4482bc18ae81d6308330ceb40f26b6e5d23/README.md
+readme: true
+known_issues:
+  - Requires macOS 15+ on Apple Silicon and existing Python 3.12 on the inference host.
+  - The provider needs in-process execution; strict plugin-host isolation is unsupported.
+  - One model at a time; use the owning Hermes process to stop or switch its server.
+  - Pull progress is indeterminate; native logs are available, with cancellation and cache reuse.
+  - Model removal forgets the library record only; shared Hugging Face files are retained.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

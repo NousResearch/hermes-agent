@@ -425,6 +425,22 @@ export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs 
     : new Date(nowMs)
 }
 
+function pluginCardMeta(message: ChatMessage): { pluginCard?: ChatMessage['pluginCard'] } {
+  return message.pluginCard ? { pluginCard: message.pluginCard } : {}
+}
+
+// The safety-refused notice rides metadata.custom on the system row, like
+// asyncResult — extracted so toRuntimeMessage keeps its complexity in budget.
+function contentRefusedMeta(
+  message: ChatMessage
+): { contentRefused: NonNullable<ChatMessage['contentRefused']> } | Record<string, never> {
+  return message.contentRefused ? { contentRefused: message.contentRefused } : {}
+}
+
+// The thread's stopped mark (AssistantMessage's StoppedNotice). A reply the next
+// turn went on with keeps `interrupted` but is not drawn as stopped.
+const stoppedMark = (message: ChatMessage) => (message.interrupted && !message.continued ? { interrupted: true } : {})
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
@@ -466,7 +482,9 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         custom: {
           ...timelineMeta,
           ...(message.asyncResult ? { asyncResult: message.asyncResult } : {}),
-          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {})
+          ...(message.asyncResultKind ? { asyncResultKind: message.asyncResultKind } : {}),
+          ...pluginCardMeta(message),
+          ...contentRefusedMeta(message)
         }
       }
     } as ThreadMessage
@@ -490,7 +508,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
       custom: {
         ...(message.interim ? { interim: true } : {}),
-        ...(message.interrupted ? { interrupted: true } : {}),
+        ...stoppedMark(message),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
         ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
@@ -587,6 +605,10 @@ export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolM
           ? cached.merged
           : {
               ...prev,
+              // The folded bubble is where the reply ends now, so a stop there is the reply's stop. It is not
+              // lost when the bubble above was never stopped, and not hidden by that bubble's `continued`
+              // (the reply went on after an earlier stop).
+              ...(message.interrupted ? { interrupted: true, continued: message.continued } : {}),
               completedAt: [prev.completedAt, message.completedAt, ...message.parts.map(part => part.completedAt)]
                 .filter((value): value is number => value !== undefined)
                 .reduce<number | undefined>(

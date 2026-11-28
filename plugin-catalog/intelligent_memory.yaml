@@ -1,15 +1,28 @@
 name: intelligent_memory
 repo: https://github.com/hoysama/hermes-intelligent-memory
-sha: 2d15ce5ba5878ddd7e18ca8cb1f0c62311965da0
-description: Local-first Arabic/English intelligent memory with canonical facts, conflict lifecycle, bounded
-  recall, and selective Hermes cloud enrichment.
+sha: 3100c82311cf6d218e2660ee9e8adf88a496ba24
+description: Local-first Arabic/English intelligent memory with canonical facts, verbatim
+  source quotes, governance audit, bounded lexical recall, and selective Hermes cloud
+  enrichment.
 maintainer: hoysama
 tier: community
 category: memory
 docs_url: https://github.com/hoysama/hermes-intelligent-memory#readme
+version: "0.3.0"
 capabilities:
-  provides_tools: []
-  provides_hooks: []
+  provides_tools:
+    - intelligent_memory_remember
+    - intelligent_memory_recall
+    - intelligent_memory_status
+    - intelligent_memory_revise
+    - intelligent_memory_forget
+    - intelligent_memory_restore
+    - intelligent_memory_feedback
+  provides_hooks:
+    - on_session_end
+    - on_pre_compress
+    - on_memory_write
+    - on_delegation
   provides_middleware: []
   requires_env: []
 subdir: plugin/intelligent_memory

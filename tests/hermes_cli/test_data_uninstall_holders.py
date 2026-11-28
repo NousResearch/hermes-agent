@@ -86,7 +86,8 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
         if started:
             loop.run_forever()
         loop.run_until_complete(server.stop())
-        loop.close()
+        # The loop is closed by the test after join: drain() stops it from the control
+        # thread, so the finally block's call_soon_threadsafe can race a close here.
 
     thread = Thread(target=serve, daemon=True)
     thread.start()
@@ -102,6 +103,8 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
         if thread.is_alive():
             loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=10)
+        if not thread.is_alive():
+            loop.close()
     assert not thread.is_alive()
 
 
@@ -156,7 +159,7 @@ def test_named_profile_cannot_delete_data_served_by_the_default_multiplexer(layo
 
 
 def test_data_removal_respects_the_checkpoint_store_owner(layout):
-    from tools.checkpoint_pruning import store_lock
+    from agent.checkpoints.pruning import store_lock
 
     home, _, data = layout
     with store_lock(home / "checkpoints"):

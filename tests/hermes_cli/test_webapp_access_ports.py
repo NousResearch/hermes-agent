@@ -1,0 +1,344 @@
+"""Which port Web Access serves a gateway's Webapp on (``hermes_cli.webapp_access._port_to_serve``).
+
+The default profile's gateway serves the documented address, 9120 unless ``webapp.port`` says otherwise.
+A standalone profile has a gateway of its own; turning Web Access on there without a ``webapp.port`` used
+to bind 9120 too, which the default gateway's Webapp holds, so nothing was served. Start now gives such a
+profile the first port above 9120 that no other Hermes home claims and nothing listens on, and writes it to
+that profile's ``webapp.port``, so the gateway binds it, the launcher prints and opens it, the sign-in
+callback names it, and it stays the same across restarts. A ``webapp.port`` the user set always stays.
+What listens is faked, and the probe itself is checked on OS-chosen ports; one specific-address case
+holds a real loopback listener on the first candidate port.
+"""
+import os
+import socket
+import stat
+from pathlib import Path
+
+import pytest
+
+from hermes_cli import webapp_access
+
+_REAL_PORT_FREE = webapp_access._port_free
+_REAL_LAN_ADDRESS = webapp_access.lan_address
+
+
+def _write(path: Path, text: str) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "config.yaml").write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def machine(monkeypatch, tmp_path):
+    """A Hermes root with a standalone profile ``solo`` and a sibling ``other`` that claims 9122; 9121 is
+    in use by something else. The process runs as ``solo`` (Web Access scopes to its gateway's home)."""
+    root = _write(tmp_path / ".hermes", "")
+    solo = _write(root / "profiles" / "solo", "gateway:\n  standalone: true\n")
+    _write(root / "profiles" / "other", "gateway:\n  standalone: true\nwebapp:\n  port: 9122\n")
+    listening = {9121}
+    probed: list[tuple[str, int]] = []
+
+    def port_free(host, port):
+        probed.append((host, port))
+        return port not in listening
+
+    monkeypatch.setattr(webapp_access, "_port_free", port_free, raising=False)
+    monkeypatch.setattr(webapp_access, "nous_signed_in", lambda: True)
+    monkeypatch.setattr(webapp_access, "lan_address", lambda: "192.168.1.50")
+    monkeypatch.setenv("HERMES_HOME", str(solo))
+    return {"root": root, "solo": solo, "listening": listening, "probed": probed, "monkeypatch": monkeypatch}
+
+
+def test_port_selection_skips_decimal_string_claims(machine):
+    root = machine["root"]
+    _write(root, "webapp:\n  port: '9122'\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: '9123'\n")
+    assert webapp_access.plan("lan")[1] == 9124
+
+
+def test_port_selection_skips_env_expanded_claims_and_ignores_invalid_claims(machine):
+    root = machine["root"]
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.setenv("ROOT_WEBAPP_PORT", "9122")
+    monkeypatch.setenv("OTHER_WEBAPP_PORT", "09123")
+    _write(root, "webapp:\n  port: ${ROOT_WEBAPP_PORT}\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: ${OTHER_WEBAPP_PORT}\n")
+    _write(root / "profiles" / "bad_unicode", "webapp:\n  port: '\uff19\uff11\uff12\uff14'\n")
+    _write(root / "profiles" / "bad_ws", "webapp:\n  port: ' 9124 '\n")
+    _write(root / "profiles" / "bad_sign", "webapp:\n  port: '+9124'\n")
+    _write(root / "profiles" / "bad_bool", "webapp:\n  port: true\n")
+    _write(root / "profiles" / "bad_unset", "webapp:\n  port: ${UNSET_OTHER_PORT}\n")
+    assert webapp_access.plan("lan")[1] == 9124
+
+
+def test_port_selection_expands_stopped_sibling_dotenv_without_mutating_environ(machine):
+    root = machine["root"]
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.delenv("BM_WEBAPP_PORT", raising=False)
+    machine["listening"].clear()
+    other = _write(
+        root / "profiles" / "other",
+        "gateway:\n  standalone: true\nwebapp:\n  enabled: true\n  port: ${BM_WEBAPP_PORT}\n",
+    )
+    (other / ".env").write_text("BM_WEBAPP_PORT=09121\n", encoding="utf-8")
+    env_before = dict(os.environ)
+
+    assert webapp_access._claimed_ports(machine["solo"]) == {9120, 9121}
+    assert webapp_access.plan("lan")[1] == 9122
+    assert "BM_WEBAPP_PORT" not in os.environ
+    assert dict(os.environ) == env_before
+
+
+def test_root_with_invalid_port_still_claims_default_port(machine):
+    root = machine["root"]
+    _write(root, "webapp:\n  port: true\n")
+    _write(root / "profiles" / "other", "webapp:\n  port: '9122'\n")
+    assert webapp_access._claimed_ports(machine["solo"]) == {9120, 9122}
+
+
+def test_a_standalone_profile_with_an_env_expanded_port_keeps_its_template(machine):
+    monkeypatch = machine["monkeypatch"]
+    monkeypatch.setenv("SOLO_WEBAPP_PORT", "9555")
+    _write(machine["solo"], "gateway:\n  standalone: true\nwebapp:\n  port: ${SOLO_WEBAPP_PORT}\n")
+    host, port, public_url, callback = webapp_access.plan("lan")
+    assert (port, callback) == (None, "http://192.168.1.50:9555/auth/callback")
+    assert machine["probed"] == []
+    webapp_access.serve(host, public_url, port)
+    assert _webapp_block(machine["solo"])["port"] == "${SOLO_WEBAPP_PORT}"
+    assert webapp_access.access_status()["port"] == 9555
+
+
+def _webapp_block(home: Path) -> dict:
+    from hermes_cli.config import read_user_config_raw
+
+    return read_user_config_raw(home / "config.yaml").get("webapp") or {}
+
+
+def test_a_standalone_profile_without_a_port_gets_a_free_one_that_every_surface_uses(machine):
+    from gateway.webapp_listener import dial_origin, listener_plan
+
+    assert webapp_access.gateway_home() == machine["solo"]
+    planned = webapp_access.plan("lan")
+    # 9120 is the default profile's, 9121 is in use, 9122 is the other profile's.
+    assert planned[-1] == "http://192.168.1.50:9123/auth/callback"
+    host, port, public_url, _callback = planned
+    assert (host, port, public_url) == ("0.0.0.0", 9123, "")
+    webapp_access.serve(host, public_url, port)
+    assert _webapp_block(machine["solo"]) == {"enabled": True, "host": "0.0.0.0", "port": 9123}
+    # The gateway binds that port, and the address the launcher prints and opens is built on it.
+    bind_host, bind_port, mount, _reason = listener_plan(machine["solo"])
+    assert (bind_host, bind_port) == ("0.0.0.0", 9123) and mount is not None
+    assert dial_origin(bind_host, bind_port) == "http://127.0.0.1:9123"
+    assert webapp_access.access_status()["port"] == 9123
+    assert _webapp_block(machine["root"]) == {}
+
+
+def test_the_chosen_port_stays_for_that_profile(machine):
+    host, port, public_url, _ = webapp_access.plan("lan")
+    webapp_access.serve(host, public_url, port)
+    webapp_access.turn_off()
+    machine["probed"].clear()
+    machine["listening"].add(9123)  # its own gateway may hold it now
+    for mode, url, expected in (("lan", None, "http://192.168.1.50:9123/auth/callback"),
+                                ("public", "https://solo.example.test", "https://solo.example.test/auth/callback")):
+        host, port, public_url, callback = webapp_access.plan(mode, url)
+        assert port is None  # nothing to write: the config already has it
+        assert callback == expected
+        webapp_access.serve(host, public_url, port)
+        assert _webapp_block(machine["solo"])["port"] == 9123
+    assert machine["probed"] == []
+
+
+def test_the_own_url_mode_also_gets_a_free_port(machine):
+    host, port, _public_url, callback = webapp_access.plan("public", "https://solo.example.test")
+    assert (host, port, callback) == ("127.0.0.1", 9123, "https://solo.example.test/auth/callback")
+    assert machine["probed"][-1] == ("127.0.0.1", 9123)
+
+
+def test_the_default_profile_keeps_the_documented_port_and_writes_none(machine):
+    machine["monkeypatch"].setenv("HERMES_HOME", str(machine["root"]))
+    host, port, public_url, callback = webapp_access.plan("lan")
+    assert port is None and callback == "http://192.168.1.50:9120/auth/callback"
+    webapp_access.serve(host, public_url, port)
+    assert "port" not in _webapp_block(machine["root"])
+    assert machine["probed"] == []
+
+
+@pytest.mark.parametrize("configured", [9555, 9120, "not-a-port"])
+def test_a_port_the_user_set_is_never_replaced(machine, configured):
+    """Even one another gateway holds, or an invalid one: the gateway then says why by the setting's name."""
+    _write(machine["solo"], f"gateway:\n  standalone: true\nwebapp:\n  port: {configured}\n")
+    host, port, public_url, _callback = webapp_access.plan("lan")
+    assert port is None and machine["probed"] == []
+    webapp_access.serve(host, public_url, port)
+    assert _webapp_block(machine["solo"])["port"] == configured
+
+
+def test_a_port_the_managed_scope_sets_is_the_one_the_callback_names(machine, tmp_path):
+    """An administrator's ``webapp.port`` wins over the profile's config when the gateway loads it, and
+    saving never writes over it: Start registers the callback on that port and writes none."""
+    from gateway.webapp_listener import listener_plan
+    from hermes_cli import managed_scope
+
+    managed = _write(tmp_path / "managed", "webapp:\n  port: 9555\n")
+    machine["monkeypatch"].setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+    host, port, public_url, callback = webapp_access.plan("lan")
+    assert (port, callback) == (None, "http://192.168.1.50:9555/auth/callback")
+    assert machine["probed"] == []
+    webapp_access.serve(host, public_url, port)
+    assert "port" not in _webapp_block(machine["solo"])
+    bind_host, bind_port, mount, _reason = listener_plan(machine["solo"])
+    assert (bind_host, bind_port) == ("0.0.0.0", 9555) and mount is not None
+
+
+def test_with_no_free_port_start_refuses_and_names_the_setting(machine):
+    machine["listening"].update(range(9121, 9221))
+    with pytest.raises(webapp_access.WebappAccessError) as refused:
+        webapp_access.plan("lan")
+    assert "webapp.port" in str(refused.value) and str(machine["solo"] / "config.yaml") in str(refused.value)
+    assert "port" not in _webapp_block(machine["solo"])
+
+
+@pytest.mark.parametrize("mode, url", [("lan", None), ("public", "https://solo.example.test")])
+def test_a_start_refused_for_no_nous_account_saves_no_port(machine, mode, url):
+    machine["monkeypatch"].setattr(webapp_access, "nous_signed_in", lambda: False)
+    with pytest.raises(webapp_access.WebappAccessError, match="Sign in to your Nous account"):
+        webapp_access.plan(mode, url)
+    assert _webapp_block(machine["solo"]) == {} and machine["probed"] == []
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("existing", [None, 0o775])
+def test_choosing_a_port_keeps_the_credential_folder_user_only(machine, existing):
+    """The port-claim lock lives in the root's ``webapp`` folder, beside the Webapp's credentials."""
+    folder = machine["root"] / "webapp"
+    if existing is not None:
+        folder.mkdir()
+        folder.chmod(existing)
+    previous = os.umask(0o002)
+    try:
+        webapp_access.plan("lan")
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+    assert stat.S_IMODE((folder / "port-claim.lock").stat().st_mode) == 0o600
+
+
+#: How long one Start waits for the other to reach its step in the test below before it fails.
+_SYNC_SECONDS = 20
+
+
+def _start_in_a_process_of_its_own(home: str, first: bool, first_holds, second_selecting, results) -> None:
+    """One standalone profile's Start in a process of its own, for the test below. The first holds the
+    port it chose, unsaved, in the probe until the second reaches the port claim; the second starts only
+    once the first holds it. Reports the port *home* saved, or the traceback."""
+    import traceback
+
+    from hermes_cli import auth
+    from hermes_constants import set_hermes_home_override
+
+    os.environ["HERMES_HOME"] = home
+    set_hermes_home_override(Path(home))
+    webapp_access.nous_signed_in = lambda: True
+    webapp_access.lan_address = lambda: "192.168.1.50"
+    listening = {9121}
+    try:
+        if first:
+            def port_free(_host, port):
+                if not first_holds.is_set():
+                    first_holds.set()
+                    if not second_selecting.wait(_SYNC_SECONDS):
+                        raise AssertionError("the second Start never reached the port claim")
+                return port not in listening
+        else:
+            file_lock = auth._file_lock
+
+            def claim_lock(lock_path, *args, **kwargs):
+                if Path(lock_path).name == "port-claim.lock":
+                    second_selecting.set()  # about to wait for the lock the first holds
+                return file_lock(lock_path, *args, **kwargs)
+
+            def port_free(_host, port):
+                second_selecting.set()  # with no lock between them, it probes while the first holds its port
+                return port not in listening
+
+            auth._file_lock = claim_lock
+            if not first_holds.wait(_SYNC_SECONDS):
+                raise AssertionError("the first Start never chose a port")
+        webapp_access._port_free = port_free
+        host, port, public_url, _callback = webapp_access.plan("lan")
+        webapp_access.serve(host, public_url, port)
+        results.put((home, _webapp_block(Path(home)).get("port")))
+    except BaseException:
+        results.put((home, traceback.format_exc()))
+
+
+def test_two_profiles_starting_at_once_never_save_the_same_port(machine):
+    """Each standalone profile's gateway has its own change lock and process, so two first Starts can
+    overlap. Here each runs in a process of its own with its own home under one root, and the first holds
+    the port it chose, unsaved, until the second is at the port claim: waiting for the lock or, with no
+    lock between the processes, probing the same free port. Without that lock both save that port.
+    Spawned, not forked, as on Windows, whose byte lock is just as cross-process."""
+    import multiprocessing
+
+    twin = _write(machine["root"] / "profiles" / "twin", "gateway:\n  standalone: true\n")
+    spawn = multiprocessing.get_context("spawn")
+    first_holds, second_selecting, results = spawn.Event(), spawn.Event(), spawn.Queue()
+    starts = [spawn.Process(target=_start_in_a_process_of_its_own,
+                            args=(str(home), home == machine["solo"], first_holds, second_selecting, results))
+              for home in (machine["solo"], twin)]
+    for start in starts:
+        start.start()
+    try:
+        saved = dict(results.get(timeout=2 * _SYNC_SECONDS + 30) for _ in starts)
+    finally:
+        for start in starts:
+            start.join(timeout=10)
+            if start.is_alive():
+                start.kill()
+    # 9120 is the default profile's, 9121 is in use, 9122 is the other profile's.
+    assert saved == {str(machine["solo"]): 9123, str(twin): 9124}
+
+
+def test_a_start_that_fails_after_choosing_keeps_the_port(machine):
+    """The port is saved when it is chosen, before the bundle build and the registration, so another
+    profile never takes it; a Start that then fails leaves the profile that port and nothing else."""
+    webapp_access.plan("lan")
+    assert _webapp_block(machine["solo"]) == {"port": 9123}
+    machine["probed"].clear()
+    _host, port, _public_url, callback = webapp_access.plan("lan")
+    assert (port, callback, machine["probed"]) == (None, "http://192.168.1.50:9123/auth/callback", [])
+
+
+def test_a_specific_address_gets_a_port_that_is_free_on_loopback_too(machine):
+    """The gateway also binds the port on loopback for a specific address, so a port something holds
+    on loopback is never chosen for it, though the address itself is free there."""
+    address = _REAL_LAN_ADDRESS()
+    if address is None:
+        pytest.skip("this machine has no non-loopback IPv4 address")
+    _write(machine["solo"], f"gateway:\n  standalone: true\nwebapp:\n  host: {address}\n")
+    machine["monkeypatch"].setattr(webapp_access, "_port_free", _REAL_PORT_FREE)
+    with socket.socket() as held:
+        try:
+            held.bind(("127.0.0.1", 9121))
+        except OSError:
+            pytest.skip("9121 is already in use on loopback here")
+        held.listen()
+        host, port, _public_url, _callback = webapp_access.plan("lan")
+    assert host == address
+    assert port not in {9121, 9122}, "9121 is held on loopback, 9122 is the other profile's"
+    assert _webapp_block(machine["solo"])["port"] == port
+
+
+def test_the_probe_sees_a_port_a_listener_holds():
+    """On a port the OS picked, not a real service's."""
+    with socket.socket() as held:
+        held.bind(("127.0.0.1", 0))
+        held.listen()
+        port = held.getsockname()[1]
+        assert webapp_access._port_free("127.0.0.1", port) is False
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        free = probe.getsockname()[1]
+    assert webapp_access._port_free("127.0.0.1", free) is True

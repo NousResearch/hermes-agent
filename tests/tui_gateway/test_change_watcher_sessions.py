@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from tui_gateway import server
 
@@ -51,6 +52,25 @@ def test_sessions_signature_changes_for_session_metadata_updates(tmp_path, monke
     _seed_store(db_path)
     monkeypatch.setattr(server, "_watcher_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_served_profile_homes", [])
+
+    before = server._sessions_sig()
+    conn = sqlite3.connect(db_path)
+    conn.execute("UPDATE sessions SET title = 'Renamed' WHERE id = 'session-1'")
+    conn.commit()
+    conn.close()
+
+    assert server._sessions_sig() != before
+
+
+def test_sessions_signature_sees_a_commit_inside_the_same_mtime_tick(tmp_path, monkeypatch):
+    """Filesystem timestamps tick coarsely (~4 ms; whole seconds on some filesystems), and SQLite
+    commits in place: a commit in the tick of the previous read leaves the DB/WAL mtime unchanged."""
+    db_path = tmp_path / "state.db"
+    _seed_store(db_path)
+    monkeypatch.setattr(server, "_watcher_home", lambda: tmp_path)
+    monkeypatch.setattr(server, "_served_profile_homes", [])
+    frozen_mtime = time.time_ns()
+    monkeypatch.setattr(server, "_newest_mtime_ns", lambda _paths: frozen_mtime)
 
     before = server._sessions_sig()
     conn = sqlite3.connect(db_path)

@@ -100,26 +100,26 @@ They look similar; they are not the same primitive.
 
 | | `delegate_task` | Kanban |
 |---|---|---|
-| Shape | RPC call (fork → join) | Durable message queue + state machine |
-| Parent | Blocks until child returns | Fire-and-forget after `create` |
+| Shape | Tool call that runs child agents inside the calling session | Durable message queue + state machine |
+| Parent | Gets a handle at once and the result as a later message. Sessions that cannot receive a later message (one-shot runs, cron jobs, Kanban workers) and nested orchestrators wait in the call | Gets a task id at once. A gateway, TUI or Desktop chat that creates a task is subscribed to its completion and block events by default; a classic CLI, cron or scripted create is not, and the result's `subscribed` flag says which |
 | Child identity | Anonymous subagent | Named profile with persistent memory |
-| Resumability | None — failed = failed | Block → unblock → re-run; crash → reclaim |
-| Human in the loop | Not supported | Comment / unblock at any point |
-| Agents per task | One call = one subagent | N agents over task's life (retry, review, follow-up) |
-| Audit trail | Lost on context compression | Durable rows in SQLite forever |
-| Coordination | Hierarchical (caller → callee) | Peer — any profile reads/writes any task |
+| Resumability | A finished or stopped child continues on its own conversation with `action="continue"`. Automatic resume is opt-in (`delegation.auto_resume`) | Block → unblock → re-run; crash → reclaim |
+| Human in the loop | The child cannot ask questions. You can steer or stop it while it runs | Comment / unblock at any point |
+| Agents per task | One subagent per task; one call takes several tasks | N agents over task's life (retry, review, follow-up) |
+| Audit trail | Each child's transcript is stored as a session under the parent's. The parent's context holds only the child's summary | Rows in SQLite until the task is deleted. `hermes kanban gc` prunes old events of done and archived tasks |
+| Coordination | Hierarchical (caller → callee) | Any profile reads and comments on any task on the board. A dispatched worker changes only its own card |
 
-**One-sentence distinction:** `delegate_task` is a function call; Kanban is a work queue where every handoff is a row any profile (or human) can see and edit.
+**One-sentence distinction:** `delegate_task` runs child agents inside one conversation and returns their summaries to it; Kanban is a work queue where every handoff is a row any profile (or human) can read.
 
 :::caution Don't link a support card to the card it is meant to unblock
 A worker that is blocked on `t_parent` and creates a support card for the missing piece must **not** `kanban_link(t_parent, t_support)`: the link makes the support card a *child* of the blocked parent, so it is gated behind the parent it exists to unblock and neither card ever runs. Reference the parent id in the support card's body instead. `link`/`kanban_link` report `gated: true` and record a `dependency_wait` event when they demote a `ready` child (and `kanban_create` with `parents` does the same when it parks the new card), so the deadlock is visible on the board; `hermes kanban unlink <parent> <child>` releases it.
 :::
 
-**Use `delegate_task` when** the parent agent needs a short reasoning answer before continuing, no humans involved, result goes back into the parent's context.
+**Use `delegate_task` when** the result belongs in the parent's own context, the work can end with the session, and no other profile or person needs to pick it up.
 
 **Use Kanban when** work crosses agent boundaries, needs to survive restarts, might need human input, might be picked up by a different role, or needs to be discoverable after the fact.
 
-They coexist: a kanban worker may call `delegate_task` internally during its run.
+They also coexist inside one run. A kanban task executes in an isolated managed worker under the profile's gateway, and its `delegate_task` children are reserved by that gateway under the worker's execution: each child gets its own session (listed as a subagent of the card's session), counts against `delegation.max_concurrent_children` and `delegation.max_spawn_depth`, returns its result inside the card's turn, and ends with the worker. If the gateway goes down mid-child, the child is retired, never resumed. Work that must outlive the gateway, or needs its own reviewer, still belongs in child cards (`kanban_create` with `parents`).
 
 ## Core concepts
 
@@ -516,7 +516,7 @@ The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `
 
 Three reasons:
 
-1. **Backend portability.** Workers whose terminal tool points at a remote backend (Docker / Modal / Singularity / SSH) would run `hermes kanban complete` *inside* the container, where `hermes` isn't installed and `~/.hermes/kanban.db` isn't mounted. The kanban tools run in the agent's own Python process and always reach `~/.hermes/kanban.db` regardless of terminal backend.
+1. **Backend portability.** Workers whose terminal tool points at a remote backend (Docker / Modal / SSH / a plugin sandbox) would run `hermes kanban complete` *inside* the container, where `hermes` isn't installed and `~/.hermes/kanban.db` isn't mounted. The kanban tools run in the agent's own Python process and always reach `~/.hermes/kanban.db` regardless of terminal backend.
 2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it entirely.
 3. **Better errors.** Tool results are structured JSON the model can reason about, not stderr strings it has to parse.
 
@@ -926,7 +926,7 @@ Tasks in `~/.hermes/kanban.db` are profile-agnostic on purpose (that's the coord
 
 ### Extending it
 
-The plugin uses the standard Hermes dashboard plugin contract — see [Extending the Dashboard](./extending-the-dashboard) for the full manifest reference, shell slots, page-scoped slots, and the Plugin SDK. Extra columns, custom card chrome, tenant-filtered layouts, or full `tab.override` replacements are all expressible without forking this plugin.
+The plugin uses the standard Hermes dashboard plugin contract — see [Extending the Dashboard](./extending-the-dashboard) for the full manifest reference, shell slots, page-scoped slots, and the Plugin SDK. Extra columns, tenant-filtered layouts, or full `tab.override` replacements are all expressible without forking this plugin. The dashboard has no per-card slot; on the desktop board, plugins add per-card labels through the `KANBAN_CARD_AREAS.badges` contribution area (see [Desktop Plugin SDK](../../developer-guide/desktop-plugin-sdk.md#kanban-card-badges)).
 
 To disable without removing: add `dashboard.plugins.kanban.enabled: false` to `config.yaml` (or delete `plugins/kanban/dashboard/manifest.json`).
 
@@ -1263,6 +1263,19 @@ hermes kanban notify-unsubscribe t_abcd \
 
 A subscription removes itself automatically once the task reaches `done` or `archived`; no cleanup needed.
 
+When an agent runs `notify-subscribe` from inside a gateway chat (through its terminal tool) and the
+target is that same chat (and topic), a missing `--user-id` is filled with the sender of the turn. In groups with
+`group_sessions_per_user` (the default), that keeps the wake in the participant's own session instead
+of a second, shared one. Subscriptions to any other chat or topic never take the caller's id, and
+neither does one given an explicit `--user-id-alt`.
+
+Without `--thread-id`, the subscription targets the caller's own topic when it subscribes its own chat
+from inside a gateway session. Otherwise it takes the thread of this task's existing subscription to the
+same chat; when several exist, it takes the lowest thread id and names the others on stderr. A Telegram
+DM target with nothing to infer from warns that the ping goes to the DM root.
+`notify-unsubscribe` without `--thread-id` removes the matching row the same way: the chat's root-lane
+subscription when there is one, else the caller's own topic, else the chat's only threaded subscription.
+
 **Discord threads under `profile_routes`:** when the gateway multiplexes profiles and routes a *channel*
 to a profile, a subscription created from the CLI for a *thread* in that channel needs the thread's route
 anchors, or the notifier cannot match it to any route and skips it (logged once at WARNING). Pass them
@@ -1275,6 +1288,10 @@ hermes kanban notify-subscribe t_abcd \
 ```
 
 Subscriptions created from inside the chat (`/kanban create`, `kanban_create`) record these anchors automatically.
+A Telegram forum topic, or a Slack DM thread, lives inside its own chat (`chat_id` is the group or DM, not
+the thread), so it needs no `--parent-chat-id`: the notifier matches it against the route that names that chat.
+That needs a stated `--chat-type` (`dm`, `group` or `channel`; the gateway records it for you). A row without one
+may store the thread's own id as `chat_id`, so it still needs `--parent-chat-id` to reach a channel route.
 
 ### Delivery modes
 
@@ -1340,6 +1357,31 @@ in the board DB. No relays, credential sharing, or extra dispatchers are
 needed — each profile gateway simply delivers through its own adapters.
 
 ## Runs — one row per attempt
+
+Canonical workers execute through the assigned profile's gateway owner. The local
+transport carries the dispatcher's exact board database path, including custom
+paths and shared boards assigned to another profile; it does not create a separate
+transcript writer. The owner validates the task/run/claim and freezes its policy.
+
+If the owner or managed worker disappears with an **unknown** admission while the
+interpreter the owner bound to the attempt (its `worker_bound` event) may still be
+running, the card keeps its run and claim: expired claims, stale heartbeats and
+runtime limits do not reexecute that ambiguous attempt, and an unavailable owner
+ledger also pauses reclaim. Once that bound interpreter is itself dead, nothing can
+still be running the attempt, so the crash sweep reclaims it like any dead worker:
+the run closes as crashed and the card returns to `ready` (or `review`) under the
+normal crash budget, which can re-execute effects the lost attempt already had.
+A run that never bound an interpreter is released the same way once its owner has
+settled the admission (a lost card attempt's admission settles `interrupted`):
+when every worker pid recorded for the run is dead, or, with none recorded, once
+its claim has expired, the run closes as crashed (reclaimed if its claim had already
+lapsed) and the card returns to `ready`
+under the same crash budget. Resolving an unknown admission explicitly
+(`prompt.resolve_unknown` with its admission ID and execution generation) settles
+it the same way, so it can lead to another attempt. To avoid that, inspect the
+effects and complete or block the card first; unblock a blocked card only when a
+new attempt is intended. Confirmed timeouts and provider rate-limit results retain their ordinary
+retry/failure-accounting behavior.
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.
 
@@ -1438,7 +1480,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `reconciled` | `{reason, claim_lock, claim_expires, worker_pid}` | Orphaned-card reconciliation: the card was `running` with broken claim bookkeeping (`claim_lock` or `claim_expires` NULL — crash mid-claim, manual SQL, DB restore) and no live worker, so none of the TTL/crash/stale paths could ever recover it. The dispatcher requeued it to `ready` with an explanatory comment. Gated by `kanban.reconcile_orphans` in config.yaml (default `true`). |
 | `respawn_guarded` | `{reason}` | Dispatcher refused to re-spawn this ready task this tick. Reasons: `infrastructure_cooldown` (the host refused the last spawn — no restart-safe systemd scope — and the cooldown has not elapsed; never counted against the card), `rate_limit_cooldown` (the last run hit a quota wall; same cooldown, never counted), `blocker_auth` (last failure was a quota/auth/429 error — wait for the rate window to reset), `recent_success` (a completed run happened in the last hour — wait for review before re-running), `active_pr` (a GitHub PR URL appears in a recent comment — a prior worker already opened a PR). The task stays in `ready`; the next tick gets another chance to spawn. If the underlying condition persists, the normal `consecutive_failures` circuit breaker will auto-block via `gave_up` after `failure_limit` failures. |
 | `spawn_failed` | `{error, failures}` | One spawn attempt failed (missing PATH, workspace unmountable, …). Counter increments; task returns to `ready` for retry. |
-| `skipped_nonspawnable` | `{assignee}` | Dispatcher refused to spawn because the assignee profile does not exist in this home (or is not in `kanban.dispatch_profiles`). Written once per card — repeated only when another event landed in between — so `show`/`tail` name the missing profile without a row per tick. The card stays in `ready`; reassign it or install the profile. |
+| `skipped_nonspawnable` | `{assignee}` | Dispatcher refused to spawn because the assignee profile does not exist in this home (or is not in `kanban.dispatch_profiles`, or a plugin runs it elsewhere). Written once per card — repeated only when another event landed in between — so `show`/`tail` name the missing profile without a row per tick. The card stays in `ready`; reassign it or install the profile. |
 | `protocol_violation` | `{pid, claimer, exit_code, protocol_violation, worker_output?}` | Worker exited successfully while the task was still `running`, usually because it answered without a terminal board call (`kanban_complete`, `kanban_request_review` or `kanban_block`). Emitted on every violation (the payload's `protocol_violation: true` marker is copied into the run metadata and feeds the violation-only retry budget). Below the budget — up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` (default 3) *consecutive* violations, per-task `max_retries` overriding — the task simply returns to `ready` for another attempt; when the streak reaches the bound the dispatcher also emits `gave_up` and auto-blocks. `worker_output` carries the worker's own last printed text (usually its explanation of why it stopped), also folded into `last_failure_error` and shown to the retry worker as the prior-attempt error. |
 | `gave_up` | `{failures, effective_limit, limit_source, error, terminal_provider?}` | Circuit breaker fired after N consecutive non-successful attempts. Task auto-blocks with the last error. The effective limit resolves as task `max_retries`, then dispatcher `failure_limit` / `kanban.failure_limit`, then the built-in default. `terminal_provider: true` means the worker exited `78` on a provider error a retry cannot fix (credential revoked, model gone) — including a startup credential failure that explicitly requires re-login (`hermes auth` / `setup`), which exits `78` before the first turn; other startup failures exit `1` — and the breaker fired on that first attempt, sticky, regardless of the limit. |
 

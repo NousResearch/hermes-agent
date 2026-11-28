@@ -10,7 +10,7 @@ description: "NVIDIA App control through its local MCP server: overlay capture a
   NVIDIA App settings on this machine; nothing leaves loopback."
 title: NVIDIA App
 maintainer: NousResearch
-tier: official
+tier: verified
 category: tools
 requires_hermes: ">=0.21.4"
 docs_url: https://github.com/NousResearch/hermes-nvidia/tree/main/nvidia-app

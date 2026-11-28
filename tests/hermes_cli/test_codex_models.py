@@ -2,11 +2,34 @@ import base64
 import json
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.codex_models import (
     _FORWARD_COMPAT_TEMPLATE_MODELS,
     DEFAULT_CODEX_MODELS,
     get_codex_model_ids,
 )
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-6.2-sol", "openai/gpt-6.2-astra"])
+@pytest.mark.parametrize("filename", ["config.toml", "models_cache.json"])
+def test_prefixed_codex_hint_does_not_set_offline_default(monkeypatch, tmp_path, model, filename):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    content = f'model = "{model}"\n' if filename == "config.toml" else json.dumps({"models": [{"slug": model}]})
+    (tmp_path / filename).write_text(content, encoding="utf-8")
+    models = get_codex_model_ids()
+    assert models[0] == "gpt-6-sol"
+    assert model not in models
+
+
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "openai/gpt-6.2-astra"])
+def test_saved_gpt62_is_not_injected_into_codex_picker(model):
+    from hermes_cli.model_switch_providers import _finalize_picker_rows
+
+    for provider in ("openai-codex", "openai-api"):
+        rows = [{"slug": provider, "is_current": True, "total_models": 1, "models": ["gpt-6-sol"]}]
+        choices = _finalize_picker_rows(rows, {}, model)[0]["models"]
+        assert choices == (["gpt-6-sol"] if provider == "openai-codex" else [model, "gpt-6-sol"])
 
 
 def _codex_jwt(subject: str) -> str:

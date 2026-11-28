@@ -1,0 +1,43 @@
+name: gws-workspace
+repo: https://github.com/anpicasso/hermes-gws-workspace
+sha: 05448155edf3decd892b3b122af8cb7f3cc78a73
+description: "Multi-account Gmail, Drive and Calendar tools with native gws; explicit slash commands start change notifications in the current conversation or a new session. Disclosure — runs the native `gws` CLI you install, which keeps and refreshes each Google account's credentials in this profile's gws-oauth folder (sign in with `hermes gws login` in a terminal); every send, share, upload, write and local file read or write asks for Hermes approval first; Google API results, and the change metadata a watch matches, go to your model provider; large results are saved to files in the gws-oauth folder; optional watches start only when you send `/gws-watch` in a messaging chat, need a separate worker you run yourself, a public HTTPS callback and Hermes webhook routes whose secrets you put in this plugin's settings, and they post into that chat or start a new agent session with the instructions given when the watch was made."
+maintainer: anpicasso
+tier: community
+category: tools
+requires_hermes: '>=0.23.2'
+docs_url: https://github.com/anpicasso/hermes-gws-workspace/blob/05448155edf3decd892b3b122af8cb7f3cc78a73/README.md
+version: '0.10.0'
+platforms:
+- linux
+known_issues:
+- Requires native gws and your own Google Cloud Desktop OAuth client. Use hermes gws login in a terminal; optional remote login is a separate companion, not included in this listing. Native gws owns credential storage and refresh.
+- Watches require an operator-supervised POSIX worker, public HTTPS ingress, Google API/IAM setup and operator-created Hermes webhook routes. Installation does not provision or start them.
+- One trusted operator per Hermes profile; authorized sessions can use all connected accounts. Google API results and matched change metadata are sent to the agent/model provider.
+- The agent can prepare a local draft; activating watches requires user-sent /gws-watch confirmar CODE (or advanced raw JSON), not an agent lifecycle tool. An identified sender and an existing messaging session are required; command arguments cannot choose the destination. The WhatsApp bridge supports only non-shared DMs. No Hermes patch is required.
+- Same-session delivery has a concurrent session-reset race; webhook admission is not delivery confirmation. Google push may be delayed or coalesced.
+- Stop watches and finish cleanup before changing authentication or routes. Removing the plugin preserves account credentials, watch state and saved response files; local logout does not revoke Google consent.
+- Native subprocesses use host filesystem permissions, not a file sandbox. Local input/output requires approval; successful results and saved response files may contain private Workspace content.
+capabilities:
+  provides_tools:
+  - gws_accounts
+  - gws_api
+  - gws_gmail_search
+  - gws_gmail_read
+  - gws_gmail_draft
+  - gws_gmail_send
+  - gws_drive_search
+  - gws_drive_read
+  - gws_drive_upload
+  - gws_drive_share
+  - gws_calendar_list
+  - gws_calendar_freebusy
+  - gws_calendar_create
+  - gws_calendar_update
+  - gws_schema
+  - gws_watch_prepare
+  provides_hooks:
+  - pre_gateway_dispatch
+  - pre_tool_call
+  provides_middleware: []
+  requires_env: []

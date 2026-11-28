@@ -4,7 +4,8 @@ Mounted at root (no prefix) by ``web_server.py``; ``gated_auth_middleware``
 allowlists the public ones.
 
   GET  /login                  server-rendered login page
-  GET  /auth/login?provider=N  302 to IDP, sets PKCE cookie
+  GET  /auth/login?provider=N  302 to IDP, sets PKCE cookie (started on another host than
+                                the public URL's: 302 to the same start there first)
   GET  /auth/native/authorize  RFC 8252 native-app (desktop) login start
   GET  /auth/callback          completes login, sets session cookies
   POST /auth/password-login    username/password login (JSON)
@@ -23,15 +24,17 @@ import threading
 import time
 from collections import OrderedDict, deque
 from typing import Any, Deque, Dict
-from urllib.parse import quote, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import quote, unquote, urlencode, urlparse, urlsplit, urlunparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
+from hermes_cli import webapp_sign_in
 from hermes_cli.dashboard_auth import (
-    get_provider, list_providers, list_session_providers, native_flow)
+    get_provider, list_interactive_providers, list_providers, list_session_providers,
+    native_flow)
 from hermes_cli.dashboard_auth import prefix as _prefix_mod
 from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
 from hermes_cli.dashboard_auth.base import (
@@ -41,10 +44,11 @@ from hermes_cli.dashboard_auth.cookies import (
     parse_pkce_payload, read_pkce_cookie, read_session_cookies, set_pkce_cookie,
     set_session_cookies)
 from hermes_cli.dashboard_auth.login_page import (
-    render_login_html, render_native_provider_choice_html)
-from hermes_cli.dashboard_auth.refresh_singleflight import refresh_session_coalesced
+    render_login_html, render_native_provider_choice_html, render_private_launch_html)
+from hermes_cli.dashboard_auth.refresh_singleflight import forget as forget_refresh, refresh_session_coalesced
 from hermes_cli.dashboard_auth.request_utils import (
-    access_token_max_age, client_ip as _client_ip, is_safe_next_path)
+    access_token_max_age, client_ip as _client_ip, is_safe_next_path, is_same_origin_path)
+from hermes_cli.web_server_surface import private_launch
 
 _log = logging.getLogger(__name__)
 
@@ -52,6 +56,37 @@ router = APIRouter()
 
 _NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
 _NATIVE_EXPIRED_DETAIL = "Native login expired or unknown; restart sign-in."
+_PRIVATE_LAUNCH_LOGIN_DETAIL = (
+    "This local loopback Webapp opens through a private launch link, not browser login cookies. "
+    "Run `hermes webapp` on this computer to sign in."
+)
+
+
+def _has_active_native_broker(request: Request) -> bool:
+    """True when *request* carries a live RFC 8252 native-app broker handle in its PKCE cookie."""
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
+    broker_state = parse_pkce_payload(pkce_raw).get("broker", "") if pkce_raw else ""
+    if not broker_state:
+        return False
+    try:
+        native_flow.get_pending(broker_state)
+    except native_flow.NativeFlowError:
+        return False
+    return True
+
+
+def _refuse_private_launch_browser_login(request: Request, *, allow_native: bool = False) -> None:
+    """Refuse browser cookie sign-in on a loopback Webapp: launch links are the only way in.
+
+    Cookies on ``127.0.0.1`` are shared across ports (RFC 6265 §8.5), so a loopback Webapp never
+    mints or accepts browser login cookies. RFC 8252 native-app flows never set session cookies
+    and stay allowed when *allow_native* is set and a live broker handle is present.
+    """
+    if not private_launch(request.app.state):
+        return
+    if allow_native and _has_active_native_broker(request):
+        return
+    raise _http(403, _PRIVATE_LAUNCH_LOGIN_DETAIL)
 
 
 def _http(status_code: int, detail: str) -> HTTPException:
@@ -72,7 +107,7 @@ def _redirect_uri(request: Request) -> str:
     complete authority (``X-Forwarded-Prefix`` ignored so a baked-in prefix is not doubled);
     otherwise ``url_for`` (honours ``X-Forwarded-Host/Proto`` under uvicorn ``proxy_headers``)
     with the prefix prepended, which Starlette does not do."""
-    public_url = _prefix_mod.resolve_public_url()
+    public_url = _prefix_mod.resolve_public_url(request.app.state)
     if public_url:
         return f"{public_url}/auth/callback"
     base = str(request.url_for("auth_callback"))
@@ -81,6 +116,37 @@ def _redirect_uri(request: Request) -> str:
         return base
     parsed = urlparse(base)
     return urlunparse(parsed._replace(path=f"{prefix}{parsed.path}"))
+
+
+#: Marks a sign-in start already sent to the public URL's host, so a proxy that hides the
+#: browser's host (rewrites Host, sends no X-Forwarded-Host) costs one extra hop, never a loop.
+_PUBLIC_HOST_HOP = "public_host_hop"
+
+
+def _browser_hostname(request: Request) -> str:
+    """The hostname the browser addressed: the first ``X-Forwarded-Host`` (a proxy that rewrites
+    Host, like the agent router in front of Azure, keeps the browser's there), else ``Host``."""
+    forwarded = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+    try:
+        return urlsplit(f"//{forwarded or request.headers.get('host', '')}").hostname or ""
+    except ValueError:
+        return ""
+
+
+def _public_host_redirect(request: Request) -> RedirectResponse | None:
+    """302 to this same sign-in start on the public URL's host, or ``None``.
+
+    The PKCE cookie belongs to the host that set it and the IDP returns to
+    ``{public_url}/auth/callback``, so a sign-in started on any other name for this listener (an
+    alias the operator still routes here) would end in "Missing PKCE state cookie". Moving the
+    start keeps the cookie and the callback on one host; the user lands signed in there."""
+    public_url = _prefix_mod.resolve_public_url(request.app.state)
+    if not public_url or request.query_params.get(_PUBLIC_HOST_HOP):
+        return None
+    if urlsplit(public_url).hostname == _browser_hostname(request):
+        return None
+    query = urlencode([*request.query_params.multi_items(), (_PUBLIC_HOST_HOP, "1")])
+    return RedirectResponse(url=f"{public_url}{request.url.path}?{query}", status_code=302)
 
 
 def _provider_pkce_segments(cookie_payload: dict[str, str]) -> dict[str, str]:
@@ -98,14 +164,23 @@ def _validate_post_login_target(raw: str) -> str:
 
 
 def _set_pkce(resp, request: Request, payload: dict[str, str]) -> None:
-    set_pkce_cookie(resp, payload=payload, use_https=detect_https(request), prefix=_prefix(request))
+    set_pkce_cookie(resp, payload=payload, use_https=detect_https(request), prefix=_prefix(request),
+                    gateway=webapp_sign_in.cookie_gateway(request))
+
+
+def _clear_pkce(resp, request: Request) -> None:
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request),
+                      gateway=webapp_sign_in.cookie_gateway(request))
 
 
 def _set_session(resp, request: Request, session: Session) -> None:
+    if private_launch(request.app.state):
+        raise _http(403, _PRIVATE_LAUNCH_LOGIN_DETAIL)
     set_session_cookies(
         resp, access_token=session.access_token, refresh_token=session.refresh_token,
         access_token_expires_in=access_token_max_age(session), use_https=detect_https(request),
-        prefix=_prefix(request), provider=session.provider)
+        prefix=_prefix(request), provider=session.provider, gateway=webapp_sign_in.cookie_gateway(request))
+    webapp_sign_in.bind(resp, request)
 
 
 def _bearer_payload(session: Session) -> dict[str, Any]:
@@ -156,7 +231,9 @@ def _externalize_post_login_target(target: str, prefix: str) -> str:
         return target
     if target == prefix or target.startswith(f"{prefix}/"):
         return target
-    return f"{prefix}{target}"
+    # The browser consumes the composed string, so validate that, not just its validated parts.
+    composed = f"{prefix}{target}"
+    return composed if is_same_origin_path(composed) else target
 
 
 def _complete_login(request: Request, provider: str, session: Session, *, broker_state: str,
@@ -194,6 +271,8 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 
 @router.get("/login", name="login_page")
 async def login_page(request: Request) -> HTMLResponse:
+    if private_launch(request.app.state) and not _has_active_native_broker(request):
+        return HTMLResponse(render_private_launch_html(), headers=_NO_STORE)
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
     return HTMLResponse(
@@ -201,26 +280,38 @@ async def login_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/api/auth/providers", name="auth_providers")
-async def api_auth_providers() -> Any:
-    # Only interactive providers are sign-in options; fail closed on zero.
-    providers = list_session_providers()
-    if not providers:
+async def api_auth_providers(request: Request = None) -> Any:  # type: ignore[assignment]  # None when awaited in-process
+    # Only interactive providers are sign-in options; fail closed on zero
+    # session providers. A deployment authenticated solely by a provisioned
+    # credential (interactive_login False — the session-token provider) or a
+    # loopback Webapp (private_launch — launch-link-only) answers an empty list:
+    # there is no browser sign-in to offer, which is correct, not an outage.
+    if request is not None and private_launch(request.app.state):
+        return {"providers": []}
+    if not list_session_providers():
         return JSONResponse({"detail": "no auth providers registered"}, status_code=503)
     return {"providers": [
         {"name": p.name, "display_name": p.display_name,
          "supports_password": bool(getattr(p, "supports_password", False))}
-        for p in providers]}
+        for p in list_interactive_providers()]}
 
 
 # --- Public: OAuth round trip ----------------------------------------------
 
 @router.get("/auth/login", name="auth_login")
 async def auth_login(request: Request, provider: str, next: str = ""):
+    _refuse_private_launch_browser_login(request)
+    if (moved := _public_host_redirect(request)) is not None:
+        return moved
     p = get_provider(provider)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
     if not getattr(p, "supports_session", True):
         raise _http(404, f"Provider does not support interactive login: {provider!r}")
+    if not getattr(p, "interactive_login", True):
+        # Verifies credentials but has no sign-in flow (the session-token provider):
+        # never 500 inside start_login — answer the same 404 an unknown provider gets.
+        raise _http(404, f"Provider has no interactive login: {provider!r}")
     safe_next = _validate_post_login_target(next)
     if getattr(p, "supports_password", False):
         login_url = f"{_prefix(request)}/login"
@@ -282,7 +373,7 @@ def _select_native_provider(provider: str):
     them via ``/login``); with several the caller renders a chooser instead of guessing."""
     if provider:
         return get_provider(provider)
-    candidates = list_session_providers()
+    candidates = list_interactive_providers()
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -294,6 +385,8 @@ async def auth_native_authorize(
     opaque ``broker_state`` riding in the gateway's own PKCE cookie (the desktop's
     challenge/state never touch it), then run the normal upstream round trip. Password providers
     go to the ``/login`` form instead."""
+    if (moved := _public_host_redirect(request)) is not None:
+        return moved
     if code_challenge_method.upper() != "S256":
         raise _http(400, "code_challenge_method must be S256")
     if not code_challenge:
@@ -301,7 +394,7 @@ async def auth_native_authorize(
     redirect_uri = _validate_loopback_redirect_uri(redirect_uri)
     p = _select_native_provider(provider)
     if p is None and not provider:
-        candidates = list_session_providers()
+        candidates = list_interactive_providers()
         if len(candidates) > 1:
             # Render the chooser BEFORE allocating broker state or setting a cookie: every link
             # re-enters this same validated route with an explicit provider.
@@ -316,7 +409,9 @@ async def auth_native_authorize(
                 headers=_NO_STORE)
     if p is None:
         raise _http(404, f"Unknown provider: {provider!r}")
-    if not getattr(p, "supports_session", True):
+    if not getattr(p, "supports_session", True) or not getattr(p, "interactive_login", True):
+        # Checked BEFORE register_pending: a provisioned-credential provider (session-token)
+        # has only a start_login stub, so it must never reach the upstream round trip.
         raise _http(400, f"Provider does not support native login: {p.name!r}")
     try:
         broker_state = native_flow.register_pending(
@@ -339,7 +434,8 @@ async def auth_native_authorize(
 async def auth_callback(
     request: Request, code: str = "", state: str = "", error: str = "",
     error_description: str = ""):
-    pkce_raw = read_pkce_cookie(request)
+    _refuse_private_launch_browser_login(request, allow_native=True)
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     if not pkce_raw:
         _audit(request, AuditEvent.LOGIN_FAILURE, reason="missing_pkce_cookie")
         raise _http(400, "Missing PKCE state cookie")
@@ -372,10 +468,9 @@ async def auth_callback(
     resp = RedirectResponse(url=target, status_code=302)
     if not native:
         _set_session(resp, request, session)
-    prefix = _prefix(request)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    _clear_pkce(resp, request)
     # Clear the one-shot auto-SSO loop-guard so it never suppresses a future silent attempt.
-    clear_sso_attempt_cookie(resp, prefix=prefix)
+    clear_sso_attempt_cookie(resp, prefix=_prefix(request), gateway=webapp_sign_in.cookie_gateway(request))
     return resp
 
 
@@ -454,6 +549,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     generic (no username/provider oracle): unknown/non-password provider 404, bad credentials
     401, store unreachable 503, rate limited 429.
     """
+    _refuse_private_launch_browser_login(request, allow_native=True)
     if _password_rate_limited(_client_ip(request)):
         _login_failure(request, body.provider, "rate_limited")
         raise _http(429, "Too many login attempts. Try again shortly.")
@@ -464,7 +560,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     # The native broker handle also records WHICH provider the flow was started for. Enforce
     # equality BEFORE verifying credentials so a flow started for provider A cannot be completed
     # with provider B's credentials.
-    pkce_raw = read_pkce_cookie(request)
+    pkce_raw = read_pkce_cookie(request, webapp_sign_in.cookie_gateway(request))
     pkce_parts = parse_pkce_payload(pkce_raw) if pkce_raw else {}
     broker_state = pkce_parts.get("broker", "")
     if broker_state and pkce_parts.get("provider", "") != body.provider:
@@ -487,7 +583,7 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
         request, body.provider, session, broker_state=broker_state, next_raw=body.next)
     resp = JSONResponse({"ok": True, "next": target})
     if native:
-        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
+        _clear_pkce(resp, request)
     else:
         _set_session(resp, request, session)
     return resp
@@ -495,20 +591,28 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
 
 @router.post("/auth/logout", name="auth_logout")
 async def auth_logout(request: Request):
-    _at, rt = read_session_cookies(request)
-    # Best-effort revoke on every provider; failures logged, never raised.
-    for provider in list_providers() if rt else ():
+    at, rt = read_session_cookies(request, webapp_sign_in.cookie_gateway(request))
+    # Best-effort revoke on every provider; failures logged, never raised. The access token too:
+    # a long-TTL one outlives the refresh token and its cookie.
+    for provider in list_providers() if at or rt else ():
         try:
-            provider.revoke_session(refresh_token=rt)
+            if rt:
+                provider.revoke_session(refresh_token=rt)
+            if at:
+                provider.revoke_access_session(access_token=at)
         except Exception as e:
             _log.warning("dashboard-auth: revoke on %r failed: %s", provider.name, e)
+    if rt:
+        # After the revoke: a refresh that starts later is refused by the provider, an earlier one
+        # in flight is barred from caching, and a cached rotation of this login is dropped.
+        forget_refresh(rt)
     sess = getattr(request.state, "session", None)
     _audit(request, AuditEvent.LOGOUT, provider=(sess.provider if sess else "unknown"),
            user_id=(sess.user_id if sess else ""))
     prefix = _prefix(request)
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
-    clear_session_cookies(resp, prefix=prefix)
-    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
+    clear_session_cookies(resp, prefix=prefix, gateway=webapp_sign_in.cookie_gateway(request))
+    _clear_pkce(resp, request)
     return resp
 
 
@@ -559,7 +663,11 @@ async def api_auth_ws_ticket(request: Request):
     ``Authorization`` on the upgrade); one ticket per WS."""
     sess = _require_session(request)
     from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
-    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider)
+    # On the gateway's Webapp the ticket carries the login's sign-in binding, so the socket it opens
+    # closes at sign-out (``hermes_cli.webapp_sign_in``).
+    signed_in = webapp_sign_in.sign_in_of(request)
+    ticket = mint_ticket(user_id=sess.user_id, provider=sess.provider, issuer=sess.issuer,
+                         extra={"sign_in": signed_in} if signed_in else None)
     _audit(request, AuditEvent.WS_TICKET_MINTED, provider=sess.provider, user_id=sess.user_id)
     return {"ticket": ticket, "ttl_seconds": TTL_SECONDS}
 
@@ -581,6 +689,7 @@ async def auth_native_token(request: Request, body: _NativeTokenBody):
     except native_flow.CodeInvalid:
         _audit(request, AuditEvent.NATIVE_TOKEN_FAILURE, reason="invalid_code_or_pkce")
         raise _http(400, "Invalid or expired authorization code.")
+    webapp_sign_in.gave_native_app(request, session)
     _audit(request, AuditEvent.NATIVE_TOKEN_SUCCESS, provider=session.provider,
            user_id=session.user_id)
     return _bearer_payload(session)
@@ -595,9 +704,15 @@ class _NativeRefreshBody(BaseModel):
 async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
     """Rotate a desktop-held refresh token (mirrors the gate's ``_attempt_refresh``): every
     provider rejecting the RT -> 401 ``session_expired`` (desktop re-logs); none rotated and one
-    unreachable -> 503."""
+    unreachable -> 503. On the gateway's Webapp behind the gate it renews only refresh tokens
+    this listener gave a native app's sign-in (``webapp_sign_in.token_works_alone``)."""
     if not body.refresh_token:
         raise _http(400, "refresh_token required")
+    if not webapp_sign_in.token_works_alone(request, body.refresh_token):
+        _audit(request, AuditEvent.REFRESH_FAILURE, reason="not_a_native_sign_in")
+        return JSONResponse(
+            {"error": "session_expired",
+             "detail": "Refresh token expired or invalid; start a new sign-in."}, status_code=401)
     try:
         # Off the event loop: the provider call is synchronous network I/O and a slow IdP
         # otherwise wedges every public endpoint (/api/status) behind it.
@@ -608,6 +723,7 @@ async def auth_native_refresh(request: Request, body: _NativeRefreshBody):
         raise _http(503, f"Auth provider {str(e)!r} unreachable")
     if refreshed is not None:
         session = refreshed[0]
+        webapp_sign_in.gave_native_app(request, session)
         _audit(request, AuditEvent.REFRESH_SUCCESS, provider=session.provider,
                user_id=session.user_id)
         return _bearer_payload(session)

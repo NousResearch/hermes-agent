@@ -126,9 +126,13 @@ class TestProviderModelsSWR:
             }), encoding="utf-8")
             os.utime(auth_path, ns=(mtime_ns, mtime_ns))
 
+        def seed(models):
+            fp = mod._credential_fingerprint("openai-codex")
+            mod._store_cache_entry("openai-codex", mod._cache_entry(fp, models))
+
         write_auth(jwt("account-a", "user-a", "first"), 0, 1_000_000_000)
         astra_models = ["gpt-6-astra", "gpt-6-astra-900k"]
-        mod.update_provider_cache_entry("openai-codex", astra_models)
+        seed(astra_models)
 
         # Routine OAuth rotation and pool counters rewrite auth.json, but the
         # account-scoped catalog is still authoritative for the same principal.
@@ -143,7 +147,7 @@ class TestProviderModelsSWR:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")
 
-        mod.update_provider_cache_entry("openai-codex", astra_models)
+        seed(astra_models)
         write_auth(jwt("account-b", "user-b", "new-account"), 0, 4_000_000_000)
         with patch.object(mod, "_spawn_swr_refresh") as spawn:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
@@ -152,11 +156,25 @@ class TestProviderModelsSWR:
         # An expired token only ever yields the static fallback (no Astra); the refresh to a live
         # token for the same principal must bust that row instead of serving it for the whole TTL.
         write_auth(jwt("account-b", "user-b", "stale", exp=time.time() - 60), 0, 5_000_000_000)
-        mod.update_provider_cache_entry("openai-codex", ["gpt-5.6-sol"])
+        seed(["gpt-5.6-sol"])
         write_auth(jwt("account-b", "user-b", "fresh", exp=time.time() + 3600), 0, 6_000_000_000)
         with patch.object(mod, "_spawn_swr_refresh") as spawn:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")
+
+    @pytest.mark.parametrize("fallback,age,expected", [(False, 0, True), (True, 0, False), (False, 2, False)])
+    def test_codex_gpt62_cache_requires_fresh_verified_discovery(self, monkeypatch, fallback, age, expected):
+        from hermes_cli import models as mod
+
+        gated = ["gpt-6.2-sol", "openai/gpt-6.2-astra"]
+        row = {**self._cache_entry([*gated, "gpt-6-sol"], age), "fallback": fallback}
+        monkeypatch.setattr(mod, "_load_provider_models_cache", lambda: {"openai-codex": row})
+        monkeypatch.setattr(mod, "_credential_fingerprint", lambda _: "fp")
+        monkeypatch.setattr(mod, "_spawn_swr_refresh", lambda _: None)
+        monkeypatch.setattr(mod, "provider_model_ids", lambda *a, **kw: [])
+        assert mod.cached_provider_model_ids("openai-codex", ttl_seconds=1, non_blocking=True) == (
+            row["models"] if expected else ["gpt-6-sol"])
+        assert mod.cached_provider_model_ids("openai-codex", force_refresh=True) == ["gpt-6-sol"]
 
     def test_force_refresh_bypasses_swr(self):
         import hermes_cli.models as mod

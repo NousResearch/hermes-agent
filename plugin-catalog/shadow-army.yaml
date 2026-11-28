@@ -1,0 +1,27 @@
+name: shadow-army
+repo: https://github.com/SilentKnight87/shadow-army
+sha: 22d59a0bc79ce9b7c7305b6256ba8e4446e16486
+subdir: shadow-army
+title: Shadow Army
+description: "A different model family must PASS the exact code before the agent closes a Kanban card; it asks before a push of unreviewed code and flags deleted test assertions. Disclosure — Once armed, verifier subagents run on a second already-configured provider and read the card's repository and run the configured check command through Hermes' terminal; the plugin reads Kanban databases read-only and keeps receipts in its own plugin data."
+maintainer: SilentKnight87
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+version: "0.4.0"
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-real-catch.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-ledger.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-hero.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-removed.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-push-guard.png
+  - https://raw.githubusercontent.com/SilentKnight87/shadow-army/22d59a0bc79ce9b7c7305b6256ba8e4446e16486/docs/img/readme-workspace.png
+platforms: [linux, macos]
+known_issues:
+  - Refuses only the agent's kanban_complete tool and asks only on its terminal git push and gh pr create; manual board moves, other shell commands, aliases and disabling the plugin bypass it.
+capabilities:
+  provides_tools: [army_gate, army_verdict]
+  provides_hooks: [pre_tool_call, post_tool_call, subagent_start, subagent_stop, pre_api_request, post_api_request]
+  provides_middleware: []
+  requires_env: []

@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { $backendTransitions, transitionProfileKey } from '@/store/backend-transition'
+import { isFreshDraftScope } from '@/store/composer'
 import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
@@ -9,12 +11,14 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   noteQueuedPromptDrainFailure,
   type QueuedPromptEntry,
+  queuedSubmissionId,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,
   shouldAutoDrain,
   withQueueDrainClaim
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
+import { pausedKey, usePausedChats } from '@/store/paused-replies'
 import {
   $sessionProfilesTruncated,
   $sessions,
@@ -25,6 +29,7 @@ import {
   sessionMatchesStoredId
 } from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
+import type { SessionInfo } from '@/types/hermes'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
 
@@ -38,6 +43,14 @@ interface BackgroundQueueDrainOptions {
 }
 
 const BACKGROUND_DRAIN_RETRY_MS = 750
+
+// The profile a queued chat belongs to: its sidebar row's (a row without one is the default profile's), else its
+// owner route's. Unknown means no profile's switch holds it.
+function queuedChatProfile(sessionKey: string, sessions: SessionInfo[]): null | string {
+  const row = sessions.find(session => sessionMatchesStoredId(session, sessionKey))
+
+  return row ? (row.profile ?? 'default') : (getSessionOwnerHints(sessionKey)[0]?.profile ?? null)
+}
 
 /**
  * Drain queued prompts for sessions that are not currently rendered by ChatBar.
@@ -54,10 +67,12 @@ export function useBackgroundQueueDrain({
   submitText
 }: BackgroundQueueDrainOptions) {
   const { t } = useI18n()
+  const backendTransitions = useStore($backendTransitions)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const parkedQueueSessions = useStore($parkedQueueSessions)
   const sessionsLoading = useStore($sessionsLoading)
   const workingSessionIds = useStore($workingSessionIds)
+  const pausedChats = usePausedChats()
   const submitTextRef = useRef(submitText)
   const drainingSessionIdsRef = useRef(new Set<string>())
   const drainFailuresRef = useRef(new Map<string, number>())
@@ -168,7 +183,8 @@ export function useBackgroundQueueDrain({
       void withQueueDrainClaim(sessionKey, async queue => {
         const liveEntry = queue.find(candidate => candidate.id === entry.id)
 
-        if (!liveEntry) {
+        // Server-owned rows are already admitted to the gateway FIFO.
+        if (!liveEntry || liveEntry.serverStatus) {
           return true
         }
 
@@ -191,13 +207,15 @@ export function useBackgroundQueueDrain({
           submitTextRef.current(resolved.transportText, {
             attachments: liveEntry.attachments,
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
+            ...(liveEntry.displayKind ? { displayKind: liveEntry.displayKind } : {}),
             fromQueue: true,
+            submission_id: queuedSubmissionId(liveEntry),
             sessionId: runtimeSessionId,
             storedSessionId: sessionKey
           })
         )
 
-        if (accepted === false) {
+        if (accepted !== true) {
           return false
         }
 
@@ -236,10 +254,27 @@ export function useBackgroundQueueDrain({
     const working = [...workingSessionIds]
 
     for (const [sessionKey, entries] of Object.entries(queuedPromptsBySession)) {
+      // A fresh draft key has no session yet: its follow-ups wait for the
+      // creation handoff to re-key them onto the stored id. Draining here
+      // would exhaust the budget and drop them as a gone session.
+      if (isFreshDraftScope(sessionKey)) {
+        continue
+      }
+
+      // Its profile's backend is switching (store/backend-transition.ts): the queue waits for the new backend.
+      const profile = queuedChatProfile(sessionKey, sessions)
+
+      if (profile !== null && backendTransitions[transitionProfileKey(profile)]) {
+        continue
+      }
+
       const isSelected =
         Boolean(selectedStoredSessionId) && idsShareLineage(sessionKey, selectedStoredSessionId!, sessions)
 
-      const isBusy = working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
+      // A reply paused for its continuation holds the queue like a running turn (store/paused-replies.ts).
+      const isBusy =
+        Boolean(pausedKey(pausedChats, sessionKey, sessions)) ||
+        working.some(workingId => idsShareLineage(sessionKey, workingId, sessions))
 
       if (
         isSelected ||
@@ -253,7 +288,7 @@ export function useBackgroundQueueDrain({
         continue
       }
 
-      const entry = entries[0]
+      const entry = entries.find(candidate => !candidate.serverStatus)
 
       if (!entry || (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
         continue
@@ -262,9 +297,11 @@ export function useBackgroundQueueDrain({
       drainSessionQueue(sessionKey, entry)
     }
   }, [
+    backendTransitions,
     drainSessionQueue,
     enabled,
     parkedQueueSessions,
+    pausedChats,
     queuedPromptsBySession,
     retryTick,
     selectedStoredSessionId,

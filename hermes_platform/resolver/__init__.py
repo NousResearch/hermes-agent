@@ -10,8 +10,19 @@ from hermes_platform.resolver.core import (
     Resolution,
     locate_command,
 )
+from hermes_platform.resolver.git import (
+    GitResolution,
+    clear_git_usability_cache,
+    inspect_git,
+    is_git_command,
+    is_usable_git_command,
+    is_usable_git_executable,
+    resolve_usable_git,
+)
 
 __all__ = [
-    "ABSENT", "Candidate", "CheckState", "Effort", "Inspection", "LookupContext",
-    "Observation", "Probe", "Probeable", "Resolution", "Resolver", "locate_command",
+    "ABSENT", "Candidate", "CheckState", "Effort", "GitResolution", "Inspection", "LookupContext",
+    "Observation", "Probe", "Probeable", "Resolution", "Resolver",
+    "clear_git_usability_cache", "inspect_git", "is_git_command", "is_usable_git_command",
+    "is_usable_git_executable", "locate_command", "resolve_usable_git",
 ]

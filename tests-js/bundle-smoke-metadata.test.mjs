@@ -3,10 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { bundleIdentity, verifyBundleStamp, verifyMacMetadata } from '../tests/install/e2e-assets/bundle-smoke-metadata.mjs'
+import { bundleIdentity, shouldVerifyMacDmg, verifyBundleStamp, verifyMacDmg, verifyMacMetadata } from '../tests/install/e2e-assets/bundle-smoke-metadata.mjs'
 import { stampAssertions } from '../tests/install/e2e-assets/mac-bundled-manifest.cjs'
 import { randomBytes } from 'node:crypto'
 import { buildStampPayload } from '../apps/desktop/scripts/write-build-stamp.mjs'
+import { channelBuildRequest, releaseVersion } from '../scripts/msix-shared.mjs'
 
 const commit = 'a'.repeat(40)
 
@@ -19,10 +20,10 @@ test('fresh-install provenance admits tagless commit stamps without relaxing upd
       ['source', 'git'], ['branch', 'main'], ['dirty', true], ['updateMechanism', 'electron-updater']]) {
       expect(() => verifyBundleStamp({ ...stamp, [key]: value }, { commit, platform })).toThrow(key)
     }
-    const tag = 'v1.2.3+canary.20260913T000000Z'
-    const tagged = { ...stamp, tag, source: 'git', branch: 'main', displayVersion: tag.slice(1),
+    const tag = 'canary.20260913T000000Z-v1.2.3'
+    const tagged = { ...stamp, tag, source: 'git', branch: 'main', displayVersion: releaseVersion(tag),
       updateMechanism: platform === 'darwin' ? 'electron-updater' : 'app-installer' }
-    expect(verifyBundleStamp(tagged, { commit, tag, platform })).toBe(tag.slice(1))
+    expect(verifyBundleStamp(tagged, { commit, tag, platform })).toBe(releaseVersion(tag))
     expect(() => verifyBundleStamp({ ...tagged, updateMechanism: 'external' }, { commit, tag, platform })).toThrow('updateMechanism')
   }
   expect(stampAssertions(stamp, { commit, tag: null }).join(';')).toContain('electron-updater')
@@ -30,7 +31,7 @@ test('fresh-install provenance admits tagless commit stamps without relaxing upd
 
 test('identity uses the production bundled variant and exact input tokens, not inherited build flags', () => {
   const stable = bundleIdentity(commit, 'v1.2.3')
-  const canary = bundleIdentity(commit, 'v1.2.3+canary.20260913T000000Z')
+  const canary = bundleIdentity(commit, 'canary.20260913T000000Z-v1.2.3')
   const tagless = bundleIdentity(commit)
   expect(stable.appId).not.toBe(canary.appId)
   expect(stable.msixIdentity).not.toBe(tagless.msixIdentity)
@@ -111,6 +112,35 @@ test('channel smoke binds the complete admitted request, not a commit-build iden
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
 }, 15_000)
 
+test.skipIf(process.platform === 'win32')('channel admission validates each distinct request once and re-checks every rejection', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channel-admit-'))
+  try {
+    const log = path.join(temp, 'calls'), python = path.join(temp, 'python')
+    const quote = value => `'${value.replaceAll("'", "'\\''")}'`
+    fs.writeFileSync(python, `#!/bin/sh\necho x >> ${quote(log)}\nexec ${quote(process.env.HERMES_PYTHON || 'python')} "$@"\n`,
+      { mode: 0o755 })
+    const calls = () => fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length : 0
+    const token = randomBytes(8).toString('hex')
+    const request = { schema: 1, buildId: randomBytes(16).toString('hex'), channel: `smoke-${token}`,
+      repository: 'NousResearch/hermes-agent', publicBase: 'https://releases.example.test', commit,
+      sourceVersion: '1.2.3', sequence: 1, version: '0.0.1', windowsVersion: '0.0.1.0', bundleEnv: {},
+      identity: { token, displayName: 'Smoke Channel', appId: `com.example.preview-${token}`,
+        appNamePascal: `Smoke${token}`, artifactNamePascal: `Artifact${token}`,
+        msixAppIdWithOrg: `Example.Smoke${token}`, cliName: `smoke-${token}`, windowsExecutableName: `smoke-${token}` } }
+    const admit = value => channelBuildRequest({ HERMES_PYTHON: python, HERMES_DESKTOP_VARIANT: 'bundled',
+      PATH: process.env.PATH, _HERMES_CHANNEL_REQUEST_JSON: JSON.stringify(value) })
+    expect(admit(request)).toEqual(request)
+    expect(admit(request)).toEqual(request)
+    expect(calls()).toBe(1)
+    const insecure = { ...request, publicBase: 'http://releases.example.test' }
+    expect(() => admit(insecure)).toThrow()
+    expect(() => admit(insecure)).toThrow()
+    expect(calls()).toBe(3)
+    expect(admit({ ...request, buildId: randomBytes(16).toString('hex') }).channel).toBe(request.channel)
+    expect(calls()).toBe(4)
+  } finally { fs.rmSync(temp, { recursive: true, force: true }) }
+})
+
 test('workspace admission rejects reuse and symlink escapes before creating anything outside runner temp', () => {
   const temp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'smoke-paths-')))
   const cli = path.resolve(import.meta.dirname, '../tests/install/e2e-assets/bundle-smoke-metadata.mjs')
@@ -132,6 +162,60 @@ test('workspace admission rejects reuse and symlink escapes before creating anyt
     fs.symlinkSync(temp, alias, process.platform === 'win32' ? 'junction' : 'dir')
     expect(run(path.join(alias, 'fresh'), out).status).toBe(0)
   } finally { fs.rmSync(temp, { recursive: true, force: true }) }
+})
+
+test('shouldVerifyMacDmg enforces outer DMG checks on all releases/channels and signedDmg commit claims while allowing older commit claims', () => {
+  expect(shouldVerifyMacDmg({ tag: 'v1.2.3', stamp: {} })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: 'canary.20261125T000000Z-v1.2.3', stamp: {} })).toBe(true)
+  expect(shouldVerifyMacDmg({ channelRequest: { channel: 'preview' }, stamp: {} })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: 'commit.20261125T000000Z-v1.2.3', stamp: { signedDmg: true } })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: '', stamp: { signedDmg: true } })).toBe(true)
+  expect(shouldVerifyMacDmg({ tag: 'commit.20261125T000000Z-v1.2.3', stamp: {} })).toBe(false)
+  expect(shouldVerifyMacDmg({ tag: '', stamp: {} })).toBe(false)
+
+  const commit = 'b'.repeat(40)
+  const runtime = { commands: { hermes: 'bin/hermes' } }
+  expect(buildStampPayload({ commit, dirty: false }, { HERMES_DESKTOP_VARIANT: 'bundled' }, 'darwin', { runtime }).signedDmg).toBe(true)
+  expect(buildStampPayload({ commit, dirty: false }, { HERMES_DESKTOP_VARIANT: 'bundled' }, 'win32', { runtime }).signedDmg).toBeUndefined()
+  expect(buildStampPayload({ commit, dirty: false }, { HERMES_DESKTOP_VARIANT: 'light' }, 'darwin', { runtime }).signedDmg).toBeUndefined()
+})
+
+test('verifyMacDmg enforces codesign, team ID, stapler ticket, and spctl primary-signature open policy', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'dmg-smoke-'))
+  try {
+    const dmg = path.join(temp, 'HermesBundled-1.2.3-mac-arm64.dmg')
+    fs.writeFileSync(dmg, 'dmg-fixture')
+    const calls = []
+    const exec = (cmd, args) => { calls.push([cmd, ...args]) }
+    const spawn = (cmd, args) => {
+      calls.push([cmd, ...args])
+      return { status: 0, stderr: 'Authority=Developer ID Application: Nous Research (TEAM123456)\nTeamIdentifier=TEAM123456\n' }
+    }
+    expect(verifyMacDmg(dmg, { exec, spawn })).toEqual({ dmg, teamIdentifier: 'TEAM123456' })
+    expect(calls).toEqual([
+      ['/usr/bin/codesign', '--verify', '--verbose=2', dmg],
+      ['/usr/bin/codesign', '-dv', '--verbose=4', dmg],
+      ['/usr/bin/xcrun', 'stapler', 'validate', dmg],
+      ['/usr/sbin/spctl', '-a', '-vv', '-t', 'open', '--context', 'context:primary-signature', dmg],
+    ])
+
+    expect(() => verifyMacDmg(path.join(temp, 'missing.dmg'), { exec, spawn })).toThrow(/existing \.dmg/)
+    expect(() => verifyMacDmg(path.join(temp, 'app.zip'), { exec, spawn })).toThrow(/existing \.dmg/)
+    expect(() => verifyMacDmg(dmg, {
+      exec,
+      spawn: () => ({ status: 0, stderr: 'TeamIdentifier=not set\n' }),
+    })).toThrow(/signing team/)
+    expect(() => verifyMacDmg(dmg, {
+      exec,
+      spawn: () => ({ status: 1, stderr: 'code object is not signed at all' }),
+    })).toThrow(/codesign display failed/)
+    expect(() => verifyMacDmg(dmg, {
+      exec: (cmd) => { if (cmd === '/usr/sbin/spctl') throw new Error('rejected') },
+      spawn,
+    })).toThrow(/rejected/)
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
 })
 
 test.runIf(process.platform === 'win32')('PowerShell admits only the pinned package and native slice', () => {

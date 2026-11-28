@@ -100,3 +100,19 @@ def test_all_entries_rejecting_falls_back_to_session_marker(pool):
     ) is None
     assert _mark_entitlement_rejected_model(agent, _entitlement_400()) is True
     assert _is_entitlement_rejected(agent, "openai-codex", MODEL)
+
+
+def test_a_plan_limit_benches_only_the_refused_model_until_its_reset(pool):
+    """A usage-window 402 is this model's allowance, not the credential: every other model stays usable."""
+    reset = time.time() + 3 * 3600
+    agent = types.SimpleNamespace(
+        provider="openai-codex", model=MODEL, base_url="https://chatgpt.com/backend-api/codex",
+        api_key=TOKENS[0], _credential_pool=pool, _credential_pool_entry_id="cred-0",
+        _swap_credential=MagicMock(return_value=True),
+    )
+    recover_with_credential_pool(agent, status_code=402, has_retried_429=False, classified_reason=FailoverReason.billing,
+                                 error_context={"usage_window": True, "reset_at": reset})
+    first = pool.entries()[0]
+    assert first.last_status is None
+    assert set(first.model_cooldowns) == {MODEL} and abs(first.model_cooldowns[MODEL] - reset) < 2
+    assert pool.select(model=OTHER_MODEL).id == "cred-0"

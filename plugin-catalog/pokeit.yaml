@@ -1,0 +1,26 @@
+name: pokeit
+title: PokeIt
+repo: https://github.com/kbtbc/pokeit-hermes
+sha: 990c4126db513d69292ce68d48aa756ad7852123
+description: "Real-time Pokémon GO hunting inside Hermes, with a live Radar, nearby catches and raids, approved scans, and desktop alerts. Disclosure — hosted-only connector to the author's PokeIt service: each tool call sends coordinates, place text and filters to https://mcp.pokeit.cc (tool list served at runtime, not covered by the pin; request_scan starts a scan and goes through Hermes approval; the service keeps tool names, filters, timings and result counts about 14 days and scan coordinates 24 hours); on Desktop a gateway-side read proxy calls the same server's read tools and fetches species icons from https://pokeit.cc, the embedded map loads tiles from https://tile.openstreetmap.org (revealing the viewed area and IP), the last spot, radius and filter are saved locally per profile, and a user-started watch polls about once a minute for up to two hours while Hermes runs; no credentials, shell commands or self-update."
+maintainer: kbtbc
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/kbtbc/pokeit-hermes/blob/990c4126db513d69292ce68d48aa756ad7852123/README.md
+version: "0.1.25"
+image: https://raw.githubusercontent.com/kbtbc/pokeit-hermes/990c4126db513d69292ce68d48aa756ad7852123/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kbtbc/pokeit-hermes/990c4126db513d69292ce68d48aa756ad7852123/assets/desktop-radar.webp
+platforms: []
+known_issues:
+  - Results come from PokeIt's own scanning network. They are not exhaustive and an observation can expire before you arrive.
+  - The server runs separately from this repository and can change after you install; its tool list is served at runtime.
+  - The Radar and desktop alerts need Hermes Desktop 0.23.0 or newer with the plugin enabled on the profile you chat in. CLI and messaging clients get the tools and the skill only.
+  - After installing or updating, restart the Hermes gateway that serves your chat and open a new chat so the PokeIt tools load.
+  - Desktop alerts need an area with ongoing scan coverage (https://pokeit.cc/coverage).
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

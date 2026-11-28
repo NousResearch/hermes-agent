@@ -1,0 +1,27 @@
+name: personal-task-manager
+title: Hermes Personal Task Manager
+repo: https://github.com/RudiFreeman/hermes-personal-task-manager
+sha: "5feee35b6d0080d11f0188ed8b4f92cb528ed6d2"
+version: "1.0.0"
+description: Shared personal tasks, subtasks and notes for Hermes chat, Dashboard and WebApp, with resizable task details, seven languages, Archive and restorable Trash.
+maintainer: RudiFreeman
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/RudiFreeman/hermes-personal-task-manager/blob/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/README.md
+readme: true
+screenshots:
+  - https://raw.githubusercontent.com/RudiFreeman/hermes-personal-task-manager/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/docs/screenshots/dashboard-light.png
+  - https://raw.githubusercontent.com/RudiFreeman/hermes-personal-task-manager/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/docs/screenshots/dashboard-dark.png
+  - https://raw.githubusercontent.com/RudiFreeman/hermes-personal-task-manager/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/docs/screenshots/webapp-light.png
+  - https://raw.githubusercontent.com/RudiFreeman/hermes-personal-task-manager/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/docs/screenshots/webapp-dark.png
+  - https://raw.githubusercontent.com/RudiFreeman/hermes-personal-task-manager/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/docs/screenshots/dashboard-mobile.png
+  - https://raw.githubusercontent.com/RudiFreeman/hermes-personal-task-manager/5feee35b6d0080d11f0188ed8b4f92cb528ed6d2/docs/screenshots/webapp-mobile.png
+capabilities:
+  provides_tools:
+    - personal_tasks_list
+    - personal_tasks_add
+    - personal_tasks_update
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

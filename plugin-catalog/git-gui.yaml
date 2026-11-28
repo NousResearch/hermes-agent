@@ -1,0 +1,21 @@
+name: git-gui
+title: Git Gui
+repo: https://github.com/mykeura/git-gui
+sha: 4814b7b66d4dc35f62196ec31420ba7359051642
+description: "Read-only graphical git client for Hermes Desktop: the repository of the chat you are in becomes a lane-colored commit graph, as a compact right-sidebar pane and as a full three-column page (BRANCH / TAG | GRAPH | COMMIT MESSAGE) with draggable widths, ref chips, author and age on every row; clicking a commit opens a drawer with the full message, author/committer, clickable parents, changed files (Path or Tree) and a unified diff per file, and history loads 500 commits at a time as you scroll. Nine locales with RTL support. Disclosure — reads only: the Desktop half registers a page, a right-sidebar pane, a sidebar nav row and two palette commands through the plugin SDK, and the Python half is a read-only API mounted at /api/plugins/git-gui/ that runs the local git executable as a subprocess in the session's working directory (rev-parse, for-each-ref, log, show, diff; GIT_OPTIONAL_LOCKS=0, 15 s timeout, no fetch/checkout/index or ref writes). It persists only its own view state (column widths, drawer width, file-view mode, remote-branches toggle) through Hermes plugin storage, opens no file outside that repository, makes no network requests, needs no credentials, declares no agent tools, hooks or middleware, and its Agent entrypoint's register() is deliberately inert."
+maintainer: mykeura
+tier: community
+category: desktop
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/mykeura/git-gui#readme
+version: "0.1.2"
+image: https://raw.githubusercontent.com/mykeura/git-gui/4814b7b66d4dc35f62196ec31420ba7359051642/images/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/mykeura/git-gui/4814b7b66d4dc35f62196ec31420ba7359051642/images/page.jpg
+  - https://raw.githubusercontent.com/mykeura/git-gui/4814b7b66d4dc35f62196ec31420ba7359051642/images/pane.jpg
+  - https://raw.githubusercontent.com/mykeura/git-gui/4814b7b66d4dc35f62196ec31420ba7359051642/images/drawer.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

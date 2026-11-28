@@ -70,7 +70,7 @@ def test_exhausted_mirrors_name_each_attempted_url(tmp_path, dl_server, monkeypa
     assert not (tmp_path / "absent").exists()
 
 
-@pytest.mark.parametrize("failure", ["503", "dns", "tls", "disk", "pause"])
+@pytest.mark.parametrize("failure", ["503", "521", "dns", "tls", "disk", "pause"])
 def test_only_availability_failures_can_use_a_mirror(tmp_path, dl_server, monkeypatch, failure):
     import socket
     import ssl
@@ -98,13 +98,16 @@ def test_only_availability_failures_can_use_a_mirror(tmp_path, dl_server, monkey
                 dl.pause()
             if failure == "503":
                 raise urllib.error.HTTPError(request.full_url, 503, "Unavailable", {}, None)
+            if failure == "521":
+                # A CDN's origin-down answer (macOS ffmpeg's only upstream, 2026-10-21).
+                raise urllib.error.HTTPError(request.full_url, 521, "Web Server Is Down", {}, None)
             if failure == "dns":
                 # The macOS runner's error for an upstream host it cannot resolve.
                 raise urllib.error.URLError(socket.gaierror(socket.EAI_NONAME, "nodename nor servname provided"))
         return original(request, **kwargs)
 
     monkeypatch.setattr(downloader._OPENER, "open", open_request)
-    if failure == "dns":
+    if failure in ("dns", "521"):
         dl.run()
         assert (tmp_path / "tool").read_bytes() == payload
         assert requests.count(url(dl_server, "/primary")) == 1

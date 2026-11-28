@@ -11,7 +11,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +28,7 @@ class DiscordRecoveryStore:
         self._hermes_home = Path(hermes_home or get_hermes_home())
 
     def path(self) -> Path:
-        directory = self._hermes_home / "gateway"
-        directory.mkdir(parents=True, exist_ok=True)
-        return directory / _DB_FILENAME
+        return mkdir_under_hermes_home(self._hermes_home / "gateway") / _DB_FILENAME
 
     def call(self, fn: Callable[[sqlite3.Connection], Any], default: Any = None) -> Any:
         try:
@@ -53,7 +51,7 @@ class DiscordRecoveryStore:
             return default
 
     def _initialize(self, conn: sqlite3.Connection) -> None:
-        from hermes_state_wal import apply_wal_with_fallback
+        from sqlite_support import apply_wal_with_fallback
         apply_wal_with_fallback(conn, db_label="discord_recovery.db")
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS discord_messages (

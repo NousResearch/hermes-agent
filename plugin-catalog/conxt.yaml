@@ -1,0 +1,19 @@
+name: conxt
+title: Conxt
+repo: https://github.com/conxtdevelopmentteam/hermes-conxt
+sha: 2d2d6b7e034dff293e10c511d49687fd1a41e221
+version: "0.1.1"
+description: "Governed memory for Hermes: recalls your decisions before each turn, captures conversations in batches, and puts team memories through human approval before anyone recalls them. Disclosure — Each turn's message (first 500 characters) and the conversation's user and assistant messages are sent to the Conxt API at mcp.conxt.dev (or an https CONXT_BASE_URL you set) with your CONXT_API_KEY; tool results are not sent, but text the assistant repeats is. Every entry Hermes's built-in memory tool adds is also copied to your Conxt memory, and conxt_remember / conxt_propose send the memory text they are given. No telemetry, no shell commands, and nothing is written automatically from cron or subagent runs."
+maintainer: conxtdevelopmentteam
+tier: community
+category: memory
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/conxtdevelopmentteam/hermes-conxt#readme
+image: https://raw.githubusercontent.com/conxtdevelopmentteam/hermes-conxt/2d2d6b7e034dff293e10c511d49687fd1a41e221/docs/banner.png
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - CONXT_API_KEY

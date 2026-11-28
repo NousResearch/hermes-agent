@@ -107,6 +107,11 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self.persistence = self.session_store.persistence
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -118,7 +123,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
@@ -167,7 +172,7 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
     monkeypatch.setattr("gateway.status.remove_pid_file", _mock_remove_pid_file)
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
+        "gateway.status_scoped_locks.release_all_scoped_locks",
         _mock_release_all_scoped_locks,
     )
     monkeypatch.setattr(
@@ -247,6 +252,11 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
 
     class _CleanExitRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self.persistence = self.session_store.persistence
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -257,7 +267,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
 
     _pid_state = {"alive": True}
     def _mock_get_running_pid():
@@ -284,7 +294,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
     )
     monkeypatch.setattr(
-        "gateway.status.release_all_scoped_locks",
+        "gateway.status_scoped_locks.release_all_scoped_locks",
         lambda **kwargs: 0,
     )
     monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)
@@ -335,6 +345,21 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
         raise PermissionError("simulated EPERM")
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    # Ownership guard (#89315): a bound same-home record for target pid 42, so the replace flow
+    # actually reaches the SIGTERM (and its EPERM) instead of refusing on unprovable ownership.
+    monkeypatch.setattr(
+        "gateway.status._read_pid_record",
+        lambda path=None: {
+            "pid": 42,
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+            "start_time": 0,
+            "hermes_home": str(tmp_path),
+        },
+    )
+    monkeypatch.setattr(
+        "gateway.status._get_process_start_time", lambda pid: 0 if pid == 42 else None
+    )
     monkeypatch.setattr("gateway.status.write_takeover_marker", write_marker)
     monkeypatch.setattr("gateway.status.terminate_pid", raise_permission)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
@@ -462,6 +487,11 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
 
     class _FatalConfigRunner:
         def __init__(self, config):
+            from gateway.session import SessionStore
+            from hermes_constants import get_hermes_home
+            self.session_store = SessionStore(get_hermes_home() / 'sessions', config)
+            self.persistence = self.session_store.persistence
+            self._draining = False
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = "discord: Discord bot token already in use"
@@ -472,7 +502,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
             return True
 
         async def stop(self):
-            return None
+            self.session_store.close_all_db_handles()
 
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)

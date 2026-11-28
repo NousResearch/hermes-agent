@@ -8,7 +8,8 @@ import { execFile } from 'node:child_process'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import simpleGit from 'simple-git'
+import { isGitEnvKey } from '@simple-git/argv-parser'
+import { simpleGit } from 'simple-git'
 
 import { resolveRequestedPathForIpc } from './hardening'
 import { execGit, noConsoleGitEnv, simpleGitBinary, windowsGitHost } from './no-console-git'
@@ -19,16 +20,52 @@ const REVIEW_FILE_CAP = 2_000
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
-// simple-git 3.x validates a custom binary path against an ASCII whitelist —
-// `isBadArgument` in node_modules/simple-git/dist/cjs/index.js accepts only
-// `/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`. Everything outside it is "restricted": a
+// simple-git validates a custom binary path against an ASCII whitelist
+// (`/^([a-z]:)?([a-z0-9/.\_~-]+)$/i`). Everything outside it is "restricted": a
 // space in the default `C:\Program Files\Git\...`, the parentheses in
 // `Program Files (x86)`, the accented user name in `C:\Users\João\...`. Without
-// the escape hatch simple-git THROWS on such a path; with it, it console.warns
-// this exact message — the flag only downgrades the throw. Exported so gitFor
-// and its tests share one source of truth.
-export const SIMPLE_GIT_UNSAFE_BINARY_WARN =
-  'Invalid value supplied for custom binary, restricted characters must be removed or supply the unsafe.allowUnsafeCustomBinary option'
+// `unsafe.allowUnsafeCustomBinary` simple-git THROWS on such a path.
+
+// simple-git 4 strips every guarded variable (any `GIT_*`, plus EDITOR, VISUAL,
+// PAGER, PREFIX, SSH_ASKPASS) from the environment git runs with, and rejects
+// the task when one is passed explicitly through `.env()`. These are the ones
+// the Review pane keeps forwarding from the user's own environment: the SSH
+// transport and askpass helpers `git push` authenticates with, and
+// GIT_TERMINAL_PROMPT, which stops a credential prompt from blocking a git
+// process that has no terminal.
+export const SIMPLE_GIT_ALLOWED_ENV = ['GIT_SSH_COMMAND', 'GIT_SSH', 'GIT_ASKPASS', 'SSH_ASKPASS', 'GIT_TERMINAL_PROMPT']
+
+// simple-git's vulnerability check additionally rejects GIT_SSH/GIT_SSH_COMMAND
+// and GIT_ASKPASS/SSH_ASKPASS in an explicit `.env()` (the Windows host path
+// below) unless these categories are enabled. The values come from the user's
+// environment, never from the renderer.
+const SIMPLE_GIT_ALLOWED_ENV_UNSAFE = { allowUnsafeAskPass: true, allowUnsafeSshCommand: true }
+
+const ALLOWED_ENV_KEYS = new Set(SIMPLE_GIT_ALLOWED_ENV.map(key => key.toLowerCase()))
+
+// Same test simple-git's environment guard applies, so the explicit env never
+// carries a key the guard would reject.
+function isGuardedGitEnvKey(key: string): boolean {
+  const lower = key.toLowerCase().trim()
+
+  return lower.startsWith('git_') || isGitEnvKey(lower)
+}
+
+// Explicit env for the Windows no-console host tuple: the host script needs
+// HERMES_GIT_ARGV0, and simple-git replaces the inherited env with whatever
+// `.env()` receives, so the rest of the environment is forwarded minus the
+// guarded keys that are not allow-listed.
+export function simpleGitHostEnv(base: NodeJS.ProcessEnv | undefined, gitBin: string): NodeJS.ProcessEnv {
+  const env = noConsoleGitEnv(base, gitBin)
+
+  for (const key of Object.keys(env)) {
+    if (isGuardedGitEnvKey(key) && !ALLOWED_ENV_KEYS.has(key.toLowerCase().trim())) {
+      delete env[key]
+    }
+  }
+
+  return env
+}
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -56,6 +93,14 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string; stderr:
   })
 }
 
+function requireGit(gitBin: string | null | undefined): string | undefined {
+  if (gitBin === null) {
+    throw new Error('git is not available')
+  }
+
+  return gitBin
+}
+
 function gitFor(cwd, gitBin) {
   // `gitBin` is resolved inside the Electron main process from known install
   // locations or PATH — never renderer/user input, and the Windows tuple below is
@@ -74,42 +119,18 @@ function gitFor(cwd, gitBin) {
   // forwards argv unchanged.
   const host = windowsGitHost()
   const binary = simpleGitBinary(gitBin, host)
-  const unsafe = Boolean(gitBin) || Array.isArray(binary)
+  const unsafeBinary = Boolean(gitBin) || Array.isArray(binary)
 
-  const makeGit = () =>
-    simpleGit({
-      baseDir: cwd,
-      binary,
-      maxConcurrentProcesses: 4,
-      trimmed: false,
-      ...(unsafe ? { unsafe: { allowUnsafeCustomBinary: true } } : {})
-    })
+  const git = simpleGit({
+    allowEnvironment: SIMPLE_GIT_ALLOWED_ENV,
+    baseDir: cwd,
+    binary,
+    maxConcurrentProcesses: 4,
+    trimmed: false,
+    unsafe: { ...SIMPLE_GIT_ALLOWED_ENV_UNSAFE, ...(unsafeBinary ? { allowUnsafeCustomBinary: true } : {}) }
+  })
 
-  if (!unsafe) {
-    return makeGit()
-  }
-
-  // With the escape hatch set, simple-git still console.warns that same message on
-  // every factory call — the flag only downgrades the throw to a warning. The
-  // binary was resolved by this process, never supplied by the renderer, so on
-  // Windows (where the standard git lives under a spaced "Program Files") that
-  // warning is pure console spam. Filter exactly that message, for the
-  // synchronous factory call only.
-  const originalWarn = console.warn
-
-  console.warn = (message?: unknown, ...rest: unknown[]) => {
-    if (typeof message !== 'string' || !message.startsWith(SIMPLE_GIT_UNSAFE_BINARY_WARN)) {
-      originalWarn(message, ...rest)
-    }
-  }
-
-  try {
-    const git = makeGit()
-
-    return Array.isArray(binary) ? git.env(noConsoleGitEnv(process.env, gitBin || 'git')) : git
-  } finally {
-    console.warn = originalWarn
-  }
+  return Array.isArray(binary) ? git.env(simpleGitHostEnv(process.env, gitBin || 'git')) : git
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -285,6 +306,10 @@ function statusLetter(file) {
 const isStaged = file => Boolean(file.index && file.index !== ' ' && file.index !== '?')
 
 async function reviewList(repoPath, scope, baseRef, gitBin) {
+  if (gitBin === null) {
+    return { files: [], base: null }
+  }
+
   let cwd
 
   try {
@@ -378,6 +403,10 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
 }
 
 async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
+  if (gitBin === null) {
+    return ''
+  }
+
   let cwd
 
   try {
@@ -426,6 +455,10 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
 // a full-add for a clean tracked file (so a pristine file shows no diff); it only
 // all-adds a genuinely untracked file.
 async function fileDiffVsHead(repoPath, filePath, gitBin) {
+  if (gitBin === null) {
+    return ''
+  }
+
   let cwd
 
   try {
@@ -461,7 +494,7 @@ async function fileDiffVsHead(repoPath, filePath, gitBin) {
 async function reviewStage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review stage' })
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
+  await gitFor(cwd, requireGit(gitBin)).raw(filePath ? ['add', '--', filePath] : ['add', '-A'])
 
   return { ok: true }
 }
@@ -469,7 +502,7 @@ async function reviewStage(repoPath, filePath, gitBin) {
 async function reviewUnstage(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review unstage' })
 
-  await gitFor(cwd, gitBin).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
+  await gitFor(cwd, requireGit(gitBin)).raw(filePath ? ['reset', '-q', 'HEAD', '--', filePath] : ['reset', '-q', 'HEAD'])
 
   return { ok: true }
 }
@@ -478,7 +511,7 @@ async function reviewUnstage(repoPath, filePath, gitBin) {
 // confirms first. Restores tracked files and removes untracked ones.
 async function reviewRevert(repoPath, filePath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review revert' })
-  const git = gitFor(cwd, gitBin)
+  const git = gitFor(cwd, requireGit(gitBin))
 
   if (filePath) {
     await git.raw(['checkout', 'HEAD', '--', filePath]).catch(() => undefined)
@@ -493,6 +526,10 @@ async function reviewRevert(repoPath, filePath, gitBin) {
 
 // Resolve a ref to a commit sha (captures the turn baseline for "Last turn").
 async function reviewRevParse(repoPath, ref, gitBin) {
+  if (gitBin === null) {
+    return null
+  }
+
   let cwd
 
   try {
@@ -513,7 +550,7 @@ async function reviewRevParse(repoPath, ref, gitBin) {
 // setting upstream on the first push.
 async function reviewCommit(repoPath, message, push, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review commit' })
-  const git = gitFor(cwd, gitBin)
+  const git = gitFor(cwd, requireGit(gitBin))
   const status = await git.status()
 
   if (status.staged.length === 0) {
@@ -541,6 +578,10 @@ async function reviewCommit(repoPath, message, push, gitBin) {
 // the names of untracked files (which carry no diff), and recent commit
 // subjects for style. Diff is capped so the payload stays bounded. Reads only.
 async function reviewCommitContext(repoPath, gitBin) {
+  if (gitBin === null) {
+    return { diff: '', recent: '' }
+  }
+
   let cwd
 
   try {
@@ -588,7 +629,7 @@ async function reviewCommitContext(repoPath, gitBin) {
 
 async function reviewPush(repoPath, gitBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review push' })
-  const git = gitFor(cwd, gitBin)
+  const git = gitFor(cwd, requireGit(gitBin))
   const status = await git.status()
 
   if (status.tracking) {
@@ -603,7 +644,11 @@ async function reviewPush(repoPath, gitBin) {
 // gh availability + auth + whether this branch already has a PR. Reads only;
 // drives the PR button's enabled/label state. `ghReady` is false when gh is
 // missing OR not authenticated — either way the PR action can't run.
-async function reviewShipInfo(repoPath, ghBin) {
+async function reviewShipInfo(repoPath, ghBin, gitBin?: string | null) {
+  if (gitBin === null) {
+    return { ghReady: false, pr: null }
+  }
+
   let cwd
 
   try {
@@ -672,7 +717,11 @@ const prPayload = pr => ({
 // branches we actually have sessions on rather than listing the repo's newest
 // PRs and hoping ours are in the page — on a busy repo they are not. One
 // GraphQL request per 50 branches; reads only.
-async function reviewPrList(repoPath, ghBin, branches, numbers) {
+async function reviewPrList(repoPath, ghBin, branches, numbers, gitBin?: string | null) {
+  if (gitBin === null) {
+    return { ghReady: false, prs: [] }
+  }
+
   let cwd
 
   try {
@@ -743,8 +792,9 @@ async function reviewPrList(repoPath, ghBin, branches, numbers) {
 // letting gh fill title/body from the commits. Returns the new PR url.
 async function reviewCreatePr(repoPath, gitBin, ghBin) {
   const cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review create PR' })
+  const usableGit = requireGit(gitBin)
 
-  await reviewPush(repoPath, gitBin).catch(() => undefined)
+  await reviewPush(repoPath, usableGit).catch(() => undefined)
 
   const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
 
@@ -765,6 +815,10 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
 // Compact working-tree status for the composer coding rail: branch, ahead/behind,
 // per-state change counts, +/- vs HEAD, and a capped changed-file list.
 async function repoStatus(repoPath, gitBin) {
+  if (gitBin === null) {
+    return null
+  }
+
   let cwd
 
   try {

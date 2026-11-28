@@ -80,6 +80,55 @@ class TestSteerDrain:
         assert agent._drain_pending_steer() == "hello"
         assert agent._pending_steer is None
 
+    def test_withdraw_takes_back_one_unconsumed_ticket_and_keeps_the_rest(self):
+        agent = _bare_agent()
+        agent.steer("first")
+        agent.steer("  two\nlines  ", ticket="t2")
+        agent.steer("two")  # the same text as a line of t2, without a ticket
+        agent.steer("last", ticket="t4")
+        assert agent.withdraw_steer("t2") is True
+        assert agent._pending_steer == "first\ntwo\nlast"
+        assert agent.withdraw_steer("missing") is False
+        assert agent.withdraw_steer("t4") is True
+        assert agent._pending_steer == "first\ntwo"
+
+    def test_withdraw_after_a_drain_took_the_ticket_is_refused_even_if_its_text_is_buffered_again(self):
+        agent = _bare_agent()
+        agent.steer("alpha", ticket="a")
+        assert agent._drain_pending_steer() == "alpha"
+        agent.steer("alpha", ticket="b")
+        assert agent.withdraw_steer("a") is False, "a drain consumed a"
+        assert agent.withdraw_steer("b") is True
+        assert agent._pending_steer is None
+
+    def test_a_drained_steer_put_back_undelivered_keeps_its_ticket(self):
+        from agent.agent_runtime_helpers import _requeue_pending_steer
+        agent = _bare_agent()
+        agent.steer("note")
+        agent.steer("queued prompt", ticket="t")
+        drained = agent._drain_pending_steer() or ""
+        _requeue_pending_steer(agent, drained)  # no tool result took it
+        assert agent._pending_steer == "note\nqueued prompt"
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer == "note"
+
+    def test_the_leftover_drain_hands_back_only_ticketless_steers(self):
+        agent = _bare_agent()
+        agent.steer("typed /steer")
+        agent.steer("queued prompt", ticket="t")
+        assert agent._drain_leftover_steer() == "typed /steer"
+        assert agent._pending_steer == "queued prompt"
+        assert agent._drain_leftover_steer() is None
+        assert agent.withdraw_steer("t") is True
+        assert agent._pending_steer is None
+
+    def test_a_hard_stop_drops_a_ticket_unread(self):
+        agent = _bare_agent()
+        agent.steer("queued prompt", ticket="t")
+        agent.clear_interrupt(hard_cancel=True)
+        assert agent._pending_steer is None
+        assert agent.withdraw_steer("t") is True, "dropped unread: never delivered"
+
 
 
 class TestActiveTurnRedirect:
@@ -478,7 +527,7 @@ class TestSteerInjection:
         """A run that ends right after a steered batch leaves user(steer) as the persisted tail.
         The next real prompt makes two consecutive user rows; the alternation repair must leave
         the steer row byte-identical (append-only persistence cannot follow an in-place merge)."""
-        from agent.agent_runtime_helpers import _merge_consecutive_users
+        from session_rules.turns import _merge_consecutive_users
         from agent.prompt_builder import steer_user_row
 
         steer = steer_user_row("focus on error handling")
@@ -733,21 +782,24 @@ class TestSteerRowIsHumanInput:
         from agent.context_compressor import ContextCompressor, is_user_originated_turn
         from agent.conversation_compression import _is_real_user_message
         from agent.prompt_builder import steer_user_row
-        from hermes_state import SessionDB
+        from persistence_assembly import open_persistence, profile_scope
+        from tests.fixtures.storage_read import transcript_rows
+        from tests.fixtures.storage_seed import seed_messages, seed_session
 
         row = steer_user_row("focus on the error handling")
         assert _is_real_user_message(row)
         assert is_user_originated_turn(row)
         assert ContextCompressor._is_actionable_user_turn(row)
 
-        db = SessionDB(db_path=tmp_path / "state.db")
+        db = open_persistence(profile_scope(home=tmp_path))
         try:
-            db.create_session(session_id="s1", source="cli")
-            db.append_message("s1", role="user", content="first question")
-            db.append_message("s1", role="assistant", content="first answer")
-            db.append_message("s1", role="user", content=row["content"], display_kind=row["display_kind"])
-            recents = db.list_recent_user_messages("s1", limit=5)
-            assert [r["preview"][:5] for r in recents] == [row["content"][:5], "first"]
+            seed_session(db, "s1", "cli")
+            seed_messages(db, "s1", {"role": "user", "content": "first question"},
+                          {"role": "assistant", "content": "first answer"},
+                          {"role": "user", "content": row["content"], "display_kind": row["display_kind"]})
+            recents = [r for r in reversed(transcript_rows(db, "s1"))
+                       if r["role"] == "user" and r["display_kind"] in (None, "", "steer")]
+            assert [r["content"][:5] for r in recents] == [row["content"][:5], "first"]
         finally:
             db.close()
 

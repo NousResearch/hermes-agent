@@ -1,23 +1,25 @@
-"""Issue #76423 — SessionDB: telegram topic tables namespace by profile."""
+"""Issue #76423: the store's telegram topic tables namespace by profile."""
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
-from hermes_state import SessionDB
+from tests.fixtures.storage_holder import raw_holder
+from tests.fixtures.storage_seed import seed_session
+from tests.gateway.fixtures.storage_handles import close_storage_handles, storage_handle
 
 
 CHAT = "208214988"
 
 
 def _session(db, sid, profile_name=None):
-    db.create_session(session_id=sid, source="telegram", user_id=CHAT, profile_name=profile_name)
+    seed_session(db, sid, "telegram", user_id=CHAT, profile_name=profile_name)
 
 
 def test_legacy_rows_migrate_only_to_default(tmp_path: Path):
     """v1 shape (no CASCADE, old user index) → v3: rows land in 'default' only."""
-    db_path = tmp_path / "legacy.db"
+    db_path = tmp_path / "state.db"
     conn = sqlite3.connect(str(db_path))
     conn.executescript(
         f"""
@@ -57,62 +59,61 @@ def test_legacy_rows_migrate_only_to_default(tmp_path: Path):
     )
     conn.close()
 
-    db = SessionDB(db_path=db_path)
-    db.apply_telegram_topic_migration()
-    assert db.get_meta("telegram_dm_topic_schema_version") == "3"
-    assert db.is_telegram_topic_mode_enabled(
+    db = storage_handle(tmp_path)
+    db.routing.prepare_topic_storage()
+    assert db.state_meta.get("telegram_dm_topic_schema_version") == "3"
+    assert db.routing.is_topic_mode_enabled(
         chat_id=CHAT, user_id=CHAT, profile_name="default",
     )
-    assert not db.is_telegram_topic_mode_enabled(
+    assert not db.routing.is_topic_mode_enabled(
         chat_id=CHAT, user_id=CHAT, profile_name="coder",
     )
-    assert db.get_telegram_topic_binding(
+    assert db.routing.get_topic_binding(
         chat_id=CHAT, thread_id="99", profile_name="default",
-    )["session_id"] == "legacy-sess"
-    assert db.get_telegram_topic_binding(
+    ).session_id == "legacy-sess"
+    assert db.routing.get_topic_binding(
         chat_id=CHAT, thread_id="99", profile_name="coder",
     ) is None
-    fk = db._conn.execute("PRAGMA foreign_key_list('telegram_dm_topic_bindings')").fetchall()
+    with raw_holder(db)._read_ctx() as conn:
+        fk = conn.execute("PRAGMA foreign_key_list('telegram_dm_topic_bindings')").fetchall()
     assert any(row[2] == "sessions" and row[6] == "CASCADE" for row in fk)
-    db.close()
 
 
 def test_mode_and_bindings_isolated_across_profiles(tmp_path: Path):
-    db = SessionDB(db_path=tmp_path / "state.db")
+    db = storage_handle(tmp_path)
     _session(db, "sess-a", "alpha")
     _session(db, "sess-b", "beta")
 
-    db.enable_telegram_topic_mode(chat_id=CHAT, user_id=CHAT, profile_name="alpha")
-    db.enable_telegram_topic_mode(chat_id=CHAT, user_id=CHAT, profile_name="beta")
-    db.disable_telegram_topic_mode(chat_id=CHAT, profile_name="alpha")
-    assert not db.is_telegram_topic_mode_enabled(chat_id=CHAT, user_id=CHAT, profile_name="alpha")
-    assert db.is_telegram_topic_mode_enabled(chat_id=CHAT, user_id=CHAT, profile_name="beta")
+    db.routing.enable_topic_mode(chat_id=CHAT, user_id=CHAT, profile_name="alpha")
+    db.routing.enable_topic_mode(chat_id=CHAT, user_id=CHAT, profile_name="beta")
+    db.routing.disable_topic_mode(chat_id=CHAT, profile_name="alpha")
+    assert not db.routing.is_topic_mode_enabled(chat_id=CHAT, user_id=CHAT, profile_name="alpha")
+    assert db.routing.is_topic_mode_enabled(chat_id=CHAT, user_id=CHAT, profile_name="beta")
 
-    db.bind_telegram_topic(
+    db.routing.bind_topic(
         chat_id=CHAT, thread_id="77", user_id=CHAT,
         session_key="ka", session_id="sess-a", profile_name="alpha",
     )
-    db.bind_telegram_topic(
+    db.routing.bind_topic(
         chat_id=CHAT, thread_id="77", user_id=CHAT,
         session_key="kb", session_id="sess-b", profile_name="beta",
     )
-    assert db.get_telegram_topic_binding(
+    assert db.routing.get_topic_binding(
         chat_id=CHAT, thread_id="77", profile_name="alpha",
-    )["session_id"] == "sess-a"
-    assert db.get_telegram_topic_binding(
+    ).session_id == "sess-a"
+    assert db.routing.get_topic_binding(
         chat_id=CHAT, thread_id="77", profile_name="beta",
-    )["session_id"] == "sess-b"
+    ).session_id == "sess-b"
 
-    assert db.delete_telegram_topic_binding(
+    assert db.routing.delete_topic_binding(
         chat_id=CHAT, thread_id="77", profile_name="alpha",
     ) == 1
-    assert db.get_telegram_topic_binding(
+    assert db.routing.get_topic_binding(
         chat_id=CHAT, thread_id="77", profile_name="alpha",
     ) is None
-    assert db.get_telegram_topic_binding(
+    assert db.routing.get_topic_binding(
         chat_id=CHAT, thread_id="77", profile_name="beta",
     ) is not None
     # Omitted kwarg == the single-profile "default" namespace, not a wildcard.
-    assert not db.is_telegram_topic_mode_enabled(chat_id=CHAT, user_id=CHAT)
-    assert db.get_telegram_topic_binding(chat_id=CHAT, thread_id="77") is None
-    db.close()
+    assert not db.routing.is_topic_mode_enabled(chat_id=CHAT, user_id=CHAT)
+    assert db.routing.get_topic_binding(chat_id=CHAT, thread_id="77") is None

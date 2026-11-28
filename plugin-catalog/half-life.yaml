@@ -1,0 +1,17 @@
+name: half-life
+title: Half-Life
+repo: https://github.com/dominator509/half-life
+sha: 7135e76bff696574a78c898c004a98b0b64590f3
+description: Freshness labels for supported read-only tool results.
+maintainer: DSW Enterprises
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+version: "0.3.6"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

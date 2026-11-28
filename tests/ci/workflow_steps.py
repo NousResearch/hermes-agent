@@ -25,10 +25,19 @@ record() {
 }
 source() { [[ "$1" == .venv/bin/activate ]]; }
 scripts/run_tests.sh() { record pytest "$@"; }
-npx() { record npx "$@"; }
+pnpm() { record pnpm "$@"; }
 xvfb-run() { shift 2; "$@"; }
 sleep() { return 1; }
 '''
+
+
+# Workflows use Blacksmith's drop-in checkout (same inputs, cached on its runners;
+# it also works on the remaining GitHub-hosted jobs); a few still use actions/checkout.
+CHECKOUT_ACTIONS = ("actions/checkout@", "useblacksmith/checkout@")
+
+
+def is_checkout(step: dict) -> bool:
+    return str(step.get("uses", "")).startswith(CHECKOUT_ACTIONS)
 
 
 def required(step: dict, ctx: dict) -> None:
@@ -55,9 +64,25 @@ def _interpreter_dirs(root: Path) -> tuple[str, ...]:
     return str(interpreter), str(shims)
 
 
+# A replayed step is a pure function of its rendered script, env and cwd within one process.
+# The routing tests replay the same unmutated workflow dozens of times (363 Bash runs, 37
+# distinct, in the Windows lane's selection); each Git Bash spawn costs ~0.5 s on a loaded
+# Windows runner, which pushed the file past the runner's 300 s per-file cap.
+_REPLAYED: dict[tuple, tuple[dict, list]] = {}
+
+
 def _run(step: dict, ctx: dict, cwd: Path | None = None, *, receipt: bool = False) -> tuple[dict, list]:
     required(step, ctx)
     assert step.get("shell", "bash") == "bash", "only safe Bash selection steps are replayed"
+    key = (gha.render(step["run"], ctx), receipt, str(cwd),
+           tuple((k, gha.to_string(gha.render(v, ctx))) for k, v in step.get("env", {}).items()))
+    if key not in _REPLAYED:
+        _REPLAYED[key] = _execute(step, ctx, cwd, receipt=receipt)
+    outputs, calls = _REPLAYED[key]
+    return dict(outputs), list(calls)
+
+
+def _execute(step: dict, ctx: dict, cwd: Path | None, *, receipt: bool) -> tuple[dict, list]:
     with tempfile.TemporaryDirectory(prefix="workflow-replay-", ignore_cleanup_errors=True) as directory:
         root = Path(directory)
         output, calls = root / "outputs", root / "calls"
@@ -115,10 +140,10 @@ def selected_files(step: dict, ctx: dict, repo: Path) -> set[str]:
     _, calls = _run(step, ctx, cwd, receipt=True)
     assert len(calls) == 1, f"expected one test invocation, got {calls}"
     command, *args = calls[0]
-    if command == "npx":
-        assert args[:3] == ["playwright", "test", "-c"], args
-        assert (cwd / args[3]).is_file(), args
-        paths = args[4:]
+    if command == "pnpm":
+        assert args[:4] == ["exec", "playwright", "test", "-c"], args
+        assert (cwd / args[4]).is_file(), args
+        paths = args[5:]
         assert paths and all(p.endswith(".spec.ts") for p in paths), args
         ignores = []
     else:

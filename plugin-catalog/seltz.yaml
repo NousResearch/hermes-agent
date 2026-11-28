@@ -1,0 +1,20 @@
+name: seltz
+title: Seltz
+repo: https://github.com/seltz-ai/seltz-hermes-plugin
+sha: cfa816cfcd6532baa13bb33877b7b5fddc1a9647
+description: "Source-backed web search, news, company and LinkedIn lookups, financial reports, Wikipedia, and page fetch. Sign in through the Seltz Console (OAuth); the packaged connection is the SELTZ_API_KEY fallback. Disclosure — Connects to https://mcp.seltz.ai/mcp and sends it the search queries and page URLs the agent asks Seltz to search or fetch. OAuth also contacts https://console.seltz.ai. Calls use the user's Seltz account."
+maintainer: seltz-ai
+tier: community
+category: web
+requires_hermes: ">=0.22.2"
+docs_url: https://github.com/seltz-ai/seltz-hermes-plugin/blob/cfa816cfcd6532baa13bb33877b7b5fddc1a9647/README.md
+version: "1.0.0"
+platforms: []
+image: https://raw.githubusercontent.com/seltz-ai/seltz-hermes-plugin/cfa816cfcd6532baa13bb33877b7b5fddc1a9647/assets/seltz-hermes-banner.png
+known_issues:
+  - "Portable manifests cannot declare OAuth. Browser sign-in needs the native mcp_servers.seltz entry in the README. The packaged connection is the SELTZ_API_KEY fallback and is used only when that native entry is absent."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [SELTZ_API_KEY]

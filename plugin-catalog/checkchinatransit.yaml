@@ -1,0 +1,22 @@
+name: checkchinatransit
+title: CheckChinaTransit
+repo: https://github.com/AbigailDavised/checkchinatransit-mcp
+sha: 3cd443103abf2a37db01e0d7e90590d0921cbd98
+version: "1.0.2"
+description: "China 240-hour and 24-hour visa-free transit (TWOV) passport nationality checker, A-B-C third-country routing deadlock validator (Country A != Country C), next-day midnight stay deadline calculator, and 60 eligible entry/exit port zone lookup through CheckChinaTransit's official MCP server (Streamable HTTP at https://checkchinatransit.com/api/mcp, no sign-in, no keys in config). Bundles the checkchinatransit workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local runtime code, binaries, hooks, telemetry or self-updater; every tool call goes over HTTPS to checkchinatransit.com/api/mcp with only the itinerary, port or passport country query arguments. All 8 tools are public, free, and annotated read-only (readOnlyHint: true, destructiveHint: false). The package marks the server untrusted (trust: untrusted), so Hermes asks before any tool not annotated read-only and refuses them in unattended runs. The remote tool inventory is served at runtime and is not covered by the pinned sha."
+maintainer: CheckChinaTransit
+tier: community
+category: tools
+docs_url: https://checkchinatransit.com
+requires_hermes: ">=0.21.6"
+image: https://raw.githubusercontent.com/AbigailDavised/checkchinatransit-mcp/3cd443103abf2a37db01e0d7e90590d0921cbd98/assets/cover.png
+screenshots:
+  - https://raw.githubusercontent.com/AbigailDavised/checkchinatransit-mcp/3cd443103abf2a37db01e0d7e90590d0921cbd98/assets/screenshot.png
+  - https://raw.githubusercontent.com/AbigailDavised/checkchinatransit-mcp/3cd443103abf2a37db01e0d7e90590d0921cbd98/assets/editorial.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

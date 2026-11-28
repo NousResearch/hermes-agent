@@ -3,8 +3,9 @@
  * the backend.
  *
  * Pins (`hermes.desktop.pinnedSessions`), composer drafts
- * (`hermes:composer-drafts:v3`) and queued prompts
- * (`hermes.desktop.composerQueue.v1`) are keyed by session id and re-asserted
+ * (`hermes:composer-drafts:v4`, mirrored to v3), queued prompts
+ * (`hermes.desktop.composerQueue.v1`) and interrupted sends
+ * (`hermes:composer-outbox:v1:*`) are keyed by session id and re-asserted
  * or probed at boot. When a session is removed from state.db (retention purge,
  * manual delete, another surface pruning it), those keys go stale: nothing
  * ever drops them, so every boot re-requests the dead ids and the gateway
@@ -21,7 +22,8 @@
 
 import { getSession } from '@/hermes'
 import { mapPool } from '@/lib/pool'
-import { clearSessionDraft, stashedDraftScopes } from '@/store/composer'
+import { clearSessionDraft, isFreshDraftScope, stashedDraftScopes } from '@/store/composer'
+import { dropInterruptedSends, interruptedSendScopes } from '@/store/composer-outbox'
 import { $queuedPromptsBySession, clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -146,9 +148,18 @@ function collectCandidates(): string[] {
     }
   }
 
+  // A new chat's queue is keyed by its fresh draft scope, never a session id (its first message
+  // waits there while the profile's backend restarts).
   for (const key of Object.keys($queuedPromptsBySession.get())) {
-    if (!covered.has(key)) {
+    if (!covered.has(key) && !isFreshDraftScope(key)) {
       candidates.add(key)
+    }
+  }
+
+  // Fresh-chat keys are never session references (they expire with the outbox entry instead).
+  for (const scope of interruptedSendScopes()) {
+    if (!covered.has(scope) && !isFreshDraftScope(scope)) {
+      candidates.add(scope)
     }
   }
 
@@ -186,6 +197,8 @@ function dropDeadId(id: string): void {
   if ($queuedPromptsBySession.get()[id]?.length) {
     clearQueuedPrompts(id)
   }
+
+  dropInterruptedSends(id)
 }
 
 async function sweepOnce(requireLoaded = true): Promise<void> {

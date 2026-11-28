@@ -1,5 +1,6 @@
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import type { ErrorSurface } from '@/lib/error-surface'
 import { isTodoToolName } from '@/lib/todos'
 
 import type { ClientSessionState } from '../../../types'
@@ -104,18 +105,42 @@ export function applySessionInfoStatePatch(
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
-// linearly with the growing last-block length. Bumping to 33ms lets ~2 tokens
-// batch into one commit at 60 tok/sec without introducing visible lag on the
-// streaming text (still 30 fps of visible text growth). Big perceived
-// smoothness win on long messages with big trailing paragraphs; see
-// `scripts/profile-typing-lag.md` for the measurement work behind this.
-export const STREAM_DELTA_FLUSH_MS = 33
+// linearly with the growing last-block length. 33ms let ~2 tokens batch into
+// one commit at 60 tok/sec. Raised again to 40ms (~25 visible text updates per
+// second): a matched native reply in a 71-turn transcript measured ~20% less
+// renderer scripting and ~12% less renderer task work at 40ms than at 33ms,
+// with no overlap in the scripting ranges. Text growth stays smoother than the
+// adaptive floor's worst case (4/s) and is visually indistinguishable from
+// 30 fps at word-level token rates. See `scripts/profile-typing-lag.md` for the
+// measurement work behind the original bump.
+export const STREAM_DELTA_FLUSH_MS = 40
 
 // Ceiling for the ADAPTIVE flush gap (see scheduleDeltaFlush). Under heavy
 // multi-stream load the gap stretches to 3x the measured flush cost so the
 // main thread stays responsive to input; this cap guarantees streaming text
 // still visibly updates at least ~4x per second no matter the load.
 export const MAX_STREAM_FLUSH_GAP_MS = 250
+
+/**
+ * Minimum gap before the next assistant-text flush.
+ *
+ * Visible: 30->25 fps text growth, stretched to 3x the measured flush cost so a
+ * heavy commit never saturates the thread.
+ *
+ * Hidden and no voice consumer: nothing can paint, and the assistant-ui store
+ * update + React commit still run on every flush. A hidden 300-word reply
+ * measured ~2.3 s of renderer script with only layouts removed; batching at the
+ * 4/s ceiling cuts the commits ~6x. Voice output (read-aloud, hands-free
+ * conversation, dictation) deliberately keeps the responsive floor — its
+ * consumers read the transcript on a timer, not from the screen.
+ */
+export function streamFlushFloor(measuredCostMs: number, hidden: boolean, voiceBusy: boolean): number {
+  if (hidden && !voiceBusy) {
+    return MAX_STREAM_FLUSH_GAP_MS
+  }
+
+  return Math.min(Math.max(STREAM_DELTA_FLUSH_MS, measuredCostMs * 3), MAX_STREAM_FLUSH_GAP_MS)
+}
 
 // How long an optimistically armed turn (busy/awaitingResponse set at submit /
 // restore / edit, before the backend confirms it live) may hold off a
@@ -141,10 +166,56 @@ const COMPLETION_ERROR_PATTERNS = [
   /^(Provider|Gateway)\s+error:/i
 ]
 
-export function completionErrorText(finalText: string): string | null {
+// The text heuristic is for frames without a status: a turn the gateway
+// reports complete is an answer, even one that starts "HTTP 200 OK".
+export function completionErrorText(finalText: string, status?: string): string | null {
   const text = finalText.trim()
 
-  return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+  return text && status !== 'complete' && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+}
+
+// A provider safety-filter refusal (agent/error_classifier.py
+// FailoverReason.content_policy_blocked). The gateway stamps it on the terminal
+// message.complete frame as `failure_reason` and/or the error_surface `code`.
+export const CONTENT_POLICY_REFUSAL_CODE = 'content_policy_blocked'
+
+export function isContentPolicyRefusal(
+  failure: { surface?: ErrorSurface | null } | undefined,
+  failureReason: string | undefined
+): boolean {
+  return failureReason === CONTENT_POLICY_REFUSAL_CODE || failure?.surface?.code === CONTENT_POLICY_REFUSAL_CODE
+}
+
+/**
+ * Replace a live safety-refused turn with the SAME greyed display row stored
+ * hydration builds (toChatMessages for a `content_refused` row): the user's own
+ * prompt — plus any assistant/tool rows it produced — collapse into ONE
+ * non-interactive `system` row that carries the user's text and the
+ * `contentRefused` marker. So an active chat shows the greyed block the instant
+ * the refusal lands, not only after a reload. The live frame carries no notice
+ * text, so the marker is left empty and the renderer fills the i18n fallback —
+ * exactly what a stored row from an older backend does.
+ */
+export function replaceTurnWithContentRefused(messages: ChatMessage[], occurredAt: number): ChatMessage[] {
+  const userIndex = messages.findLastIndex(message => message.role === 'user')
+
+  if (userIndex < 0) {
+    return messages
+  }
+
+  const prompt = messages[userIndex]
+
+  const refused: ChatMessage = {
+    id: `content-refused-${occurredAt}-${userIndex}`,
+    role: 'system',
+    parts: [textPart(chatMessageText(prompt), occurredAt)],
+    timestamp: prompt.timestamp ?? occurredAt,
+    completedAt: occurredAt,
+    contentRefused: {},
+    ...(prompt.rowId !== undefined ? { rowId: prompt.rowId } : {})
+  }
+
+  return [...messages.slice(0, userIndex), refused]
 }
 
 export const SUBAGENT_EVENT_TYPES = new Set([

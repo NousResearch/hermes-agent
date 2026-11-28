@@ -253,6 +253,7 @@ test('channel stamps verify the real checkout and retain source version and nati
     const provenance: InstallStamp = resolveStamp({ env, repoRoot: dir })
     const payload: StampPayload = { runtime: { repoDir: 'repo', commands: { hermes: 'bin/hermes' } } }
     const built: InstallStamp = buildStampPayload(provenance, env, 'darwin', payload)
+    assert.throws(() => buildStampPayload(provenance, env, 'linux', payload), /native update owner/)
     assert.equal(built.source, 'channel-build')
     assert.equal(built.updateMechanism, 'electron-updater')
     assert.equal(built.baseVersion, build.sourceVersion)
@@ -379,6 +380,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       'apps/desktop/scripts/before-build.mjs',
       'apps/desktop/scripts/mac-icon.cjs',
       'apps/desktop/scripts/mac-sign.mjs',
+      'apps/desktop/scripts/mac-sign-cache.mjs',
       'apps/desktop/scripts/payload-digests.mjs',
       'apps/desktop/scripts/utils.mjs',
       'scripts/msix-shared.mjs',
@@ -402,7 +404,14 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       fs.cpSync(path.join(repo, tree), path.join(root, tree), { recursive: true })
     }
 
-    fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
+    // Mirror both install trees so the copied desktop files resolve their
+    // dependencies exactly as they do in the checkout, hoisted or not.
+    for (const dir of ['', 'apps/desktop']) {
+      if (fs.existsSync(path.join(repo, dir, 'node_modules'))) {
+        fs.symlinkSync(path.join(repo, dir, 'node_modules'), path.join(root, dir, 'node_modules'), 'junction')
+      }
+    }
+
     const assets: string = path.join(app, 'assets/appx')
     fs.mkdirSync(assets)
 
@@ -421,8 +430,9 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
       const build: ChannelBuildRequest = request(sequence)
 
       const script: string = `
-        const { AppInfo } = require('./node_modules/app-builder-lib/dist/appInfo.js');
-        const Msix = require('./node_modules/app-builder-lib/dist/targets/win/MsixTarget.js').default;
+        const builderEntry = require.resolve('app-builder-lib', { paths: [require('node:path').resolve('apps/desktop')] });
+        const { AppInfo } = require(builderEntry);
+        const Msix = require(require('node:path').join(builderEntry, '../targets/win/MsixTarget.js')).default;
         const config = require('./apps/desktop/electron-builder.config.cjs');
         const pkg = require('./apps/desktop/package.json');
         const fs = require('node:fs');

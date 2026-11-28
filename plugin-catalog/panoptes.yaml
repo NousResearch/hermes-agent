@@ -1,0 +1,21 @@
+name: panoptes
+repo: https://github.com/huwhitememes/panoptes
+sha: 13e8e411f7aa91f736b5b70ad622d2331588c972
+subdir: ""
+description: "Live station map pane for the Hermes desktop app: tool calls, model steps and subagents light up stations around an eye that watches whatever is running. Disclosure — concept adapted from lot-map (github.com/alexeyw/lot-map, MIT, no shared code); pure renderer UI with no network calls, no shell and no credentials; reads only gateway events and its own settings storage."
+title: "Panoptes"
+maintainer: huwhitememes
+tier: community
+category: desktop
+requires_hermes: ">=0.21.7"
+version: "0.1.0"
+docs_url: https://github.com/huwhitememes/panoptes#readme
+screenshots:
+  - "https://raw.githubusercontent.com/huwhitememes/panoptes/13e8e411f7aa91f736b5b70ad622d2331588c972/docs/banner.png"
+  - "https://raw.githubusercontent.com/huwhitememes/panoptes/13e8e411f7aa91f736b5b70ad622d2331588c972/docs/panoptes.svg"
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -441,7 +441,9 @@ seed_one() {
         fi
     fi
 }
-seed_one ".env" ".env.example"
+# .env receives a generated API_SERVER_KEY below: seed it owner-only so it is
+# never 0644 under the ambient umask even if the later chmod 600 fails.
+(umask 077 && seed_one ".env" ".env.example")
 seed_one "config.yaml" "cli-config.yaml.example"
 seed_one "SOUL.md" "docker/SOUL.md"
 
@@ -640,7 +642,23 @@ fi
 # config-schema migrations that `hermes update` runs for non-Docker installs,
 # after first-boot seeding and before supervised gateway services start.
 # Set HERMES_SKIP_CONFIG_MIGRATION=1 for controlled/manual migrations.
-if [ -f "$HERMES_HOME/config.yaml" ]; then
+# Remote config mode (HERMES_CONFIG_BACKEND=remote) has no local config to migrate: the agent
+# migrates the fetched document in memory and never writes it back, so a leftover config.yaml must
+# not be migrated or treated as live. The backend is decided by the agent's own selection (same
+# dotenv parser and precedence as at boot: container env, $HERMES_HOME/.env, managed .env), never
+# by a second grammar here. If it cannot be decided, nothing is migrated: the agent still decides
+# at boot, and a file-mode migration simply waits for the next boot.
+_config_backend=$(s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
+import sys
+from pathlib import Path
+from hermes_cli.env_loader import selected_config_backend_name
+print(selected_config_backend_name(Path(sys.argv[1])))
+' "$HERMES_HOME" 2>/dev/null) || _config_backend=""
+if [ "$_config_backend" = "remote" ]; then
+    echo "[stage2] HERMES_CONFIG_BACKEND=remote: skipping docker_config_migrate.py"
+elif [ -z "$_config_backend" ]; then
+    echo "[stage2] Warning: could not determine the config backend; skipping docker_config_migrate.py"
+elif [ -f "$HERMES_HOME/config.yaml" ]; then
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
@@ -650,8 +668,10 @@ fi
 # volume, selected by $HERMES_HOME/installs/*/facts.json. An image upgrade
 # replaces uv.lock under that durable selection, so re-resolve it here, before
 # any supervised service boots onto a generation built for the previous image.
-# On failure (e.g. offline) PM falls back to the image's own environment and
-# keeps the extras recorded for the next boot or install. Then collect the
+# A selection the image's own environment already is boots that environment
+# instead of a rebuilt copy on the volume. On failure (e.g. offline) or when the
+# volume has no room for the rebuild, PM falls back to the image's own
+# environment and keeps the extras recorded for the next boot or install. Then collect the
 # generations nothing selects any more: no service holds a lease yet, and
 # collect_generations keeps anything younger than a day.
 s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -c '
@@ -666,6 +686,19 @@ removed = collect_generations(root) + collect_runtime_generations(install_state_
 print("[stage2] collected", len(removed), "unused dependency generations")
 ' || echo "[stage2] Warning: dependency refresh failed; continuing"
 
+# --- Ensure default catalog plugins are installed before services start ---
+# Runs a bounded foreground pass as the hermes user so default plugins (and
+# their Python dependency generations) are live for the very first session.
+# Skipped when HERMES_CONFIG_BACKEND=remote (same gate as config migration
+# above); any non-zero exit logs a warning and continues so boot never stalls.
+if [ "$_config_backend" = "remote" ]; then
+    echo "[stage2] HERMES_CONFIG_BACKEND=remote: skipping default plugins preflight"
+else
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" -m hermes_cli.default_plugins ensure \
+        --json --timeout 300 \
+        || echo "[stage2] Warning: default plugins not settled; continuing"
+fi
+
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.
@@ -673,9 +706,17 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     if refuse_symlinked_path "seed" "$HERMES_HOME/auth.json"; then
         :
     else
-        printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
+        # Seed under a restrictive umask so the credential is 0600 from the
+        # first instant — a plain root-context redirect lands 0644 under the
+        # ambient umask and exposes the refresh token on host-shared mounts
+        # until the chmod catches up (same hazard the .env seed guards
+        # against above). The re-tighten is best-effort: under `set -eu` an
+        # aborting chmod would leave the seeded credential behind with the
+        # boot dead partway.
+        (umask 077 && printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json")
         chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
-        chmod 600 "$HERMES_HOME/auth.json"
+        chmod 600 "$HERMES_HOME/auth.json" 2>/dev/null \
+            || echo "[stage2] Warning: could not tighten auth.json permissions" >&2
     fi
 fi
 
@@ -737,7 +778,10 @@ if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
     else
         printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
         chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
-        chmod 644 "$HERMES_HOME/gateway_state.json"
+        # Best-effort like the auth.json seed: under `set -eu` a failing chmod
+        # on this non-secret file would otherwise abort the whole boot.
+        chmod 644 "$HERMES_HOME/gateway_state.json" 2>/dev/null \
+            || echo "[stage2] Warning: could not set gateway_state.json permissions" >&2
     fi
 fi
 
@@ -752,40 +796,22 @@ if [ -d "$INSTALL_DIR/skills" ]; then
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 
-# --- Point agent-browser at the pinned Chromium binary ---
+# --- Check the pinned Chromium binary ---
 # The image's Dockerfile pm-provisions pinned full Chromium into
 # $HERMES_RUNTIME_DIR (/opt/hermes/tools) at BUILD time and bakes the
-# resolved browser binary path into /etc/hermes/agent-browser-executable-path
-# (the layout differs per arch — chrome-linux64/chrome on amd64,
-# chromium-linux-arm64/chromium on arm64 — so it is resolved at build time,
-# not hard-coded). agent-browser (the runtime CLI Hermes spawns for the
-# browser tool) doesn't recognise Playwright's directory layout in its own
-# cache scan and fails with "Auto-launch failed: Chrome not found" — even
-# though the binary is right there (#15697).
-#
-# Fix: read the baked path and export ``AGENT_BROWSER_EXECUTABLE_PATH``
-# via /run/s6/container_environment so the `with-contenv` shebang on
-# main-wrapper.sh propagates it into the supervised ``hermes`` process
-# and thence to agent-browser subprocesses.
-#
-# - Skipped when the user has already set ``AGENT_BROWSER_EXECUTABLE_PATH``
-#   (lets users override with a system Chrome install).
-# - Quietly skipped when the baked path file is absent (e.g. custom builds
-#   that strip the pm tool store).
-if [ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ] && \
-        [ -f /etc/hermes/agent-browser-executable-path ]; then
-    browser_bin="$(cat /etc/hermes/agent-browser-executable-path)"
+# resolved binary path into /etc/hermes/chromium-executable-path (the layout
+# differs per arch, so it is resolved at build time, not hard-coded). Hermes
+# reads that file itself (hermes_cli/browser_runtime.py) when pm's facts are
+# hidden, so nothing is exported here: the hook only says, once per boot,
+# when the baked path no longer names a runnable binary (a custom build that
+# stripped the tool store), instead of leaving the first browser_exec call to
+# discover it. No file at all is quiet: such builds never baked one.
+if [ -f /etc/hermes/chromium-executable-path ]; then
+    browser_bin="$(cat /etc/hermes/chromium-executable-path)"
     if [ -n "$browser_bin" ] && [ -x "$browser_bin" ]; then
-        echo "[stage2] Using pinned agent-browser Chromium binary: $browser_bin"
-        # Write to s6's container_environment so with-contenv picks it
-        # up for all supervised services (main-hermes, dashboard, etc.).
-        # Idempotent: each boot overwrites with the current path.
-        # Some container runtimes / s6-overlay versions do not create the
-        # envdir before cont-init hooks run, so create it defensively.
-        mkdir -p /run/s6/container_environment
-        printf '%s' "$browser_bin" > /run/s6/container_environment/AGENT_BROWSER_EXECUTABLE_PATH
+        echo "[stage2] Using pinned Chromium binary: $browser_bin"
     else
-        echo "[stage2] Warning: baked Chromium binary is missing (${browser_bin:-<empty>}); browser tool may fail"
+        echo "[stage2] Warning: baked Chromium binary is missing (${browser_bin:-<empty>}); browser_exec cannot launch the pinned browser"
     fi
 fi
 

@@ -1,0 +1,67 @@
+name: inbox-sentinel
+repo: https://github.com/eddwithers/inbox-sentinel
+sha: a354292456b0cc711ef033cf4085bd183718fe2b
+version: "0.1.0"
+title: Inbox Sentinel
+description: >-
+  One single funnel for notifications and messages: re-enable every email
+  notification — social networks, promotions, everything — and let the
+  plugin's AI gates read each message and decide what reaches you, tuned by
+  toggleable modules. Watches up to four Gmail or IMAP accounts within one
+  Hermes profile (read-only OAuth history polling or IMAP over TLS),
+  filters routine mail locally, asks your configured model
+  whether the rest needs attention, and sends a notification through a configured
+  `hermes send` target, with an optional reply draft for review. Never sends,
+  labels, archives or deletes mail. IS-ScamShield, a deterministic pre-gate check, flags
+  password-protected-PDF and undisclosed-recipients lures as POSSIBLE SCAM
+  warnings and never drafts replies to them; over-warning is intentional, so
+  false positives (e.g. legitimate password-protected statements) are
+  expected. Nine toggleable modules: IS-ScamShield, IS-AttachmentGuard and
+  IS-LinkGuard warn on lure shapes (password-protected PDFs, dangerous
+  attachments, suspicious links); IS-NoiseFilter, IS-SenderLearning and
+  IS-StormShield keep the channel quiet (local drops, learned rules,
+  identical-repeat storm suppression that never hides first arrivals or
+  security warnings); IS-Drafter drafts the optional reply (withhold rules,
+  budgeted through the host's daily draft cap) and IS-AlertShaper formats the
+  EMAIL ALERT text — both post-gate, both degrading to the host's previous
+  behaviour when disabled or failing. Modules get bounded state, config and
+  model-seam access — transport, model budgets and delivery stay host-owned.
+  IS-InboxSwitch adds account-tag policy; the host isolates account cursors,
+  retries and backoff. Invalid account settings stop polling; disabled accounts
+  are not read. Connection changes require a new account id. Watcher, custom
+  and desk_pa presets select read-only module bundles; desk_pa is a preview,
+  not calendar/archive/label capability or migration of existing automation.
+  Gmail declares four separately authorised grant slots (gmail, gmail2,
+  gmail3, gmail4) sharing the user's OAuth client and unchanged readonly scope.
+  IMAP adds three profile-secret slots INBOX_SENTINEL_IMAP_PASSWORD2/3/4;
+  passwords never belong in the account registry. Grants and secrets stay in
+  their owning profile. Budgets and learned sender rules remain profile-global.
+  Gate and drafts run in two plugin-owned
+  auxiliary model slots that follow the main model until pinned; daily attempt
+  caps bound model calls. Sends one "not watching your inbox" alert per account per day if
+  the mailbox can't be reached. Disclosure — runs a long-lived background poll after a
+  session event; calls gmail.googleapis.com through a Hermes-managed
+  gmail.readonly grant from the user's own Google Cloud Desktop client, or the
+  user's IMAP server with a profile-scoped password; message text goes to the
+  configured model provider; alerts run `hermes send` as a child process with
+  the text on argv and may be stored by the destination; sender rules and
+  counters are kept in profile plugin state; no telemetry.
+image: https://raw.githubusercontent.com/eddwithers/inbox-sentinel/a354292456b0cc711ef033cf4085bd183718fe2b/docs/media/icon.png
+maintainer: eddwithers
+tier: community
+category: automation
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/eddwithers/inbox-sentinel/blob/a354292456b0cc711ef033cf4085bd183718fe2b/README.md
+platforms: []
+known_issues:
+  - "Maximum four configured accounts. Sequential polling can delay later accounts; budget priority follows registry order, without scheduling fairness."
+  - "Signing the same OAuth grant into a different mailbox is not detectable through the host API: use a new account id as well to avoid reusing its cursor."
+  - "desk_pa is a read-only preview preset, not parity with existing Desk PA automation; write actions and migration are deferred."
+  - "Gmail needs the user's own Google Cloud Desktop OAuth client and a terminal sign-in (`hermes auth add inbox-sentinel:gmail`). In Testing mode Google expires the grant after seven days."
+  - "If the Gmail history cursor expires, the baseline is rebuilt and mail received in the gap can be missed."
+  - "Tested on macOS with Hermes v0.23.0 only. IMAP is tested against a scripted loopback TLS server, not an external provider."
+capabilities:
+  provides_tools: [inbox_sentinel_status, inbox_sentinel_test, inbox_sentinel_feedback]
+  provides_hooks: [on_session_start, pre_llm_call]
+  provides_middleware: []
+  requires_env: []

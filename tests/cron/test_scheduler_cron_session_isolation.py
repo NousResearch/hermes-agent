@@ -22,20 +22,11 @@ from tools import approval as approval_module
 from tools import approval_context
 
 
-class _DummySessionDB:
-    def set_session_title(self, *args, **kwargs):
-        pass
-
-    def end_session(self, *args, **kwargs):
-        pass
-
-    def close(self):
-        pass
-
-
 class _FakeCronAgent:
     def __init__(self, *args, **kwargs):
         self.kwargs = kwargs
+        self.session_id = kwargs["session_id"]
+        self.task_id = self.session_id
 
     def run_conversation(self, prompt, *, task_id=None):
         assert isinstance(task_id, str)
@@ -88,14 +79,13 @@ def _register_gateway_auto_approve(session_key: str) -> None:
 
 
 def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_code(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, cron_owner
 ):
     """Cron deny stays scoped; a later gateway approval still reaches its user."""
     monkeypatch.setenv("HERMES_MODEL", "test-model")
     monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
     monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(approval_context, "_get_cron_approval_mode", lambda: "deny")
-    monkeypatch.setattr("hermes_state_registry.acquire", _DummySessionDB)
     monkeypatch.setattr("run_agent.AIAgent", _FakeCronAgent)
     monkeypatch.setattr(
         "hermes_constants.resolve_reasoning_config", lambda *_args, **_kwargs: None

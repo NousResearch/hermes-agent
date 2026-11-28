@@ -1,0 +1,23 @@
+name: lazybird
+title: Lazybird TTS
+repo: https://github.com/lazybirdai/hermes-lazybird
+subdir: lazybird
+sha: 416c1690a95357efde015ff784b06b7f99a0acf1
+description: "Lazybird text-to-speech as a Hermes voice provider (tts.provider: lazybird), driven by the Lazybird v2 API. tts.voice takes any voice id from the Lazybird voice library or a voice you cloned or designed in your account (defaults to the official Elyssia voice), and tts.speed is passed through. The API returns MP3, which Hermes converts for Opus voice notes on messaging platforms. No new Python dependencies: the plugin posts with httpx. Disclosure — sends the text being spoken, the chosen voice id and speed, and your LAZYBIRD_API_KEY (header X-API-Key) to api.lazybird.app; synthesis is billed to your Lazybird account's characters; generated audio is written to Hermes's audio cache; no tools, hooks or middleware; no telemetry. Not implemented: realtime streaming (voice-mode replies are spoken sentence by sentence) and voice listing."
+maintainer: lazybirdai
+tier: community
+category: voice
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/lazybirdai/hermes-lazybird#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - "Output is always MP3; a request for another format gets an .mp3 file."
+  - "No voice listing or realtime streaming; per-sentence synthesis covers voice mode at higher latency."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - LAZYBIRD_API_KEY

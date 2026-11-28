@@ -96,6 +96,17 @@ def test_unreadable_profile_state_is_not_an_empty_selection(homes, monkeypatch, 
         enabled_member_dirs()
 
 
+@pytest.mark.platforms("posix")  # a self-referencing symlink needs no privilege only on POSIX
+def test_unreadable_config_link_is_not_an_empty_selection(homes):
+    # Only a missing file means "no config": a symlink loop must refuse, not drop the home's plugins.
+    default_home, _ = homes
+    config = default_home / "config.yaml"
+    config.unlink(missing_ok=True)
+    config.symlink_to(config)
+    with pytest.raises(ValueError, match=re.escape(str(config))):
+        pstate.enabled_plugins_ordered()
+
+
 def test_missing_config_parser_is_not_an_empty_plugin_selection(homes, monkeypatch):
     import sys
 
@@ -125,7 +136,7 @@ def test_verify_skips_bad_secondary_but_admission_refuses_it(homes, caplog):
     default_home, profile_home = homes
     plugin = default_home / "plugins" / "working"
     plugin.mkdir(parents=True)
-    (plugin / "plugin.yaml").write_text("name: working\npython_dependencies: [requests]\n", encoding="utf-8")
+    (plugin / "plugin.yaml").write_text("name: working\npython_dependencies: [fixturedep]\n", encoding="utf-8")
     _write_config(default_home, ["working"])
     bad = profile_home / "config.yaml"
     bad.write_text("plugins: [invalid]\n", encoding="utf-8")
@@ -166,8 +177,8 @@ def test_member_discovery_uses_real_enabled_config(homes):
     from pm.workspace import enabled_member_dirs
     home, _ = homes
     manifests = {
-        "modern/pyproject.toml": "[project]\n",
-        "legacy/plugin.yaml": 'name: legacy\npip_dependencies: ["requests>=2"]\n',
+        "modern/pyproject.toml": '[project]\ndependencies = ["fixturedep>=1"]\n',
+        "legacy/plugin.yaml": 'name: legacy\npip_dependencies: ["fixturedep>=1"]\n',
         "plain/plugin.yaml": "name: plain\n",
         "orphan/pyproject.toml": "[project]\n",
     }

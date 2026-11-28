@@ -682,7 +682,8 @@ class TestBundledDiscovery:
 
 
     def test_disabled_beats_enabled(self, _isolate_env):
-        """plugins.disabled wins even if the plugin is also in plugins.enabled."""
+        """plugins.disabled wins even if the plugin is also in plugins.enabled — and the
+        contradiction is surfaced (#131980), not absorbed as a plain disable."""
         import hermes_yaml as yaml
         cfg_path = _isolate_env / "config.yaml"
         cfg_path.write_text(yaml.safe_dump({
@@ -696,7 +697,7 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         loaded = mgr._plugins["disk-cleanup"]
         assert not loaded.enabled
-        assert loaded.error == "disabled via config"
+        assert loaded.error == "listed in both plugins.enabled and plugins.disabled — disabled wins"
 
     def test_memory_and_context_engine_subdirs_skipped(self, _isolate_env):
         """Bundled scan must NOT pick up plugins/memory or plugins/context_engine
@@ -709,3 +710,71 @@ class TestBundledDiscovery:
         mgr.discover_and_load()
         assert "memory" not in mgr._plugins
         assert "context_engine" not in mgr._plugins
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_deleted_or_renamed_profile_home_is_not_recreated(tmp_path, monkeypatch, move):
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path / "dead", move)
+    pi = _load_plugin_init()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        pi.dg.save_tracked([])
+    for sub in ("forget /x", "quick", "deep"):
+        assert "Profile 'b' no longer exists" in pi._handle_slash(sub)
+    assert pi._handle_slash("track /x test").startswith("Not tracked")
+    pi._recent_test_tracks["s_dead"] = {"x"}
+    pi._on_session_end(session_id="s_dead")  # caught: the cleanup is skipped
+    assert not home.exists()
+
+
+@pytest.mark.parametrize("sub", ("quick", "deep"))
+def test_profile_deleted_mid_cleanup_reply_admits_removed_files(tmp_path, monkeypatch, sub):
+    """The home goes away after quick() removed a file but before save_tracked(): the reply
+    must not claim disk-cleanup did nothing."""
+    from hermes_constants import mark_named_profile_deleted
+
+    home = tmp_path / ".hermes" / "profiles" / "b"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pi = _load_plugin_init()
+    victim = home / "test_scratch.py"
+    victim.write_text("x", encoding="utf-8")
+    pi.dg.save_tracked([{"path": str(victim), "category": "test",
+                         "timestamp": datetime.now(UTC).isoformat(), "size": 1}])
+
+    removed_first = []
+
+    def _delete_home_mid_run(_home):
+        removed_first.append(not victim.exists())
+        mark_named_profile_deleted(home)
+        shutil.rmtree(home)
+        return 0
+
+    monkeypatch.setattr(pi.dg, "_sweep_empty_dirs", _delete_home_mid_run)
+    reply = pi._handle_slash(sub)
+    assert removed_first == [True], "quick() removed the tracked file before the home vanished"
+    assert "Profile 'b' no longer exists" in reply
+    assert "did nothing" not in reply
+    assert "files it already removed stay removed" in reply
+    assert not home.exists()
+
+
+@pytest.mark.parametrize("named", (True, False))
+def test_unrelated_file_not_found_on_a_live_home_still_raises(tmp_path, monkeypatch, named):
+    """Only a dead named home turns FileNotFoundError into the "no longer exists" reply."""
+    home = tmp_path / ".hermes" / "profiles" / "b" if named else tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    pi = _load_plugin_init()
+
+    def _vanished():
+        raise FileNotFoundError("tracked file vanished")
+
+    monkeypatch.setattr(pi.dg, "quick", _vanished)
+    with pytest.raises(FileNotFoundError, match="tracked file vanished"):
+        pi._handle_slash("quick")

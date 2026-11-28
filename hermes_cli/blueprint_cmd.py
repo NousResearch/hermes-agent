@@ -134,6 +134,7 @@ def build_blueprint_seed(blueprint) -> str:
         lines.append("".join(bits))
 
     lines.append("")
+    create_options = f" Include skills={list(blueprint.skills)!r} in the create call." if blueprint.skills else ""
     lines.append(
         "Once you have my answers, create the job by calling the cronjob tool "
         "with action='create'. Build the schedule as a cron expression from "
@@ -141,7 +142,7 @@ def build_blueprint_seed(blueprint) -> str:
         "(fill {minute}/{hour} from the chosen time, {dow} from the weekday "
         f"choice using {dict(WEEKDAY_PRESETS)}, {{interval_min}} from any "
         "interval). Use this exact prompt for the job (substituting my "
-        f"answers into any {{slot}} placeholders): \"{blueprint.prompt_template}\". "
+        f"answers into any {{slot}} placeholders): \"{blueprint.prompt_template}\".{create_options} "
         "Confirm the schedule and what it will do before you create it."
     )
     return "\n".join(lines)
@@ -226,6 +227,15 @@ def handle_blueprint_command(
             f"Can't set up '{blueprint.title}': {e}\n"
             f"Or just run /blueprint {blueprint.key} and I'll ask you for the values."
         )
+
+    # Slot values are user text interpolated into the stored prompt: the same prompt/deliver
+    # guards as the cronjob tool and the dashboard's blueprint instantiate.
+    from cron.job_args import _normalize_deliver_param, _validate_bot_chat_deliver
+    from cron.prompt_scan import _scan_cron_prompt
+    guard_error = _scan_cron_prompt(spec["prompt"]) or _validate_bot_chat_deliver(
+        _normalize_deliver_param(spec.get("deliver")))
+    if guard_error:
+        return BlueprintCommandResult(f"Can't set up '{blueprint.title}': {guard_error}")
 
     try:
         from cron.scheduler import CronSchedulerRegistrationError, create_job_with_scheduler_registration

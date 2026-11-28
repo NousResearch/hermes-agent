@@ -67,7 +67,7 @@
  * does) instead of quietly writing plaintext. See the branch comments in each
  * test for the reasoning.
  *
- * Prerequisite: `npm run build` must have been run so dist/ exists.
+ * Prerequisite: `pnpm run build` must have been run so dist/ exists.
  */
 
 import * as fs from 'node:fs'

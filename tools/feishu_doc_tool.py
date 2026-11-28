@@ -8,8 +8,7 @@ from tools.feishu_lark import (
     _check_feishu,
     build_request,
     get_client,
-    raw_body,
-    set_client)
+    raw_body)
 from tools.registry import registry, tool_error, tool_result
 
 _RAW_CONTENT_URI = "/open-apis/docx/v1/documents/:document_id/raw_content"

@@ -7,6 +7,9 @@ rebound onto server.py's globals (method_ctx.bind_module) and reference them bar
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
+# Mirrors ui-tui/src/config/limits.ts INLINE_IMAGE_MAX_COLS/ROWS: no client gets a bigger preview.
+_MAX_PREVIEW_COLS = 64
+_MAX_PREVIEW_ROWS = 16
 method = _registry.method
 
 
@@ -91,6 +94,32 @@ def _(rid, params: dict) -> dict:
     data_url = _image_to_data_url(image_ref, cap) if image_ref else None
     return _ok(rid, {"available": True, "success": True, "image": image_ref,
                      **({"image_data": data_url} if data_url else {})})
+
+
+@method("image.render")
+def _(rid, params: dict) -> dict:
+    """Params: ``path``, ``cols``/``rows`` (cell budget), ``graphics`` (client owns a real
+    terminal), ``terminal`` (the client's own protocol pick). Result: ``{mode, cols, rows, ...}``
+    — see ``ImageRenderResult``."""
+    from agent.terminal_image import local_image_path, render_inline_image, resolve_inline_mode
+    # The client's terminal, never this process's env: one gateway serves many clients.
+    mode = resolve_inline_mode(_display_cfg().get("inline_images", "auto"), graphics=params.get("graphics") is True,
+                               detected="kitty" if params.get("terminal") == "kitty" else "unicode")
+    path = local_image_path(params.get("path"))
+    try:
+        cols, rows = int(params.get("cols") or 0), int(params.get("rows") or 0)
+    except (TypeError, ValueError):
+        return _err(rid, 4072, "cols and rows must be integers")
+    # A preview, whoever asks: past the TUI's own budget the reply grows by the cell (8 ints each).
+    cols, rows = min(cols, _MAX_PREVIEW_COLS), min(rows, _MAX_PREVIEW_ROWS)
+    image = render_inline_image(path, mode=mode, max_cols=cols, max_rows=rows) if path else None
+    if image is None:
+        return _ok(rid, {"mode": "off"})
+    if image.mode == "kitty":
+        return _ok(rid, {"mode": "kitty", "cols": image.cols, "rows": image.rows, "color": image.color,
+                         "transmit": image.transmit, "placeholder": image.placeholder})
+    return _ok(rid, {"mode": "unicode", "cols": image.cols, "rows": image.rows,
+                     "cells": [[[*top, *bottom] for top, bottom in row] for row in image.cells]})
 
 
 def register(server) -> None:

@@ -1,0 +1,27 @@
+name: procgen-studio
+title: Procgen Studio
+repo: https://github.com/iamlukethedev/hermes-procgen-studio
+sha: 204b063ca5dcb81c050299b9fcaa47ea5a437553
+description: "Image and video backend that draws with code. Your configured model writes SVG/Python drawing programs, which are rendered locally to PNG (and MP4/GIF) with the editable source and a reproducible seed saved next to each image. No image API key, STYLE.md art contracts with six presets, a critic pass with bounded redraws, local seed re-rolls and restyles, /procgen and hermes procgen commands, and a Desktop pane. Disclosure: no network calls of its own; every model call goes through ctx.llm on the user's configured provider (the procgen_draw / procgen_critic auxiliary slots when pinned); runs model-written Python drawing programs in a separate sandboxed Python process (AST import allowlist, audit hook refusing network, subprocess and file access outside the job directory, CPU/memory/file-size limits, wall-clock timeout; allow_python: false switches to SVG/pixel-only); invokes the system ffmpeg as a subprocess for video only; reads a STYLE.md from the session working directory when it has a preset:/palette: line; writes renders under $HERMES_HOME/plugin-data/procgen-studio/ and $HERMES_HOME/cache/generated/, plus an optional user-configured output folder; no telemetry, credentials, background processes or self-updates. Installs cairosvg (needs the system cairo library), numpy and Pillow."
+maintainer: iamlukethedev
+tier: community
+category: tools
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/iamlukethedev/hermes-procgen-studio#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/iamlukethedev/hermes-procgen-studio/204b063ca5dcb81c050299b9fcaa47ea5a437553/examples/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/iamlukethedev/hermes-procgen-studio/204b063ca5dcb81c050299b9fcaa47ea5a437553/examples/01-icons-ember.png
+  - https://raw.githubusercontent.com/iamlukethedev/hermes-procgen-studio/204b063ca5dcb81c050299b9fcaa47ea5a437553/examples/02-icons-frost.png
+  - https://raw.githubusercontent.com/iamlukethedev/hermes-procgen-studio/204b063ca5dcb81c050299b9fcaa47ea5a437553/examples/03-scene.png
+  - https://raw.githubusercontent.com/iamlukethedev/hermes-procgen-studio/204b063ca5dcb81c050299b9fcaa47ea5a437553/examples/04-logo.png
+  - https://raw.githubusercontent.com/iamlukethedev/hermes-procgen-studio/204b063ca5dcb81c050299b9fcaa47ea5a437553/examples/05-monster.png
+known_issues:
+  - Not for photorealism; it is built for icons, game assets, logos, flat illustrations, scenes, patterns, diagrams, low-poly creatures and motion graphics.
+  - cairosvg ignores SVG filters (no blur); glows and soft shadows are drawn with gradients.
+  - Output quality tracks the configured model's coding ability; small local models produce simpler drawings.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

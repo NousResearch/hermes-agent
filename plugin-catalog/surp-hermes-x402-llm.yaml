@@ -1,0 +1,28 @@
+name: surp-hermes-x402-llm
+repo: https://github.com/ivcained/surp-hermes-x402-llm
+sha: fdbd49f8a4577199f0870d0bf9e15b795467977c
+description: "Marketplace-aware LLM routing for Surp — live prices for all models, provider TPS and trusted flags, mid-chat seller switching, secret masking, and approval-gated paid chat. Disclosure — the messages passed to surp_chat and SURP_API_KEY go to the surp.ivc.lol gateway, run by the individual developer ivcained (operator page https://surp.ivc.lol/operator, terms https://surp.ivc.lol/terms; not affiliated with Surplus Intelligence), which forwards them to third-party sellers on the Surplus Intelligence marketplace, including sellers not flagged trusted unless trusted_only is set; paid surp_chat calls spend from the user's prepaid Surp balance (USDC on Base, 5 % gateway markup), each behind a per-model Hermes approval prompt (denied in cron and other unattended runs by default) plus a per-request ceiling (max_spend_usd, default $0.05); the price, provider, quote, combo and cache tools call the same gateway without a key; routing preferences are stored under HERMES_HOME/cache/surp-hermes-x402-llm/."
+maintainer: ivcained
+tier: community
+category: models
+version: "0.5.0"
+readme: true
+capabilities:
+  provides_tools:
+    - surp_models
+    - surp_markets
+    - surp_providers
+    - surp_route_prefs
+    - surp_quote
+    - surp_cache_status
+    - surp_chat
+    - surp_usage
+    - surp_jev_stats
+    - surp_combo_create
+    - surp_combo_list
+    - surp_combo_get
+  provides_hooks:
+    - pre_tool_call
+  requires_env:
+    - SURP_API_KEY
+requires_hermes: ">=0.21.5"

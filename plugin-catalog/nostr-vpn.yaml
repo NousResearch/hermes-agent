@@ -1,0 +1,19 @@
+name: nostr-vpn
+title: Nostr VPN
+repo: https://github.com/mmalmi/nostr-vpn
+sha: ffc8a77d342dd8db5e680fef92921a9706adf9f8
+subdir: plugins/nostr-vpn
+description: "Private mesh networking through the separately installed nvpn CLI. Instruction-only skill; connects to relays and peers and starts a persistent daemon. Tunnels need elevated host networking privileges. Disclosure — instruction-only skill: the agent runs the separately installed nvpn CLI in the terminal (installed by the user, or by the agent from the project's latest GitHub release or an unpinned `cargo install nvpn`), which creates local device keys, connects to Nostr relays and peers, starts a persistent daemon that with elevated privileges creates tunnel interfaces and routes, and on an admin host can approve devices into the user's private network."
+maintainer: Sirius Business Ltd
+tier: community
+category: tools
+version: "0.1.1"
+docs_url: https://github.com/mmalmi/nostr-vpn/blob/ffc8a77d342dd8db5e680fef92921a9706adf9f8/plugins/nostr-vpn/README.md
+platforms: []
+known_issues:
+  - "CLI approval and JSON join-request output are currently source-only. The skill documents the released CLI and native admin app fallback."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

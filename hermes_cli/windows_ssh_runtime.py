@@ -327,14 +327,14 @@ def process_state(pid: int, creation_time_ns: int, hermes_path: str, spawn_nonce
     # layout — so match "a python running our module" (`-c` bootstrap or plain `-m`). Identity
     # is anchored by the unforgeable creation-time + secret owner-nonce below.
     is_python = os.path.basename(arg0).startswith("python")
-    launches_module = (
-        argv[1:3] == ["-m", "hermes_cli.main"]
-        or (len(argv) > 2 and argv[1] == "-c" and "hermes_cli.main" in argv[2]))
+    from gateway.status_inline_source import inline_bootstrap_argv
+    logical_argv = inline_bootstrap_argv(argv) or argv
+    launches_module = logical_argv[1:3] == ["-m", "hermes_cli.main"]
     executable_match = arg0 == expected or (is_python and launches_module)
     try:
-        serve = argv.index("serve")
-        owner = argv.index("--ssh-owner-nonce", serve + 1)
-        owned = executable_match and "--isolated" in argv[serve + 1:] and argv[owner + 1] == spawn_nonce
+        serve = logical_argv.index("serve")
+        owner = logical_argv.index("--ssh-owner-nonce", serve + 1)
+        owned = executable_match and "--isolated" in logical_argv[serve + 1:] and logical_argv[owner + 1] == spawn_nonce
     except (ValueError, IndexError):
         owned = False
     return {"alive": process.is_running(), "owned": owned, "indeterminate": False,
@@ -380,6 +380,22 @@ def _resolve_direct_command(hermes_path: str) -> list[str]:
     return command
 
 
+def _spawn_env(payload: dict[str, Any]) -> dict[str, str]:
+    """The serve's environment. A Desktop dev build's renderer is an http origin the backend trusts
+    only from the HERMES_DESKTOP_DEV_SERVER it inherits, so the payload's ``devServer`` is handed
+    down exactly as the POSIX spawn command does; without one the variable is not set at all."""
+    dev_server = str(payload.get("devServer") or "")
+    if len(dev_server) > 2048 or any(ch in dev_server for ch in "\x00\r\n"):
+        raise ValueError("invalid devServer")
+    env = dict(os.environ)
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONPATH", None)
+    env.pop("HERMES_DESKTOP_DEV_SERVER", None)
+    if dev_server:
+        env["HERMES_DESKTOP_DEV_SERVER"] = dev_server
+    return env
+
+
 def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
     ownership_id = _ownership(str(payload["ownershipId"]))
     spawn_nonce = _nonce(str(payload["spawnNonce"]))
@@ -396,9 +412,7 @@ def spawn_backend(payload: dict[str, Any]) -> dict[str, Any]:
         args.extend(["--profile", profile])
     args.extend(["serve", "--isolated", "--host", "127.0.0.1", "--port", "0",
                  "--ssh-session-token-file", token_path, "--ssh-owner-nonce", spawn_nonce])
-    env = dict(os.environ)
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("PYTHONPATH", None)
+    env = _spawn_env(payload)
     _ensure_scope(ownership_id)
     log_path = _log_path(ownership_id, spawn_nonce)
     win32con = _win32().win32con
@@ -426,12 +440,21 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     return {
         "path": path,
         "version": (version.stdout + version.stderr).splitlines()[0] if version.returncode == 0 else "",
+        "runtimeBootstrapOwnership": 1,
         "supported": "--ssh-session-token-file" in help_text and "--ssh-owner-nonce" in help_text}
 
 
 def _probe(*_: str) -> dict[str, Any]:
     import platform
     return {"os": "Windows", "arch": platform.machine(), "hermesHome": str(get_default_hermes_root()), "python": sys.executable}
+
+
+def _inventory(*_: str) -> dict[str, Any]:
+    """Desktop's read-only roster: the canonical root and profile predicate; never mints an identity."""
+    from hermes_cli.install_identity import _INSTALL_ID_FILENAME, _read_existing
+    from hermes_cli.profiles import _iter_named_profile_dirs
+    install_id, _ = _read_existing(get_default_hermes_root() / _INSTALL_ID_FILENAME)
+    return {"profiles": ["default", *[p.name for p in _iter_named_profile_dirs()]], "installId": install_id}
 
 
 def _read_log(ownership_id: str, spawn_nonce: str) -> dict[str, Any]:
@@ -449,6 +472,7 @@ def _write_lock_op(ownership_id: str) -> dict[str, Any]:
 # operation -> (argument count or None for "any", handler(*args)).
 _OPERATIONS: dict[str, tuple[int | None, Any]] = {
     "probe": (None, _probe),
+    "inventory": (None, _inventory),
     "upload-token": (2, lambda o, n: upload_token(o, n, sys.stdin.buffer.read(65))),
     "read-lock": (1, read_lock),
     "write-lock": (1, _write_lock_op),

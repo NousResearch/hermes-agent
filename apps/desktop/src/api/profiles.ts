@@ -16,11 +16,28 @@ export function getProfiles(scope?: ProfileScope): Promise<ProfilesResponse> {
   })
 }
 
-export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string }> {
-  return hermesApi<{ name: string; ok: boolean; path: string }>({
+/**
+ * A connection's unscoped `/api/status`. `/api/profiles` lists every INSTALLED
+ * profile; `gateway_shared_with` here is the set its gateway actually serves.
+ */
+export function getConnectionServedProfiles(connectionId: string): Promise<{ gateway_shared_with?: null | string[] }> {
+  return hermesApi<{ gateway_shared_with?: null | string[] }>({
+    ...capabilityScoped({ connectionId }),
+    path: '/api/status',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+// Matches CREATE_RPC_TIMEOUT (hermes_cli/profile_provision_gateway.py): fresh profile creation
+// seeds bundled skills (up to 60s) and runs the bounded default-plugins preflight (120s).
+export const PROFILE_CREATE_TIMEOUT_MS = 300_000
+
+export function createProfile(body: ProfileCreatePayload): Promise<{ name: string; ok: boolean; path: string; soul_set?: boolean }> {
+  return hermesApi<{ name: string; ok: boolean; path: string; soul_set?: boolean }>({
     path: '/api/profiles',
     method: 'POST',
-    body
+    body,
+    timeoutMs: PROFILE_CREATE_TIMEOUT_MS
   })
 }
 

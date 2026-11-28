@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import type { FC, ReactNode } from 'react'
 import { useMemo } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { type Contribution, useContributions } from '@/contrib'
 import { ContribBoundary } from '@/contrib/react/boundary'
 import {
@@ -47,22 +49,35 @@ const DirectiveEntry: FC<{
   streaming: boolean
 }> = ({ contribution, parsed, streaming }) => {
   const render = (contribution.data as TranscriptDirectiveContribution).render
+  // The surface this transcript renders in (primary pane or a tile) names the
+  // chat that owns the card, so its actions can address that chat's composer.
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const sessionId = storedId || runtimeId || null
 
   // Stable component IDENTITY per (render, parsed) — a fresh type per parent
-  // render would remount the widget (card-sized jump). Streaming arrives as a
-  // real prop on that stable type, so the settle flip re-renders the same
-  // mount instead of being memo-skipped (ref-only reads were exactly that).
+  // render would remount the widget (card-sized jump). Streaming and the owning
+  // session arrive as real props on that stable type, so the settle flip
+  // re-renders the same mount instead of being memo-skipped (ref-only reads
+  // were exactly that).
   const Leaf = useMemo(
     () =>
-      function DirectiveLeafHost({ streaming: live }: { streaming: boolean }) {
-        return <>{render({ attrs: parsed.attrs, source: parsed.source, streaming: live })}</>
+      function DirectiveLeafHost({
+        sessionId: owner,
+        streaming: live
+      }: {
+        sessionId: null | string
+        streaming: boolean
+      }) {
+        return <>{render({ attrs: parsed.attrs, sessionId: owner, source: parsed.source, streaming: live })}</>
       },
     [render, parsed]
   )
 
   return (
     <ContribBoundary id={contribution.id} variant="chip">
-      <Leaf streaming={streaming} />
+      <Leaf sessionId={sessionId} streaming={streaming} />
     </ContribBoundary>
   )
 }
@@ -102,6 +117,24 @@ export const TranscriptDirectiveLeaf: FC<{ text: string; streaming?: boolean }> 
       ))}
     </>
   )
+}
+
+/** A directive given as data rather than text: a plugin's card row
+ *  (`ctx.post_card`). Renders the same contribution an assistant's `::name{...}`
+ *  would, or nothing when no plugin claims the name (the caller shows the text). */
+export const ClaimedDirective: FC<{ name: string; attrs: Readonly<Record<string, string>> }> = ({ name, attrs }) => {
+  const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+  const match = claimFor(contributions, name)
+  const parsed = useMemo<ParsedTranscriptDirective>(() => ({ attrs: { ...attrs }, name, source: '' }), [attrs, name])
+
+  return match ? <DirectiveEntry contribution={match} parsed={parsed} streaming={false} /> : null
+}
+
+/** True when a plugin claims directive `name` right now. */
+export function useDirectiveClaimed(name: string | undefined): boolean {
+  const contributions = useContributions(TRANSCRIPT_DIRECTIVE_AREA)
+
+  return name !== undefined && claimFor(contributions, name) !== undefined
 }
 
 /** A paragraph resolved against the registry: the prose to keep as prose, and

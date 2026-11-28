@@ -10,56 +10,17 @@ import pytest
 
 from hermes_cli import plugins as plugins_mod
 from hermes_cli.plugins import PluginManager
+from tests.hermes_cli.plugin_host_support import (
+    PROBE_PLUGIN,
+    _home_with_plugins,
+    _hosted_model_provider,
+)
 
-PROBE_PLUGIN = '''
-import json, os
-from agent.image_gen_provider import ImageGenProvider
-
-class Painter(ImageGenProvider):
-    @property
-    def name(self):
-        return "hostpainter"
-    def generate(self, prompt, aspect_ratio="landscape", **kw):
-        return {"success": True, "image": f"{prompt}@{os.getpid()}"}
-
-SEEN = []
-
-def register(ctx):
-    ctx.register_tool(name="hostprobe_pid", toolset="hostprobe", schema={"name": "hostprobe_pid",
-        "description": "d", "parameters": {"type": "object", "properties": {}}},
-        handler=lambda args, **kw: json.dumps({"pid": os.getpid(), "seen": SEEN, "x": args.get("x")}))
-    ctx.register_tool(name="hostprobe_nested", toolset="hostprobe", schema={"name": "hostprobe_nested",
-        "description": "d", "parameters": {"type": "object", "properties": {}}},
-        handler=lambda args, **kw: ctx.dispatch_tool("hostprobe_pid", {"x": "nested"}))
-    ctx.register_tool(name="hostprobe_crash", toolset="hostprobe", schema={"name": "hostprobe_crash",
-        "description": "d", "parameters": {"type": "object", "properties": {}}},
-        handler=lambda args, **kw: os._exit(3))
-    ctx.register_hook("post_tool_call", lambda tool_name=None, **kw: SEEN.append(tool_name))
-    ctx.register_image_gen_provider(Painter())
-'''
 
 PLATFORM_PLUGIN = '''
 def register(ctx):
     ctx.register_platform("x", "X", adapter_factory=lambda cfg: None, check_fn=lambda: True)
 '''
-
-
-def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
-    home = tmp_path / ".hermes"
-    home.mkdir(parents=True, exist_ok=True)
-    for name, body in plugins.items():
-        plugin_dir = home / "plugins" / name
-        plugin_dir.mkdir(parents=True)
-        (plugin_dir / "plugin.yaml").write_text(yaml.safe_dump({"name": name, "version": "1.0"}), encoding="utf-8")
-        (plugin_dir / "__init__.py").write_text(body, encoding="utf-8")
-    (home / "config.yaml").write_text(yaml.safe_dump(
-        {"plugins": {"enabled": list(plugins), "isolation": isolation}}), encoding="utf-8")
-    empty_bundled = tmp_path / "bundled"
-    empty_bundled.mkdir()
-    monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
-    return home
 
 
 @pytest.mark.platforms("posix")  # os._exit / SIGKILL process semantics
@@ -124,6 +85,41 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
     assert blocked.verdict == "in_process" and "register_platform" in blocked.reasons[0]
 
 
+def test_the_host_never_imports_a_package_planted_in_the_profile_home(tmp_path, monkeypatch):
+    """The host process starts in the profile home. A home a plugin's backend writes (a profile it runs
+    elsewhere) must not put a ``hermes_cli`` package of its own ahead of Hermes's."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "hermes_cli").mkdir()
+    (home / "hermes_cli" / "__init__.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+def test_an_empty_pythonpath_entry_does_not_put_the_profile_home_back_on_the_hosts_path(tmp_path, monkeypatch):
+    """``-P`` keeps the home the host starts in off its import path, but an empty ``PYTHONPATH`` entry means
+    the current directory again (``export PYTHONPATH=$PYTHONPATH:/x`` with it unset writes one)."""
+    home = _home_with_plugins(tmp_path, monkeypatch, {"quietprobe": "def register(ctx):\n    pass\n"})
+    planted = tmp_path / "planted.ran"
+    (home / "json.py").write_text(f"open({str(planted)!r}, 'a').write('ran')\n", encoding="utf-8")
+    userlib = tmp_path / "userlib"
+    userlib.mkdir()
+    monkeypatch.setenv("PYTHONPATH", os.pathsep + str(userlib))
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert not planted.exists()
+        assert manager._plugins["quietprobe"].error is None
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
 
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
@@ -149,28 +145,13 @@ def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path
             host.shutdown()
         managed_scope.invalidate_managed_cache()
 
-MODEL_PROVIDER_PLUGIN = '''
-import os
-from providers import register_provider
-from providers.base import ProviderProfile
-
-class HostModel(ProviderProfile):
-    def build_extra_body(self, *, session_id=None, **context):
-        return {"pid": os.getpid(), "session_id": session_id}
-
-register_provider(HostModel(name="hostmodel", base_url="https://hostmodel.example/v1", env_vars=("HOSTMODEL_KEY",)))
-'''
-
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_model_provider_profile_data_is_local_and_overrides_run_in_the_host(tmp_path, monkeypatch):
     import providers
 
     home = _home_with_plugins(tmp_path, monkeypatch, {})
-    plugin_dir = home / "plugins" / "model-providers" / "hostmodel"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.yaml").write_text("name: hostmodel\nkind: model-provider\n", encoding="utf-8")
-    (plugin_dir / "__init__.py").write_text(MODEL_PROVIDER_PLUGIN, encoding="utf-8")
+    _hosted_model_provider(home)
     profile = providers.get_provider_profile("hostmodel")
     try:
         assert isinstance(profile, providers.ProviderProfile)
@@ -341,3 +322,110 @@ def register(ctx):
         manager.unload()
         manager._plugin_host().shutdown()
     assert service.result(result["handle"]).summary == "host child done"
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("isolation", ["host", "in_process"])
+def test_failed_register_runs_its_on_unload_cleanup(tmp_path, monkeypatch, isolation):
+    # A register() that queued cleanup and then raised must have that cleanup run, in either mode.
+    marker = tmp_path / "cleaned"
+    body = f'''
+from pathlib import Path
+def register(ctx):
+    ctx.on_unload(lambda: Path({str(marker)!r}).write_text("cleaned"))
+    raise RuntimeError("register failed")
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"halfload": body}, isolation=isolation)
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert "register failed" in str(manager._plugins["halfload"].error)
+        assert marker.is_file(), "the failed load's on_unload cleanup never ran"
+    finally:
+        manager.unload()
+        if isolation == "host":
+            manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("cleanup", ['raise SystemExit("cleanup exit")', "import os; os._exit(7)"])
+def test_failed_hosted_load_keeps_its_error_when_cleanup_fails(tmp_path, monkeypatch, cleanup):
+    # Cleanup that raises or kills the host must not replace the register() error that is recorded.
+    body = f'''
+def register(ctx):
+    def cleanup():
+        {cleanup}
+    ctx.on_unload(cleanup)
+    raise RuntimeError("register failed")
+'''
+    _home_with_plugins(tmp_path, monkeypatch, {"halfload": body})
+    manager = PluginManager()
+    manager.discover_and_load()
+    try:
+        assert "register failed" in str(manager._plugins["halfload"].error)
+    finally:
+        manager.unload()
+        manager._plugin_host().shutdown()
+
+
+@pytest.mark.platforms("any")
+@pytest.mark.parametrize("held_in", ["register", "host_start"])
+def test_late_failure_of_an_abandoned_load_leaves_the_reloaded_plugin_alone(tmp_path, monkeypatch, held_in):
+    # A hosted load abandoned at its deadline (inside register(), or still waiting for the host to start)
+    # can fail after a reload of the same plugin succeeded. Host state is keyed by plugin, not by load,
+    # so that late failure must not unload the live load.
+    from hermes_cli import plugin_host, plugins_loader
+    from tests.waiting import wait_until
+    from tools.registry import registry
+
+    state = tmp_path / "state"
+    state.mkdir()
+    # The abandoned load's register() is the first to run when it is held inside register(), the second
+    # when it is held before the host start returns (the reload reaches the host first).
+    failing_attempt = 1 if held_in == "register" else 2
+    body = f'''
+import json, time
+from pathlib import Path
+STATE = Path({str(state)!r})
+def register(ctx):
+    attempt = len(list(STATE.glob("attempt-*"))) + 1
+    (STATE / f"attempt-{{attempt}}").write_text("x")
+    if attempt == {failing_attempt}:
+        while not (STATE / "go").exists():
+            time.sleep(0.05)
+        raise RuntimeError("abandoned load failed late")
+    ctx.register_tool(name="lateprobe_ping", toolset="lateprobe", schema={{"name": "lateprobe_ping",
+        "description": "d", "parameters": {{"type": "object", "properties": {{}}}}}},
+        handler=lambda args, **kw: json.dumps({{"pong": True}}))
+'''
+    home = _home_with_plugins(tmp_path, monkeypatch, {"lateprobe": body})
+    (home / "config.yaml").write_text(yaml.safe_dump({"plugins": {
+        "enabled": ["lateprobe"], "isolation": "host", "load_timeout_seconds": 2}}), encoding="utf-8")
+    manager = PluginManager()
+    manager._plugin_host().ensure_started()  # outside any load deadline: a slow host start can't time out the reload
+    if held_in == "host_start":
+        start, callers = plugin_host.PluginHost.ensure_started, []
+
+        def slow_first_start(self):
+            channel = start(self)
+            callers.append(self)
+            if len(callers) == 1:
+                wait_until(lambda: (state / "go").exists(), timeout=30, what="the test to release the host start")
+            return channel
+
+        monkeypatch.setattr(plugin_host.PluginHost, "ensure_started", slow_first_start)
+    manager.discover_and_load()
+    try:
+        assert "timed out" in str(manager._plugins["lateprobe"].error)
+        manager.discover_and_load(force=True)
+        assert manager._plugins["lateprobe"].enabled
+        (state / "go").write_text("go")
+        loader = f"{plugins_loader._LOADER_THREAD_PREFIX}lateprobe"
+        wait_until(lambda: not any(t.is_alive() and t.name == loader for t in plugins_loader._ABANDONED_LOADERS),
+                   timeout=15, what="the abandoned first load to finish")
+        assert len(list(state.glob("attempt-*"))) == 2
+        assert json.loads(registry.dispatch("lateprobe_ping", {}, scope=manager.scope_key)) == {"pong": True}
+    finally:
+        (state / "go").write_text("go")
+        manager.unload()
+        manager._plugin_host().shutdown()

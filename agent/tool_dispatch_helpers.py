@@ -18,11 +18,13 @@ from typing import Any, Dict, List, Optional
 
 from agent.compression_marker import _COMPRESSION_MARKER_ARTIFACT_RE
 from agent.message_metadata import stamp_message_timestamp
+from agent.redact_secret_sources import redact_secret_source_values
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     tool_may_have_side_effect,
 )
 from tools.threat_patterns import scan_for_threats
+from session_rules.turns import _is_multimodal_tool_result, _is_text_part, _multimodal_text_summary
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,23 @@ def _is_destructive_command(cmd: str) -> bool:
     return bool(cmd) and bool(_DESTRUCTIVE_PATTERNS.search(cmd) or _REDIRECT_OVERWRITE.search(cmd))
 
 
+def _extend_tool_timeout(tool_name: str, default: float | None) -> float | None:
+    """A registered transport budget must not be cut short by the generic executor."""
+    from tools.registry import registry
+
+    entry = registry.get_entry(tool_name)
+    if default is None or entry is None or entry.execution_timeout is None:
+        return default
+    return max(default, entry.execution_timeout)
+
+
+def _requires_extended_tool_deadline(tool_name: str) -> bool:
+    from agent.tool_executor import _resolve_concurrent_tool_timeout
+
+    default = _resolve_concurrent_tool_timeout()
+    return _extend_tool_timeout(tool_name, default) != default
+
+
 def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Whether an MCP tool's server opted into parallel calls; False if MCP is unavailable."""
     try:
@@ -182,7 +201,7 @@ def _batch_admission(tool_call, execution_cwd: Optional[Path]) -> tuple[str, lis
         return None
 
     name, args = _peel_bridge_call(tool_name, function_args)
-    if name in _NEVER_PARALLEL_TOOLS:
+    if name in _NEVER_PARALLEL_TOOLS or _requires_extended_tool_deadline(name):
         return None
     if name in _PATH_SCOPED_TOOLS:
         scoped = _extract_parallel_scope_paths(name, args, execution_cwd=execution_cwd)
@@ -299,30 +318,6 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return left_parts[:common_len] == right_parts[:common_len]
 
 
-def _is_multimodal_tool_result(value: Any) -> bool:
-    """True for the multimodal envelope: dict with ``_multimodal=True`` and a ``content`` list."""
-    return isinstance(value, dict) and value.get("_multimodal") is True and isinstance(value.get("content"), list)
-
-
-def _is_text_part(p: Any) -> bool:
-    return isinstance(p, dict) and p.get("type") == "text"
-
-
-def _multimodal_text_summary(value: Any) -> str:
-    """Plain-text view of a tool result (logging, previews, string-only providers)."""
-    if isinstance(value, str):
-        return value
-    if _is_multimodal_tool_result(value):
-        if value.get("text_summary"):
-            return str(value["text_summary"])
-        parts = [str(p.get("text", "")) for p in value.get("content") or [] if _is_text_part(p)]
-        return "\n".join(parts) if parts else "[multimodal tool result]"
-    try:
-        return json.dumps(value, default=str)
-    except Exception:
-        return str(value)
-
-
 def _append_subdir_hint_to_multimodal(value: dict[str, Any], hint: str) -> None:
     """Append a subdir hint to the envelope's first text part (and ``text_summary``) in place."""
     if not _is_multimodal_tool_result(value):
@@ -421,6 +416,17 @@ def _trajectory_normalize_msg(msg: dict[str, Any]) -> dict[str, Any]:
     return msg
 
 
+def _redact_secret_source_content(content: Any) -> Any:
+    """Scrub applied secret-source values from a result's text before it becomes provider context:
+    not every tool runs its output through ``redact_sensitive_text`` (MCP, web, plugin tools)."""
+    if isinstance(content, str):
+        return redact_secret_source_values(content)
+    if isinstance(content, list):
+        return [{**item, "text": redact_secret_source_values(item["text"])} if _is_text_item(item) else item
+                for item in content]
+    return content
+
+
 def _normalize_tool_call_id(tool_call_id: Any) -> Any:
     """Normalize a composite bridge id to its canonical call-id half."""
     if isinstance(tool_call_id, str) and "|" in tool_call_id:
@@ -443,6 +449,7 @@ def make_tool_result_message(
     tool_call_id = _normalize_tool_call_id(tool_call_id)
     # Elision notice is appended to the RAW content first, THEN wrapped, so it sits inside
     # the untrusted block next to the data it describes — once, at construction (cache-safe).
+    content = _redact_secret_source_content(content)
     wrapped = _maybe_wrap_untrusted(name, _maybe_append_elision_notice(name, content))
     message = stamp_message_timestamp({
         "role": "tool",
@@ -599,9 +606,7 @@ __all__ = [
     "_extract_parallel_scope_path",
     "_extract_parallel_scope_paths",
     "_is_destructive_command",
-    "_is_multimodal_tool_result",
     "_maybe_append_elision_notice",
-    "_multimodal_text_summary",
     "_paths_overlap",
     "_plan_tool_batch_segments",
     "_should_parallelize_tool_batch",

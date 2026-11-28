@@ -15,13 +15,14 @@ def _project(tmp_path: Path) -> tuple[Path, str]:
     source = tmp_path / "source with spaces"
     source.mkdir()
     (source / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.2.3"\n', encoding="utf-8")
-    (source / "package.json").write_text('{"workspaces": ["apps/desktop"]}', encoding="utf-8")
-    (source / "package-lock.json").write_text('{"packages": {}}', encoding="utf-8")
+    (source / "package.json").write_text('{}', encoding="utf-8")
+    (source / "pnpm-workspace.yaml").write_text("packages:\n  - apps/desktop\n", encoding="utf-8")
+    (source / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'\n", encoding="utf-8")
     (source / ".gitignore").write_text(".build/\n", encoding="utf-8")
     (source / "pm").mkdir()
     (source / "pm/lock.json").write_text(json.dumps({"schema": 1, "packages": {
         name: {"version": "1.0.0", "artifacts": {current_target(): {"url": "https://example.test/tool", "sha256": "a" * 64}}}
-        for name in ("python", "node", "npm")
+        for name in ("python", "node", "pnpm")
     }}), encoding="utf-8")
     subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
     subprocess.run(["git", "add", "."], cwd=source, check=True)
@@ -106,7 +107,7 @@ def test_prepared_input_roundtrip_rejects_mutation_and_foreign_source(tmp_path):
     from pm.registry import get_package
     store = cache / "tools"
     binaries = {}
-    for name in ("python", "node", "npm"):
+    for name in ("python", "node", "pnpm"):
         package = get_package(name)
         entry = store / package.store_entry("1.0.0", request.target)
         binary = package.binary(entry, request.target)
@@ -180,9 +181,10 @@ def test_source_admission_rejects_dirty_checkout_and_invalid_store_before_writes
     source, commit = _project(tmp_path)
     work = tmp_path / "work"
     cache = tmp_path / "cache"
-    for tag, selected in [(None, commit), ("v1.2.0+canary.20260911T120000Z", None)]:
-        with pytest.raises(ValueError, match="Store.*stable"):
-            BuildRequest.create(source, tag=tag, commit=selected, variant="store", work=work, cache=cache, bundle_env={})
+    # A commit build never packages the Store identity. A canary does (it runs every stable lane),
+    # and only stable ever submits one.
+    with pytest.raises(ValueError, match="Store.*stable"):
+        BuildRequest.create(source, tag=None, commit=commit, variant="store", work=work, cache=cache, bundle_env={})
     (source / "package.json").write_text("{}", encoding="utf-8")
     (source / "pyproject.toml").write_text('staged fixture contents', encoding="utf-8")
     subprocess.run(["git", "add", "pyproject.toml"], cwd=source, check=True)

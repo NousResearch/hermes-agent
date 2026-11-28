@@ -14,7 +14,7 @@ full credential environment. Two tiers:
 import os
 from unittest.mock import patch
 
-from tools.environments.local import hermes_subprocess_env
+from tools.environments.local import build_subprocess_env, hermes_subprocess_env
 from tools.environments.local_env_policy import _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_FORCE_PREFIX
 
 
@@ -24,6 +24,7 @@ _TIER1_SAMPLE = {
     "SLACK_APP_TOKEN": "xapp-secret",
     "MODAL_TOKEN_SECRET": "modal-secret",
     "HERMES_DASHBOARD_SESSION_TOKEN": "dash-secret",
+    "OSC7577_TOKEN": "dummy-token-replace-me",
 }
 
 _PROVIDER_SAMPLE = {
@@ -139,25 +140,25 @@ class TestTierInvariants:
 
 class TestBrowserPassthroughPattern:
     def test_browser_keys_recoverable_after_strip(self):
-        """Browser tool pattern: strip everything, then re-add the browser
-        backend keys agent-browser actually needs."""
-        from tools.browser_tool import _BROWSER_PASSTHROUGH_KEYS
+        """browser_exec pattern: strip everything, then re-add only the key
+        the browser harness itself reads."""
+        from tools.browser_use_cli import _HARNESS_PASSTHROUGH_KEYS
 
         leaked = {
+            "BROWSER_USE_API_KEY": "bu-key",
             "BROWSERBASE_API_KEY": "bb-key",
-            "BROWSERBASE_PROJECT_ID": "bb-proj",
-            "FIRECRAWL_API_KEY": "fc-key",
             "ANTHROPIC_API_KEY": "ant-should-go",
             "TELEGRAM_BOT_TOKEN": "bot-should-go",
         }
         with patch.dict(os.environ, {**_SAFE_SAMPLE, **leaked}, clear=True):
             env = hermes_subprocess_env(inherit_credentials=False)
-            for key in _BROWSER_PASSTHROUGH_KEYS:
+            for key in _HARNESS_PASSTHROUGH_KEYS:
                 if key in os.environ:
                     env[key] = os.environ[key]
 
-        assert env["BROWSERBASE_API_KEY"] == "bb-key"
-        assert env["FIRECRAWL_API_KEY"] == "fc-key"
+        assert env["BROWSER_USE_API_KEY"] == "bu-key"
+        # Cloud-provider keys stay in-process (sessions are created over HTTP), never in the child.
+        assert "BROWSERBASE_API_KEY" not in env
         # Provider + gateway secrets must NOT come back.
         assert "ANTHROPIC_API_KEY" not in env
         assert "TELEGRAM_BOT_TOKEN" not in env
@@ -237,3 +238,9 @@ class TestInternalDynamicSecrets:
         assert {
             "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
         } <= _ALWAYS_STRIP_KEYS
+
+    def test_osc7577_token_scrubbed_from_subprocesses(self):
+        assert "OSC7577_TOKEN" in _ALWAYS_STRIP_KEYS
+        with patch.dict(os.environ, {**_SAFE_SAMPLE, "OSC7577_TOKEN": "dummy-token-replace-me"}, clear=True):
+            assert "OSC7577_TOKEN" not in build_subprocess_env(scrub_secrets=True)
+            assert "OSC7577_TOKEN" not in hermes_subprocess_env(inherit_credentials=True)

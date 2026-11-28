@@ -37,8 +37,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from hermes_cli.plugin_host_wire import (
-    Channel, PluginHostUnavailable, PluginHostUnsupported, decode, encode, signature_from,
+    Channel, Opaque, PluginHostUnavailable, PluginHostUnsupported, declared_return, decode, encode, restore,
+    signature_from,
 )
+from hermes_cli._startup_fast import project_root_str
+from hermes_cli.plugins_loader import PluginHomeMoved
 
 logger = logging.getLogger("hermes_cli.plugins")
 
@@ -51,19 +54,45 @@ _RESTART_BUDGET = 3
 _RESTART_WINDOW_SECS = 600.0
 
 
+def _hosted_ambient_credentials(home: Path, own: Optional[bool] = None,
+                                template_env: Optional[dict[str, str]] = None) -> dict[str, str]:
+    """``env_vars`` of this home's hosted ``ambient_credentials`` providers (``GH_TOKEN``-style names the
+    child-env scrub always strips), read the way that provider reads them in-process: ``get_secret``
+    under the home's scope, so the launch home keeps its shell value and a routed home never gets it.
+    *own* and *template_env* are ``build_profile_secret_scope``'s *process_home* and *template_env*."""
+    from agent.runtime_scope import bind_state, scope_for_profile
+    from agent.secret_scope import build_profile_secret_scope, get_secret
+    from hermes_cli.plugin_host_profiles import is_hosted_profile
+    from providers import list_providers
+    names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
+    if not names:
+        return {}
+    with bind_state(scope_for_profile(home), secrets=build_profile_secret_scope(home, process_home=own,
+                                                                                template_env=template_env),
+                    home_override=False, terminal=False):
+        return {name: value for name in sorted(names) if (value := get_secret(name))}
+
+
 class PluginHost:
     """One host process for one :class:`~hermes_cli.plugins.PluginManager` (one profile home)."""
 
     def __init__(self, manager: Any):
         self._manager = manager
-        self._home = Path(manager.home_path)
+        self._home = Path(manager.owner_home)
         self._lock = threading.Lock()
         self._proc: Optional[subprocess.Popen] = None
         self._channel: Optional[Channel] = None
         self._contexts: dict[str, Any] = {}
+        # The current load of each plugin_key: a request (and the tasks it spawns) carries the load it ran
+        # in, so code left running from an unloaded load is not taken for a reload of the same plugin.
+        self._loads: dict[str, int] = {}
+        self._load_ids = itertools.count(1)
         self._handles: dict[int, Any] = {}
         self._handle_ids = itertools.count(1)
         self._base_context = self._build_base_context()
+        from hermes_cli.plugin_isolation import home_moved_refusal
+        # Built through the name, so kept only if it still leads here after the build (as a start's last check).
+        self._context_stale = home_moved_refusal(self._home) is not None
         self._loading: Optional[str] = None
         self._stopping = False
         self._deaths: list = []
@@ -77,6 +106,10 @@ class PluginHost:
     @property
     def pid(self) -> Optional[int]:
         return self._proc.pid if self._proc is not None else None
+
+    @property
+    def home(self) -> Path:
+        return self._home
 
     @property
     def alive(self) -> bool:
@@ -98,15 +131,44 @@ class PluginHost:
         context.run(bind)
         return context
 
-    def _argv(self) -> list:
-        from hermes_cli.plugin_isolation import host_launcher
-        return [*host_launcher(), sys.executable, "-m", _HOST_MODULE]
+    def _launcher(self, own: bool) -> tuple[list, Optional[dict[str, str]]]:
+        """The host's launcher, and the env its ``.env`` templates resolved against (``launcher_for``)."""
+        from hermes_cli.plugin_isolation import launcher_for
+        # For the home this start took (``_home``), not ``owner_home`` read again nor the caller's binding, either
+        # of which can name a link renamed since. Not in the host's context either: its secret scope holds only
+        # the profile's files, without the launch profile's env-only keys.
+        return launcher_for(self._home, own)
 
-    def _env(self) -> dict[str, str]:
-        from tools.environments.local import served_profile_child_env
-        env = self._base_context.run(served_profile_child_env, target_home=self._home, inherit_credentials=True)
-        repo_root = str(Path(__file__).resolve().parents[1])
-        env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
+    def _env(self, own: bool, templates: Optional[dict[str, str]], launcher: list) -> dict[str, str]:
+        from hermes_cli.plugin_isolation import home_moved_refusal, lending_launcher
+        # Building the env reads the provider registry (the child-env builder's blocklist, at its first import or
+        # the registry's first read) and scans the home's provider plugins for ambient credentials; either imports
+        # them, in Hermes for an in-process home: not through a moved name.
+        if (moved := home_moved_refusal(self._home)) is not None:
+            raise PluginHomeMoved(moved)
+
+        def build() -> dict[str, str]:  # imported here too: a first import reads the registry for the bound home
+            with lending_launcher(launcher):  # and that read can run a cold provider extraction
+                from tools.environments.local import served_profile_child_env
+                return served_profile_child_env(target_home=self._home, inherit_credentials=True, own_profile=own,
+                                                template_env=templates)
+
+        env = self._base_context.run(build)
+
+        def ambient() -> dict[str, str]:  # a cold provider extraction here runs under this start's launcher
+            with lending_launcher(launcher):
+                return _hosted_ambient_credentials(self._home, own, templates)
+
+        # The build read through the name too, and the scan rereads the plugin dirs once their stamps are due.
+        if (moved := home_moved_refusal(self._home)) is not None:
+            raise PluginHomeMoved(moved)
+        env.update(self._base_context.run(ambient))
+        repo_root = project_root_str()
+        # Absolute entries only: the host starts in the profile home, where an empty or relative entry
+        # (``PYTHONPATH=:/x``) would put that home back on the import path that -P keeps it off.
+        inherited = env.get("PYTHONPATH")
+        entries = [os.path.abspath(p or os.curdir) for p in inherited.split(os.pathsep)] if inherited else []
+        env["PYTHONPATH"] = os.pathsep.join([repo_root, *entries])
         env.setdefault("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING")
         from hermes_cli.plugin_isolation import HOST_PROCESS_ENV
         env[HOST_PROCESS_ENV] = "1"
@@ -117,10 +179,28 @@ class PluginHost:
             if self.alive:
                 return self._channel  # type: ignore[return-value]
             self._stopping = False
-            argv = self._argv()
-            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=self._env(), cwd=str(self._home),
-                                    bufsize=0)
+            home = Path(self._manager.owner_home)  # at each start: a renamed link's old name leads nowhere
+            if home != self._home or self._context_stale:
+                previous, self._home = self._home, home
+                self._context_stale = True  # built through the name: kept once this start's last check passes
+                try:
+                    self._base_context = self._build_base_context()
+                except BaseException:
+                    self._home = previous  # so the next start builds the context for the new home again
+                    raise
+            from hermes_cli.plugin_isolation import home_moved_refusal, is_launch_home
+            own = is_launch_home(self._home)  # one answer for the launcher and the child's env
+            launcher, templates = self._launcher(own)  # the launcher's .env, resolved once for the child's env too
+            # -P: the host starts in the profile home, which ``-m`` would otherwise put first on sys.path, so a
+            # ``hermes_cli/`` package there (a home a plugin's backend writes) would run instead of ours.
+            argv = [*launcher, sys.executable, "-P", "-m", _HOST_MODULE]
+            env = self._env(own, templates, launcher)
+            # Every read above went through the name: if it was repointed meanwhile, they read another directory.
+            if (moved := home_moved_refusal(self._home)) is not None:
+                raise PluginHomeMoved(moved)
+            self._context_stale = False
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    env=env, cwd=str(self._home), bufsize=0)
             threading.Thread(target=_pump_stderr, args=(proc, self._home.name), daemon=True,
                              name=f"plugin-host-{proc.pid}-stderr").start()
             self._generation += 1
@@ -179,7 +259,10 @@ class PluginHost:
             if loaded is None or not loaded.enabled:
                 continue
             manager.unload(key)
-            manager._load_plugin(loaded.manifest)
+            try:
+                manager._load_plugin(loaded.manifest)
+            except PluginHomeMoved as exc:  # unloaded above: it stays down rather than run under no profile name
+                logger.error("Not reloading plugin '%s' after its host exited: %s", key, exc)
 
     def shutdown(self) -> None:
         self._stopping = True
@@ -203,23 +286,37 @@ class PluginHost:
     def load(self, manifest: Any, ctx: Any, *, module_name: Optional[str], entrypoint: bool) -> str:
         """Import ``manifest``'s plugin in the host and replay its registrations onto ``ctx``."""
         from hermes_cli.plugins import PluginContext, manifest_key
-        channel = self.ensure_started()
         plugin_key = manifest_key(manifest)
+        # Claimed before ensure_started() can block on a host start, so a load abandoned at its deadline there
+        # cannot take the key back from a newer load of this plugin when it resumes (see the except branch).
         self._contexts[plugin_key] = ctx
+        self._loads[plugin_key] = next(self._load_ids)
         params = {
-            "plugin_key": plugin_key, "plugin_id": ctx.plugin_id, "name": manifest.name,
+            "plugin_key": plugin_key, "load": self._loads[plugin_key], "plugin_id": ctx.plugin_id,
+            "name": manifest.name,
             "path": manifest.path, "module_name": module_name, "entrypoint": entrypoint,
-            "profile_name": self._base_context.copy().run(lambda: ctx.profile_name),
             "manifest": {k: getattr(manifest, k, None) for k in (
                 "name", "version", "description", "author", "source", "path", "key", "kind",
-                "skill_namespace")},
+                "data_namespace")},
             "ctx_methods": sorted(n for n in dir(PluginContext) if not n.startswith("_")),
         }
-        self._loading = plugin_key
         try:
+            channel = self.ensure_started()
+            # After the start: a restart can move the host to another home (a renamed link's old name).
+            params["profile_name"] = self._base_context.copy().run(lambda: ctx.profile_name)
+            self._loading = plugin_key
             result = channel.call("load", params)
         except BaseException:
-            self._contexts.pop(plugin_key, None)
+            # register() may have queued host-side on_unload callbacks before raising: run them, as
+            # the in-process failure path does, so the failed load leaves nothing behind in the host.
+            # Only while this load still owns the key: a deadline-abandoned load can fail after a newer
+            # load of the same plugin took it over, and the host's state is keyed by plugin, not load.
+            # Best effort: a failing cleanup must not replace the load error being re-raised.
+            if self._contexts.get(plugin_key) is ctx:
+                try:
+                    self._unload(plugin_key)
+                except Exception:
+                    logger.warning("Plugin '%s' cleanup after a failed load failed", plugin_key, exc_info=True)
             raise
         finally:
             self._loading = None
@@ -259,7 +356,9 @@ class PluginHost:
             self._contexts[plugin_key] = ctx
         from hermes_cli.plugins import PluginContext
         params = {
-            "plugin_key": plugin_key, "plugin_id": getattr(ctx, "plugin_id", Path(plugin_dir).name),
+            # One load per key until it unloads: a fresh instance of the same plugin is not a reload.
+            "plugin_key": plugin_key, "load": self._loads.setdefault(plugin_key, next(self._load_ids)),
+            "plugin_id": getattr(ctx, "plugin_id", Path(plugin_dir).name),
             "name": Path(plugin_dir).name, "path": str(plugin_dir), "module_name": module_name,
             "base": base_ref, "capture": capture, "forward": ctx is not None,
             "manifest": {"name": Path(plugin_dir).name, "path": str(plugin_dir), "source": "user"},
@@ -287,15 +386,23 @@ class PluginHost:
                                            "attr": attr, "args": encode(list(args)), "kwargs": encode(kwargs)})
 
     def asgi_request(self, plugin_name: str, dashboard_dir: str, api_file: str, method: str, path: str,
-                     query: str, headers: list, body: bytes) -> dict[str, Any]:
-        """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host."""
+                     query: str, headers: list, body: bytes, *, timeout: Optional[float] = None,
+                     authenticated: bool = False) -> dict[str, Any]:
+        """One dashboard ``/api/plugins/<name>/`` request, served by the plugin's router in the host;
+        ``TimeoutError`` when no answer comes within ``timeout`` seconds (the host is left running)."""
+        from hermes_cli.plugin_isolation import refuse_moved_plugin_dir
         self.ensure_started()
+        # The request waited in its profile's queue, and the host may have just started or have releases to flush
+        # first, since the lookup read ``dashboard_dir``: its name is checked right before the host is sent it.
         return self._call("asgi", {"plugin": plugin_name, "dashboard_dir": dashboard_dir, "api_file": api_file,
                                    "method": method, "path": path, "query": query,
-                                   "headers": [list(h) for h in headers], "body": encode(body)})
+                                   "authenticated": authenticated is True,
+                                   "headers": [list(h) for h in headers], "body": encode(body)},
+                          timeout=timeout, before_send=lambda: refuse_moved_plugin_dir(dashboard_dir))
 
     def _unload(self, plugin_key: str) -> None:
         self._contexts.pop(plugin_key, None)
+        self._loads.pop(plugin_key, None)
         channel = self._channel
         if channel is None or channel.closed_reason is not None:
             return
@@ -304,7 +411,11 @@ class PluginHost:
             logger.warning("Plugin '%s' on_unload callback failed in the plugin host: %s", plugin_key, error)
 
     # -- parent -> host -----------------------------------------------------------------------------
-    def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None) -> Any:
+    def _call(self, method: str, params: dict[str, Any], *, generation: Optional[int] = None,
+              timeout: Optional[float] = None, returns: Any = None,
+              before_send: Optional[Callable[[], None]] = None) -> Any:
+        """``returns`` is the type a core ABC declares for the result; the reply is rebuilt as it. ``before_send``
+        runs once the queued releases are flushed, right before *method* is sent."""
         channel = self._channel
         try:
             if channel is None:
@@ -314,7 +425,10 @@ class PluginHost:
             if self._releases:
                 released, self._releases = self._releases, []
                 channel.call("release", {"refs": released})
-            return decode(channel.call(method, params), self._resolve_ref)
+            if before_send is not None:
+                before_send()
+            resolve = functools.partial(self._resolve_result_ref, base=_host_object_base(returns))
+            return restore(decode(channel.call(method, params, timeout=timeout), resolve), returns)
         except PluginHostUnavailable as exc:
             raise PluginHostUnavailable(self._exit_reason()) from exc
 
@@ -327,14 +441,14 @@ class PluginHost:
         return self._call("invoke", {"ref": ref, "args": encode(list(args)), "kwargs": encode(kwargs)},
                           generation=generation)
 
-    def obj_invoke(self, slot: _ObjectSlot, method: str, args: tuple, kwargs: dict) -> Any:
+    def obj_invoke(self, slot: _ObjectSlot, method: str, args: tuple, kwargs: dict, returns: Any = None) -> Any:
         ref, generation = slot.live()
         return self._call("obj_invoke", {"ref": ref, "method": method, "args": encode(list(args)),
-                                         "kwargs": encode(kwargs)}, generation=generation)
+                                         "kwargs": encode(kwargs)}, generation=generation, returns=returns)
 
-    def obj_getattr(self, slot: _ObjectSlot, name: str) -> Any:
+    def obj_getattr(self, slot: _ObjectSlot, name: str, returns: Any = None) -> Any:
         ref, generation = slot.live()
-        value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation)
+        value = self._call("obj_getattr", {"ref": ref, "name": name}, generation=generation, returns=returns)
         if isinstance(value, dict) and set(value) == {"__missing__"}:
             raise AttributeError(name)
         return value
@@ -354,6 +468,8 @@ class PluginHost:
             return self._serve_ctx(params)
         if method == "facade":
             return self._serve_facade(params)
+        if method == "session_event":
+            return self._serve_session_event(params)
         if method == "dispose":
             handle = self._handles.pop(int(params["handle"]), None)
             if handle is not None:
@@ -382,6 +498,28 @@ class PluginHost:
         kwargs = decode(params.get("kwargs") or {}, resolve)
         result = getattr(ctx, method)(*args, **kwargs)
         return self._encode_for_host(result)
+
+    def _serve_session_event(self, params: dict[str, Any]) -> bool:
+        """A hosted plugin's ``emit_plugin_session_event``: looked up in this host's profile, the one
+        every plugin it runs belongs to (a plugin thread's call has no caller scope of its own).
+
+        Sent as the plugin whose code made the call (``plugin``, in its load ``load``); False, as before
+        this was forwarded, unless that load is the plugin's current one and ``plugin_id`` is its own."""
+        from hermes_cli.plugin_events import emit_plugin_session_event
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        plugin = str(params.get("plugin") or "")
+        ctx = self._contexts.get(plugin)
+        if ctx is None or getattr(ctx, "plugin_id", None) != params.get("plugin_id") \
+                or params.get("load") != self._loads.get(plugin):
+            logger.warning("Plugin host session event %r refused: sender %r (load %r) is not that loaded plugin",
+                           params.get("plugin_id"), params.get("plugin"), params.get("load"))
+            return False
+        token = set_hermes_home_override(self._home)
+        try:
+            return emit_plugin_session_event(str(params.get("plugin_id")), params.get("session_id"),
+                                             str(params.get("event")), params.get("payload"))
+        finally:
+            reset_hermes_home_override(token)
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:
         from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES
@@ -424,6 +562,14 @@ class PluginHost:
             return self._object_proxy(ref, base)
         raise PluginHostUnsupported("registration handles are owned by the plugin host")
 
+    def _resolve_result_ref(self, ref: dict[str, Any], base: Optional[type] = None) -> Any:
+        """A provider object a hosted method returned (``ContextEngine.clone_for_agent``): a proxy when
+        the contract declares that provider type, otherwise a placeholder (and the host drops it)."""
+        if "__object__" in ref and base is None:
+            self._release(self._generation, int(ref["__object__"]))
+            return Opaque(str(ref.get("type") or "object"))
+        return self._resolve_ref(ref, base)
+
     def _callable_proxy(self, ref: dict[str, Any]) -> Callable[..., Any]:
         ref_id, generation = int(ref["__callable__"]), self._generation
 
@@ -453,11 +599,11 @@ class PluginHost:
         live = set(ref.get("live") or ())
         namespace: dict[str, Any] = {}
         for name, meta in (ref.get("methods") or {}).items():
-            namespace[name] = _method_proxy(host, slot, name, meta)
+            namespace[name] = _method_proxy(host, slot, name, meta, declared_return(base, name))
 
         def __getattribute__(self_: Any, name: str) -> Any:
             if name in live:
-                return host.obj_getattr(slot, name)
+                return host.obj_getattr(slot, name, declared_return(base, name))
             return object.__getattribute__(self_, name)
 
         def __getattr__(self_: Any, name: str) -> Any:
@@ -526,6 +672,13 @@ def _holds_live_handle(value: Any) -> bool:
     return found or (isinstance(encoded, dict) and "__opaque__" in encoded)
 
 
+def is_hosted_object(obj: Any) -> bool:
+    """``obj`` is a proxy for a plugin object whose code runs in the plugin host (``plugins.isolation:
+    host``): its methods run there and anything they return that is not plain data arrives as an
+    :class:`Opaque` placeholder."""
+    return "__hermes_plugin_host_ref__" in vars(type(obj))
+
+
 def _run_on_gateway_loop(coro: Any) -> Any:
     """A facade coroutine (``platform_actions``) uses adapters bound to the gateway's event loop, so
     it runs there when a gateway is up; otherwise on a private loop. Always called off-loop (a
@@ -541,12 +694,13 @@ def _run_on_gateway_loop(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
-def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str, Any]) -> Callable[..., Any]:
+def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str, Any],
+                  returns: Any) -> Callable[..., Any]:
     async def async_method(self_: Any, *args: Any, **kwargs: Any) -> Any:
-        return await asyncio.to_thread(host.obj_invoke, slot, name, args, kwargs)
+        return await asyncio.to_thread(host.obj_invoke, slot, name, args, kwargs, returns)
 
     def sync_method(self_: Any, *args: Any, **kwargs: Any) -> Any:
-        return host.obj_invoke(slot, name, args, kwargs)
+        return host.obj_invoke(slot, name, args, kwargs, returns)
 
     method: Any = async_method if meta.get("async") else sync_method
     method.__name__ = method.__qualname__ = name
@@ -555,6 +709,14 @@ def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str
         self_param = inspect.Parameter("self", inspect.Parameter.POSITIONAL_OR_KEYWORD)
         method.__signature__ = signature.replace(parameters=[self_param, *signature.parameters.values()])
     return method
+
+
+def _host_object_base(hint: Any) -> Optional[type]:
+    """``hint`` when it is a provider ABC a hosted object may stand in for (``HOST_OBJECT_BASES``)."""
+    from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+    if isinstance(hint, type) and f"{hint.__module__}:{hint.__qualname__}" in HOST_OBJECT_BASES.values():
+        return hint
+    return None
 
 
 def _import_ref(ref: str) -> type:

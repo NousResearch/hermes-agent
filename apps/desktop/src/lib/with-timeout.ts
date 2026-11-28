@@ -19,17 +19,24 @@ export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 180_000
 // caller forever. Every caller of these bounds them with this shared budget.
 export const RECONNECT_ATTEMPT_TIMEOUT_MS = 20_000
 
-/** Budget for the phase-1 dial of a source switch (store/connections
- * selectConnection). Unlike the two above this await is not one IPC: it is the
- * main process's whole remote bring-up chain — one ssh connect
- * (DEFAULT_CONNECT_TIMEOUT_MS 15 s in electron/ssh-connection.ts), the
- * sequential ssh execs that probe platform, locate the runtime and read its
- * version (DEFAULT_EXEC_TIMEOUT_MS 20 s each), the spawned backend's ready
- * sentinel (DEFAULT_READY_TIMEOUT_MS 45 s in electron/remote-lifecycle.ts) and
- * the port forward (DEFAULT_FORWARD_TIMEOUT_MS 15 s). Their sum is ~135 s, and
- * a *healthy* cold dial lands far inside it — measured 37-64 s against a 2 GB
- * VPS over Windows ssh (no mux: every stage is a fresh ssh process plus a cold
- * `serve` boot).
+/** Budget for each bounded step of a source switch (store/connections
+ * selectConnection): the phase-1 open of the target, the OAuth REST probe and
+ * the activation (ensureGatewayAgent) each get this whole budget, as does a
+ * registry secondary's getConnectionFor in store/gateway. It is sized for the
+ * worst of them, the cold dial of an SSH source. Local owner-route lookups also
+ * take it: main may be bringing up a pooled conn:local backend. Plain profile
+ * lookups retain the reconnect-class budget above.
+ * Unlike the two above, the cold dial is not one IPC: it is the main process's
+ * whole remote bring-up chain — one ssh connect (DEFAULT_CONNECT_TIMEOUT_MS
+ * 15 s in electron/ssh-connection.ts), the sequential ssh execs that probe
+ * platform, locate the runtime and read its version (DEFAULT_EXEC_TIMEOUT_MS
+ * 20 s each), the spawned backend's ready sentinel and the port forward
+ * (DEFAULT_FORWARD_TIMEOUT_MS 15 s). The budget was sized when the ready wait
+ * was 45 s (sum ~135 s); electron/remote-lifecycle.ts DEFAULT_READY_TIMEOUT_MS
+ * is now 120 s for busy hosts (#94642), so a worst-case busy-host boot can
+ * outlast this step. A *healthy* SSH cold dial lands far inside it — measured
+ * 37-64 s against a 2 GB VPS over Windows ssh (no mux: every stage is a fresh
+ * ssh process plus a cold `serve` boot).
  *
  * Bounding that chain with RECONNECT_ATTEMPT_TIMEOUT_MS reported
  * "Could not connect to <source>" for switches that were still dialing, and
@@ -83,6 +90,134 @@ export function withTimeout<T>(
       },
       err => {
         clearTimeout(timer)
+        reject(err)
+      }
+    )
+  })
+}
+
+/** Like `withTimeout`, but suspends the countdown while `isPaused()` is true.
+ * Used for the initial backend boot wait so bounded main-process preflight
+ * stages (such as `backend.default-plugins`) do not consume the renderer's
+ * connect budget while they run; once the stage completes, the remaining budget
+ * resumes so a subsequent hang still times out cleanly. */
+export function withPausableTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+  watchPause: (onChange: () => void) => () => void,
+  isPaused: () => boolean,
+  onTimeout?: (error: TimeoutError) => void,
+  signal?: AbortSignal
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error('Aborted'))
+
+      return
+    }
+
+    let settled = false
+    let remainingMs = ms
+    let armedAt: number | null = null
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let unsubscribe: () => void = () => undefined
+
+    const onAbort = () => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      cleanup()
+      reject(signal?.reason ?? new Error('Aborted'))
+    }
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+
+      armedAt = null
+      unsubscribe()
+      signal?.removeEventListener('abort', onAbort)
+    }
+
+    const arm = () => {
+      if (settled || timer !== null) {
+        return
+      }
+
+      armedAt = Date.now()
+      timer = setTimeout(() => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        const error = new TimeoutError(message)
+
+        try {
+          onTimeout?.(error)
+        } catch (onTimeoutError) {
+          reject(onTimeoutError)
+
+          return
+        }
+
+        reject(error)
+      }, Math.max(1, remainingMs))
+    }
+
+    const pause = () => {
+      if (timer === null) {
+        return
+      }
+
+      clearTimeout(timer)
+      timer = null
+
+      if (armedAt !== null) {
+        remainingMs = Math.max(1, remainingMs - (Date.now() - armedAt))
+        armedAt = null
+      }
+    }
+
+    const sync = () => {
+      if (settled) {
+        return
+      }
+
+      if (isPaused()) {
+        pause()
+      } else {
+        arm()
+      }
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true })
+    unsubscribe = watchPause(sync)
+    sync()
+
+    Promise.resolve(promise).then(
+      value => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
+        resolve(value)
+      },
+      err => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        cleanup()
         reject(err)
       }
     )

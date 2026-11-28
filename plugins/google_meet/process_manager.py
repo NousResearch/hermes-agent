@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import get_hermes_home
+from plugins.google_meet._jsonfile import say_queue_lock
 
 from utils import atomic_json_write
 
@@ -100,7 +101,8 @@ def start(url: str, *, out_dir: Optional[Path] = None, headed: bool = False,
     log_path = out / "bot.log"
     # Detach: stdout/stderr → log file, new session so parent signals don't propagate.
     with open(log_path, "ab", buffering=0) as log_fh:
-        proc = subprocess.Popen([sys.executable, "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
+        proc = subprocess.Popen([sys.executable, "-P", "-m", "plugins.google_meet.meet_bot"], stdin=subprocess.DEVNULL,
+                                # detached-spawn: ok — reached via files across turns, stopped by meet_leave (pid in .active.json)
                                 stdout=log_fh, stderr=subprocess.STDOUT, env=env, start_new_session=True,
                                 close_fds=True)
     record = {"pid": proc.pid, "meeting_id": meeting_id, "out_dir": str(out), "url": url,
@@ -174,7 +176,7 @@ def enqueue_say(text: str) -> dict[str, Any]:
         return {"ok": False, "reason": f"out_dir missing: {out_dir}"}
     queue_path = out_dir / "say_queue.jsonl"
     entry = {"id": uuid.uuid4().hex[:12], "text": text}
-    with queue_path.open("a", encoding="utf-8") as f:
+    with say_queue_lock(queue_path), queue_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
     return {"ok": True, "meetingId": active.get("meeting_id"), "enqueued_id": entry["id"],
             "queue_path": str(queue_path)}

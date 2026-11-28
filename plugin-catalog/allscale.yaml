@@ -1,0 +1,19 @@
+name: allscale
+title: AllScale
+repo: https://github.com/allscale-io/allscale-mcp
+sha: dca245036e0f509604401b34376c42549e807a12
+description: "Work in the business dollar account that AllScale provides (balances held and settled in USDC/USDT): check balances and transactions, create and send invoices, manage Claim Links, create checkout links and prepare payouts, through AllScale's hosted Streamable HTTP MCP server (https://mcp.allscale.io/mcp, OAuth 2.1 with dynamic client registration and PKCE). Portable Agent Plugins v1 package (plugin.json + mcp.json), configuration only, no local code. Disclosure — hosted-only connector: every tool call goes to mcp.allscale.io with the user's requests and returns account data (balances, transactions, invoices, customer names and emails) into the model context, and so to the user's model provider. Sign-in is AllScale's own OAuth; Hermes stores and refreshes the token, and the user picks one merchant account and read-only or write permissions at sign-in. Write tools create and send real invoices and checkout links; payment tools only create a pending payout, and funds move only after the merchant approves it in AllScale with a passkey. The package marks the server untrusted. The tool set is served by the remote server at runtime and is not covered by the pinned sha. Requires an AllScale account, which AllScale opens for the business at allscale.io. No shell commands, no background processes, no files read outside the plugin, no telemetry. OAuth must be enabled with an mcp_servers entry (auth: oauth) and hermes mcp login allscale, as shown in the README; the bundled mcp.json alone yields 401."
+maintainer: allscale-io
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/allscale-io/allscale-mcp#readme
+version: "1.0.0"
+platforms: []
+known_issues:
+  - "Sign in once after installing: add the mcp_servers entry from the README (auth: oauth), then run hermes mcp login allscale"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

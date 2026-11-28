@@ -1,0 +1,33 @@
+name: sgme
+repo: https://github.com/freehul/sgme
+sha: f12c9bfa2cc9f4a59420376cb91176abb882948b
+subdir: adapters/hermes
+version: "1.10.6"
+description: "SGME (拾光记忆) self-hosted long-term memory engine — tagged memories with provenance, per-turn recall, automatic session refinement, a skills library, wiki knowledge base, care signals, communication roles and a three-pool task system (ideas/demands/projects), all behind one HTTP service you own. The plugin is a thin bridge: no LLM, no database, everything heavy runs in your SGME server (local or remote). Disclosure — the plugin talks only to the SGME server you configure (default http://127.0.0.1:9910, SGME_BASE_URL for a remote server), sending SGME_AGENT_KEY / SGME_ADMIN_KEY read through Hermes's secret scope; each session's user, assistant and tool messages are appended to that server and refined into memories at session end by an LLM you configure on the SGME side; its sgme_* tools let the model read and change memories, skills, wiki pages and tasks on that server and write skill packages under $HERMES_HOME/plugin-data/sgme/skills/ on the SGME host; credential names in the SGME vault can be listed, and reading a credential value into the conversation is off by default (credential_get_enabled / SGME_ENABLE_CREDENTIAL_GET); no third-party services, no telemetry."
+maintainer: freehul
+tier: community
+category: memory
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/freehul/sgme/blob/main/AI-INSTALL/README.md
+image: https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-01-trace.png
+screenshots:
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-00-seamless-switching.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-02-shared-memory.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-03-unified-search.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-05-skillhub.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-07-scenario-inject.png
+  - https://raw.githubusercontent.com/freehul/sgme/f12c9bfa2cc9f4a59420376cb91176abb882948b/assets/selling-point-11-persona-insight.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - SGME_BASE_URL
+    - SGME_AGENT_KEY
+    - SGME_ADMIN_KEY
+    - SGME_INJECT_MODE
+    - SGME_INJECT_MAX_TOKENS
+    - SGME_CAPTURE_ENABLED
+    - SGME_REFINE_ON_END
+    - SGME_HERMES_AGENT_ID
+    - SGME_HTTP_TIMEOUT

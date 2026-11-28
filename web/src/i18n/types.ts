@@ -135,10 +135,33 @@ export interface Translations {
     sharedMetricsBody?: string;
     sharedMetricsReaskBody?: string;
     sharedMetricsShare?: string;
-    sharedMetricsLocal?: string;
     sharedMetricsOff?: string;
     sharedMetricsDetails?: string;
     sharedMetricsSaveFailed?: string;
+    /** Hermes Cloud "dashboard is moving" modal — optional, English fallback. */
+    dashboardMovingMeta?: string;
+    dashboardMovingNotice?: string;
+    dashboardMovingTitle?: string;
+    dashboardMovingBody?: string;
+    dashboardMovingMachineTitle?: string;
+    dashboardMovingMachineDetail?: string;
+    dashboardMovingMachineReady?: string;
+    dashboardMovingMachineStarting?: string;
+    dashboardMovingMachineDown?: string;
+    dashboardMovingMachineNotAvailable?: string;
+    dashboardMovingMachineNotAvailableDetail?: string;
+    dashboardMovingSettingsTitle?: string;
+    dashboardMovingSettingsDetail?: string;
+    dashboardMovingOpen?: string;
+    dashboardMovingLater?: string;
+  };
+
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: string;
+    noProvider: string;
+    builtinLayer: string;
+    builtinNote: string;
   };
 
   // ── Status page ──
@@ -391,8 +414,17 @@ export interface Translations {
     authRequired: string;
     authRequiredHint: string;
     updateGit: string;
+    updateAll: string;
+    updatingAll: string;
+    updateAllDone: (updated: number, needsReview: number, failed: number) => string;
+    autoUpdate: string;
+    autoUpdateDesc: (hours: number) => string;
     /** Optional: locales without it fall back to the English body at the call site. */
     updateConsentBody?: (name: string, sha: string) => string;
+    /** Optional, English fallback: the scan rated an update caution; confirming retries with force. */
+    updateScanBody?: (name: string, count: number) => string;
+    /** Optional, English fallback: the scan rated an update dangerous; never overridable. */
+    updateScanBlocked?: (name: string) => string;
     versionBadge: string;
     showInSidebar: string;
     hideFromSidebar: string;
@@ -919,5 +951,20 @@ export interface Translations {
       confirmTitle?: string;
       confirmManyTitle?: string;
     };
+  };
+
+  // ── Channels page: catalog platforms not installed yet ──
+  channelsCatalog: {
+    title: string;
+    hint: string;
+    badgeOfficial: string;
+    badgeVerified: string;
+    disclosure: string;
+    lazyInstallsOff: string;
+    run: string;
+    install: string;
+    installing: string;
+    installed: (title: string) => string;
+    installFailed: (title: string) => string;
   };
 }

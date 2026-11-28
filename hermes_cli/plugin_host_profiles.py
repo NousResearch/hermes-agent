@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List
 
 from hermes_cli.plugin_host_wire import PluginHostUnavailable, decode, signature_from
+from hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +30,39 @@ _EXTRACT_TIMEOUT_SECS = 60.0
 _CACHE_VERSION = 1
 
 
-def load_hosted_profiles(plugin_dir: Path, module_name: str) -> list[Any]:
-    """ProviderProfile proxies for a model-provider plugin whose code runs in the plugin host."""
+def load_hosted_profiles(plugin_dir: Path, module_name: str) -> tuple[list[Any], dict[str, str]]:
+    """ProviderProfile proxies for a model-provider plugin whose code runs in the plugin host, plus
+    ``{profile name: reason}`` for its profiles that cannot cross the host boundary (the caller
+    loads those in-process)."""
     from providers.base import ProviderProfile
-    payload = _cached_extraction(Path(plugin_dir), module_name)
+    # One address for the extraction and the proxies, taken first: a profile link repointed while the extraction
+    # runs would otherwise pair one installation's profiles with another directory's copy of the path.
+    address = _host_address(Path(plugin_dir))
+    payload = _cached_extraction(Path(address), module_name)
     if payload.get("error"):
         raise PluginHostUnavailable(str(payload["error"]))
-    return [_profile_proxy(ProviderProfile, str(plugin_dir), module_name, entry)
-            for entry in payload.get("profiles") or []]
+    entries = payload.get("profiles") or []
+    in_process = {str(e["name"]): str(e["in_process"]) for e in entries if e.get("in_process")}
+    hosted = [_profile_proxy(ProviderProfile, address, module_name, e)
+              for e in entries if not e.get("in_process")]
+    return hosted, in_process
+
+
+def _host_address(plugin_dir: Path) -> str:
+    """Where the host loads *plugin_dir* from: the profile home's own spelling resolved, so the address
+    outlives a rename of the link the profile was opened by, and the plugin's path below it as installed, so
+    a plugin installed as a link and then removed stays removed."""
+    from hermes_constants import get_hermes_home
+    home = get_hermes_home()
+    try:
+        return str(Path(os.path.realpath(home)) / plugin_dir.relative_to(home))
+    except ValueError:  # not under the home (a project plugin): as given
+        return str(plugin_dir)
+
+
+def is_hosted_profile(profile: Any) -> bool:
+    """True for a profile proxy whose code runs in the plugin host."""
+    return type(profile).__module__ == __name__
 
 
 def _fingerprint(plugin_dir: Path) -> str:
@@ -55,7 +81,7 @@ def _fingerprint(plugin_dir: Path) -> str:
 
 
 def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
-    from hermes_constants import get_hermes_home
+    from hermes_constants import get_hermes_home, mkdir_under_hermes_home
     # Keyed by the full path too: a user and a project plugin may share a directory name.
     path_key = hashlib.sha256(str(plugin_dir.resolve()).encode("utf-8")).hexdigest()[:12]
     cache = get_hermes_home() / "cache" / "plugin_host" / "model-providers" / f"{plugin_dir.name}-{path_key}.json"
@@ -68,7 +94,10 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
         pass
     payload = _extract(plugin_dir, module_name)
     if not payload.get("error"):
-        cache.parent.mkdir(parents=True, exist_ok=True)
+        try:  # a cache: a deleted or renamed profile home skips it instead of coming back
+            mkdir_under_hermes_home(cache.parent)
+        except FileNotFoundError:
+            return payload
         tmp = cache.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps({"fingerprint": fingerprint, "module_name": module_name,
                                    "payload": payload}), encoding="utf-8")
@@ -78,19 +107,28 @@ def _cached_extraction(plugin_dir: Path, module_name: str) -> dict[str, Any]:
 
 def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     """Import the plugin in a throwaway host process with no credentials and read its profiles."""
-    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, host_launcher
+    from hermes_cli.plugin_isolation import HOST_PROCESS_ENV, extraction_launcher, home_moved_refusal
     from hermes_constants import get_hermes_home
-    repo_root = str(Path(__file__).resolve().parents[1])
+    repo_root = project_root_str()
+    # Absolute: the child starts in the home, so a relative HERMES_HOME or plugin dir would resolve twice.
+    # Links kept: a marked profile whose directory is a link out of the Hermes root is found by its name only.
+    home = str(get_hermes_home().absolute())
+    if (moved := home_moved_refusal(Path(home))) is not None:
+        return {"error": moved}
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT") if key in os.environ}
     # Windows resolves Path.home() from USERPROFILE, never HOME: without it the child cannot start.
-    env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=str(get_hermes_home()),
+    env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=home,
                PYTHONPATH=repo_root,
                **{HOST_PROCESS_ENV: "1"})
-    argv = [*host_launcher(), sys.executable, "-m", "hermes_cli.plugin_host_child", "--extract-profiles",
-            str(plugin_dir), module_name]
+    # -P and a trusted cwd: ``-m`` otherwise puts the launch directory ahead of PYTHONPATH, so a
+    # ``hermes_cli/`` package in the directory Hermes was started from would run instead of ours.
+    argv = [*extraction_launcher(Path(home)), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child",
+            "--extract-profiles", str(plugin_dir.resolve()), module_name]
+    if (moved := home_moved_refusal(Path(home))) is not None:  # the launcher was read through the name too
+        return {"error": moved}
     try:
         done = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, env=env,
-                              timeout=_EXTRACT_TIMEOUT_SECS, check=False)
+                              cwd=home, timeout=_EXTRACT_TIMEOUT_SECS, check=False)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"error": f"profile extraction failed: {exc}"}
     try:

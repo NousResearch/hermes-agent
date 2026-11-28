@@ -9,6 +9,11 @@ class AdmissionRefused(RuntimeError):
     """The candidate set was refused; config and environment untouched."""
 
 
+class SelectionRaced(AdmissionRefused):
+    """Another writer changed the plugin selection while PM prepared this one; nothing was published,
+    so re-reading the selection and proposing again is safe."""
+
+
 class DependencyConflict(AdmissionRefused):
     """PM's resolver proved the candidate set cannot co-install with the pinned dependency set.
 
@@ -55,11 +60,13 @@ def admit_plugin_set_change(
     extra_dirs: Iterable[Path] = (),
     expected_config: str | None = None,
     plugin: Optional[str] = None,
+    settled: Iterable[str] = (),
 ) -> None:
     """PM discovers and validates the proposed union under its install lock.
 
     No config or dependency selection is written by this application process. *plugin* names the
     plugin being admitted so a resolver conflict is reported against it (:class:`DependencyConflict`).
+    *settled* names the plugins the user just decided on, so an update never undoes that decision.
     """
     from hermes_constants import get_hermes_home
     from pm.client import sync_venv
@@ -70,11 +77,13 @@ def admit_plugin_set_change(
         sync_venv(explicit=True, plugins=Selection({
             "home": str(home.resolve()), "enabled": sorted(candidate_enabled),
             "disabled": sorted(candidate_disabled), "extra_dirs": [str(Path(d).resolve()) for d in extra_dirs],
+            "settled": sorted(settled),
             **({"expected_config": expected_config} if expected_config is not None else {}),
         }))
     except Exception as exc:
+        from pm.publication import SelectionChanged
         from pm.workspace import ResolutionConflict
 
         if isinstance(exc, ResolutionConflict):
             raise DependencyConflict(exc.cause, plugin=plugin) from exc
-        raise AdmissionRefused(str(exc)) from exc
+        raise (SelectionRaced if isinstance(exc, SelectionChanged) else AdmissionRefused)(str(exc)) from exc

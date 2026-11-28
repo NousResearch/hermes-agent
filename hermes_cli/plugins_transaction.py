@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 import shutil
 
 
@@ -60,7 +61,7 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
     """
     from hermes_cli import plugins_cmd as pc
     from hermes_cli.runtime_state import _bytes
-    from pm.plugin_declarations import read_python_declaration
+    from pm.plugin_declarations import needs_workspace_member, read_python_declaration, unsatisfied_requirements
     from pm.workspace import enabled_plugin_dirs, install_node_sidecar
 
     if (target / "node_modules").is_dir() and (staged / "package.json").is_file() and (
@@ -74,8 +75,12 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
     if target.resolve() not in enabled_plugin_dirs(installing=target):
         return  # a disabled plugin's deps are admitted (and consented) by `hermes plugins enable`
     before, after = read_python_declaration(target), read_python_declaration(staged)
-    added = tuple(spec for spec in after.install_requirements if spec not in before.install_requirements)
-    if not added and not (after.is_member and not before.is_member):
+    after_needs = needs_workspace_member(after)
+    if not after_needs:
+        return
+    before_needs = needs_workspace_member(before)
+    added = tuple(spec for spec in unsatisfied_requirements(after) if spec not in before.install_requirements)
+    if not added and before_needs:
         return
     if not interactive:
         raise pc.PluginOperationError(
@@ -92,19 +97,27 @@ def update_plugin(
     *,
     catalog_entry=None,
     interactive: bool = False,
+    force: bool = False,
+    scan_decision_cb: Callable[[Any], bool] | None = None,
     carry_user_files: Callable[[Path], list[str]] | None = None,
+    surface_gate: Callable[[dict, Path], None] = lambda _manifest, _staged: None,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
     the dashboard and the gateway's auto-apply pass False and get a refusal instead.
+    Every update is scanned: *force* accepts a caution verdict (the user already saw it), and
+    *scan_decision_cb(result)* may accept one by asking; a dangerous verdict always blocks.
     *carry_user_files(staged)* may merge user-owned state into the staged tree before
     manifest validation, example-file generation, dependency preparation and publication; it
-    returns the carried paths so a scan block can attribute findings to them."""
+    returns the carried paths so a scan block can attribute findings to them.
+    *surface_gate(manifest, staged)* may raise (``RepinConsentRequired`` for a widened plugin) to
+    refuse the candidate before it is scanned or published."""
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
-    from hermes_cli.plugins_cmd_catalog import refuse_if_installed_removed
+    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, refuse_if_installed_removed
+    from hermes_cli.plugins_cmd_git import _refuse_foreign_checkout
     from pm.store import tree_digest
 
     target = target.resolve()
@@ -163,6 +176,7 @@ def update_plugin(
                 shutil.copytree(target, staged, symlinks=True, ignore=shutil.ignore_patterns("__pycache__"))
                 if feed_revision:
                     git = pc._resolve_git_executable()
+                    _refuse_foreign_checkout(git, target)
                     status = pc._git_or_raise(git, target, "status", "--porcelain", failure_prefix="Could not inspect plugin edits: ")
                     if status.stdout.strip():
                         raise pc.PluginOperationError("Pinned feed update has local changes; save them before updating.")
@@ -175,6 +189,7 @@ def update_plugin(
                 revision = pc._git_head_revision(staged, pc._resolve_git_executable())
             merged = carry_user_files(staged) if carry_user_files is not None else None
             manifest = pc._read_manifest_for_install(staged)
+            surface_gate(manifest, staged)
             installed_name = str(manifest.get("name") or target.name)
             if catalog_entry is None and installed_name != target.name:
                 raise pc.PluginOperationError("The updated plugin changed its installed name; reinstall it explicitly.")
@@ -186,7 +201,8 @@ def update_plugin(
                 raise pc.PluginOperationError(
                     f"The updated plugin renamed itself to '{installed_name}', but that plugin already exists.")
             pc._check_manifest_version(manifest, installed_name)
-            pc._scan_merged_tree(staged, source, merged, force=False, reviewed_pin=catalog_entry is not None)
+            pc._scan_merged_tree(staged, source, merged, force=force, scan_decision_cb=scan_decision_cb,
+                                 reviewed_pin=catalog_entry is not None)
             pc._copy_example_files(staged, pc._console())
             _refresh_declared_dependencies(target, staged, manifest, interactive=interactive)
             if tree_digest(target) != before:
@@ -202,7 +218,7 @@ def update_plugin(
                 target_digest=before if new_target == target else None,
             )
             return output
-        except pc.PluginOperationError:
+        except (pc.PluginOperationError, RepinConsentRequired):
             raise
         except Exception as exc:
             raise pc.PluginOperationError(f"Plugin '{target.name}' update was not published: {exc}") from exc

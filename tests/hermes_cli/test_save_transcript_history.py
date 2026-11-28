@@ -9,39 +9,44 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-def _compacted_store(path):
-    from hermes_state import SessionDB
+def _compacted_store(home):
+    from persistence.conversation.messages import NewMessage
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_seed import seed_messages, seed_session
 
-    db = SessionDB(db_path=path)
-    db.create_session("s1", "telegram")
+    db = open_persistence(profile_scope(home=home))
+    seed_session(db, "s1", "telegram")
     for i in range(1, 7):
-        db.append_message("s1", "user", f"question {i}")
-        db.append_message("s1", "assistant", f"answer {i}")
+        seed_messages(db, "s1", {"role": "user", "content": f"question {i}"},
+                      {"role": "assistant", "content": f"answer {i}"})
     tail = [{"role": "user", "content": "question 6"}, {"role": "assistant", "content": "answer 6"}]
-    db.archive_and_compact(
-        "s1", [{"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail],
-        watermark=db.get_active_message_watermark("s1"), tail_count=len(tail),
+    db.messages.compact(
+        "s1", [NewMessage.from_live(m) for m in ({"role": "user", "content": "[CONTEXT COMPACTION] summary"}, *tail)],
+        watermark=db.messages.active_watermark("s1"), carried_tail_count=len(tail),
     )
     return db
 
 
 def _cli_save(db, fmt, out):
     import cli
+    from persistence_assembly import open_persistence_reader, store_location
 
-    stub = SimpleNamespace(_session_db=db, session_id="s1", conversation_history=[], model="m",
-                           session_start=datetime(2026, 1, 1))
     printed = io.StringIO()
-    with contextlib.redirect_stdout(printed):
+    # The CLI's session store carries the storage interface reader it reads the stored session through.
+    with open_persistence_reader(store_location(db.scope)) as reader, contextlib.redirect_stdout(printed):
+        stub = SimpleNamespace(_session_db=SimpleNamespace(persistence=reader), session_id="s1",
+                               conversation_history=[], model="m", session_start=datetime(2026, 1, 1))
         cli.HermesCLI.save_conversation(stub, f"/save {fmt} {out}")
     return out.read_text(encoding="utf-8") if out.exists() else printed.getvalue()
 
 
 def _gateway_save(db, fmt, out):
+    from unittest import mock
+
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
     from gateway.run import GatewayRunner
     from gateway.session import SessionEntry, SessionSource, build_session_key
-    from hermes_state import AsyncSessionDB
 
     source = SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1", user_name="t", chat_type="dm")
     runner = object.__new__(GatewayRunner)
@@ -54,9 +59,10 @@ def _gateway_save(db, fmt, out):
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key=build_session_key(source), session_id="s1", created_at=datetime.now(),
         updated_at=datetime.now(), platform=Platform.TELEGRAM, chat_type="dm")
-    runner._session_db = AsyncSessionDB(db)
     event = MessageEvent(text=f"/save {fmt} {out.name}", source=source, message_id="m1")
-    reply = asyncio.run(runner._handle_save_command(event))
+    # The runner reads the session through its storage handle: hand it the test's.
+    with mock.patch.object(GatewayRunner, "persistence", db):
+        reply = asyncio.run(runner._handle_save_command(event))
     return delivered["text"] if reply == "Export complete." else reply
 
 
@@ -100,7 +106,7 @@ def _tui_save(db, fmt, out, *, host=False, profile=False):
 @pytest.mark.parametrize("save", [_cli_save, _gateway_save], ids=["cli", "gateway"])
 def test_save_transcript_holds_display_history(tmp_path, monkeypatch, save):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = _compacted_store(tmp_path / "state.db")
+    db = _compacted_store(tmp_path)
     try:
         text = save(db, "md", tmp_path / "saved.md")
     finally:
@@ -116,23 +122,27 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
     in the display history, and stay out of the live context."""
     import json
 
-    from hermes_state import SessionDB
+    from persistence.conversation.messages import TranscriptRead, TranscriptView
+    from persistence_assembly import open_persistence, profile_scope
+    from tests.fixtures.storage_read import transcript_rows
+    from tests.fixtures.storage_seed import seed_messages
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    db = _compacted_store(tmp_path / "state.db")
+    db = _compacted_store(tmp_path)
     # A model-only live row (a micro-compaction merge) is context, not display history: only the transfer
     # projection carries it, so the snapshot's ids pin that projection, not the display read.
-    db.append_message("s1", "user", "merged", display_metadata={"model_only": True})
-    db.append_message("s1", "user", "undone secret")
-    db.rewind_to_message("s1", db.get_messages("s1")[-1]["id"])
+    seed_messages(db, "s1", {"role": "user", "content": "merged", "display_metadata": {"model_only": True}},
+                  {"role": "user", "content": "undone secret"})
+    db.messages.deactivate_message("s1", transcript_rows(db, "s1")[-1]["id"])
 
-    def shape(store, **flags):
-        return [(m["role"], m["content"]) for m in store.get_messages("s1", **flags)]
+    def shape(store, view=TranscriptView.ACTIVE):
+        return [(m["role"], m["content"]) for m in transcript_rows(store, "s1", TranscriptRead(view=view))]
 
     try:
-        shown, live = shape(db, include_compacted=True), shape(db)
+        shown, live = shape(db, TranscriptView.DISPLAY), shape(db)
         snapshot = json.loads(save(db, "json", tmp_path / "saved.json"))
-        kept = [m["id"] for m in db.get_messages("s1", include_inactive=True) if m["active"] or m["compacted"]]
+        kept = [m["id"] for m in transcript_rows(db, "s1", TranscriptRead(view=TranscriptView.ALL))
+                if m["active"] or m["compacted"]]
         assert [m["id"] for m in snapshot["messages"]] == kept  # every kept row, not the deduped display read
         assert sum(snapshot["timings"]["role_counts"].values()) == len(kept)  # timings name no undone row
         assert {i[k] for i in snapshot["timings"]["intervals"] for k in ("from_message_id", "to_message_id")} <= set(kept)
@@ -142,10 +152,10 @@ def test_save_json_restores_compacted_history_as_archived(tmp_path, monkeypatch,
         assert "max_export_messages" in save(db, "json", tmp_path / "capped.json")
     finally:
         db.close()
-    restored = SessionDB(db_path=tmp_path / "restored.db")
+    restored = open_persistence(profile_scope(home=tmp_path / "restored"))
     try:
-        assert restored.import_sessions([snapshot])["ok"]
-        assert shape(restored, include_compacted=True) == shown
+        assert restored.maintenance.import_sessions([snapshot]).ok
+        assert shape(restored, TranscriptView.DISPLAY) == shown
         assert shape(restored) == live
     finally:
         restored.close()

@@ -297,9 +297,9 @@ def _make_mock_parent():
 class TestDelegateTaskDispatch:
     def test_non_dict_output_schema_rejected(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool_config._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "tools.delegate_tool_routes._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -322,9 +322,9 @@ class TestDelegateTaskDispatch:
 
     def test_invalid_json_schema_rejected_at_dispatch(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool_config._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "tools.delegate_tool_routes._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -356,9 +356,9 @@ class TestDelegateTaskDispatch:
             return child
 
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("tools.delegate_tool_config._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "tools.delegate_tool_routes._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,

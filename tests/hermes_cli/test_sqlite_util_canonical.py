@@ -67,10 +67,7 @@ _STORE_OPENERS = (
     ("cron.incidents", "_connect"),
     ("cron.notepad", "_connect"),
     ("cron.delivery_queue", "_connect"),
-    ("gateway.delivery_ledger", "_connect"),
-    ("tools.async_delegation", "_connect"),
     ("hermes_cli.projects_db", "connect"),
-    ("gateway.hosted_rooms_common", "open_sqlite"),
 )
 
 
@@ -87,8 +84,6 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
         monkeypatch.setattr(module._executions, "EXECUTIONS_FILE", tmp_path / "executions.db")
     if module_name == "agent.verification_evidence":
         monkeypatch.setattr(module, "_db_path", lambda: tmp_path / "ve.db")
-    if module_name in ("gateway.delivery_ledger", "tools.async_delegation"):
-        monkeypatch.setattr(module, "_db_path", lambda: tmp_path / "state.db")
 
     calls = []
     real_open_db = sqlite_util.open_db
@@ -102,7 +97,7 @@ def test_every_store_opens_through_the_canonical_open_db(monkeypatch, tmp_path, 
     if getattr(module, "open_db", None) is real_open_db:
         monkeypatch.setattr(module, "open_db", spy)
     opener = getattr(module, attr)
-    args = (tmp_path / "opened.db",) if module_name == "gateway.hosted_rooms_common" else ()
+    args = ()
     if module_name == "hermes_cli.projects_db":
         args = (tmp_path / "projects.db",)
     conn = opener(*args)
@@ -117,17 +112,17 @@ def test_plugin_db_wal_goes_through_the_shared_fallback(monkeypatch, tmp_path):
     """A raw ``PRAGMA journal_mode=WAL`` bypasses the network-FS fallback and the WAL-reset-bug gate;
     plugin databases must obey the same rules as every core store."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_state_wal
+    import sqlite_support
     from plugins import plugin_storage
 
     seen = []
-    real = hermes_state_wal.apply_wal_with_fallback
+    real = sqlite_support.apply_wal_with_fallback
 
     def spy(conn, **kwargs):
         seen.append(kwargs["db_label"])
         return real(conn, **kwargs)
 
-    monkeypatch.setattr(hermes_state_wal, "apply_wal_with_fallback", spy)
+    monkeypatch.setattr(sqlite_support, "apply_wal_with_fallback", spy)
     conn = plugin_storage.plugin_db("board")
     try:
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1

@@ -6,6 +6,7 @@ IDs before advancing each eligible head oldest-first.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -15,6 +16,7 @@ import time
 from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 
+from scripts.releases import lanes as lane_set
 from scripts.releases.progress import error as log_error, group, log, logged_run, notice
 from scripts.releases.versioning import (
     marker_ref, outstanding_attempts, parse_attempt_ref, parse_marker_ref,
@@ -31,8 +33,12 @@ def _key(version: str) -> tuple[int, int, int]:
 
 
 def plan(claims: list[dict], *, head: str | None,
-         requested_version: str | None = None) -> list[dict]:
-    """Return each eligible draft flip immediately followed by its head advance."""
+         requested_version: str | None = None, unfinished: dict | None = None) -> list[dict]:
+    """Return each eligible draft flip immediately followed by its head advance.
+
+    ``unfinished`` is the step that finishes the desktop head whose advance stopped after the head
+    moved (_unfinished_desktop_head); it runs before anything newer.
+    """
     ordered = sorted(claims, key=lambda claim: _key(claim["version"]))
     head_key = _key(head) if head is not None else None
     steps: list[dict] = []
@@ -44,6 +50,11 @@ def plan(claims: list[dict], *, head: str | None,
         state = claim["state"]
 
         if head_key is not None and version_key <= head_key:
+            if state == "published" and unfinished is not None and version in unfinished.values():
+                kind, = unfinished
+                log(f"  plan {version}: its advance did not finish after the head moved — {kind} again")
+                steps.append(unfinished)
+                continue
             if state in {"published", "burned"}:
                 log(f"  plan {version}: {state}, at or below head {head} — nothing to do")
                 continue
@@ -262,7 +273,7 @@ def discover(repository: str, run=output) -> list[dict]:
         commit = claim_ref["commit"]
         claim = _tag_message(claim_tag, claim_ref["object"], run)
         try:
-            # Normalized: a claim cut before the opt-in platform flags reads them as false.
+            # Normalized: a claim cut before lanes existed reads as the lane set it gated.
             claim = validate_claim(claim, version=version, attempt=attempt, commit=commit)
         except ValueError as error:
             raise ValueError(f"{claim_tag} metadata is invalid") from error
@@ -325,18 +336,15 @@ def discover(repository: str, run=output) -> list[dict]:
             if retry:
                 why += f"; failed-job retry due (attempt {retry['attempt'] + 1} of {MAX_ATTEMPTS})"
 
-        flags = [name for name, on in (("autopublish", claim["autopublish"]),
-                                       ("skip-bundles", claim["skipBundles"]),
-                                       ("skip-tests", claim["skipTests"])) if on]
         log(f"  {claim_tag} @ {commit[:10]}: {state.upper()} — {why}"
-            + (f" [{', '.join(flags)}]" if flags else ""))
+            + (" [autopublish]" if claim["autopublish"] else "")
+            + f" [{lane_set.describe(claim['lanes'])}]")
         records.append({
             "version": version,
             "attempt": attempt,
             "state": state,
             "autopublish": claim["autopublish"],
-            "skip_bundles": claim["skipBundles"],
-            "skip_tests": claim["skipTests"],
+            "lanes": claim["lanes"],
             "claim_tag": claim_tag,
             "claim_object": claim_ref["object"],
             "claim_epoch": claim_epoch,
@@ -358,22 +366,104 @@ def channel_head(desktop_head: str | None, records: list[dict],
                  stable_alias_digest: str | None) -> str | None:
     """The newest version whose publication pass finished.
 
-    A bundle release finishes when the protected R2 head names it. A release
-    that skipped bundles never moves that head. It finishes when the Docker
-    ``stable`` alias carries the digest its final receipt binds.
+    A release that advances the desktop channel finishes when the protected R2
+    head names it. One that does not finishes when the Docker ``stable`` alias
+    carries the digest its final receipt binds, or, when it moves no channel at
+    all, as soon as it is public.
     """
     versions = [desktop_head] if desktop_head is not None else []
-    if stable_alias_digest is not None:
-        versions += [record["version"] for record in records
-                     if record["state"] == "published"
-                     and record["docker_manifest_digest"] == stable_alias_digest]
+    versions += [record["version"] for record in records
+                 if record["state"] == "published"
+                 and (not lane_set.moves_channels(record["lanes"])
+                      or (stable_alias_digest is not None
+                          and record["docker_manifest_digest"] == stable_alias_digest))]
     return max(versions, key=_key, default=None)
+
+
+STABLE_POINTER = "releases/stable/release-candidates.json"
+
+
+def _alias_state(record: dict, records: list[dict]) -> str:
+    """Who holds the Docker aliases relative to ``record``: "newer", "unknown", "behind" or "current".
+
+    A digest a newer published release carries means that release owns the aliases (the
+    channel head read can have missed it on a registry error). An alias that cannot be read
+    leaves the owner unknown. Recovery moves the aliases in neither case, so a registry error
+    can never roll them back.
+    """
+    from scripts.releases import docker
+
+    alias = docker.stable_alias_digest()
+    if alias is None:
+        return "unknown"
+    if alias in {row["docker_manifest_digest"] for row in records if row["state"] == "published"
+                 and _key(row["version"]) > _key(record["version"])}:
+        return "newer"
+    if alias != record["docker_manifest_digest"] or docker.stable_desktop_alias_behind(record["claim_tag"]):
+        return "behind"
+    return "current"
+
+
+def _unfinished_desktop_head(env: dict, records: list[dict], read_archive, head: str | None) -> dict | None:
+    """The step that finishes the protected desktop head's advance, or None when it finished.
+
+    publish_release writes the candidate pointer last, after the head moves, and the Docker
+    aliases move after that, slim before desktop, so a failure there leaves the head on a
+    release that plan() would otherwise count as done. The pointer is the source channel's
+    update target and the next release's upgrade baseline. A full ``advance`` repeats the
+    Docker promotion too; while a newer release owns the aliases, or their owner cannot be
+    read, only the desktop advance repeats (``finish``).
+    """
+    from hermes_cli.release_channels import ChannelError
+    from scripts.releases import channel_releases
+
+    desktop = channel_releases.stable_head_version(env)
+    record = next((row for row in records if row["version"] == desktop and row["state"] == "published"
+                   and lane_set.advances_desktop(row["lanes"])), None)
+    if record is None:
+        return None
+    candidate = json.loads(read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json"))
+    try:
+        pointer = json.loads(read_archive(STABLE_POINTER))
+    except ChannelError:
+        pointer = None  # the head's own pointer write never landed
+    if desktop != head:
+        aliases = "newer"  # a newer release holds the channel head, and with it the aliases
+    elif "docker" in record["lanes"]:
+        aliases = _alias_state(record, records)
+    else:
+        aliases = "current"
+    if aliases in {"newer", "unknown"}:
+        return {"finish": desktop} if pointer != candidate else None
+    return {"advance": desktop} if pointer != candidate or aliases == "behind" else None
+
+
+def _reconcile_store(env: dict, records: list[dict], read_archive) -> None:
+    from scripts.releases import store
+
+    # Channels are already durable; Store recovery must not depend on advancing them again.
+    for record in sorted(records, key=lambda row: _key(row["version"]), reverse=True):
+        if record["state"] != "published" or "windows-store" not in record["lanes"]:
+            continue
+        log(f"Reconciling the Microsoft Store submission for {record['tag']}")
+        try:
+            raw = read_archive(f"releases/tag/{record['claim_tag']}/release-candidates.json")
+            if hashlib.sha256(raw).hexdigest() != record["candidate_manifest_sha256"]:
+                raise store.StoreError("the archived candidate manifest differs from the receipt")
+            result = store.release_from_env(env, json.loads(raw))
+        except (store.StoreError, ValueError, OSError) as error:
+            print(f"::warning title=Microsoft Store::{error}. The release is published; "
+                  "check its Store submission in Partner Center.")
+            return
+        # A newer public release may have failed its advisory upload, leaving an older one held.
+        if result != "superseded":
+            return
 
 
 def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
               read_archive=None) -> list[dict]:
     """Converge GitHub publication and protected heads oldest-first."""
-    from scripts.releases import channel_releases, docker, stable, store
+    from scripts.releases import channel_releases, docker, stable
 
     repository = env["GITHUB_REPOSITORY"]
     run = logged_run(run)
@@ -430,15 +520,17 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
     with group("Read the stable channel head"):
         head = read_head()
         log(f"Channel head: {head or '(none)'}")
+        unfinished = _unfinished_desktop_head(env, records, read_archive, head) if advance_head is None else None
     with group("Plan"):
-        steps = plan(records, head=head, requested_version=requested)
+        steps = plan(records, head=head, requested_version=requested, unfinished=unfinished)
         log("Steps: " + (", ".join(f"{kind} {version}" for step in steps
                                    for kind, version in step.items()) or "(none)"))
     by_version = {record["version"]: record for record in records}
 
-    if advance_head is None:
+    production = advance_head is None
+    if production:
         def production_advance(record: dict) -> None:
-            if not record["skip_bundles"]:
+            if lane_set.advances_desktop(record["lanes"]):
                 log(f"Advancing the protected desktop channel to {record['version']} from "
                     f"releases/tag/{record['claim_tag']}/ "
                     f"(receipt manifest {record['candidate_manifest_sha256']})")
@@ -446,26 +538,16 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                     channel_releases.advance_stable(env, record, Path(directory))
                 log(f"Desktop channel head is now {record['version']}")
             else:
-                log(f"{record['version']} skipped bundles: no desktop channel to advance")
-            log(f"Tagging Docker {record['tag']}/stable/latest onto {record['claim_tag']} "
-                f"({record['docker_manifest_digest']})")
-            # The final vX.Y.Z and the stable/latest aliases move onto the attempt's image here, in
-            # the publication pass with the feed pointer, never in the green
-            # build that pushed the image under the attempt ref. A release
-            # that skipped bundles moves only these aliases.
-            docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
-            log("Docker aliases moved")
-            if not record["skip_bundles"]:
-                log("Checking the Microsoft Store submission")
-                # The Store check joins the pass here (after the feeds and aliases
-                # move). It never releases the held submission: the API cannot,
-                # so it prints the Publish now step. The Store never blocks a
-                # release: a failed or unreadable submission becomes a warning.
-                try:
-                    store.check_from_env(env)
-                except store.StoreError as error:
-                    print(f"::warning title=Microsoft Store::{error}. The release is published; "
-                          "upload the Store package from the release run's summary in Partner Center.")
+                log(f"{record['version']} did not build every desktop package the channel serves "
+                    "(windows, macos-arm64): the desktop channel stays on the previous release")
+            if "docker" in record["lanes"]:
+                log(f"Tagging Docker {record['tag']}/stable/latest onto {record['claim_tag']} "
+                    f"({record['docker_manifest_digest']})")
+                # The final vX.Y.Z and the stable/latest aliases move onto the attempt's image here, in
+                # the publication pass with the feed pointer, never in the green
+                # build that pushed the image under the attempt ref.
+                docker.promote_stable(record["claim_tag"], record["docker_manifest_digest"], record["tag"])
+                log("Docker aliases moved")
         advance_head = production_advance
 
     for number, step in enumerate(steps, start=1):
@@ -480,6 +562,11 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
                 log(f"Receipt {record['tag']}: manifest {record['candidate_manifest_sha256']}, "
                     f"docker {record['docker_manifest_digest']}")
             notice(f"{record['tag']} is public", title="Stable sequencer")
+        elif "finish" in step:
+            record = by_version[step["finish"]]
+            with group(f"[{number}/{len(steps)}] Finish {record['version']}'s desktop advance (a newer "
+                       "release owns the Docker aliases)"), tempfile.TemporaryDirectory() as directory:
+                channel_releases.advance_stable(env, record, Path(directory))
         else:
             record = by_version[step["advance"]]
             with group(f"[{number}/{len(steps)}] Advance channels to {record['version']}"):
@@ -499,6 +586,8 @@ def reconcile(env: dict, *, run=output, read_head=None, advance_head=None,
         log(f"Channel head after the pass: {reached} (planned {expected})")
         if reached != expected:
             raise ValueError("Stable protected head did not reach the planned version")
+    if production:
+        _reconcile_store(env, list(final.values()), read_archive)
     log("Stable sequencer finished: " + (", ".join(
         f"{kind} {version}" for step in steps for kind, version in step.items()) or "nothing to do"))
     return steps

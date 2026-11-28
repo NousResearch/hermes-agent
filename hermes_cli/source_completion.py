@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # The installers run this file directly under an isolated interpreter, which
@@ -24,6 +25,10 @@ if __name__ == "__main__":
 
 #: Second-phase marker: the re-executed interpreter, not the bootstrap one.
 _PREPARED = "--prepared"
+
+#: A re-run installer can meet a completion its own install's processes started (a Desktop
+#: gateway's background child relaunched onto the new tree); it waits for it, up to this long.
+INSTALLER_LOCK_WAIT_SECONDS = 30 * 60
 
 
 def complete_source_checkout(
@@ -37,12 +42,17 @@ def complete_source_checkout(
     completion_message: str | None = None,
     announce: str | None = None,
     followups: list[tuple[str, str]] | None = None,
-    before_build=None,
+    after_dependencies=None,
+    lock_wait: float = 0.0,
 ) -> bool:
     """Publish commands, build the products, then run post-build maintenance.
 
-    ``before_build`` (an update's paused-gateway restart) runs once the launchers are published:
-    dependencies are already synced, the long product builds have not started.
+    ``after_dependencies`` (an update's launch-file refresh and paused-gateway restart) runs once
+    the launchers are published and the Python and Node dependencies prepared, before the long
+    product builds start (``build_update_products``).
+
+    ``lock_wait`` is how many seconds to wait for a live update holding the shared lock to
+    finish before refusing; the default refuses at once.
 
     Every step runs even when an earlier one failed; each failure is printed as ``⚠``,
     recorded on the open update receipt and appended to ``followups`` as ``(step, reason)``.
@@ -63,7 +73,7 @@ def complete_source_checkout(
     # sampled (R2): a completion from another home must not build a checkout an update owns;
     # one inside the update's tree joins the lock it inherited.
     lock = UpdateLock(install_root=root)
-    if not lock.acquire():
+    if not _acquire_waiting(lock, lock_wait):
         raise RuntimeError(
             f"an update is still running ({describe_holder(lock.holder)}); "
             "wait for it to exit, then relaunch Hermes"
@@ -74,10 +84,30 @@ def complete_source_checkout(
             pre_update_snapshot_id=pre_update_snapshot_id,
             pre_update_version=pre_update_version,
             completion_message=completion_message, announce=announce, followups=followups,
-            before_build=before_build,
+            after_dependencies=after_dependencies,
         )
     finally:
         lock.release()
+
+
+def _acquire_waiting(lock, wait: float) -> bool:
+    """Take *lock*, waiting up to *wait* seconds while a live update holds it.
+
+    A holder with a ``reason`` (an unwritable marker or lock file) never clears by waiting.
+    """
+    deadline = time.monotonic() + wait
+    next_notice = 0.0
+    while not lock.acquire():
+        now = time.monotonic()
+        holder = lock.holder
+        if now >= deadline or (holder is not None and holder.reason):
+            return False
+        if now >= next_notice:
+            who = f"process {holder.pid}" if holder is not None and holder.pid else "its processes"
+            print(f"→ Waiting for another Hermes update to finish ({who})...", flush=True)
+            next_notice = now + 60
+        time.sleep(min(2.0, deadline - now))
+    return True
 
 
 def _complete_locked(
@@ -91,7 +121,7 @@ def _complete_locked(
     completion_message: str | None,
     announce: str | None,
     followups: list[tuple[str, str]] | None = None,
-    before_build=None,
+    after_dependencies=None,
 ) -> bool:
     """The completion body; callers hold the update lock already."""
     from hermes_cli.source_build import build_update_products
@@ -121,9 +151,7 @@ def _complete_locked(
             owed.append((name, reason))
 
     step("launchers", lambda: publish_launchers(root))
-    if before_build is not None:
-        before_build()  # never raises: a failed restart stays owed and is retried after the build
-    step("build", lambda: build_update_products(root, desktop=desktop))
+    step("build", lambda: build_update_products(root, desktop=desktop, after_dependencies=after_dependencies))
     if announce:
         print(announce)
     verdict: list[bool] = []
@@ -200,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             ok = complete_source_checkout(
                 root, desktop=args.desktop, assume_yes=not args.interactive,
-                completion_message="✓ Install complete!",
+                completion_message="✓ Install complete!", lock_wait=INSTALLER_LOCK_WAIT_SECONDS,
             )
         return 0 if ok else 1
 

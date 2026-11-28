@@ -26,6 +26,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent.deadline import poll_until
 from agent.proxy_bypass import is_loopback_host
 from hermes_constants import get_hermes_home
 
@@ -431,15 +432,21 @@ _SQLITE_AUTH_DBS = frozenset({"Cookies", "Login Data", "Login Data For Account",
 _AUTH_BACKUP_DEADLINE_S = 5.0
 _AUTH_DB_LOCKED = ("SQLite backup made no progress within five seconds — "
                    "a running browser holds a write lock on it")
+# Session cookies keep the copy signed in. Login Data / Web Data are saved passwords and
+# autofill, which a running Chrome on macOS/Linux holds with a write lock even when Cookies
+# copy in milliseconds; failing the snapshot over them forced users to quit Chrome before
+# every browser session. They get a short best-effort budget and are skipped when locked.
+_SESSION_AUTH_DBS = frozenset({"Cookies"})
+_OPTIONAL_AUTH_BACKUP_DEADLINE_S = 0.5
 
 
-def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
+def _copy_auth_file(src_file: str, dst_file: str, *, deadline_s: float | None = None) -> str | None:
     """Copy auth state; returns None on success, else WHY the file could not be snapshotted.
     A DB that cannot be backed up consistently within the deadline is refused, never raw-copied."""
     os.makedirs(os.path.dirname(dst_file), exist_ok=True)
     try:
         if os.path.basename(src_file) in _SQLITE_AUTH_DBS:
-            deadline = time.monotonic() + _AUTH_BACKUP_DEADLINE_S
+            deadline = time.monotonic() + (_AUTH_BACKUP_DEADLINE_S if deadline_s is None else deadline_s)
             last_remaining: list[int | None] = [None]
 
             def check_deadline(_status: int, remaining: int, total: int) -> None:
@@ -471,24 +478,31 @@ def _copy_auth_file(src_file: str, dst_file: str) -> str | None:
 
 
 def _mirror_profile_auth(src: str, dst: str, source_profile: str) -> dict[str, str]:
-    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (agent-browser opens it);
-    returns ``{relative name: reason}`` for the DB auth files that could NOT be copied ({} = clean)."""
+    """Mirror ``source_profile``'s auth files into the copy's ``Default`` (the launched browser opens it);
+    returns ``{relative name: reason}`` for the session-cookie DBs that could NOT be copied ({} =
+    the signed-in state is usable). Locked password/autofill DBs are logged and skipped."""
     failed: dict[str, str] = {}
     for rel in _AUTH_REFRESH_PROFILE_FILES:
         s = os.path.join(src, source_profile, rel)
         if not os.path.isfile(s):
             continue
-        reason = _copy_auth_file(s, os.path.join(dst, "Default", rel))
-        if reason and os.path.basename(rel) in _SQLITE_AUTH_DBS:
+        base = os.path.basename(rel)
+        session_db = base in _SESSION_AUTH_DBS
+        reason = _copy_auth_file(s, os.path.join(dst, "Default", rel),
+                                 deadline_s=None if session_db else _OPTIONAL_AUTH_BACKUP_DEADLINE_S)
+        if not reason or base not in _SQLITE_AUTH_DBS:
+            continue
+        if session_db:
             failed[rel] = reason
+        else:
+            why = "the running browser holds a write lock on it" if reason == _AUTH_DB_LOCKED else reason
+            logger.info("real-profile snapshot: skipped %s (%s); session cookies still copied", rel, why)
     return failed
 
 
 def _unavailable_auth_dbs_error(browser: str, failed: dict[str, str]) -> str:
-    """Fail-closed message naming WHICH auth databases could not be snapshotted and WHY. On
-    macOS/Linux a running browser typically lets Cookies back up but holds Login Data / Login Data
-    For Account / Web Data with a write lock, so the message must not read as "close the browser"
-    when the real cause is an unreadable file (and vice versa)."""
+    """Message naming WHICH session-cookie databases could not be snapshotted and WHY, so it never
+    reads as "close the browser" when the real cause is an unreadable file (and vice versa)."""
     names = ", ".join(failed)
     if all(reason == _AUTH_DB_LOCKED for reason in failed.values()):
         return (f"{browser} is running and holds the profile's {names} with a write lock, so their "
@@ -524,10 +538,11 @@ def _profile_is_locked(src: str, source_profile: str) -> bool:
 
 
 def _browser_setting(key: str):
-    """Read ``browser.<key>`` from raw config; None when unset/unreadable."""
+    """``browser.<key>`` from the effective user config (managed overlay, ``${VAR}`` expanded); None when
+    unset/unreadable."""
     try:
-        from hermes_cli.config import read_raw_config
-        browser_cfg = read_raw_config().get("browser", {})
+        from hermes_cli.config_effective import load_user_config_effective
+        browser_cfg = load_user_config_effective().get("browser", {})
         return browser_cfg.get(key) if isinstance(browser_cfg, dict) else None
     except Exception as e:
         logger.debug("could not read %s: %s", key, e)
@@ -617,11 +632,8 @@ def close_browser_holding_profile(src: str, timeout: float = 15.0) -> tuple[bool
     psutil.wait_procs(alive, timeout=3.0)
     # The lock releases slightly after the process exits on Windows; poll.
     source_profile = _resolve_source_profile(src)[0] or _last_used_profile(src)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not _profile_is_locked(src, source_profile):
-            return True, "closed the browser and the profile lock released."
-        time.sleep(0.5)
+    if poll_until(lambda: not _profile_is_locked(src, source_profile), timeout, 0.5):
+        return True, "closed the browser and the profile lock released."
     return False, (
         "closed the browser processes but the profile is still locked — "
         "another instance may have relaunched (background/tray mode).")
@@ -697,11 +709,39 @@ def _copy_profile_tree(src: str, dst: str, source_profile: str) -> None:
             len(multi.args[0]) if multi.args else 0, src, source_profile)
 
 
+def _drop_singleton_leftovers(dst: str) -> None:
+    """Never carry live-instance leftovers into the copy (they make Chrome think it's open)."""
+    for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(dst, leftover))
+
+
+def _snapshot_source(marker: str) -> str | None:
+    """Source profile name a completed snapshot was taken from (the done marker's content)."""
+    try:
+        with open(marker, encoding="utf-8-sig") as fh:
+            return fh.read().strip() or None
+    except OSError:
+        return None
+
+
+def _reuse_snapshot(browser: str, dst: str) -> tuple[str, None]:
+    """Serve the last completed snapshot as-is when the live profile is locked. Its logins are as
+    fresh as that copy; the next launch with the browser closed re-syncs them. Refusing instead
+    would drop the session to a signed-out browser although a usable copy is on disk."""
+    _drop_singleton_leftovers(dst)
+    logger.info("real-profile: %s holds its profile lock; reusing the last snapshot in %s "
+                "(logins as of that copy)", browser, dst)
+    return dst, None
+
+
 def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | None, str | None]:
     """Snapshot ``browser``'s real ACTIVE profile into the hermes copy dir; returns ``(dst, err)``.
     Copies ``Local State`` plus the active profile's auth files into the copy's ``Default``. The
     completion marker is written only after full success, so a torn first copy (disk full, Ctrl+C)
-    never looks "already populated" — it is redone from scratch."""
+    never looks "already populated" — it is redone from scratch. A locked live profile (Windows,
+    browser running) reuses a completed snapshot of the same source profile without re-syncing;
+    only a missing or other-profile snapshot fails with the locked error."""
     src = src or real_profile_data_dir(browser)
     if not src or not os.path.isdir(src):
         return None, (
@@ -711,16 +751,21 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
     if resolve_err or not source_profile:
         return None, resolve_err
     dst = real_profile_copy_dir(browser)
-    # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
-    # hang the launch for minutes. Never trips on POSIX; there a running browser surfaces later as
-    # auth DB backups that miss their deadline (``_unavailable_auth_dbs_error``).
-    if _profile_is_locked(src, source_profile):
-        return None, _locked_profile_error(browser)
     marker = os.path.join(dst, _SNAPSHOT_DONE_MARKER)
     # Only a copy that previously COMPLETED counts as populated; a half-written tree is
     # rebuilt — otherwise a torn first copy poisons freshness forever.
     populated = os.path.isfile(marker)
+    same_source = populated and _snapshot_source(marker) == source_profile
+    # Fast lock probe BEFORE any copy: a blocking file op on a Windows-locked cookie DB can
+    # hang the launch for minutes. Never trips on POSIX, where a running browser only locks the
+    # password/autofill DBs, which ``_mirror_profile_auth`` skips.
+    if _profile_is_locked(src, source_profile):
+        return _reuse_snapshot(browser, dst) if same_source else (None, _locked_profile_error(browser))
     try:
+        if populated and not same_source:
+            # Drop another profile's marker BEFORE re-syncing: an interrupted sync must never leave
+            # it vouching for this profile's cookies on a later locked reuse.
+            os.unlink(marker)
         os.makedirs(dst, exist_ok=True)
         # Secure the snapshot dir AND its browser-profile parent on EVERY launch so a failed
         # first attempt or an older-build dir still converges to owner-only perms.
@@ -731,12 +776,9 @@ def snapshot_real_profile(browser: str, src: str | None = None) -> tuple[str | N
             _copy_profile_tree(src, dst, source_profile)
         # Both paths: lock-aware auth DB copy into Default — also the per-launch re-sync.
         failed_dbs = _mirror_profile_auth(src, dst, source_profile)
-        if failed_dbs:  # even online-backup failed: never launch a silently signed-out session
+        if failed_dbs:  # no session cookies: a "real profile" launch would be signed out
             return None, _unavailable_auth_dbs_error(browser, failed_dbs)
-        # Never carry live-instance leftovers into the copy.
-        for leftover in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
-            with contextlib.suppress(OSError):
-                os.unlink(os.path.join(dst, leftover))
+        _drop_singleton_leftovers(dst)
         # Mark complete only after everything above succeeded.
         try:
             with open(marker, "w", encoding="utf-8") as fh:
@@ -1013,7 +1055,9 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
 
 def _detach_kwargs(system: str) -> dict:
     if system != "Windows":
-        return {"start_new_session": True}
+        # /browser connect launches the USER's debug browser: it must outlive this Hermes (the connection persists in
+        # BROWSER_CDP_URL and a later session re-attaches to it), and it is never ours to stop.
+        return {"start_new_session": True}  # detached-spawn: ok — the user's browser, meant to outlive Hermes
     flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
              | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     return {"creationflags": flags} if flags else {}

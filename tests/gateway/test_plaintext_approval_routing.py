@@ -48,7 +48,6 @@ def _clear_approval_state():
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
-    mod._pending.clear()
 
 
 def _make_runner():
@@ -68,10 +67,7 @@ def _make_runner():
     adapter._unwrap_ephemeral = lambda r: (r, 0) if isinstance(r, str) else (None, 0)
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
     runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._busy_ack_ts = {}
     runner._draining = False
     runner.session_store = None
     runner._is_user_authorized = lambda _source: True

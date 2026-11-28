@@ -17,7 +17,10 @@ async def resolve_heartbeat_owner(runner, event, entry):
     resolved = entry.session_id
     if resolved != expected:
         def compression_tip():
-            return runner.session_store._db_for_key(entry.session_key).get_compression_tip(expected)
+            from persistence.core.errors import StoreUnavailable
+            if (store := runner.session_store._persistence_for_key(entry.session_key)) is None:
+                raise StoreUnavailable(f"no storage handle for {entry.session_key}")
+            return store.lineage.tip(expected)
 
         tip = await runner._run_in_executor_with_context(compression_tip)
         if tip != resolved:
@@ -42,3 +45,41 @@ def settle_heartbeat_attempt(event, manager):
             manager.abandon_fire()
         except Exception:
             logger.warning("Failed to refund unexecuted heartbeat", exc_info=True)
+
+
+async def admit_heartbeat(runner, adapter, source, session_id, route):
+    """Coalesce overdue ticks behind the canonical FIFO, not an adapter-local slot."""
+    import json
+    from gateway.platforms.event import MessageEvent
+    from hermes_cli.heartbeat import HeartbeatManager
+    from persistence.core.errors import StoreUnavailable
+
+    from gateway.session_authorities import active_authority
+    from gateway.session_persistence import authority_persistence
+    authority = active_authority(runner)
+    if authority is None:
+        return
+    if (store := authority_persistence(authority)) is None:
+        raise StoreUnavailable(f"no storage handle for {authority.profile_id}")
+    # Admissions live on the route's logical owner (the compression root), not its transcript tip;
+    # a LOCAL route's heartbeat rides local_automation_v1.
+    pending = store.admissions.list(session_id=authority.logical_owner(session_id))
+    if any(row.payload.get('native_text_v1', {}).get('automation', {}).get('heartbeat')
+           or row.payload.get('local_automation_v1', {}).get('heartbeat') for row in pending):
+        return
+    manager = HeartbeatManager(session_id)
+    prompt = manager.due_prompt()
+    if prompt is None:
+        return
+    state = manager.state
+    identity = json.dumps(['heartbeat', session_id, state.created_at, state.fire_count], separators=(',', ':'))
+    event = MessageEvent(text=prompt, source=source, internal=True, message_id=identity,
+        metadata={'gateway_session_key': route, 'gateway_session_id': session_id})
+    event._heartbeat_session_id = session_id
+    try:
+        await authority.admit_automation(adapter, event, identity)
+    except BaseException:
+        # Readiness is not a delivery attempt, and cancellation before commit is not ACK.
+        if getattr(event, '_gateway_accepted', False) is not True:
+            manager.abandon_fire()
+        raise

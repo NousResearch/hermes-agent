@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -12,6 +13,19 @@ from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
+from session_rules.turns import (
+    _AUTO_LOAD_HEADER_RE,
+    _AUTO_LOAD_PREFIX,
+    _AUTO_LOAD_SUFFIX_RE,
+    _BUNDLE_MARKER,
+    _SINGLE_SKILL_INSTRUCTION,
+    _SINGLE_SKILL_MARKER,
+    _SKILL_INVOCATION_PREFIX,
+    _SKILL_NAME_RE,
+    _SUPPORTING_FILES_END,
+)
+# Published here before the storage interface (#149567) moved it; the catalog's OpenViking and Honcho pins import it here.
+from session_rules.turns import extract_user_instruction_from_skill_message
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +43,10 @@ _skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
 # Keep the last map callers could actually see, even when plugin lifecycle
 # invalidation drops the projection cache before /reload-skills can diff it.
 _last_interactive_skill_commands_by_key: dict[tuple, dict[str, dict[str, Any]]] = {}
+# The on-disk signature each published map was scanned at (same key). The one gateway serves every
+# local session for its whole lifetime, so a skill installed or removed from another terminal must
+# move this signature and rescan on the next lookup instead of waiting for /reload-skills (CFG-8).
+_skill_commands_sig_by_key: dict[tuple, tuple] = {}
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
@@ -36,34 +54,6 @@ _publish_lock = threading.Lock()
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
-# Skill-scaffolding markers. A /skill (or /bundle) turn is expanded into a
-# model-facing message embedding the full skill body; memory providers storing
-# the raw user turn would capture the body instead of what the user asked, so
-# ``extract_user_instruction_from_skill_message`` recovers just the instruction.
-# The markers MUST stay byte-identical to the builders (``_build_skill_message``,
-# ``_scaffold_header``).
-_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
-_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
-_SINGLE_SKILL_INSTRUCTION = "The user has provided the following instruction alongside the skill invocation: "
-_RUNTIME_NOTE = "\n\n[Runtime note:"
-_BUNDLE_MARKER = " skill bundle,"
-_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
-_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
-
-# The skill name sits in the first quoted span of the activation note, for both
-# the single-skill and the bundle header ("work" / "/clean /work").
-_SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
-
-# Gateway auto-load scaffold (gateway/run_turn.py ``_hmwa_auto_load_skills``): a channel-bound
-# skill prepended to the user's text on a NEW session. Unlike the invocation scaffolds above it
-# carries no instruction marker — the user's text simply follows the payload blocks — so the
-# describer strips the header + body and renders the typed request (session previews, titles).
-_AUTO_LOAD_PREFIX = '[IMPORTANT: The "'
-_AUTO_LOAD_SUFFIX_RE = re.compile(r'" skill is auto-loaded\. Follow its instructions for this session\.\]')
-# Closing sentence of the skill-directory footer note (see _SKILL_DIR_NOTE in this module):
-# the last thing in every built payload, so it marks where an auto-load payload ends and the
-# next payload or the user's typed text begins.
-_SKILL_DIR_NOTE_END = "then run them with the terminal tool using the absolute path."
 
 # SQL LIKE pattern for listing queries that recognize scaffolding before the row
 # reaches Python (no LIKE wildcards in the prefix, so no ESCAPE clause needed).
@@ -76,6 +66,14 @@ AUTO_LOAD_SCAFFOLD_SQL_LIKE = _AUTO_LOAD_PREFIX + "%"
 # message; ``describe_skill_invocation`` cuts there rather than show the body.
 SKILL_EXCERPT_JOINT = "\x1e"
 
+
+
+def _skills_off() -> bool:
+    """Skills read this host's profile skill files: off for a safe worker and in a hosted scope
+    (where they are not the agent's), so nothing below discovers, reads or renders one."""
+    from agent.safe_worker_policy import safe_worker_enabled
+    from tools.hosted_tool_policy import host_feature_enabled
+    return safe_worker_enabled() or not host_feature_enabled("skills")
 
 
 def slugify_skill_name(name: str) -> str:
@@ -101,85 +99,25 @@ def append_user_instruction(parts: list, instruction: str) -> str:
     return stable_prefix
 
 
-def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
-    """Recover the user's instruction from a slash-skill-expanded turn: the
-    string unchanged when it is NOT scaffolding, the extracted instruction when
-    the scaffolding carried one, or ``None`` for a bare ``/skill`` invocation."""
+_BUNDLE_LOADED_RE = re.compile(r"^Skills loaded: (.+)$", re.MULTILINE)
+
+
+def skills_loaded_by_scaffold(content: Any) -> list[str]:
+    """Skill names a slash-skill, bundle/stacked or gateway auto-load turn carries inline; ``[]`` for any
+    other text. Only a complete activation header counts, so typed text that merely starts like one
+    (``[IMPORTANT: The "config" file is broken]``) is not mistaken for a skill load."""
     if not isinstance(content, str):
-        return None
-    if not content.startswith(_SKILL_INVOCATION_PREFIX):
-        return content
-    if _BUNDLE_MARKER in content:
-        # Bundles put the instruction before the loaded skills: FIRST marker is the user's.
-        return _cut_after(content, _BUNDLE_USER_INSTRUCTION, _BUNDLE_FIRST_SKILL_BLOCK, content.find)
-    if _SINGLE_SKILL_MARKER in content:
-        # The instruction follows the skill body (which may quote the marker): LAST marker is the user's.
-        return _cut_after(content, _SINGLE_SKILL_INSTRUCTION, _RUNTIME_NOTE, content.rfind)
-    return None
-
-
-def _describe_auto_loaded_skill_turn(content: str) -> Optional[str]:
-    """``[IMPORTANT: The "X" skill is auto-loaded. …]`` + payload(s) + typed text
-    -> the typed text.
-
-    ``_hmwa_auto_load_skills`` builds each payload with ``_build_skill_message``
-    (activation header, body, then the skill-directory footer note) and appends the
-    user's text as the final block. The footer's closing sentence is the reliable
-    payload-end marker: the user's text is what follows the LAST footer. A header
-    quoted inside a body (a skill embedding the scaffold in an example) carries no
-    footer, so it cannot end the payload early. ``/<skill>`` renders when no user
-    text follows, matching the single-skill describer's bare-invocation shape."""
-    if not content.startswith(_AUTO_LOAD_PREFIX):
-        return None
-    name_match = re.match(re.escape(_AUTO_LOAD_PREFIX) + r'([^"]*)"', content)
-    name = name_match.group(1) if name_match else ""
-    # The payload footer ends with this exact sentence (_build_skill_message); the
-    # user's text is the last thing after the FINAL footer in the message.
-    footer_end = content.rfind(_SKILL_DIR_NOTE_END)
-    if footer_end == -1:
-        return f"/{name}" if name else None
-    tail = content[footer_end + len(_SKILL_DIR_NOTE_END):]
-    if not tail.strip():
-        return f"/{name}" if name else None
-    return " ".join(tail.split()) or None
-
-
-def describe_skill_invocation(content: Any, separator: str = " — ") -> Optional[str]:
-    """Render a slash-skill-expanded turn the way the user typed it:
-    ``"/work — fix the title leak"``, ``"/work"`` for a bare invocation, or
-    ``None`` when *content* is not scaffolding. ``separator=" "`` gives the
-    literal invocation as typed (chat transcripts).
-
-    A gateway auto-load scaffold (channel-bound skill on a new session) is also
-    scaffolding: the typed request follows the skill payload, so it renders as
-    that request — the header/body never reaches a preview or a title (#48359).
-    """
-    if not isinstance(content, str):
-        return None
+        return []
     if content.startswith(_AUTO_LOAD_PREFIX):
-        return _describe_auto_loaded_skill_turn(content)
+        return [m.group(1) for m in _AUTO_LOAD_HEADER_RE.finditer(content)] if _AUTO_LOAD_HEADER_RE.match(content) else []
     if not content.startswith(_SKILL_INVOCATION_PREFIX):
-        return None
+        return []
+    header = content.split("\n", 1)[0]
+    if _BUNDLE_MARKER in header:
+        loaded = _BUNDLE_LOADED_RE.search(content)
+        return [n.strip() for n in loaded.group(1).split(",") if n.strip()] if loaded else []
     match = _SKILL_NAME_RE.match(content)
-    name = (match.group(1) if match else "").strip()
-    # Bundle headers already carry their typed "/a /b" keys; a single skill is a bare name.
-    label = name if name.startswith("/") else f"/{name}"
-    instruction = extract_user_instruction_from_skill_message(content)
-    if instruction and instruction is not content:
-        # An excerpt (head + tail joined by SKILL_EXCERPT_JOINT) can put the
-        # joint inside the span — keep only the side the marker was found on.
-        instruction = " ".join(instruction.split(SKILL_EXCERPT_JOINT)[0].split())
-        if instruction:
-            return f"{label}{separator}{instruction}" if name else instruction
-    return label if name else None
-
-
-def _cut_after(message: str, marker: str, stop_marker: str, find) -> Optional[str]:
-    """Text between *marker* (located with ``find``) and *stop_marker*, stripped; None if absent/empty."""
-    marker_idx = find(marker)
-    if marker_idx < 0:
-        return None
-    return message[marker_idx + len(marker):].split(stop_marker, 1)[0].strip() or None
+    return [match.group(1)] if header.endswith(_SINGLE_SKILL_MARKER) and match and match.group(1) else []
 
 
 def _resolve_skill_commands_platform() -> Optional[str]:
@@ -223,6 +161,8 @@ def _resolve_skill_commands_project() -> Optional[str]:
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
+    if _skills_off():
+        return None
     raw_identifier = (skill_identifier or "").strip()
     if not raw_identifier:
         return None
@@ -358,7 +298,7 @@ def _build_skill_message(
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {skill_dir}{_SUPPORTING_FILES_END}"
         )
     stable_prefix = None
     if user_instruction:
@@ -480,12 +420,16 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     Builds a local map and publishes once at the end: writing straight into the
     global exposed partial results to overlapping scans, which then logged
     bogus "already claimed" collisions against their own incumbents."""
+    if _skills_off():
+        return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
     # one bogus "already claimed" warning per skill — each naming the same skill as its own incumbent
     # (#74574).
+    # Taken BEFORE the scan: an install racing the scan moves it, so the next lookup rescans.
+    signature = _skill_dirs_signature()
     commands: dict[str, dict[str, Any]] = {}
     try:
         from tools.skills_tool import _get_disabled_skill_names, _skill_catalog
@@ -509,8 +453,77 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
         # Publishing under the lock keeps the (key, map) pair consistent for any
         # reader between the lookup and this store (#14536, #74574); the scan above
         # (file I/O, deferred imports) stays outside it.
-        _skill_commands_by_key[key] = commands
+        _skill_commands_sig_by_key[key] = signature
+        _publish_scope(_skill_commands_by_key, key, commands)
     return commands
+
+
+# The most scopes the change watcher signs per pass (each is one ~1 ms stat walk).
+_MAX_WATCHED_SCOPES = 32
+# Scopes kept resident (LRU). Each distinct (platform, profile, project) keeps a whole command map; a
+# long-lived gateway visiting many repos would otherwise keep one per repo forever. An evicted scope
+# rescans on its next lookup, exactly as after /reload-skills.
+_MAX_CACHED_SCOPES = 2 * _MAX_WATCHED_SCOPES
+
+
+# One recency order for every per-scope table: separate orders let a scope used recently in one table be
+# the oldest in another, so evicting by either dropped a live scope's /reload-skills baseline.
+_scope_recency: dict[tuple, None] = {}
+
+
+def _publish_scope(table: Optional[dict], key: tuple, value: Any = None) -> None:
+    """Mark ``key`` most recently used (storing ``value`` in ``table`` unless it is None); past the cap,
+    the least recently used scope leaves every per-scope table together. Caller holds ``_publish_lock``."""
+    if table is not None:
+        table[key] = value
+    _scope_recency.pop(key, None)
+    _scope_recency[key] = None
+    while len(_scope_recency) > _MAX_CACHED_SCOPES:
+        stale = next(iter(_scope_recency))
+        for scoped in (_scope_recency, _skill_commands_by_key, _skill_commands_sig_by_key, _last_interactive_skill_commands_by_key):
+            scoped.pop(stale, None)
+
+
+def published_scopes_signature() -> tuple:
+    """Signature of every skill scope a session has resolved commands for, plus the ambient one.
+
+    One gateway serves sessions in several profiles and repos; each published ``(platform, home,
+    project)`` key names a scope whose roots (that profile's skills/external dirs, that repo's trusted
+    project skills) a viewer is looking at. The change watcher (``skills.changed``) compares this, so
+    an install in a session's repo B notifies viewers even when the gateway was launched in repo A.
+    Only command maps/catalogs refetch; a conversation's stored system prompt is never rebuilt.
+    """
+    from agent.runtime_cwd import reset_session_cwd, set_session_cwd
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    with _publish_lock:
+        keys = list(_skill_commands_by_key)
+    scopes = sorted({(home, project) for _platform, home, project in keys if home})[:_MAX_WATCHED_SCOPES]
+    rows = [("", None, _skill_dirs_signature())]
+    for home, project in scopes:
+        home_token = set_hermes_home_override(home)
+        # No project: an empty session cwd would fall back to the process cwd; "/" resolves no repo.
+        cwd_token = set_session_cwd(project or os.path.sep)
+        try:
+            rows.append((home, project, _skill_dirs_signature()))
+        finally:
+            reset_session_cwd(cwd_token)
+            reset_hermes_home_override(home_token)
+    return tuple(rows)
+
+
+def _skill_dirs_signature() -> Optional[tuple]:
+    """Stat-cheap change signature of every skill root (the catalog's own: the mtime and child names of
+    every directory the catalog walks, depth-bounded, plus the disabled set and the platform). None when
+    it cannot be computed (a root that cannot be stat'ed), which keeps the published map rather than
+    rescanning on every lookup. Any other error raises: the catalog scan itself takes the same signature
+    unguarded (``tools.skills_tool._skill_catalog``), and a swallowed bug would pin a stale map silently."""
+    from tools.skills_tool import _get_disabled_skill_names, skill_search_dirs, _skills_scan_signature
+    try:
+        roots, _active = skill_search_dirs()
+        return _skills_scan_signature([d for _tier, d in roots], _get_disabled_skill_names())
+    except OSError:
+        logger.debug("Skill dir signature failed", exc_info=True)
+        return None
 
 
 def get_skill_commands() -> dict[str, dict[str, Any]]:
@@ -521,11 +534,20 @@ def get_skill_commands() -> dict[str, dict[str, Any]]:
 
     See #14536, #88023, #114359, #104849.
     """
+    if _skills_off():
+        return {}
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         cached = _skill_commands_by_key.get(key)
+        scanned_at = _skill_commands_sig_by_key.get(key)
+        if cached is not None:
+            _publish_scope(None, key)
     if cached is not None:
-        return cached
+        # A skill installed or removed from another terminal moves the dir signature: rescan, so the
+        # long-lived gateway's palette and dispatch see it without /reload-skills (CFG-8).
+        current = _skill_dirs_signature()
+        if current is None or scanned_at is None or current == scanned_at:
+            return cached
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
     return scan_skill_commands()
@@ -556,6 +578,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     """
     from agent.skill_utils import get_disabled_skill_names
     from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_cli.plugins_content import plugin_skill_owners
     from hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_constants import get_hermes_home
 
@@ -574,7 +597,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     return {
         key: info for key, info in cached.items()
         if not (info["name"] in disabled or info["name"].split(":", 1)[1] in disabled
-                or info["name"].split(":", 1)[0] in disabled_plugins)
+                or plugin_skill_owners(manager, info["name"]) & disabled_plugins)
     }
 
 
@@ -632,10 +655,12 @@ def _merge_interactive_skill_commands(
 def get_interactive_skill_commands() -> dict[str, dict[str, Any]]:
     """Filesystem skills plus profile-scoped plugin skills; never use for
     messaging/native command menus (plugin skills are CLI/TUI/desktop only)."""
+    if _skills_off():
+        return {}
     identity = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     commands = _merge_interactive_skill_commands(get_skill_commands(), get_plugin_skill_commands())
     with _publish_lock:
-        _last_interactive_skill_commands_by_key[identity] = dict(commands)
+        _publish_scope(_last_interactive_skill_commands_by_key, identity, dict(commands))
     return commands
 
 
@@ -665,6 +690,7 @@ def reload_skills() -> dict[str, Any]:
     key = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         before_commands = _last_interactive_skill_commands_by_key.get(key)
+        _publish_scope(None, key)
     if before_commands is None:
         # Preserve only a previously published view. A first-ever reload has
         # no before-state, so discoveries correctly appear as additions.
@@ -679,6 +705,7 @@ def reload_skills() -> dict[str, Any]:
         # Clear the entire multi-slot cache: a skill edit could affect any
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
+        _skill_commands_sig_by_key.clear()
     from tools.skills_tool import clear_skills_cache
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     invalidate_plugin_skill_commands()
@@ -687,7 +714,7 @@ def reload_skills() -> dict[str, Any]:
     after = command_snapshot(effective_commands)
     result = diff_command_snapshots(before, after)
     with _publish_lock:
-        _last_interactive_skill_commands_by_key[key] = effective_commands
+        _publish_scope(_last_interactive_skill_commands_by_key, key, effective_commands)
     result["commands"] = len(effective_commands)
     return result
 
@@ -837,6 +864,8 @@ def build_preloaded_skills_prompt(
     ``_load_skill_payload``, bypassing ``get_skill_commands()``'s scan-time disabled filter — mirrors the
     bundle-invocation gate (#59156).
     """
+    if _skills_off():
+        return "", [], list(skill_identifiers)
     loaded_names, missing, _disabled, prompt_parts = _load_skill_blocks(
         [(raw or "").strip() for raw in skill_identifiers],
         lambda identifier: _load_skill_payload(identifier, task_id=task_id),
@@ -878,6 +907,8 @@ def build_auto_load_prompt(
     that lost the HERMES_HOME ContextVar cannot pin the launch profile's skills into another profile's prompt.
     """
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    if _skills_off():
+        return "", [], []
     home_token = set_hermes_home_override(str(home_override)) if home_override is not None else None
     try:
         auto_skills = resolve_auto_load_skills(user_config)

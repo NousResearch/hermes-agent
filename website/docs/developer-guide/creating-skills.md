@@ -60,7 +60,7 @@ metadata:
     requires_toolsets: [web]            # Optional — only show when these toolsets are active
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
-    fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    fallback_for_tools: [browser_exec]  # Optional — hide when these tools exist
     config:                              # Optional — config.yaml settings the skill needs
       - key: my.setting
         description: "What this setting controls"
@@ -120,7 +120,7 @@ metadata:
     requires_toolsets: [web]           # Hide if the web toolset is NOT active
     requires_tools: [web_search]       # Hide if web_search tool is NOT available
     fallback_for_toolsets: [browser]   # Hide if the browser toolset IS active
-    fallback_for_tools: [browser_navigate]  # Hide if browser_navigate IS available
+    fallback_for_tools: [browser_exec]  # Hide if browser_exec IS available
 ```
 
 | Field | Behavior |
@@ -130,7 +130,7 @@ metadata:
 | `fallback_for_toolsets` | Skill is **hidden** when ANY listed toolset **is** available |
 | `fallback_for_tools` | Skill is **hidden** when ANY listed tool **is** available |
 
-**Use case for `fallback_for_*`:** Create a skill that serves as a workaround when a primary tool isn't available. For example, a `duckduckgo-search` skill with `fallback_for_tools: [web_search]` only shows when the web search tool (which requires an API key) is not configured.
+**Use case for `fallback_for_*`:** Create a skill that serves as a workaround when a primary tool isn't available. For example, a curl-based search skill with `fallback_for_tools: [web_search]` only shows when the `web_search` tool is disabled.
 
 **Use case for `requires_*`:** Create a skill that only makes sense when certain tools are present. For example, a web scraping workflow skill with `requires_toolsets: [web]` won't clutter the prompt when web tools are disabled.
 
@@ -372,8 +372,6 @@ hermes skills install owner/morning-brief
 ```
 
 Blueprints are one **source** of the unified Suggested Cron Jobs surface — the same place curated starter automations and (later) usage-pattern and integration suggestions appear. See [Suggested Cron Jobs](#suggested-cron-jobs) below.
-
-**Sharing an automation you built.** A blueprint loaded by a cron job (`hermes cron create --skill <name> ...`) can be exported back to a SKILL.md and published like any other skill, so an automation you tuned for yourself becomes a one-command install for someone else.
 
 The blueprint layer adds no new object type, store, or transport — the blueprint is a skill, the schedule is a cron job, and sharing is the existing publish/tap/index path.
 

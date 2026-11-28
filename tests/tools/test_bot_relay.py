@@ -15,6 +15,7 @@ relay adds to message_agent:
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -108,7 +109,7 @@ def test_resolve_ambiguous_handle_across_connections(root):
 # ── outbox / replies ─────────────────────────────────────────────────────────
 
 
-def test_enqueue_claim_is_atomic_and_single_shot(root):
+def test_enqueue_claim_replays_exact_identity_until_reply(root):
     bot_relay.write_remote_roster(root, _rows())
     roster = bot_relay.read_remote_roster(root)
     target = bot_relay.resolve_remote_target("researcher", roster)
@@ -120,7 +121,9 @@ def test_enqueue_claim_is_atomic_and_single_shot(root):
     assert [e["id"] for e in claimed] == [env["id"]]
     assert claimed[0]["target_connection"] == "ssh-vps"
     assert claimed[0]["message"] == "hi"
-    # second drain: nothing (no double delivery)
+    # Reconnect replays the same admission identity, never a fresh turn.
+    assert bot_relay.claim_pending_envelopes(root) == claimed
+    bot_relay.write_reply(root, env['id'], reply='done')
     assert bot_relay.claim_pending_envelopes(root) == []
 
 
@@ -309,18 +312,25 @@ def _managed_home(tmp_path, *, legacy_soul=False):
     return home
 
 
-class _FakeDB:
-    def __init__(self, home, title):
-        self.db_path = str(home / "state.db")
+class _FakeSessions:
+    def __init__(self, title):
         self._title = title
 
-    def get_session_title(self, _sid):
+    def get_title(self, _sid):
         return self._title
+
+
+class _FakePersistence:
+    """The agent's storage interface handle: its profile scope and the session title verb."""
+
+    def __init__(self, home, title):
+        self.scope = SimpleNamespace(profile_dir=home)
+        self.sessions = _FakeSessions(title)
 
 
 class _FakeAgent:
     def __init__(self, home, title="Bot Chat"):
-        self._session_db = _FakeDB(home, title)
+        self.persistence = _FakePersistence(home, title)
         self.session_id = "sess-1"
         self._session_title_hint = None
         self._bot_mode_protocol = True
@@ -608,6 +618,56 @@ def test_the_outbox_is_claimed_oldest_first(root):
 
     assert [e["id"] for e in claimed] == [first["id"], second["id"]]
     assert [e["message"] for e in claimed] == ["do this first", "then this"]
+
+
+def test_replayed_unanswered_dm_precedes_mail_queued_after_it(root):
+    """A Desktop that reconnects before the first DM's reply drains it again as a replay, beside a
+    second DM queued since. Both reach the target's delivery lane in this list's order, so the
+    claimed-but-unanswered one (sent first) must come first — not after the fresh outbox row."""
+    first = bot_relay.enqueue_envelope(
+        root, target=_target(), message="do this first",
+        sender_profile="default", sender_handle="hermes",
+    )
+    base = bot_relay.relay_root(root)
+    now = _time2.time()
+    _os2.utime(base / bot_relay.OUTBOX_DIR / f"{first['id']}.json", (now - 2, now - 2))
+    assert [e["id"] for e in bot_relay.claim_pending_envelopes(root)] == [first["id"]]
+    second = bot_relay.enqueue_envelope(
+        root, target=_target(), message="then this",
+        sender_profile="default", sender_handle="hermes",
+    )
+    _os2.utime(base / bot_relay.OUTBOX_DIR / f"{second['id']}.json", (now - 1, now - 1))
+
+    drained = bot_relay.claim_pending_envelopes(root)
+
+    assert [e["message"] for e in drained] == ["do this first", "then this"]
+    assert [e["id"] for e in drained] == [first["id"], second["id"]]  # stable ids, no re-mint
+
+
+def test_pre_upgrade_claim_settles_unknown_instead_of_stranding_its_waiter(root):
+    """A claimed envelope from the old lane (no ``canonical_delivery_v1``) is never replayed into the
+    authority, but its waiter must still resolve: once the old drain's re-offer point passes it gets
+    a terminal ``unknown`` reply (not auto-retryable) and is never handed out again."""
+    from tools.bot_failure_reasons import UNKNOWN
+
+    base = bot_relay._ensure_dirs(root)
+    legacy = {"id": "a" * 32, "created_at": int(_time2.time()) - 60, "from_profile": "default",
+              "from_handle": "hermes", "target_connection": "cloud-1", "target_profile": "default",
+              "target_handle": "hermes", "message": "legacy"}
+    path = base / bot_relay.CLAIMED_DIR / f"{legacy['id']}.json"
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    reply_path = base / bot_relay.REPLIES_DIR / f"{legacy['id']}.json"
+    claimed_at = _time2.time() - 60
+    _os2.utime(path, (claimed_at, claimed_at))
+    assert bot_relay.claim_pending_envelopes(root) == []
+    assert not reply_path.exists()  # inside the old lane's in-flight window: no verdict yet
+
+    claimed_at = _time2.time() - bot_relay.REOFFER_AFTER_SECONDS - 10
+    _os2.utime(path, (claimed_at, claimed_at))
+    assert bot_relay.claim_pending_envelopes(root) == []
+    reply = json.loads(reply_path.read_text(encoding="utf-8"))
+    assert reply["reason"] == UNKNOWN
+    assert reply["error"] and not reply["reply"]
 
 
 def test_drain_delivers_fresh_envelope_under_ttl(root):

@@ -138,7 +138,7 @@ class TestCursesBrowse:
                     pass  # key sequence exhausted
 
             mock_wrapper.side_effect = run_inner
-            with patch("curses.curs_set"):
+            with patch("curses.curs_set"), patch("curses.ungetch", side_effect=lambda k: mock_stdscr.keys.insert(0, k)):
                 with patch("curses.has_colors", return_value=False):
                     return _session_browse_picker(sessions)
 
@@ -146,6 +146,12 @@ class TestCursesBrowse:
         sessions = _make_sessions(3)
         result = self._run_with_keys(sessions, [27, ord("["), ord("B"), 10])
         assert result == sessions[1]["id"]
+
+    def test_quick_double_escape_clears_filter_then_exits(self):
+        """Two Esc presses inside the escape-sequence window are two keypresses, not one sequence."""
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [ord("2"), 27, 27, -1, 10])  # -1: nothing follows
+        assert result is None
 
     def test_escape_cancels(self):
         sessions = _make_sessions(3)

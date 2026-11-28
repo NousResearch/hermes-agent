@@ -184,6 +184,8 @@ class TestCompositeMenuRawArrowKeys:
         KEY_HOME = 262
         KEY_END = 360
         KEY_ENTER = 343
+        KEY_UP = 259  # real curses values: read_key() translates raw arrows into these
+        KEY_DOWN = 258
 
         class error(Exception):
             pass

@@ -496,6 +496,21 @@ class TestManagedKreaRouting:
         assert kwargs["aspect_ratio"] == "portrait"
 
 
+class TestSeedream55:
+    """Seedream 5.5 rejects outputs outside 921,600..4,624,220 total pixels."""
+
+    MODEL = "bytedance/seedream/v5.5/text-to-image"
+
+    def test_every_aspect_lands_inside_the_pixel_window(self, image_tool):
+        for aspect in ("landscape", "square", "portrait"):
+            for builder, args in (
+                (image_tool._build_fal_payload, (self.MODEL, "a mug", aspect)),
+                (image_tool._build_fal_edit_payload, (self.MODEL, "make it blue", ["https://x/a.png"], aspect)),
+            ):
+                size = builder(*args)["image_size"]
+                assert 921_600 <= size["width"] * size["height"] <= 4_624_220, (builder, aspect)
+
+
 class TestManagedPortalRouting:
     """A Portal model under the managed selection reaches the Portal plugin — never FAL."""
 

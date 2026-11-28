@@ -98,7 +98,8 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
     record = channel_record(require_readable_config_before_write(get_config_path()), root)
     forward_only = rides_default_channel(record, selected_channel, root)
     try:
-        target = resolve_source_target(selected_channel, git_cmd, root, forward_only=forward_only)
+        target = resolve_source_target(selected_channel, git_cmd, root, forward_only=forward_only,
+                                       require_known_relation=True)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f"✗ Could not resolve the {selected_channel} source channel: {exc}")
         sys.exit(1)

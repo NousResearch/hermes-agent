@@ -221,6 +221,48 @@ def test_cache_force_expiry_and_passive_opt_out(installation, monkeypatch):
     assert requests.count(url) == 5
 
 
+def test_unanswered_release_comparison_uses_failure_cache(installation, monkeypatch, capsys):
+    """Regression for #158232. A comparison failure cannot establish that HEAD is current."""
+    from hermes_cli import _startup_fast, source_check, source_releases
+
+    root, _linked, home, _base, head, responses, requests, _git = installation
+    release = "a" * 40  # The release commit has not been fetched into this checkout.
+    target = source_releases.SourceTarget("stable", "stable", "fixture/fork", commit=release, version="1.2.3")
+    monkeypatch.setattr(source_releases, "_resolve_source_target", lambda *_a, **_kw: target)
+    monkeypatch.setattr("hermes_cli.update_channel.rides_default_channel", lambda *_a: True)
+    clock = [1_000_000.0]
+    monkeypatch.setattr(source_check.time, "time", lambda: clock[0])
+    compare_url = f"/repos/fixture/fork/compare/{release}...{head}"
+    responses[compare_url] = (503, {})
+
+    def check():
+        return source_check.check_for_updates(install_root=root, home=home, channel="stable", passive=True)
+
+    status = check()
+    assert status.get("error") == "release-relation-unknown", status
+    assert status["behind"] is None
+    assert "updateAvailable" not in status
+
+    with monkeypatch.context() as banner_patch:
+        banner_patch.setattr(source_check, "check_for_updates", lambda **_kw: status)
+        _startup_fast.print_fast_version_info()
+    output = capsys.readouterr().out
+    assert "Could not check for updates" in output
+    assert "Up to date" not in output
+
+    calls = requests.count(compare_url)
+    assert calls > 0
+    responses[compare_url] = (200, {"status": "behind"})
+    clock[0] += source_check._UPDATE_CHECK_FAILURE_CACHE_SECONDS - 1
+    assert check()["error"] == "release-relation-unknown"
+    assert requests.count(compare_url) == calls
+    clock[0] += 2
+    available = check()
+    assert available["targetSha"] == release
+    assert available["updateAvailable"] is True
+    assert requests.count(compare_url) == calls + 1
+
+
 def test_explicit_and_current_branch_heal_only_after_confirmed_absence(installation, monkeypatch):
     from hermes_cli.source_check import check_for_updates
     root, linked, home, _base, _head, _responses, requests, git = installation

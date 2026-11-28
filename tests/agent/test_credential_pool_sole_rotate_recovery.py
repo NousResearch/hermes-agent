@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 def _entry(idx: int, *, token: str, refresh: str) -> dict:
@@ -84,3 +86,58 @@ def test_multi_entry_pool_still_rotates_to_healthy_sibling(tmp_path, monkeypatch
     nxt = _mark(pool, "codex-1")
 
     assert nxt is not None and nxt.id == "codex-2"
+
+
+def test_stale_session_pool_reloads_new_sibling_after_exhausted_rotation(tmp_path, monkeypatch):
+    from agent.agent_runtime_helpers import recover_with_credential_pool
+    from agent.error_classifier import FailoverReason
+    from agent.credential_pool import STATUS_EXHAUSTED, load_pool
+
+    old_pool = _load(tmp_path, monkeypatch, [_entry(1, token="tok-a", refresh="rf-a")])
+    old_pool.mark_exhausted_and_rotate(
+        status_code=429,
+        error_context={"reason": "usage_limit_reached", "reset_at": time.time() + 3600},
+        credential_id="codex-1",
+    )
+    auth_path = tmp_path / "hermes" / "auth.json"
+    store = json.loads(auth_path.read_text())
+    store["credential_pool"]["openai-codex"].append(
+        _entry(2, token="tok-b", refresh="rf-b")
+    )
+    auth_path.write_text(json.dumps(store))
+
+    swap = Mock(return_value=True)
+    agent = SimpleNamespace(
+        _credential_pool=old_pool,
+        _credential_pool_entry_id="codex-1",
+        _credential_pool_revert_id=None,
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        model="gpt-5.3-codex",
+        api_key="tok-a",
+        _swap_credential=swap,
+    )
+    real_load_pool = load_pool
+    reloads = []
+
+    def tracked_load_pool(provider):
+        reloads.append(provider)
+        return real_load_pool(provider)
+
+    monkeypatch.setattr("agent.credential_pool.load_pool", tracked_load_pool)
+
+    recovered, retried = recover_with_credential_pool(
+        agent,
+        status_code=429,
+        has_retried_429=False,
+        classified_reason=FailoverReason.rate_limit,
+        error_context={"reason": "usage_limit_reached", "reset_at": time.time() + 3600},
+    )
+
+    assert (recovered, retried) == (True, False)
+    assert reloads == ["openai-codex"]
+    assert agent._credential_pool is not old_pool
+    assert {entry.id for entry in agent._credential_pool.entries()} == {"codex-1", "codex-2"}
+    assert next(entry for entry in agent._credential_pool.entries() if entry.id == "codex-1").last_status == STATUS_EXHAUSTED
+    swap.assert_called_once()
+    assert swap.call_args.args[0].id == "codex-2"

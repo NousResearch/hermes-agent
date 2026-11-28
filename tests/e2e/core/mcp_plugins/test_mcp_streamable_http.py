@@ -58,10 +58,6 @@ KNOWN: dict[str, tuple[str, str]] = {
     "test_no_information_free_meta_is_sent_over_http": (
         r"^requests carried an empty/null params\._meta: \[.*'tools/call'",
         "#120923 empty params._meta sent on every request; some hosted MCP servers answer HTTP 400"),
-    "test_401_on_tools_call_is_reported_as_an_auth_failure": (
-        r"^a 401 on tools/call reached the model without any sign it is an auth failure: "
-        r"\{'error': 'MCP call failed: MCPError",
-        "#121285 mcp 2.x folds a tools/call 401 into a generic MCPError; auth recovery never runs"),
 }
 
 

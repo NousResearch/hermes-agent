@@ -192,6 +192,8 @@ describe('a message while the profile backend starts or stops', () => {
     const { clickSend, editor, onSubmit, send } = mount(EXISTING_CHAT)
 
     expect(placeholder(editor)).toBe('Starting sandbox…')
+    // The painted hint is hidden from assistive tech; this attribute announces it.
+    expect(editor.getAttribute('aria-placeholder')).toBe('Starting sandbox…')
 
     await type(editor, 'hey can you read updog.com for me')
     expect(send()?.disabled).toBe(true)

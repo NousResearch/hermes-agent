@@ -1194,6 +1194,7 @@ export function ChatBar({
       <div
         aria-disabled={inputDisabled ? true : undefined}
         aria-label={t.composer.message}
+        aria-placeholder={placeholder}
         {...composerTextEntryProps(touchPointer)}
         {...tapFocus}
         className={cn(

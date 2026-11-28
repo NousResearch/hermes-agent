@@ -1046,13 +1046,18 @@
 
    `data-empty` carries emptiness because `:empty` can't: a cleared editor
    keeps a scaffolding <br>. See markEditorEmptiness in rich-editor.ts.
+
+   The empty alt text (`/ ''`) keeps the hint out of the accessibility tree.
+   Without it Chromium reports the hint as the field's value, so dictation
+   tools and screen readers read "Send a follow-up" as text the user typed.
+   The element's `aria-placeholder` exposes the hint as a placeholder instead.
    ───────────────────────────────────────────────────────────────────────── */
 [data-slot='composer-rich-input'] {
   position: relative;
 }
 
 [data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
-  content: attr(data-placeholder);
+  content: attr(data-placeholder) / '';
   position: absolute;
   inset: 0;
   padding: inherit;

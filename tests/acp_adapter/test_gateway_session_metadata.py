@@ -53,6 +53,23 @@ async def test_new_session_carries_picker_modes_provenance_and_commands(daemon, 
 
 @pytest.mark.platforms('linux')
 @pytest.mark.asyncio
+async def test_new_session_advertises_the_profiles_skills_as_commands(daemon, tmp_path):
+    home = daemon[0]
+    skill = home / 'skills' / 'wire-probe'
+    skill.mkdir(parents=True)
+    (skill / 'SKILL.md').write_text('---\nname: wire-probe\ndescription: Skill command fixture\n---\n# Wire probe\n')
+    async with editor(daemon, tmp_path) as acp:
+        await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})
+        sid = (await acp.rpc('session/new', cwd=str(tmp_path), mcpServers=[]))['result']['sessionId']
+        await async_wait_until(lambda: _updates(acp, sid, 'available_commands_update'))
+        commands = {c['name']: c for c in _updates(acp, sid, 'available_commands_update')[0]['availableCommands']}
+        assert {'help', 'model', 'status'} <= set(commands), commands
+        assert commands['wire-probe']['description'] == 'Skill command fixture', commands['wire-probe']
+        assert commands['wire-probe']['input']['hint'], commands['wire-probe']
+
+
+@pytest.mark.platforms('linux')
+@pytest.mark.asyncio
 async def test_editor_commands_reply_and_turns_report_usage_and_title(daemon, tmp_path):
     async with editor(daemon, tmp_path) as acp:
         await acp.rpc('initialize', protocolVersion=1, clientCapabilities={})

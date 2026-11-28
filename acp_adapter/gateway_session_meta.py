@@ -42,11 +42,37 @@ COMMANDS: dict[str, tuple[str, str | None]] = {
 }
 
 
-def available_commands_update() -> AvailableCommandsUpdate:
+SKILL_COMMAND_HINT = "optional instructions for the skill"
+
+
+def skill_commands(catalog: dict | None) -> list[AvailableCommand]:
+    """The skills in the owner's ``commands.catalog`` for this session, as editor commands.
+
+    The catalog is bound to the session's profile and workspace, so it lists the skills (project-local
+    ones included) that the owner's ``slash.exec`` serves as a turn (``gateway_commands._forward``).
+    A name that ``COMMANDS`` already advertises keeps its built-in entry."""
+    if not isinstance(catalog, dict):
+        return []
+    descriptions = {pair[0]: pair[1] for pair in catalog.get("pairs") or ()
+                    if isinstance(pair, (list, tuple)) and len(pair) == 2}
+    commands = []
+    for key in sorted(catalog.get("skills") or {}):
+        name = str(key).lstrip("/")
+        if not name or name in COMMANDS:
+            continue
+        description = " ".join(str(descriptions.get(key) or "").split()) or f"Run the {name} skill"
+        commands.append(AvailableCommand(name=name, description=description,
+                                         input=UnstructuredCommandInput(hint=SKILL_COMMAND_HINT)))
+    return commands
+
+
+def available_commands_update(catalog: dict | None = None) -> AvailableCommandsUpdate:
+    """``COMMANDS``, then the session's skills from the owner's ``commands.catalog`` when given."""
     return AvailableCommandsUpdate(session_update="available_commands_update", available_commands=[
-        AvailableCommand(name=name, description=description,
-                         input=UnstructuredCommandInput(hint=hint) if hint else None)
-        for name, (description, hint) in COMMANDS.items()])
+        *(AvailableCommand(name=name, description=description,
+                           input=UnstructuredCommandInput(hint=hint) if hint else None)
+          for name, (description, hint) in COMMANDS.items()),
+        *skill_commands(catalog)])
 
 
 def help_text() -> str:

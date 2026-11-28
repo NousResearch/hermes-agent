@@ -300,7 +300,14 @@ class CLITuiMixin:
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "☤")
+            # Skin-branded working glyph: the status prefix without its trailing space.
+            _working_icon = "☤"
+            try:
+                from hermes_cli.skin_engine import get_active_status_prefix
+                _working_icon = get_active_status_prefix().strip() or "☤"
+            except Exception:
+                pass
+            return _state_fragment("class:prompt-working", _working_icon)
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]

@@ -104,6 +104,7 @@ Text strings used throughout the CLI interface.
 | `welcome` | Welcome message shown at CLI startup | `Welcome to Hermes Agent! Type your message or /help for commands.` |
 | `goodbye` | Message shown on exit | `Goodbye! ☤` |
 | `response_label` | Label on the response box header | ` ☤ Hermes ` |
+| `status_prefix` | Prefix before the model name in the status bar and the working prompt icon (the icons drop its trailing space) | `☤ ` |
 | `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
 
@@ -178,6 +179,7 @@ branding:
   welcome: "Welcome to My Agent! Type your message or /help for commands."
   goodbye: "See you later! ⚡"
   response_label: " ⚡ My Agent "
+  status_prefix: "⚡ "
   prompt_symbol: "⚡"
   help_header: "(⚡) Available Commands"
 

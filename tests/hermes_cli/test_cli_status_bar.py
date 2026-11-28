@@ -523,3 +523,31 @@ class TestCacheHitBaselineReset:
         with patch.object(cli_mod, "CLI_CONFIG", {"display": {"status_bar": {"fields": ["model", "duration"]}}}):
             text = cli_obj._build_status_bar_text(width=80)
         assert "weekly-digest" not in text
+
+
+class TestStatusPrefixSkinConfigurable:
+    """The status-bar model prefix is a skin value, not a hardcoded glyph."""
+
+    def test_active_status_prefix_follows_the_active_skin(self):
+        from hermes_cli.skin_engine import get_active_status_prefix, set_active_skin
+
+        set_active_skin("default")
+        default_prefix = get_active_status_prefix()
+        set_active_skin("ares")
+        ares_prefix = get_active_status_prefix()
+
+        assert default_prefix.strip() and ares_prefix.strip()
+        assert default_prefix != ares_prefix
+
+    def test_status_bar_text_uses_the_skin_prefix(self):
+        from hermes_cli import cli_status_bar_mixin as status_bar_mod
+
+        cli_obj = _make_cli()
+        with patch.object(status_bar_mod, "get_active_status_prefix", return_value="★ "):
+            assert cli_obj._build_status_bar_text(120).startswith("★ ")
+
+    def test_missing_status_prefix_falls_back_without_raising(self):
+        from hermes_cli import skin_engine
+
+        with patch.object(skin_engine, "get_active_skin", side_effect=RuntimeError("no skin")):
+            assert skin_engine.get_active_status_prefix() == "☤ "

@@ -51,8 +51,14 @@ _POSIX_PRIMITIVES = (
 # Scaffolding files a skill should not ship (noise, not skill content).
 _FORBIDDEN_FILES = ("README.md", "CHANGELOG.md", "install.sh", ".env", ".env.example", ".gitignore")
 # Presence of the load-bearing section is checked, not exact ordering, so the
-# linter is not a change-detector.
+# linter is not a change-detector. Skills are authored in several languages, so a
+# precise localized heading counts; a vague one (``用途``, bare ``触发``) names a
+# topic rather than when to trigger, and stays a miss on purpose.
 _EXPECTED_SECTIONS = ("When to Use", "When to use")
+_LOCALIZED_SECTION_PATTERN = re.compile(
+    r"^#+\s+(?:\d+[.、]\s*)?(?:触发条件|触发场景|适用场景|使用时机|何时使用)(?:\s*[（(].*[）)])?\s*$",
+    re.MULTILINE,
+)
 # incident-log-shape: at least this many PR/issue refs AND this density (per 1k chars of prose).
 _INCIDENT_REF_MIN = 4
 _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat at ~0.7
@@ -149,7 +155,13 @@ def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
         if re.search(rf"`{re.escape(util)}`", prose):
             yield _warn("shell-utility-reference",
                         f"prose references `{util}`; name the native tool `{tool}` instead.")
-    if not any(re.search(rf"^#+\s+{re.escape(s)}", body, re.MULTILINE) for s in _EXPECTED_SECTIONS):
+    # Prose, not the raw body: a fenced example that happens to contain the heading must not
+    # satisfy a check that is about the skill's own structure.
+    # A numbered heading ("## 1. When to Use") is still the same section; the prefix match keeps
+    # accepting the shapes the linter accepted before (trailing ":", "##", examples).
+    if not (any(re.search(rf"^#+\s+(?:\d+[.、]\s*)?{re.escape(s)}", prose, re.MULTILINE)
+                for s in _EXPECTED_SECTIONS)
+            or _LOCALIZED_SECTION_PATTERN.search(prose)):
         yield _warn("missing-section", "no '## When to Use' section found; skills need explicit "
                     "trigger conditions near the top.")
     # Incident-log shape: a skill body dense in PR/issue numbers is narrating history instead of

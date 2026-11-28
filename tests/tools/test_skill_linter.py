@@ -1,6 +1,8 @@
 """Tests for tools/skill_linter.py — the advisory SKILL.md convention linter."""
 
 
+import pytest
+
 from tools.skill_linter import (
     ERROR,
     WARNING,
@@ -94,6 +96,36 @@ def test_missing_when_to_use_section_warns():
     content = CLEAN.replace("## When to Use\n- When the user wants X.\n", "")
     findings = lint_content(content)
     assert "missing-section" in _rules(findings)
+
+
+@pytest.mark.parametrize("section", (
+    "## 触发条件",
+    "## 触发场景",
+    "## 适用场景",
+    "## 使用时机",
+    "## 何时使用",
+    "## 触发条件（何时该加载这个技能）",
+    "## 1. When to Use（触发条件）",
+))
+def test_localized_trigger_section_is_recognized(section):
+    # Skills written in Chinese were told to duplicate their trigger conditions in English
+    # solely to satisfy the linter.
+    content = CLEAN.replace("## When to Use", section)
+    assert "missing-section" not in _rules(lint_content(content))
+
+
+@pytest.mark.parametrize("section", ("## 用途", "## 触发", "## 使用时机说明"))
+def test_vague_headings_are_not_trigger_sections(section):
+    # A topic heading names the subject, not when to load the skill: no free pass.
+    content = CLEAN.replace("## When to Use\n- When the user wants X.\n", f"{section}\n- 做某事。\n")
+    assert "missing-section" in _rules(lint_content(content))
+
+
+def test_heading_only_inside_a_fenced_example_still_warns():
+    # The check is about the skill's own structure, so an example must not satisfy it.
+    content = CLEAN.replace("## When to Use\n- When the user wants X.\n",
+                            "## 示例\n```markdown\n## When to Use\n- When the user wants X.\n```\n")
+    assert "missing-section" in _rules(lint_content(content))
 
 
 def test_bad_name_format_is_error():

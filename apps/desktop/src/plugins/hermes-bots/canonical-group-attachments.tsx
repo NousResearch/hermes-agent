@@ -2,6 +2,7 @@ import { Button, cn, Codicon, GHOST_ICON_BTN, randomUuid, Tip } from '@hermes/pl
 import { type Ref, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 
 import { downloadCanonicalAttachment } from './canonical-attachment-download'
+import { filesFailure } from './canonical-files-client'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { type CanonicalGroupBinding, canonicalGroupRequest } from './canonical-groups'
 import { ROOM_COMPOSER_AREAS } from './group-room-ui'
@@ -91,7 +92,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
       const { attachment_id, kind, name, mime, size } = result
       next = [...next, { attachment_id, kind, name, mime, size }]
       onChange?.(next)
-    } } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    } } catch (e) { setError(`${labels.uploadFailed}: ${e instanceof Error ? e.message : String(e)}`) }
     finally { queued.current = null; setBusy(false); onUploadingChange?.(false) }
   }
 
@@ -106,7 +107,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
 
       if (signal.aborted) {return}
       downloadCanonicalAttachment(result.bytes, result.name, result.mime, signal)
-    } catch (e) { if (!signal.aborted) {setError(e instanceof Error ? e.message : String(e))} }
+    } catch (e) { if (!signal.aborted) {setError(filesFailure(e) === 'missing' ? labels.fileVersionUnavailable : labels.fileDownloadFailed)} }
     finally { if (!signal.aborted) {setBusy(false)} }
   }
 
@@ -121,7 +122,7 @@ export function CanonicalGroupAttachments({ binding, attachments, onChange, onUp
         <Button aria-label={labels.removeAttachment} disabled={disabled || busy} onClick={() => onChange?.(attachments.filter(item => item !== a))} size="icon-xs" type="button" variant="ghost"><Codicon name="close" /></Button>
       </Tip>}
     </span>)}
-    {error && <span className="text-[0.6875rem] text-destructive" role="alert">{labels.uploadFailed}: {error}</span>}
+    {error && <span className="text-[0.6875rem] text-destructive" role="alert">{error}</span>}
   </div>
 
   if (readOnly) {return chips || null}

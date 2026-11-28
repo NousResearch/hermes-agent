@@ -9,7 +9,8 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Mapping
+from collections import deque
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Any
@@ -17,7 +18,75 @@ from typing import Any
 from persistence.gateway.hosted_rooms import AuthorityHistoryError, HostedRoomError, ReplicaError, ReplicaGapError
 
 
+MAX_THREAD_TRANSCRIPT_EVENTS = 24
+
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def _consumed_file_batch(messages: Iterable[Mapping[str, Any]], member: str, end: int, source: int) -> bool:
+    """A real batch ends before the next whole message would overflow, or at the pre-Send cutoff."""
+    from session_rules.hosted_attachments import MAX_TASK_ATTACHMENTS, MAX_TASK_ATTACHMENT_BYTES
+
+    files: deque[tuple[int, int]] = deque()
+    count = size = last = 0
+    for event in messages:
+        payload = event["payload"]
+        items = payload.get("attachments") or ()
+        recipients = payload.get("recipient_member_ids")
+        if event["kind"] == "message.member" and (
+                payload.get("member_id") == member or (recipients is not None and member not in recipients)):
+            items = ()
+        added = sum(item["size"] for item in items)
+        if event["seq"] > end:
+            return bool(files) and last == end and (
+                event["seq"] == source or count + len(items) > MAX_TASK_ATTACHMENTS or size + added > MAX_TASK_ATTACHMENT_BYTES)
+        last = event["seq"]
+        if items:
+            files.append((len(items), added))
+            count += len(items)
+            size += added
+            # The first receipt can start after a watermark from an older discussion.
+            while count > MAX_TASK_ATTACHMENTS or size > MAX_TASK_ATTACHMENT_BYTES:
+                old_count, old_size = files.popleft()
+                count -= old_count
+                size -= old_size
+    return False
+
+
+def active_policy_within_budget(events: list[dict[str, Any]], *, capacity: int, retry_limit: int,
+                                read_prefix: Callable[[int, int, int], Iterable[Mapping[str, Any]]] | None = None) -> bool:
+    """Keep ordinary turns bounded while allowing completed batches of pre-Send inputs."""
+    retries = sum(event["kind"] == "turn.deferred" for event in events)
+    if retries > retry_limit:
+        return False
+    ordinary = len(events) - retries
+    if ordinary <= capacity:
+        return True
+
+    source_seq = events[0]["seq"]
+    batch_replies = {}
+    positions: dict[str, int] = {}
+    for event in events:
+        if event["kind"] not in {"turn.settled", "turn.failed", "turn.cancelled"}:
+            continue
+        payload = event["payload"]
+        seen = payload.get("seen_through_seq")
+        member = payload.get("member_id")
+        if not isinstance(member, str) or type(seen) is not int:
+            continue
+        previous = positions.get(member, 0)
+        positions[member] = max(previous, seen)
+        if (previous < seen < source_seq and read_prefix is not None
+                and _consumed_file_batch(read_prefix(previous, source_seq, event["seq"] - 1), member, seen, source_seq)):
+            ordinary -= 1
+            message_id = payload.get("message_event_id")
+            if isinstance(message_id, str):
+                batch_replies[message_id] = payload.get("task_id")
+    for event in events:
+        if (event["kind"] == "message.member" and event["event_id"] in batch_replies
+                and batch_replies[event["event_id"]] == event["payload"].get("task_id")):
+            ordinary -= 1
+    return ordinary <= capacity
 
 
 def identifier(

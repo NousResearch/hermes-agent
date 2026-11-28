@@ -319,3 +319,41 @@ def test_snapshot_never_imports_a_settlement_source_from_another_thread(backend,
     _user(store, "u2")
     # CONTRACT: a settlement whose source names a user message of another thread does not pull that message in.
     assert _snapshot(store, 5).events == _logged(store, 3, 4, 5)
+
+
+def test_an_earlier_file_does_not_exempt_unrelated_replies_from_the_projection_bound(backend, scope_a):
+    from tests.contracts.gateway.test_hosted_room_attachments_reads_contract import _commit, _entry, _put
+
+    store = backend.open(scope_a)
+    _room(store)
+    file = _put(store)
+    _commit(store, [file], event_id="share", viewer=True, hold=True)
+    _user(store, "share", attachments=[_entry(file)])
+    _user(store, "later")
+    for n in range(64):
+        last = _append(store, f"m{n}", "message.member",
+                       {"thread_id": "t1", "discussion_event_id": "later", "member_id": "m1"}, actor=MEMBER)
+    with pytest.raises(PolicyProjectionError, match="active room policy projection exceeded its bound"):
+        _snapshot(store, last)
+
+
+def test_failure_after_a_text_only_prefix_counts_as_an_ordinary_event():
+    from session_rules.hosted_rooms import active_policy_within_budget
+
+    send = {"kind": "message.user", "seq": 2, "payload": {"thread_id": "thread"}}
+    failure = {"kind": "turn.failed", "seq": 3, "payload": {
+        "discussion_event_id": "send", "thread_id": "thread", "member_id": "a",
+        "task_id": "task", "seen_through_seq": 1}}
+    assert not active_policy_within_budget([send, failure], capacity=1, retry_limit=1)
+
+
+def test_history_uses_the_first_settled_publication_for_a_task(backend, scope_a):
+    store = backend.open(scope_a)
+    _room(store)
+    _user(store, "send")
+    coords = {"discussion_event_id": "send", "thread_id": "t1", "member_id": "m1", "task_id": "task"}
+    for message in ("first", "second"):
+        _append(store, message, "message.member", coords, actor=MEMBER)
+        last = _append(store, "settled-" + message, "turn.settled", {**coords, "message_event_id": message})
+    snapshot = _snapshot(store, last)
+    assert [e["event_id"] for e in snapshot.read_messages(thread_id="t1", watermark=0)] == ["send", "first"]

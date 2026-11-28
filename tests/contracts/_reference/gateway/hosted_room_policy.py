@@ -8,11 +8,13 @@ Reference limit: every verb holds the backend lock for its whole sequence, so no
 from __future__ import annotations
 
 import json
+from functools import partial
 from collections.abc import Mapping
 from typing import Any
 
 from persistence import JsonValue
 from persistence.gateway.hosted_rooms import HostedPlacement, PolicyProjectionError, PolicySnapshot, RoomNotFoundError
+from session_rules.hosted_rooms import MAX_THREAD_TRANSCRIPT_EVENTS, active_policy_within_budget
 from session_rules.hosted_tasks import compact_json, validate_task_input
 
 from ..backend import register_repository
@@ -24,8 +26,9 @@ __all__ = ["InMemoryHostedRoomPolicyRepository"]
 MAX_ACTIVE_POLICY_EVENTS = 64
 # Retry receipts (``turn.deferred``) are bounded apart from the discussion's other events.
 MAX_ACTIVE_RETRY_RECEIPTS = 64
-MAX_THREAD_TRANSCRIPT_EVENTS = 24
-_TRANSCRIPT_SCHEMA_VERSION = 5
+# Released v5 readers rebuild only markers below five. A negative format identifier
+# also makes v6 replay if v5 rewrites the projection during a rollback.
+_TRANSCRIPT_SCHEMA_VERSION = -6
 _TERMINAL_KINDS = frozenset({"turn.settled", "turn.failed", "turn.cancelled", "turn.deferred"})
 # What a Continue restores into a reopened discussion's active projection (the cap's activity is not one).
 _REOPENED_KINDS = frozenset({*_TERMINAL_KINDS, "message.member", "room.assignment", "room.routed", "room.continued"})
@@ -85,9 +88,18 @@ def _store_transcript_event(tables: HostedTables, *, event: Mapping[str, Any], t
 
 def _discussion_events(tables: HostedTables, *, room_id: str, thread_id: str, discussion_event_id: str, bound_error: str, capacity: int) -> list[dict[str, Any]]:
     """The thread transcript's room events merged with the active projection, by seq, each bounded; ``capacity`` bounds the active events other than retry receipts."""
-    active = sorted((row for row in tables["hosted_room_policy_events"].get(room_id, {}).values() if row["discussion_event_id"] == discussion_event_id), key=lambda row: row["seq"])
-    receipts = [row for row in active if json.loads(row["event_json"]).get("kind") == "turn.deferred"]
-    if len(active) - len(receipts) > capacity or len(receipts) > MAX_ACTIVE_RETRY_RECEIPTS:
+    through_seq = tables["hosted_room_policy_cursors"].get(room_id, {}).get("through_seq", 0)
+    log_events = [event_from_row(row) for row in room_events(tables, room_id) if row["seq"] <= through_seq]
+    anchor = next((row for row in tables["hosted_room_policy_events"].get(room_id, {}).values()
+                   if row["discussion_event_id"] == discussion_event_id), None)
+    active = [e for e in log_events if anchor and e["seq"] >= anchor["seq"] and
+              (e["seq"] == anchor["seq"] or (e["kind"] in _REOPENED_KINDS and e["payload"].get("discussion_event_id") == discussion_event_id))]
+    def read_prefix(after, end, published_through):
+        return (event for event in _read_messages(tables, room_id, published_through, thread_id=thread_id, watermark=after)
+                if event["seq"] <= end)
+
+    if not active_policy_within_budget(active, capacity=capacity, retry_limit=MAX_ACTIVE_RETRY_RECEIPTS,
+                                       read_prefix=read_prefix):
         raise PolicyProjectionError(bound_error)
     transcript_bound = min(2**63 - 2, MAX_THREAD_TRANSCRIPT_EVENTS * (capacity + MAX_ACTIVE_RETRY_RECEIPTS + 2))
     transcript = [row for row in tables["hosted_room_policy_transcript"].get(room_id, {}).values() if row["thread_id"] == thread_id]
@@ -96,7 +108,7 @@ def _discussion_events(tables: HostedTables, *, room_id: str, thread_id: str, di
     joined = sorted((log[seq] for seq in seqs if seq in log), key=lambda row: row["seq"])[:transcript_bound + 1]
     if len(joined) > transcript_bound:
         raise PolicyProjectionError("thread policy transcript exceeded its bound")
-    by_seq = {int(event["seq"]): event for event in (*map(event_from_row, joined), *(json.loads(row["event_json"]) for row in active))}
+    by_seq = {int(event["seq"]): event for event in (*map(event_from_row, joined), *active)}
     for event in _settled_source_users(tables, room_id=room_id, thread_id=thread_id, events=by_seq):
         by_seq[int(event["seq"])] = event
     return [by_seq[seq] for seq in sorted(by_seq)]
@@ -126,8 +138,6 @@ def _apply_discussion_event(tables: HostedTables, event: Mapping[str, Any], payl
     """Member messages join a known active discussion; terminal outcomes record their publication receipt, transcript reference and member watermark."""
     room_id, seq, kind = str(event["room_id"]), int(event["seq"]), _text(event, "kind")
     thread_id, discussion_event_id = _text(payload, "thread_id"), _text(payload, "discussion_event_id")
-    if any(row["discussion_event_id"] == discussion_event_id for row in tables["hosted_room_policy_events"].get(room_id, {}).values()):
-        _store_active_event(tables, event=event, thread_id=thread_id, discussion_event_id=discussion_event_id)
     if kind not in _TERMINAL_KINDS:
         return
     task_id = _text(payload, "task_id")
@@ -140,7 +150,11 @@ def _apply_discussion_event(tables: HostedTables, event: Mapping[str, Any], payl
     if kind == "turn.settled" and payload.get("message_event_id"):
         committed = _settled_message(tables, room_id, discussion_event_id, payload["message_event_id"])
         if committed is not None:
-            seen_through_seq = max(seen_through_seq, int(committed["seq"]))
+            skipped = (event_from_row(row) for row in room_events(tables, room_id)
+                       if seen_through_seq < row["seq"] < committed["seq"])
+            if not any(e["payload"].get("thread_id") == thread_id and (e["kind"] == "message.user" or
+                       (e["kind"] == "message.member" and e["payload"].get("member_id") != member_id)) for e in skipped):
+                seen_through_seq = max(seen_through_seq, int(committed["seq"]))
             _store_transcript_event(tables, event=committed, thread_id=thread_id, settled_seq=seq)
     else:
         _store_transcript_event(tables, event=event, thread_id=thread_id)
@@ -177,11 +191,6 @@ def _apply_continued(tables: HostedTables, event: Mapping[str, Any], payload: Ma
     tables.rows("hosted_room_policy_threads", room_id)[thread_id] = {
         "room_id": room_id, "thread_id": thread_id, "discussion_event_id": discussion_event_id, "latest_user_seq": int(source_event["seq"]), "completed": 0}
     _store_active_event(tables, event=source_event, thread_id=thread_id, discussion_event_id=discussion_event_id)
-    for row in room_events(tables, room_id):
-        restored = event_from_row(row)
-        if (int(source_event["seq"]) < int(row["seq"]) <= int(event["seq"]) and row["kind"] in _REOPENED_KINDS
-                and restored["payload"].get("discussion_event_id") == discussion_event_id):
-            _store_active_event(tables, event=restored, thread_id=thread_id, discussion_event_id=discussion_event_id)
 
 
 def _apply_stop_requested(tables: HostedTables, event: Mapping[str, Any], payload: Mapping[str, Any]) -> None:
@@ -212,7 +221,7 @@ def _ensure_cursor_and_transcript(tables: HostedTables, room_id: str) -> int:
     _require_room(tables, room_id)
     cursor = tables["hosted_room_policy_cursors"].setdefault(room_id, {"room_id": room_id, "through_seq": 0, "stopped_through_seq": 0, "updated_at": 0})
     state = tables["hosted_room_policy_transcript_state"].get(room_id)
-    if state is None or int(state["schema_version"]) < _TRANSCRIPT_SCHEMA_VERSION:
+    if state is None or int(state["schema_version"]) != _TRANSCRIPT_SCHEMA_VERSION:
         for name in _DERIVED_TABLES:
             tables[name].pop(room_id, None)
         cursor.update(through_seq=0, stopped_through_seq=0)
@@ -236,6 +245,28 @@ def _latest_user_message(tables: HostedTables, room_id: str, thread_id: str) -> 
     """The newest ``message.user`` row whose payload ``thread_id`` is ``thread_id``."""
     rows = [row for row in room_events(tables, room_id) if row["kind"] == "message.user"]
     return next((row for row in reversed(rows) if (payload := json.loads(row["payload_json"])) and isinstance(payload, dict) and payload.get("thread_id") == thread_id), None)
+
+
+def _read_messages(tables, room_id, through_seq, *, thread_id, watermark):
+    events = [event_from_row(row) for row in room_events(tables, room_id) if watermark < row["seq"] <= through_seq]
+    publications = tables["hosted_room_policy_publications"].get(room_id, {})
+    settled = {e["payload"].get("message_event_id"): e for e in events if e["kind"] == "turn.settled"
+               and publications.get((e["payload"].get("task_id"), "turn.settled", 0), {}).get("seq") == e["seq"]}
+    messages = []
+    for event in events:
+        payload = event["payload"]
+        if payload.get("thread_id") != thread_id:
+            continue
+        if event["kind"] == "message.user":
+            messages.append(event)
+        elif event["kind"] == "message.member" and (receipt := settled.get(event["event_id"])):
+            source = find_event(tables, room_id, payload.get("discussion_event_id"))
+            if (source and source["kind"] == "message.user" and source["seq"] < event["seq"] < receipt["seq"]
+                    and json.loads(source["payload_json"]).get("thread_id") == thread_id
+                    and all(payload.get(key) == receipt["payload"].get(key)
+                            for key in ("thread_id", "member_id", "task_id", "discussion_event_id"))):
+                messages.append(event)
+    return messages
 
 
 class InMemoryHostedRoomPolicyRepository:
@@ -303,7 +334,8 @@ class InMemoryHostedRoomPolicyRepository:
             bound_error="active room policy projection exceeded its bound", capacity=capacity)
         watermarks = {(thread_id, str(row["member_id"])): int(row["seen_through_seq"])
                       for row in tables["hosted_room_policy_watermarks"].get(room_id, {}).values() if row["thread_id"] == thread_id}
-        return PolicySnapshot(through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events), watermarks=watermarks)
+        return PolicySnapshot(through_seq=through_seq, stopped_through_seq=stopped_through_seq, events=tuple(events), watermarks=watermarks,
+                              read_messages=partial(_read_messages, tables, room_id, through_seq))
 
     def compact_completed(self, *, placement: HostedPlacement, room_id: str, max_active_events: int = MAX_ACTIVE_POLICY_EVENTS) -> None:
         self._capacity(placement, max_active_events)

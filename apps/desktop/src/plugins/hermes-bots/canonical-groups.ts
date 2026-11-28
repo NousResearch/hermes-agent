@@ -65,7 +65,8 @@ function requireRoute(route: CanonicalGroupRoute): void {
 export async function canonicalGroupRequest<T>(
   route: CanonicalGroupRoute,
   method: string,
-  params: Record<string, unknown> = {}
+  params: Record<string, unknown> = {},
+  timeoutMs?: number
 ): Promise<T> {
   requireRoute(route)
 
@@ -74,7 +75,12 @@ export async function canonicalGroupRequest<T>(
   }
 
   // The descriptor overload never falls back to the foreground gateway.
-  return host.requestProfile<T>(canonicalGroupProfileRoute(route), method, { ...params, profile: route.profile })
+  const descriptor = canonicalGroupProfileRoute(route)
+  const body = { ...params, profile: route.profile }
+
+  return timeoutMs === undefined
+    ? host.requestProfile<T>(descriptor, method, body)
+    : host.requestProfile<T>(descriptor, method, body, timeoutMs)
 }
 
 /** The SDK route a room's authority is reached on (its own profile, served by its connection). */

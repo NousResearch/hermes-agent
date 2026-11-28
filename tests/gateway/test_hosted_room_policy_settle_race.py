@@ -70,3 +70,33 @@ def test_a_continue_an_older_build_wrote_after_a_newer_message_does_not_strand_i
     other = _append(db, "third", "message.user", {"text": "@reviewer other", "thread_id": "other"})
     snapshot = HostedRoomPolicyCheckpoint(db, placement="shared").snapshot(room_id="room", latest_seq=int(other["seq"]))
     assert {(e.get("payload") or {}).get("thread_id") for e in snapshot.events} == {"other"}
+
+
+def test_snapshot_admits_only_input_from_its_log_generation(db, monkeypatch):
+    import sqlite3
+
+    from gateway import hosted_room_discussion as discussion
+
+    room = rooms.create_room(db, placement="shared", room_id="room", name="Room", authority_gateway_id="home",
+                             members=[{"member_id": name, "profile": name, "handle": name} for name in ("a", "b")])
+    checkpoint = HostedRoomPolicyCheckpoint(db, placement="shared")
+    first = _append(db, "first", "message.user", {"text": "@a first", "thread_id": "thread"})
+    checkpoint.sync(room_id="room", latest_seq=first["seq"])
+    connect = sqlite3.connect
+    arrived = []
+
+    class InterleavedConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            if not arrived and "SELECT thread_id, discussion_event_id FROM hosted_room_policy_threads" in sql:
+                arrived.append(True)
+                second = _append(db, "second", "message.user", {"text": "@a second", "thread_id": "thread"})
+                checkpoint.sync(room_id="room", latest_seq=second["seq"])
+            return super().execute(sql, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: connect(*a, factory=InterleavedConnection, **kw))
+    snap = checkpoint.snapshot(room_id="room", latest_seq=first["seq"])
+    assert arrived
+    task = discussion.plan_next_task(room, snap.events, local_profiles=("a", "b"),
+                                     initial_watermarks=snap.watermarks, read_messages=snap.read_messages,
+                                     freeze_input_context=True).task
+    assert task.payload["source_event_seq"] in task.payload["input_context"]["event_seqs"]

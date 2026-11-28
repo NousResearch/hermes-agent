@@ -10,14 +10,16 @@ from tests.gateway.fixtures.storage_handles import close_storage_handles, storag
 def test_authorized_upload_send_download_and_task_consumption(tmp_path):
     from gateway.session_hosted_attachments import upload, download, submission_payload
     from gateway import hosted_rooms
-    hosted_rooms.create_room(storage_handle(tmp_path), placement="profile", room_id="room", name="Room", members=[], authority_gateway_id="gateway")
+    store = storage_handle(tmp_path)
+    authority = SimpleNamespace(profile_id="owned", persistence=store, epoch=store.runtime.begin_epoch(instance_id="owner"))
+    hosted_rooms.create_room(store, placement="profile", room_id="room", name="Room", members=[], authority_gateway_id="gateway")
     from persistence.core.errors import AuthorityRefusal
     allowed = [True]
     def authorize(subject, room_id):
         if not allowed[0] or subject != 'owner' or room_id != 'room':
             raise AuthorityRefusal('permission_denied')
-    service = SimpleNamespace(authority=SimpleNamespace(profile_id='owned', persistence=storage_handle(tmp_path)), db_path=tmp_path / 'state.db',
-        store=storage_handle(tmp_path), placement='profile', authorize_room=authorize,
+    service = SimpleNamespace(authority=authority, db_path=tmp_path / 'state.db',
+        store=store, placement='profile', authorize_room=authorize,
         _room=lambda room: {'members': [{'member_id': 'member', 'profile': 'default'}]},
         _owned_authority=lambda room: ('gateway', 1))
     actor = SimpleNamespace(subject='owner', profile_id='owned', capabilities={'session:read','session:submit'})

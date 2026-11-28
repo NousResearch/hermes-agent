@@ -24,7 +24,7 @@ _METHODS = (
     "groups.rename", "groups.context", "groups.log", "groups.disband", "groups.replicate", "groups.replica_state",
     "groups.promote", "groups.demote", "groups.stop", "groups.continue", "groups.retry", "groups.approve",
     "groups.peer.invite", "groups.peer.revoke", "groups.peer.register", "groups.attachment.upload",
-    "groups.attachment.download")
+    "groups.attachment.download", "groups.attachment.list")
 #: ``groups.discard`` is forwarded to an owning gateway only, so local capabilities never list it.
 LONG_HANDLERS = frozenset(_METHODS) | {"groups.discard"}
 
@@ -505,7 +505,20 @@ def _(rid, params: dict, service) -> dict:
     from gateway.session_hosted_attachments import read_download
     room_id = params.get("room_id")
     service._room(room_id)
-    return _ok(rid, read_download(service, room_id, params))
+    from persistence import StoreUnavailable
+    try:
+        return _ok(rid, read_download(service, room_id, params))
+    except StoreUnavailable:
+        return _err(rid, 5123, "Room attachment storage is unavailable", {"reason": "storage_unavailable"})
+
+
+@_room_method("groups.attachment.list", code=5124, room_code=4128, service_code=4115)
+def _(rid, params: dict, service) -> dict:
+    """List published file versions for a viewer of this group chat."""
+    from gateway.session_hosted_attachments import read_catalog
+    room_id = params.get("room_id")
+    service._room(room_id)
+    return _ok(rid, read_catalog(service, room_id, params))
 
 
 @_room_method(

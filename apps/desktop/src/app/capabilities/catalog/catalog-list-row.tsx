@@ -4,7 +4,7 @@ import { useI18n } from '@/i18n'
 import { Lock } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import { type CatalogEntry, type CatalogKind, catalogLabel } from './catalog-data'
+import { catalogAttribution, type CatalogEntry, type CatalogKind } from './catalog-data'
 import { CatalogHeaderMeta, CatalogMetadata } from './catalog-metadata'
 
 interface CatalogListRowProps {
@@ -72,7 +72,7 @@ export function CatalogListRow({
           <CatalogMetadata entry={entry} limit={2} onCategory={onCategory} onSearch={onSearch} onTag={onTag} />
         </span>
         <span className="mt-1.5 flex items-center gap-2 text-[0.65rem] text-(--ui-text-quaternary)">
-          <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
+          <span className="min-w-0 flex-1 truncate">{catalogAttribution(entry)}</span>
           <CatalogHeaderMeta entry={entry} />
         </span>
       </span>

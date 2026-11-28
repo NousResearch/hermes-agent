@@ -5,7 +5,7 @@ import { type CSSProperties, type ReactNode, useState } from 'react'
 import { RowButton } from '@/components/ui/row-button'
 import { cn } from '@/lib/utils'
 
-import { type CatalogEntry, catalogLabel } from './catalog-data'
+import { catalogAttribution, type CatalogEntry, catalogLabel } from './catalog-data'
 import { CatalogDates, CatalogHeaderMeta, CatalogMetadata, CatalogRating } from './catalog-metadata'
 
 export function catalogIcon(category: string) {
@@ -106,7 +106,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
     >
       {showsCardImage(entry) && <CatalogImage className="catalog-card-image aspect-[2/1]" key={entry.imageUrl!} src={entry.imageUrl!} />}
       {variant !== 'default' && <div className="catalog-card-topline">
-        <span className="min-w-0 truncate" title={entry.author || catalogLabel(entry.source)}>{entry.author || catalogLabel(entry.source)}</span>
+        <span className="min-w-0 truncate" title={catalogAttribution(entry)}>{catalogAttribution(entry)}</span>
         {/* z-10: this slot precedes the title button, whose card-wide ::after
             would otherwise paint over it and swallow the click. */}
         {variant !== 'hero' && <span className="relative z-10 shrink-0">{action}</span>}
@@ -132,7 +132,7 @@ export function CatalogCard({ entry, action, accentIndex, onOpen, onCategory, on
         {/* In a fixed-height grid cell the description is what gives way. */}
         <div className="flex min-h-0 min-w-0 flex-col gap-2">
           {variant === 'default' && <span className="flex w-full items-center gap-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            <span className="min-w-0 flex-1 truncate">{entry.author || catalogLabel(entry.source)}</span>
+            <span className="min-w-0 flex-1 truncate">{catalogAttribution(entry)}</span>
             <CatalogHeaderMeta entry={entry} />
             <CatalogRating entry={entry} />
           </span>}

@@ -4,6 +4,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esApproval } from './es_approval'
 import { esBoot } from './es_boot'
+import { esCatalog } from './es_catalog'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
@@ -37,6 +38,7 @@ export const esOverrides = {
   },
   sharedMetrics: esSharedMetrics,
   firstRun: esFirstRun,
+  catalog: esCatalog,
   intro: introEs,
   connectors: esConnectorCard,
   connectorsPage: {

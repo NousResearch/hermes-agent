@@ -13,6 +13,7 @@ import type { CatalogFacets } from './catalog-query'
 interface CatalogFilterBarProps {
   kind: CatalogKind
   sources: string[]
+  sourceLabels?: Record<string, string>
   categories: ReadonlyArray<readonly [string, { label: string; count: number }]>
   tags: FacetRow[]
   facets: CatalogFacets
@@ -46,7 +47,7 @@ export function CatalogFilterBar(props: CatalogFilterBarProps) {
 
   const rows = mode === 'categories'
     ? props.categories.map(([value, meta]) => ({ value, label: catalogLabel(meta.label) }))
-    : props.sources.map(value => ({ value, label: tierLabel(value) ?? catalogLabel(value) }))
+    : props.sources.map(value => ({ value, label: tierLabel(value) ?? props.sourceLabels?.[value] ?? catalogLabel(value) }))
 
   const selected = props.facets[mode]
   const select = mode === 'categories' ? props.onCategory : props.onSource

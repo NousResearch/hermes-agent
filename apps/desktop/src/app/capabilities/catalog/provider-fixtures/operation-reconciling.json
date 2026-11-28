@@ -1,0 +1,11 @@
+{
+  "operation_id": "fixture_operation_0001",
+  "identifier": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team:example-skill",
+  "action": "install",
+  "state": "completed",
+  "outcome": "installed",
+  "managed_state": "installed",
+  "message": "Installed Example skill.",
+  "installation_revision": "install-1",
+  "settlement": "reconciling"
+}

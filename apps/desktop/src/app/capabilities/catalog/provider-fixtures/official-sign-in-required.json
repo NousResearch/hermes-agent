@@ -1,0 +1,16 @@
+{
+  "skills": [],
+  "provider_sources": [
+    {
+      "id": "plugin.1d469f9048c880a6a240f932f11ba28cb5b274d866b46e4f4f2b353ee15c385e.team",
+      "label": "Team skills",
+      "searchable": true,
+      "provider": {
+        "id": "team",
+        "plugin_id": "fixture-catalog"
+      },
+      "state": "sign_in_required",
+      "message": "Sign in using the plugin setup."
+    }
+  ]
+}

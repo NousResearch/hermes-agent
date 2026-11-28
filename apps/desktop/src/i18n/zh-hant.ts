@@ -81,7 +81,30 @@ export const zhHantOverrides = {
     snapshotHint: '內容來自 Hermes 目錄。瀏覽時不會連線至來源程式碼儲存庫。',
     installHint: '安裝前請檢查原始碼。變更將於新的工作階段生效。',
     results: (count: number) => `${count.toLocaleString('zh-Hant')} 個結果`,
-    back: '返回結果'
+    back: '返回結果',
+    provider: {
+      review: (action: string) => `審查${action}`,
+      confirm: (action: string) => `確認${action}`,
+      actions: { install: '安裝', update: '更新', uninstall: '解除安裝' },
+      managed: '由此來源管理。請在此審查變更，而不要編輯或刪除本機檔案。',
+      loading: '正在載入來源…',
+      empty: '此來源沒有符合的技能。',
+      signIn: '請透過提供此來源的外掛程式登入後再瀏覽。',
+      unavailable: '此來源無法使用。您的本機技能未受影響。',
+      incomplete: '審查不完整，或提供者原則不允許確認。',
+      changed: '此審查已過期。請關閉並重新要求審查。',
+      unknown: '結果尚未知曉。請先復原原始確認，再開始其他操作。',
+      recover: '復原原始操作',
+      finalizing: '正在確定本機狀態…',
+      setup: '僅為設定指引。確認不會執行這些說明。',
+      more: (source: string) => `載入更多${source}`,
+      preview: '技能預覽',
+      status: {
+        not_installed: '未安裝', installed: '已安裝', removed: '已在此來源之外移除',
+        unmanaged_local: '未受管理的本機副本', pending: '操作待處理', unavailable: '來源無法使用',
+        unknown: '結果未知', completed: '已完成', failed: '操作遭拒'
+      }
+    }
   },
   connectors: {
     directory: {

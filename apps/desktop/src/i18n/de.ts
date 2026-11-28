@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deApproval } from './de_approval'
 import { deBoot } from './de_boot'
+import { deCatalog } from './de_catalog'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
@@ -37,6 +38,7 @@ export const deOverrides = {
   },
   sharedMetrics: deSharedMetrics,
   firstRun: deFirstRun,
+  catalog: deCatalog,
   intro: introDe,
   connectors: deConnectorCard,
   connectorsPage: {

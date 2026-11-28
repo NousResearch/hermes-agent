@@ -1,0 +1,41 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`stock fixture: failed-registration has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: flag-off has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: never-used has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: previously-used-disabled has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock fixture: signed-out has identical rows/actions/requests 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.GithubExample SkillPublic lookalikeGithubDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock local/empty fixture remains unchanged: local=false 1`] = `"SkillsCategorySourceAll/FiltersNo matchesTry another search or clear your filters.Clear filters"`;
+
+exports[`stock local/empty fixture remains unchanged: local=false 2`] = `
+[
+  "List view",
+  "Category",
+  "Source",
+  "All",
+  "",
+  "Clear filters",
+]
+`;
+
+exports[`stock local/empty fixture remains unchanged: local=true 1`] = `"SkillsCategorySourceAll/UncategorizedFiltersMore to exploreSmaller corners of the catalog, all in one place.LocalLocal RemainderEdited local bytesLocalDeveloper ModeBuild for HermesBuilt a tool, connector, plugin, or Mod?Want to but don’t know how?Submit ModDeveloper Docs"`;
+
+exports[`stock local/empty fixture remains unchanged: local=true 2`] = `
+[
+  "List view",
+  "Category",
+  "Source",
+  "All",
+  "Uncategorized",
+  "",
+  "Added Local remainder",
+  "Local remainder",
+  "Submit Mod",
+  "Developer Docs",
+]
+`;

@@ -1,0 +1,7 @@
+{
+  "ok": false,
+  "error": {
+    "code": "acknowledgement_required",
+    "message": "Acknowledge every required finding."
+  }
+}

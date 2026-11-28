@@ -8,6 +8,7 @@ import type {
   StarmapGraph
 } from '@/types/hermes'
 import type { ActionResponse } from '@/types/hermes'
+import type { CatalogSource } from '@/types/skill-catalog'
 
 import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from './client'
 
@@ -113,8 +114,8 @@ const HUB_REQUEST_TIMEOUT_MS = 45_000
 /** The full built-in optional-skills catalog (local checkout scan — fast),
  *  with per-profile installed flags. Feeds the Capabilities Skills list's
  *  "available to install" rows. */
-export function getOfficialSkills(profile?: ProfileScope): Promise<{ skills: OfficialSkillInfo[] }> {
-  return window.hermesDesktop.api<{ skills: OfficialSkillInfo[] }>({
+export function getOfficialSkills(profile?: ProfileScope): Promise<{ skills: OfficialSkillInfo[]; provider_sources?: CatalogSource[] }> {
+  return window.hermesDesktop.api<{ skills: OfficialSkillInfo[]; provider_sources?: CatalogSource[] }>({
     ...capabilityScoped(profile),
     path: '/api/skills/hub/official'
   })

@@ -64,6 +64,30 @@ export const jaCatalog = {
   installHint: 'インストール前にソースを確認してください。変更は新しいセッションに適用されます。',
   results: (count: number) => `${count.toLocaleString('ja')}件の結果`,
   back: '結果に戻る'
+,
+  provider: {
+    review: (action: string) => `${action}を確認`,
+    confirm: (action: string) => `${action}を確定`,
+    actions: { install: 'インストール', update: '更新', uninstall: 'アンインストール' },
+    managed: 'このソースが管理しています。ローカルファイルを編集・削除する代わりに、ここで変更を確認してください。',
+    loading: 'ソースを読み込み中…',
+    empty: 'このソースに一致するスキルはありません。',
+    signIn: 'このソースを閲覧するには、提供元プラグインでサインインしてください。',
+    unavailable: 'このソースは利用できません。ローカルのスキルは変更されていません。',
+    incomplete: '確認が不完全か、提供元のポリシーにより確定できません。',
+    changed: 'この確認内容は最新ではありません。閉じてから新しい確認を要求してください。',
+    unknown: '結果はまだ不明です。別の操作を始める前に、元の確定を復旧してください。',
+    recover: '元の操作を復旧',
+    finalizing: 'ローカルの状態を確定中…',
+    setup: 'セットアップの案内のみです。確定してもこれらの手順は実行されません。',
+    more: (source: string) => `${source}をさらに読み込む`,
+    preview: 'スキルのプレビュー',
+    status: {
+      not_installed: '未インストール', installed: 'インストール済み', removed: 'このソース外で削除済み',
+      unmanaged_local: '管理対象外のローカルコピー', pending: '操作を保留中', unavailable: 'ソースを利用できません',
+      unknown: '結果不明', completed: '完了', failed: '操作が拒否されました'
+    }
+  }
 } satisfies TranslationOverrides['catalog']
 
 export const jaSkillDeepLink = {

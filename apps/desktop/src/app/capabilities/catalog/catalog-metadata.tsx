@@ -41,7 +41,7 @@ export function CatalogHeaderMeta({ entry }: { entry: CatalogEntry }) {
       {entry.source && (
         <Badge className="max-w-full" size="xs" variant={SOURCE_TONE[entry.source] ?? 'muted'}>
           {entry.source === 'verified' && <CheckCircle2 aria-hidden className="size-3 shrink-0" />}
-          <span className="truncate">{catalogLabel(entry.source)}</span>
+          <span className="truncate">{entry.provider?.label ?? catalogLabel(entry.source)}</span>
         </Badge>
       )}
       {entry.updateAvailable && <CatalogUpdateBadge />}

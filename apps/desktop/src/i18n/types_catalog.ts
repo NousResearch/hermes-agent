@@ -81,6 +81,25 @@ export interface CatalogTranslations {
     submit: string
     docs: string
   }
+  provider: {
+    review: (action: string) => string
+    confirm: (action: string) => string
+    actions: Record<'install' | 'update' | 'uninstall', string>
+    managed: string
+    loading: string
+    empty: string
+    signIn: string
+    unavailable: string
+    incomplete: string
+    changed: string
+    unknown: string
+    recover: string
+    finalizing: string
+    setup: string
+    more: (source: string) => string
+    preview: string
+    status: Record<'not_installed' | 'installed' | 'removed' | 'unmanaged_local' | 'pending' | 'unavailable' | 'unknown' | 'completed' | 'failed', string>
+  }
   toolsets: {
     mostUsed: string
     mostUsedBlurb: string

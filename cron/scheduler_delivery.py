@@ -410,31 +410,27 @@ def _cron_job_origin_log_suffix(job: dict) -> str:
     return " " + " ".join(fields) if fields else ""
 
 
-def _plugin_cron_env_var(platform_name: str) -> str:
-    """Cron home-channel env var registered by a plugin ``PlatformEntry.cron_deliver_env_var``."""
+def _registry_entry(platform_name: str):
+    """The ``PlatformEntry`` registered for *platform_name* (plugins discovered first), else ``None``."""
     with contextlib.suppress(Exception):
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name.lower())
-        if entry and entry.cron_deliver_env_var:
-            return entry.cron_deliver_env_var
-    return ""
+        return platform_registry.get(platform_name.lower())
+    return None
+
+
+def _plugin_cron_env_var(platform_name: str) -> str:
+    """Cron home-channel env var registered by a plugin ``PlatformEntry.cron_deliver_env_var``."""
+    return getattr(_registry_entry(platform_name), "cron_deliver_env_var", None) or ""
 
 
 def _is_known_delivery_platform(platform_name: str) -> bool:
     """Valid cron delivery platform: built-in, a plugin with a ``cron_deliver_env_var``, or a
     registered plugin platform (its home target then comes from config.yaml only)."""
-    name = platform_name.lower()
-    return name in _KNOWN_DELIVERY_PLATFORMS or bool(_plugin_cron_env_var(name)) or _registered_plugin_platform(name)
-
-
-def _registered_plugin_platform(name: str) -> bool:
-    with contextlib.suppress(Exception):
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(name)
-        return entry is not None and entry.source == "plugin"
-    return False
+    entry = _registry_entry(platform_name)
+    return (platform_name.lower() in _KNOWN_DELIVERY_PLATFORMS or bool(getattr(entry, "cron_deliver_env_var", None))
+            or getattr(entry, "source", None) == "plugin")
 
 
 def moved_platform_hint(platform_name: str) -> str:
@@ -765,8 +761,7 @@ def _resolve_single_delivery_target(
         if saved := [n for n in _unloaded_home_platforms() if n == platform_name.lower()]:
             _note_unloaded_homes(saved, skipped)
         elif (hint := moved_platform_hint(platform_name)) and skipped is not None:
-            # A bare route to a platform that left core (its home in DINGTALK_HOME_CHANNEL-style env, not
-            # config.yaml) is reported like a platform:chat route, not dropped without a word.
+            # A bare route to a moved platform (home in its *_HOME_CHANNEL env) is reported, never dropped.
             skipped.append(f"delivery target '{deliver_value}' skipped: no loaded plugin provides it{hint}")
         return None
     chat_id = _get_home_target_chat_id(platform_name)

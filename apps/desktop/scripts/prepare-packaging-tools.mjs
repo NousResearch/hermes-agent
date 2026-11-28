@@ -129,6 +129,7 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
     toolsets.icons = copyTool(iconTools, path.join(out, 'icons'))
     markIconsToolsetCommonJS(out)
   }
+  markIconsToolsetCommonJS(out)
   let windows = null
   if (process.platform === 'win32') {
     const builder = await load('toolsets/winCodeSign.js')

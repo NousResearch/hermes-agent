@@ -292,6 +292,31 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(reconnect).not.toHaveBeenCalled()
   })
 
+  it('rejects an uncertain dispatch without retiring and reuses the descriptor after health recovers', async () => {
+    const connection = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
+    const connectionPromise = Promise.resolve(connection)
+    const failure = new Error('request timed out')
+    const probe = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce({ ok: true })
+    const canRetire = vi.fn(async () => false)
+    const retire = vi.fn()
+    const reconnect = vi.fn()
+
+    const options = {
+      connectionPromise,
+      currentConnectionPromise: () => connectionPromise,
+      probe,
+      canRetire,
+      retire,
+      reconnect
+    }
+
+    await expect(ensureHealthyPooledRemoteBackendForDispatch(options)).rejects.toBe(failure)
+    expect(canRetire).toHaveBeenCalledWith(connection, failure)
+    expect(retire).not.toHaveBeenCalled()
+    expect(reconnect).not.toHaveBeenCalled()
+    await expect(ensureHealthyPooledRemoteBackendForDispatch(options)).resolves.toBe(connection)
+  })
+
   it('retires a dead cached descriptor and gives dispatch the replacement', async () => {
     const stale = { baseUrl: 'http://127.0.0.1:49525', mode: 'remote' }
     const replacement = { baseUrl: 'http://127.0.0.1:53968', mode: 'remote' }

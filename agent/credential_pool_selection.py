@@ -1,10 +1,12 @@
 """Credential selection for ``CredentialPool``: ``select`` (rotates and counts), ``choose`` plus
-``commit`` (the same choice, recorded only once the key is used) and ``peek`` (reads only)."""
+``commit`` (the same choice, recorded only once the key is used) and ``peek`` (reads only); and the
+forced refresh of the row behind a failed request (one locked lookup, one typed ``RefreshOutcome``)."""
 from __future__ import annotations
 
+import enum
 import random
 from dataclasses import replace
-from typing import Callable, Optional, TYPE_CHECKING
+from typing import Callable, NamedTuple, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from agent.credential_pool import PooledCredential
@@ -121,3 +123,68 @@ class CredentialPoolSelectionMixin:
                 return current
             available = _serving(self._available_entries(model=model)[0], endpoint_url)
             return next((e for e in available if current and e.id == current.id), next(iter(available), None))
+
+
+class RefreshKind(enum.Enum):
+    ADOPTED = "adopted"  # the in-lock store re-read found a usable bearer; no refresh token spent
+    POSTED = "posted"  # the provider refresh ran
+    REFUSED = "refused"  # the row needed a POST that ``may_post`` refused
+    NEEDS_ROTATION = "needs_rotation"  # no matching row, a non-OAuth row, or the refresh failed
+
+
+class RefreshOutcome(NamedTuple):
+    kind: RefreshKind
+    entry: Optional[PooledCredential] = None
+    row: Optional[PooledCredential] = None
+
+
+NO_REFRESH = RefreshOutcome(RefreshKind.NEEDS_ROTATION)
+
+
+class CredentialPoolRefreshMixin:
+    def try_refresh_current(self) -> Optional[PooledCredential]:
+        with self._lock:
+            entry = self._current_unlocked()
+            refreshed = self._refresh_entry(entry, force=True) if entry is not None else None
+            if refreshed is not None:
+                self._current_id = refreshed.id
+            return refreshed
+
+    def try_refresh_matching(
+        self, api_key_hint: Optional[str] = None, credential_id: Optional[str] = None,
+    ) -> Optional[PooledCredential]:
+        """Force-refresh the entry that supplied the failed request; the id wins over the key."""
+        return self.refresh_failed_entry(api_key_hint, credential_id).entry
+
+    def refresh_failed_entry(
+        self, api_key_hint: Optional[str] = None, credential_id: Optional[str] = None, *,
+        key_wins: bool = False, may_post: Optional[Callable[[PooledCredential], bool]] = None,
+    ) -> RefreshOutcome:
+        """Under the pool lock: find the failed row, adopt a usable stored bearer, else POST if allowed.
+
+        ``key_wins`` resolves the row like rotation does (#79156) when the key names a pool row. A key
+        no row holds is usually this row's own pre-rotation bearer (a stale 401, #138337), so the id
+        then still names the row and the refresh adopts its rotated token. With no identity, select
+        WITHOUT the proactive refresh: the forced refresh must spend a rotating refresh token exactly once.
+        """
+        with self._lock:
+            by_id, by_key = self._failed_entry_matches(credential_id, api_key_hint)
+            id_sent_key = by_id is not None and (not api_key_hint or by_id.runtime_api_key == api_key_hint)
+            entry = (by_id if id_sent_key else by_key or by_id) if key_wins else (by_id or by_key)
+            if entry is None and not api_key_hint:
+                entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
+            if entry is None:
+                return NO_REFRESH
+            self._current_id = entry.id
+            outcome = self._refresh_entry_outcome(
+                entry, force=True, failed_key=api_key_hint, allow_post=may_post is None or may_post(entry))
+            if outcome.entry is not None:
+                self._current_id = outcome.entry.id
+            return outcome._replace(row=entry)
+
+    def _post_refresh(self, entry: PooledCredential, *, force: bool, allow_post: bool,
+                      failed_key: Optional[str] = None) -> RefreshOutcome:
+        if not allow_post:
+            return RefreshOutcome(RefreshKind.REFUSED)
+        refreshed = self._refresh_entry_impl(entry, force=force, failed_key=failed_key)
+        return NO_REFRESH if refreshed is None else RefreshOutcome(RefreshKind.POSTED, refreshed)

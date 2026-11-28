@@ -54,3 +54,20 @@ def _fast_retry_backoff(request, monkeypatch):
     # server-error retries don't burn real wall-clock seconds.
     from agent import retry_utils as _retry_utils
     monkeypatch.setattr(_retry_utils, "jittered_backoff", lambda *a, **k: 0.0)
+
+
+@pytest.fixture
+def fake_pool_store(monkeypatch):
+    """Stand in for ``~/.hermes/auth.json`` so separate CredentialPool instances (separate processes in
+    production) see each other's persisted writes without touching the real filesystem."""
+    store: dict[str, list] = {}
+
+    def _write(provider, entries, *, removed_ids=None, status_cleared_ids=None, token_bases=None):
+        store[provider] = list(entries)
+
+    def _read(provider=None):
+        return dict(store) if provider is None else list(store.get(provider, []))
+
+    monkeypatch.setattr("agent.credential_pool.write_credential_pool", _write)
+    monkeypatch.setattr("agent.credential_pool.read_credential_pool", _read)
+    return store

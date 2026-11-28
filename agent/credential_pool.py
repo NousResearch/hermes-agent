@@ -5,7 +5,9 @@ from __future__ import annotations
 from agent.credential_pool_admin import CredentialPoolAdminMixin
 from agent.credential_pool_model_cooldowns import CredentialPoolModelCooldownMixin, model_cooldown_until
 from agent.credential_pool_errors import _normalize_error_context, redact_error_text
-from agent.credential_pool_selection import CredentialPoolSelectionMixin
+from agent.credential_pool_selection import (
+    NO_REFRESH, CredentialPoolRefreshMixin, CredentialPoolSelectionMixin, RefreshKind, RefreshOutcome,
+)
 from agent.credential_pool_timestamps import _parse_absolute_timestamp
 
 import logging
@@ -17,7 +19,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -902,13 +904,9 @@ _TOKENS_SINGLETON_PROVIDERS: dict[str, tuple[str, str, str, str]] = {
 # providers are refreshable when their profile ships ``refresh_credential`` (see
 # ``hermes_cli.auth_plugin_providers.is_refreshable_oauth_provider``); any other provider is returned
 # unchanged by that path, so callers must not report a refresh for them.
+RefreshPath = Literal["anthropic", "tokens", "plugin", "nous"]
 REFRESHABLE_OAUTH_PROVIDERS = frozenset({"anthropic", "nous", *_TOKENS_SINGLETON_PROVIDERS})
 
-# Providers whose refresh tokens are single-use: the sync -> POST -> write-back
-# sequence must be serialized across processes under the auth-store flock.
-# ``nous`` is deliberately absent even though it is in SINGLE_USE_REFRESH_POOL_PROVIDERS:
-# its refresh path serializes on its own auth-store lock (``_refresh_entry_impl`` nous branch).
-_SINGLE_USE_REFRESH_PROVIDERS = ("openai-codex", "xai-oauth", "anthropic")
 
 # Lock-free window between consecutive auth-store holds in a deferred refresh sweep
 # (_refresh_pending_entries): a waiter with a shorter timeout (Desktop assistant start,
@@ -939,7 +937,8 @@ class _RefreshDone(Exception):
         self.result = result
 
 
-class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin):
+class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin,
+                     CredentialPoolRefreshMixin):
     def __init__(self, provider: str, entries: list[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
@@ -1464,48 +1463,56 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     # ---- refresh -----------------------------------------------------------
 
     def _refresh_entry(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
+        return self._refresh_entry_outcome(entry, force=force, failed_key=failed_key).entry
+
+    def _refresh_entry_outcome(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None,
+                               allow_post: bool = True) -> RefreshOutcome:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
-            return None
-        # Plugin providers with a ``refresh_credential`` hook are treated as single-use by default:
-        # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
-        # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
-        if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
-            return self._refresh_entry_impl(entry, force=force, failed_key=failed_key)
+            return NO_REFRESH
+        path = self._refresh_path()
+        if path is None:
+            return NO_REFRESH  # ``_refresh_entry_impl`` would hand the row back unchanged: nothing was refreshed
+        # Every path but Nous spends a single-use refresh token. Plugin hooks count as single-use: the
+        # pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than a
+        # ``refresh_token_reused`` login loss.
+        if path == "nous":
+            return self._post_refresh(entry, force=force, allow_post=allow_post, failed_key=failed_key)
 
-        # Single-use refresh tokens: sync -> POST -> write-back must be atomic
-        # across Hermes processes, or two processes adopt the same on-disk
-        # token, both POST it, and the loser gets ``refresh_token_reused`` /
-        # ``invalid_grant`` (for Anthropic sources other than claude_code
-        # there was no recovery path at all). Serialize through the shared
-        # cross-process auth-store flock; a waiter's in-lock re-sync picks up
-        # the winner's rotated token and skips the POST.
+        # Single-use refresh tokens: sync -> POST -> write-back must be atomic across Hermes processes, or two
+        # processes adopt the same on-disk token, both POST it, and the loser gets ``refresh_token_reused`` /
+        # ``invalid_grant`` (for Anthropic sources other than claude_code there was no recovery path at all).
+        # Serialize through the shared cross-process auth-store flock; a waiter's in-lock re-sync picks up the
+        # winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
-                if synced is not entry and not force and not self._entry_needs_refresh(synced):
-                    return synced
-                return self._refresh_entry_impl(synced, force=force)
+                # A forced refresh still adopts a peer's rotation: a usable bearer other than the one that failed.
+                fresh = synced.runtime_api_key not in ("", failed_key) if force and failed_key else (
+                    synced is not entry and not force)
+                if fresh and not self._entry_needs_refresh(synced):
+                    return RefreshOutcome(RefreshKind.ADOPTED, synced)
+                return self._post_refresh(synced, force=force, allow_post=allow_post)
             synced = self._sync_entry_from_pool_store(entry)
             if self.provider == "anthropic" and synced.source == "claude_code":
-                # claude_code entries are NOT profile-owned: the refresh token
-                # lives in one shared ~/.claude/.credentials.json (or Keychain)
-                # every profile reads. The profile-scoped lock above only covers
-                # THIS profile's auth.json, so take the dedicated shared-file
-                # lock (inner, per the ordering invariant on ``_auth_store_lock``)
-                # and re-read that authoritative file before any
-                # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
+                # claude_code entries are NOT profile-owned: the refresh token lives in one shared
+                # ~/.claude/.credentials.json (or Keychain) every profile reads. The profile-scoped lock above
+                # only covers THIS profile's auth.json, so take the dedicated shared-file lock (inner, per the
+                # ordering invariant on ``_auth_store_lock``) and re-read that authoritative file before any
+                # adopt-and-return shortcut fires. The official ``claude`` CLI rotating out-of-band is handled
+                # by the sync-and-retry-once fallback in ``_recover_failed_refresh``.
                 with self._claude_code_credentials_lock():
                     synced = self._sync_anthropic_entry_from_credentials_file(synced)
                     if synced.refresh_token != entry.refresh_token:
-                        return synced
-                    return self._refresh_entry_impl(synced, force=force)
-            if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
-                return synced
-            return self._refresh_entry_impl(synced, force=force)
+                        return RefreshOutcome(RefreshKind.ADOPTED, synced)
+                    return self._post_refresh(synced, force=force, allow_post=allow_post)
+            # Judge the bearer the 401'd request sent, not this row's copy: re-POSTing revokes a sibling (#138337).
+            rotated = (synced.runtime_api_key not in ("", failed_key) and not self._entry_needs_refresh(synced)
+                       if failed_key else synced.access_token != entry.access_token)
+            if rotated or synced.refresh_token != entry.refresh_token:
+                return RefreshOutcome(RefreshKind.ADOPTED, synced)
+            return self._post_refresh(synced, force=force, allow_post=allow_post)
 
     def _claude_code_credentials_lock(self):
         """Cross-process lock keyed to the shared claude_code credentials file.
@@ -1651,37 +1658,57 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             last_refresh=refreshed.get("last_refresh"),
         )
 
+    def _refresh_path(self) -> Optional[RefreshPath]:
+        """The one refresh path this pool's provider has, in ``_refresh_entry_impl``'s dispatch order."""
+        if self.provider == "anthropic":
+            return "anthropic"
+        if self.provider in _TOKENS_SINGLETON_PROVIDERS:
+            return "tokens"
+        if plugin_refresh_hook(self.provider) is not None:
+            return "plugin"
+        return "nous" if self.provider == "nous" else None
+
+    def _sync_nous_or_adopt(self, entry: PooledCredential, force: bool, sent: Optional[str]) -> PooledCredential:
+        synced = self._sync_nous_entry_from_auth_store(entry)
+        # A peer persisted a DIFFERENT usable key: adopt it without re-spending the refresh token.
+        if synced is not entry and force and synced.runtime_api_key and synced.runtime_api_key != sent:
+            logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", synced.id)
+            raise _RefreshDone(synced)
+        return synced
+
+    def _post_nous_refresh(self, entry: PooledCredential, force: bool, sent: Optional[str]) -> PooledCredential:
+        auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=sent or None)
+        return self._sync_nous_entry_from_auth_store(entry)
+
+    def _post_plugin_refresh(self, entry: PooledCredential, force: bool, sent: Optional[str]) -> PooledCredential:
+        rotated = plugin_refresh_hook(self.provider)(entry)
+        if not rotated:
+            # ``None``/empty = the plugin could not rotate: bench like a failed refresh POST, never
+            # report the stale row as refreshed (the loop would replay the dead bearer).
+            raise RuntimeError("provider refresh_credential returned no rotated fields")
+        return apply_plugin_refresh_result(entry, rotated)
+
+    # path -> (sync, post). Sync adopts fresher stored tokens BEFORE the refresh_token is spent.
+    _REFRESH_VIA = {
+        "anthropic": (lambda _pool, e, _force, _sent: e, lambda pool, e, _force, _sent: pool._refresh_anthropic(e)),
+        "tokens": (lambda pool, e, _force, _sent: pool._sync_entry_from_auth_store(e),
+                   lambda pool, e, _force, _sent: pool._post_tokens_refresh(e)),
+        "plugin": (lambda _pool, e, _force, _sent: e, _post_plugin_refresh),
+        "nous": (_sync_nous_or_adopt, _post_nous_refresh),
+    }
+
     def _refresh_entry_impl(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
-        # Single-use-token providers adopt fresher tokens from their store
-        # BEFORE spending the refresh_token; ``entry`` is rebound to the synced
-        # row so the failure path below recovers against the pair we POSTed.
+        path = self._refresh_path()
+        if path is None:
+            return entry
+        sync, post = self._REFRESH_VIA[path]
         try:
-            if self.provider == "anthropic":
-                updated = self._refresh_anthropic(entry)
-            elif self.provider in _TOKENS_SINGLETON_PROVIDERS:
-                entry = self._sync_entry_from_auth_store(entry)
-                updated = self._post_tokens_refresh(entry)
-            elif (plugin_refresh := plugin_refresh_hook(self.provider)) is not None:
-                rotated = plugin_refresh(entry)
-                if not rotated:
-                    # ``None``/empty = the plugin could not rotate: bench like a failed refresh POST, never
-                    # report the stale row as refreshed (the loop would replay the dead bearer).
-                    raise RuntimeError("provider refresh_credential returned no rotated fields")
-                updated = apply_plugin_refresh_result(entry, rotated)
-            elif self.provider == "nous":
-                # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
-                stale_key = failed_key or entry.runtime_api_key or entry.agent_key or entry.access_token
-                synced = self._sync_nous_entry_from_auth_store(entry)
-                if synced is not entry:
-                    entry = synced
-                    # A peer persisted a DIFFERENT usable key: adopt it without re-spending the refresh token.
-                    if force and entry.runtime_api_key and entry.runtime_api_key != stale_key:
-                        logger.debug("Nous entry %s: adopting peer-rotated token, skipping refresh", entry.id)
-                        return entry
-                auth_mod.resolve_nous_runtime_credentials(force_refresh=force, stale_access_token=stale_key or None)
-                updated = self._sync_nous_entry_from_auth_store(entry)
-            else:
-                return entry
+            # The bearer the request SENT, not this row's (maybe older) copy: adopting it replays the 401.
+            sent = failed_key
+            if path == "nous" and not sent:
+                sent = entry.runtime_api_key or entry.agent_key or entry.access_token
+            entry = sync(self, entry, force, sent)  # a failure below recovers against the pair it POSTed
+            updated = post(self, entry, force, sent)
         except _RefreshDone as done:
             return done.result
         except Exception as exc:
@@ -2101,15 +2128,13 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         self, credential_id: Optional[str], api_key_hint: Optional[str],
     ) -> Optional[PooledCredential]:
         """Resolve the entry that issued a failed request from its supplied identity."""
-        entry = None
-        if credential_id:
-            entry = self._find(lambda e: e.id == credential_id)
+        entry, hint_entry = self._failed_entry_matches(credential_id, api_key_hint)
+        if entry is not None:
             # #79156: when both identities disagree, trust the key that made
             # the request. A stale ``_credential_pool_entry_id`` (per-turn env
             # refresh rewrote ``api_key`` without rebinding the id) would
             # otherwise quarantine a healthy fallback for days.
-            if entry is not None and api_key_hint and entry.runtime_api_key != api_key_hint:
-                hint_entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
+            if api_key_hint and entry.runtime_api_key != api_key_hint:
                 if hint_entry is not None:
                     logger.info(
                         "credential pool: credential_id %s runtime key "
@@ -2121,12 +2146,17 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 # Otherwise the id is stale and the request key is not in the
                 # pool — drop the id so we do not mark the wrong entry.
                 entry = hint_entry
-        if entry is None and api_key_hint:
-            # Prefer the entry whose key actually failed: on a pool freshly
-            # loaded from disk current() is None and _select_unlocked() would
-            # return the NEXT key — the wrong one.
-            entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
-        return entry
+        # Prefer the entry whose key actually failed: on a pool freshly loaded from disk
+        # current() is None and _select_unlocked() would return the NEXT key — the wrong one.
+        return entry if entry is not None else hint_entry
+
+    def _failed_entry_matches(
+        self, credential_id: Optional[str], api_key_hint: Optional[str],
+    ) -> tuple[Optional[PooledCredential], Optional[PooledCredential]]:
+        """The rows a failed request names: by its credential id, and by the key it sent."""
+        by_id = self._find(lambda e: e.id == credential_id) if credential_id else None
+        by_key = self._find(lambda e: e.runtime_api_key == api_key_hint) if api_key_hint else None
+        return by_id, by_key
 
     def _rotate_unmatched(self) -> Optional[PooledCredential]:
         """Rotate without marking anything when the failed identity matches no entry.
@@ -2294,46 +2324,6 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 self._active_leases.pop(credential_id, None)
             else:
                 self._active_leases[credential_id] = count - 1
-
-    # ---- explicit refresh / admin ------------------------------------------
-
-    def try_refresh_current(self) -> Optional[PooledCredential]:
-        with self._lock:
-            return self._try_refresh_current_unlocked()
-
-    def try_refresh_matching(
-        self,
-        api_key_hint: Optional[str] = None,
-        credential_id: Optional[str] = None,
-    ) -> Optional[PooledCredential]:
-        """Force-refresh the entry that supplied the failed request.
-
-        Direct integrations may reload the pool after a request failed, so
-        ``current_id`` cannot identify the issuing credential. With no hint,
-        select WITHOUT the normal proactive refresh: the forced refresh below
-        must consume a rotating refresh token exactly once.
-        """
-        with self._lock:
-            entry = self._find(lambda e: e.id == credential_id) if credential_id else None
-            if entry is None:
-                if api_key_hint:
-                    entry = self._find(lambda e: e.runtime_api_key == api_key_hint)
-                else:
-                    entry = self._current_unlocked() or self._select_unlocked(refresh=False, count=False)[0]
-            if entry is None:
-                return None
-            self._current_id = entry.id
-            return self._try_refresh_current_unlocked(failed_key=api_key_hint)
-
-    def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None) -> Optional[PooledCredential]:
-        entry = self._current_unlocked()
-        if entry is None:
-            return None
-        refreshed = self._refresh_entry(entry, force=True, failed_key=failed_key)
-        if refreshed is not None:
-            self._current_id = refreshed.id
-        return refreshed
-
 
 
 # --- Seeding --------------------------------------------------------------

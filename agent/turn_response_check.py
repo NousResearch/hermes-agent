@@ -149,6 +149,8 @@ def check_api_response(
             return _verdict(_iv.action, _iv.result)
 
     agent._turn_received_provider_response = True
+    from agent.credential_auth_recovery import end_auth_episodes
+    end_auth_episodes(agent)
     # Every row this response becomes (truncation fragments and Codex incomplete interims are built
     # before record_response_usage runs) is stamped with THIS response's reasoning count, never a
     # previous response's.

@@ -14,6 +14,8 @@ from __future__ import annotations
 import time
 from typing import Any, Optional
 
+from agent.credential_pool_selection import RefreshKind
+
 # Waits before each retry of an unexpired Nous key that keeps answering 401 (~50 s in total).
 TRANSIENT_AUTH_BACKOFF_S = (5.0, 15.0, 30.0)
 # Cap same-entry OAuth refreshes on a persistent auth failure, else a single-entry pool re-mints forever.
@@ -39,6 +41,13 @@ def _episode(agent: Any, provider: str, entry_id: Optional[str]) -> dict[str, An
         episode = agent._auth_pool_refresh_counts[(provider, entry_id)] = {"refreshes": 0, "waits": 0}
     episode["last"] = now
     return episode
+
+
+def end_auth_episodes(agent: Any) -> None:
+    """A served response proves the credential authenticates, so the next 401 starts a fresh episode.
+    Nous keeps its tally: one forced refresh per turn (``nous_pool_refreshed_this_turn``)."""
+    counts = getattr(agent, "_auth_pool_refresh_counts", None) or {}
+    agent._auth_pool_refresh_counts = {key: state for key, state in counts.items() if key[0] == "nous"}
 
 
 def nous_pool_refreshed_this_turn(agent: Any) -> bool:
@@ -118,25 +127,36 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
     # Only a 401 is the "valid key refused" shape worth backing off on; a non-entitlement 403
     # keeps the capped-refresh path and fails fast.
     nous = provider == "nous" and status_code == 401
-    entry_id = credential_id
+    entry_id = (getattr(_entry_for(pool, credential_id, api_key_hint), "id", None) or credential_id) if nous else None
     if nous:
-        found = _entry_for(pool, credential_id, api_key_hint)
-        entry_id = getattr(found, "id", None) or credential_id
         episode = _episode(agent, provider, entry_id)
         if episode["refreshes"] >= 1:
             # The one forced refresh of this episode already happened: never re-redeem the grant.
             return _retry_after_backoff(
                 agent, pool, episode, failed_key=api_key_hint, entry_id=entry_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
+    identified = bool(credential_id or api_key_hint)
+
+    def may_post(row) -> bool:
+        return nous or not identified or _episode(agent, provider, row.id)["refreshes"] < _MAX_AUTH_REFRESH_ATTEMPTS
+
     # Refresh the entry that supplied the failing key, not current(): refreshing a healthy entry
     # burns its single-use refresh token for a failure it never had.
-    refresh_kwargs = {"api_key_hint": api_key_hint}
-    if credential_id:
-        refresh_kwargs["credential_id"] = credential_id
-    refreshed = pool.try_refresh_matching(**refresh_kwargs)
+    outcome = pool.refresh_failed_entry(
+        api_key_hint, entry_id if nous else credential_id, key_wins=not nous, may_post=may_post)
+    refreshed = outcome.entry
     if refreshed is None:
-        # Refresh failed; rotate (the failed entry is already marked exhausted).
-        return (True, False) if rotate_and_swap(401, "auth refresh failed") else (False, has_retried_429)
+        capped = outcome.kind is RefreshKind.REFUSED
+        if capped:
+            log.warning(
+                "Credential auth failure persists after %s refreshes for pool entry %s — "
+                "rotating to another entry, or allowing fallback to activate.",
+                _MAX_AUTH_REFRESH_ATTEMPTS, getattr(outcome.row, "id", None) or credential_id)
+        label = "auth persists after refresh" if capped else "auth refresh failed"
+        # The capped row's grant just minted tokens: a terminal-looking 401 reason (Codex
+        # ``token_invalidated``) names the access token, so the bench must not mark the row DEAD.
+        context = {k: v for k, v in (error_context or {}).items() if k != "reason"} if capped else None
+        return (True, False) if rotate_and_swap(401, label, context) else (False, has_retried_429)
     refreshed_id = getattr(refreshed, "id", None)
     if nous:
         episode = _episode(agent, provider, refreshed_id or entry_id)
@@ -147,17 +167,10 @@ def recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_con
             return _retry_after_backoff(
                 agent, pool, episode, failed_key=api_key_hint, entry_id=refreshed_id,
                 credential_id=credential_id, has_retried_429=has_retried_429)
-    elif refreshed_id is not None:
-        # try_refresh_matching() reports success even when upstream keeps rejecting; cap same-entry
-        # refreshes so a single-entry pool falls through to fallback.
+    elif refreshed_id is not None and outcome.kind is RefreshKind.POSTED:
         state = _episode(agent, provider, refreshed_id)
         state["refreshes"] += 1
-        if state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:
-            log.warning(
-                "Credential auth failure persists after %s refreshes for "
-                "pool entry %s — treating as unrecoverable and allowing "
-                "fallback to activate.", state["refreshes"] - 1, refreshed_id,
-            )
+        if not identified and state["refreshes"] > _MAX_AUTH_REFRESH_ATTEMPTS:
             return False, has_retried_429
     log.info("Credential auth failure — refreshed pool entry %s", refreshed_id or "?")
     if agent._swap_credential(refreshed) is False:

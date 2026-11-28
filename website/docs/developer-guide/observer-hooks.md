@@ -230,7 +230,9 @@ Fields: `session_id`, `kind`, `prompt_id`, `execution_generation` (the turn's
 generation for `approval` / `clarify`, `None` for request frames), and on the
 opened hook `params`: a deep copy of what the viewers received, with every
 string force-redacted the way `on_human_input_request` redacts `prompt` (even
-with `security.redact_secrets: false`). The settled hook adds `reason`: the
+with `security.redact_secrets: false`). A dangerous-command approval's
+`description` is the scanner warning only, without the unverified
+model-provided context the viewers see. The settled hook adds `reason`: the
 `request.cancel` reason for a frame (`resolved`, `timeout`, `interrupted`) or
 `settled` for an `approval.settled` / `clarify.settled` event. What the person
 typed is never included. Each prompt id gets exactly one opened and one

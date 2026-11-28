@@ -12,7 +12,9 @@ order on one worker thread, so plugin code never runs under ``event_stream.lock`
 ``session_server_requests._lock``, on the agent thread or on the event loop; each runs in the owning
 profile's scope (``session_authorities.owner_scope``). ``params`` is a deep copy with every string
 force-redacted (as ``tools/human_input_hooks.py`` redacts its ``prompt``) inside that owner scope, so
-the owning profile's registered vault values are scrubbed too, and never holds an answer.
+the owning profile's registered vault values are scrubbed too, and never holds an answer. A dangerous-command
+approval's ``description`` is its scanner warning (``scanner_description`` from ``tools.approval``), without the
+unverified model-provided context the viewers see; every other prompt's is the viewers' own.
 """
 from __future__ import annotations
 
@@ -82,9 +84,11 @@ class PromptTable(dict):
         return deepcopy(dict(self), memo)
 
 
-def control_opened(authority, session_id, controls, prompt_id) -> None:
+def control_opened(authority, session_id, controls, prompt_id, *, description=None) -> None:
     """The authority published *prompt_id*'s ``approval.request`` / ``clarify.request`` (it is in
-    ``controls.pending``, where ``respond`` finds it)."""
+    ``controls.pending``, where ``respond`` finds it). *description*: a command approval's
+    ``scanner_description`` (sent only when the viewers' description adds context), which
+    ``params`` carries instead of the viewers' description."""
     table = controls.pending
     held = table.get(prompt_id)
     if held is None or prompt_id in table.observed:
@@ -92,7 +96,13 @@ def control_opened(authority, session_id, controls, prompt_id) -> None:
     prompt = held[1]
     opened = _Opened(authority, session_id, prompt["kind"], prompt_id, prompt.get("execution_generation"))
     table.observed[prompt_id] = opened
-    _enqueue(OPENED, authority, {**opened.payload(), "params": deepcopy(prompt)})
+    params = deepcopy(prompt)
+    if isinstance(description, str):
+        # Plugin code is automated input: a command approval's scanner warning, never the model's
+        # context; redacted as PendingControls.register redacts the viewers' description.
+        from gateway.run import _redact_approval_command
+        params["description"] = _redact_approval_command(description)
+    _enqueue(OPENED, authority, {**opened.payload(), "params": params})
 
 
 def request_opened(events, session_id, request_id, method, params, replay) -> _Opened | None:

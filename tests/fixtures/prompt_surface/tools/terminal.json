@@ -3,6 +3,18 @@
   "name": "terminal",
   "parameters": {
     "properties": {
+      "approval_effect": {
+        "description": "If this command triggers approval, explain what it will change or affect. Do not include secrets, tokens, passwords, or credentials.",
+        "type": "string"
+      },
+      "approval_purpose": {
+        "description": "If this command triggers approval, explain its purpose to the user. Do not include secrets, tokens, passwords, or credentials.",
+        "type": "string"
+      },
+      "approval_risk": {
+        "description": "If this command triggers approval, explain risks the user should consider. Do not include secrets, tokens, passwords, or credentials.",
+        "type": "string"
+      },
       "background": {
         "default": false,
         "description": "Only for commands that must keep running after this call returns; returns a session_id.",

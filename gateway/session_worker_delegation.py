@@ -92,6 +92,7 @@ async def worker_delegation_request(connection, ref, params):
                 from tools.process_registry import process_registry
                 # Queueing after commit can repeat after a lost ACK. Existing
                 # token-guarded claims arbitrate delivery; never ACK at publication.
-                process_registry.completion_queue.put(dict(event) | {'restored': True})
+                process_registry.completion_queue.put(dict(event) | {'restored': True,
+                    '_completion_ledger_home': store.scope.hermes_home_key})
         return result
     return await asyncio.to_thread(persist_and_publish)

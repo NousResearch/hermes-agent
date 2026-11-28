@@ -288,9 +288,14 @@ class GatewayNotificationOwnershipMixin:
             return
         from tools.async_delegation import requeue_admitted_completion
         from tools.process_registry import process_registry
+        from hermes_constants import get_hermes_home, hermes_home_key
         runner = cast(Any, self)
+        owner = hermes_home_key(get_hermes_home())
         with runner._completion_delivery_lock:
             for delegation_id in completion_ids:
+                event = {"type": "async_delegation", "delegation_id": delegation_id,
+                         "_completion_ledger_home": owner}
+                runner._completion_deliveries_delivered.pop(runner._completion_queue_identity(event), None)
                 runner._completion_deliveries_delivered.pop(("async_delegation", delegation_id, ""), None)
         for delegation_id in completion_ids:
             try:

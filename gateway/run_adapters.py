@@ -1470,6 +1470,8 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
         adapter.set_message_handler(message_handler or self._primary_message_handler())
         adapter.set_fatal_error_handler(fatal_error_handler or self._handle_adapter_fatal_error)
         adapter.set_session_store(self.session_store)
+        from gateway.session_scope import register_adapter_session_scope
+        register_adapter_session_scope(self, adapter)
         adapter.set_busy_session_handler(busy_session_handler or self._primary_busy_session_handler())
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
@@ -1865,11 +1867,6 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
     def _instantiate_adapter(self, platform: Platform, config: Any) -> Optional[BasePlatformAdapter]:
         """Instantiate the adapter for a platform: plugin registry first, then built-ins."""
         from gateway.run import _instantiate_builtin_adapter
-        if hasattr(config, "extra") and isinstance(config.extra, dict):
-            config.extra.setdefault("group_sessions_per_user", self.config.group_sessions_per_user)
-            config.extra.setdefault(
-                "thread_sessions_per_user", getattr(self.config, "thread_sessions_per_user", False)
-            )
         with _log_suppressed(logging.DEBUG, "Platform registry lookup for '%s' failed: %s", platform.value):
             from gateway.platform_registry import platform_registry
             if platform_registry.is_registered(platform.value):

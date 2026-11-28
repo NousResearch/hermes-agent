@@ -3580,9 +3580,9 @@ class GatewayRunner(
                 except Exception:
                     _profile = None
         from gateway.session_dm_threads import dm_thread_key_source, telegram_extra_for
-        return build_session_key(dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db),
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False), profile=_profile)
+        from gateway.session_scope import scope_for_runner
+        keyed = dm_thread_key_source(source, telegram_extra_for(source, config), self._sync_session_db)
+        return build_session_key(keyed, profile=_profile, **scope_for_runner(self, source))
 
     # Telegram General topic in forum-enabled private chats: clients omit message_thread_id or send "1"; both = root.
     _TELEGRAM_GENERAL_TOPIC_IDS = frozenset({"", "1"})

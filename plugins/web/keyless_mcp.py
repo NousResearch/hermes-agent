@@ -65,17 +65,65 @@ _VENDOR_REFUSAL_RE = re.compile(
 def _is_search_failover_eligible(message: str) -> bool:
     """Return whether another anonymous vendor may serve the search.
 
-    Rate limits and structured HTTP 401/402/403/5xx vendor refusals are local to
-    one free search endpoint. Free-text markers are deliberately ignored:
-    vendors may echo the query in an otherwise terminal error.
+    Rate limits, structured HTTP 401/402/403/5xx vendor refusals, and tagged
+    transport failures are local to one free search endpoint. Free-text markers
+    are deliberately ignored: vendors may echo the query in an otherwise
+    terminal error.
     """
-    return _is_rate_limitish(message) or bool(_VENDOR_REFUSAL_RE.match(message or ""))
+    return _is_rate_limitish(message) or bool(_VENDOR_REFUSAL_RE.match(message or "")) or _is_transport_failover_eligible(message)
+
+
+# Self-produced tag marking an error as transport-level (DNS/connect/timeout).
+# Because it is written by Hermes itself, not echoed from a vendor body, it can
+# be trusted as failover evidence even though it may carry query fragments.
+_TRANSPORT_TAG = "transport failed: "
+
+# Anchored like _VENDOR_REFUSAL_RE: the optional ``Keyless <Vendor> <kind> failed:``
+# wrapper is what ``_fail_msg`` puts in front of the tagged detail.
+_TRANSPORT_REFUSAL_RE = re.compile(
+    r"\s*(?:keyless\s+\w+\s+(?:search|extract)\s+failed:\s*)?transport\s+failed:",
+    re.IGNORECASE,
+)
+
+
+def _is_transport_exception(exc: Any) -> bool:
+    """Classify by exception type, not message text: *exc* itself or its
+    ``__cause__`` chain is a connection/timeout-level failure (``requests``,
+    ``httpx``, or builtin). Such a failure is local to one endpoint, never to
+    the query, so it must fail over like a rate limit (#156380)."""
+    if exc is None:
+        return False
+    import requests
+    transport: tuple[type[BaseException], ...] = (
+        requests.ConnectionError, requests.Timeout, ConnectionError, TimeoutError,
+    )
+    try:
+        import httpx
+        transport = transport + (httpx.TransportError,)
+    except Exception:
+        pass
+    while exc is not None:
+        if isinstance(exc, transport):
+            return True
+        exc = exc.__cause__
+    return False
+
+
+def _is_transport_failover_eligible(message: str) -> bool:
+    """Whether an error message carries the self-produced transport tag (optionally
+    behind the ``_fail_msg`` wrapper). The tag is anchored at the start of the
+    detail, so a terminal error merely quoting it (``HTTP 400: invalid query
+    'transport failed:'``) does not match."""
+    return bool(_TRANSPORT_REFUSAL_RE.match(message or ""))
 
 
 def _fail_msg(vendor: str, kind: str, exc: Any, *, other_backends: bool = True) -> str:
     label, env_key, site = _VENDOR_HINTS[vendor]
     alt = " or another web backend via `hermes tools`" if other_backends else ""
-    return f"Keyless {label} {kind} failed: {exc}. Set {env_key} ({site}){alt} for reliable service."
+    detail = str(exc)
+    if not detail.startswith(_TRANSPORT_TAG) and _is_transport_exception(exc):
+        detail = f"{_TRANSPORT_TAG}{detail}"
+    return f"Keyless {label} {kind} failed: {detail}. Set {env_key} ({site}){alt} for reliable service."
 
 
 def _search(vendor: str, rows: Callable[[], list[dict[str, Any]]], catch: Any = (), fmt: Optional[Callable[[Exception], str]] = None) -> dict[str, Any]:
@@ -202,6 +250,8 @@ def mcp_call(url: str, tool: str, arguments: dict[str, Any], timeout: int = _TIM
     try:
         response = requests.post(url, json=payload, headers=headers, timeout=timeout)
     except requests.RequestException as exc:
+        if _is_transport_exception(exc):
+            raise KeylessMCPError(f"{_TRANSPORT_TAG}{exc}") from exc
         raise KeylessMCPError(f"request failed: {exc}") from exc
     if response.status_code >= 400:
         raise KeylessMCPError(f"HTTP {response.status_code}: {_response_text(response)[:300]}")
@@ -333,9 +383,21 @@ def _keenable_request(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
     return response.json()
 
 
+def _keenable_call(method: str, path: str, **kwargs: Any) -> Any:
+    """``_keenable_request`` with transport failures tagged for failover (the raw
+    ``requests`` call raises unclassified ``RequestException`` subclasses)."""
+    import requests
+    try:
+        return _keenable_request(method, path, **kwargs)
+    except requests.RequestException as exc:
+        if _is_transport_exception(exc):
+            raise KeylessMCPError(f"{_TRANSPORT_TAG}{exc}") from exc
+        raise
+
+
 def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
     def _rows() -> list[dict[str, Any]]:
-        data = _keenable_request("post", "/v1/search/public", json={"query": query, "max_results": max(1, int(limit))})
+        data = _keenable_call("post", "/v1/search/public", json={"query": query, "max_results": max(1, int(limit))})
         return [
             _row(r.get("url") or "", r.get("title") or "", r.get("snippet") or r.get("description") or "", i + 1)
             for i, r in enumerate(data.get("results") or [])
@@ -347,7 +409,7 @@ def keenable_search_keyless(query: str, limit: int = 5) -> dict[str, Any]:
 def keenable_extract_keyless(urls: list[str]) -> list[dict[str, Any]]:
     def _fetch(url: str) -> dict[str, Any]:
         try:
-            data = _keenable_request("get", "/v1/fetch/public", params={"url": url})
+            data = _keenable_call("get", "/v1/fetch/public", params={"url": url})
         except KeylessMCPError as exc:
             if is_origin_http_error(str(exc)):  # the target's answer, relayed by Keenable
                 return _page_error(url, str(exc))
@@ -417,9 +479,11 @@ def _walk_ring(name: str, kind: str, call, throttled) -> tuple:
 
 
 def search_with_failover(name: str, query: str, limit: int = 5) -> dict[str, Any]:
-    """Rate limits and vendor refusals (HTTP 401/402/403/5xx) advance to the next
-    vendor, other errors stop the walk (a malformed query fails everywhere).
-    ``data.served_by`` is set when the serving vendor differs from *name*."""
+    """Rate limits, vendor refusals (HTTP 401/402/403/5xx), and transport
+    failures (DNS/connect/timeout, tagged by ``_fail_msg``/``mcp_call``) advance
+    to the next vendor; other errors stop the walk (a malformed query fails
+    everywhere). ``data.served_by`` is set when the serving vendor differs from
+    *name*."""
 
     def _throttled(result: dict[str, Any]) -> bool:
         return not result.get("success") and _is_search_failover_eligible(result.get("error", ""))
@@ -436,12 +500,18 @@ def search_with_failover(name: str, query: str, limit: int = 5) -> dict[str, Any
 
 def extract_with_failover(name: str, urls: list[str]) -> list[dict[str, Any]]:
     """Advances to the next ring vendor only when EVERY url in a batch comes
-    back with a rate-limit-shaped error — partial failures and HTTP 403s can
-    be page problems, not provider throttling, and return as-is. A target's own
-    ``HTTP 429 from origin`` is the page's answer, not the vendor's quota."""
+<<<<<<< ours
+    back with a rate-limit- or transport-shaped error — partial failures and
+    HTTP 403s can be page problems, not provider throttling, and return as-is.
+    A target's own ``HTTP 429 from origin`` is the page's answer, not the
+    vendor's quota."""
 
     def _throttled(error: str) -> bool:
-        return bool(error) and not is_origin_http_error(error) and _is_rate_limitish(error)
+        return (
+            bool(error)
+            and not is_origin_http_error(error)
+            and (_is_rate_limitish(error) or _is_transport_failover_eligible(error))
+        )
 
     def _all_throttled(results: list[dict[str, Any]]) -> bool:
         return bool(results) and all(_throttled(r.get("error", "")) for r in results)

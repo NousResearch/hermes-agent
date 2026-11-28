@@ -1,0 +1,21 @@
+name: prompt-stash
+repo: https://github.com/Murali-lns/hermes-prompt-stash
+sha: c4c885dbd5fe96032f64fce35faa7c6c36281e96
+title: Stash
+description: "A T3 Code-style prompt stash in the Desktop message box. Ctrl+S (Cmd+S on macOS) with text parks the half-written prompt and clears the box, with an Undo toast; Ctrl+S on an empty box brings the prompt back, or opens a keyboard picker when several are stashed. A bookmark badge beside the send button shows the count. Keeps the 20 newest text-only entries; the shortcut is rebindable. Independent codebase, not derived from stash or note-stash: those are sidebar capture bins, this one works inside the composer itself. Disclosure: desktop-only and SDK-only; reads and writes only the focused chat's message box through host.composer, stores entries in the plugin's own ctx.storage on this machine, and copies an entry to the clipboard only when a restore cannot be shown. No network calls, shell commands, gateway calls, background polling, telemetry or credentials."
+maintainer: Murali-lns
+tier: community
+category: desktop
+requires_hermes: ">=0.23.4"
+docs_url: https://github.com/Murali-lns/hermes-prompt-stash#readme
+version: "0.1.0"
+screenshots:
+  - https://raw.githubusercontent.com/Murali-lns/hermes-prompt-stash/c4c885dbd5fe96032f64fce35faa7c6c36281e96/docs/stashed.png
+  - https://raw.githubusercontent.com/Murali-lns/hermes-prompt-stash/c4c885dbd5fe96032f64fce35faa7c6c36281e96/docs/picker.png
+  - https://raw.githubusercontent.com/Murali-lns/hermes-prompt-stash/c4c885dbd5fe96032f64fce35faa7c6c36281e96/docs/restored.png
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

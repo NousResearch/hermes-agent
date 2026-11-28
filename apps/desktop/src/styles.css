@@ -4036,6 +4036,26 @@ html[data-hermes-desktop-host='browser'] [data-slot='sidebar-container'] {
   visibility: inherit !important;
 }
 
+/* Suppress CSS transitions on hidden keep-alive panes and during the
+   `data-session-switching` settle window (see session-switching.ts). Toggling
+   `visibility: hidden` <-> `visible` across `[data-pane-hidden] *` otherwise
+   starts `visibility` transitions on transition-enabled descendants, firing a
+   `transitionrun` storm that compounds with synchronous scroll-restore geometry
+   reads into a 1-2s `Recalculate style` stall (#158689, #146852). */
+[data-tree-group] *,
+[data-tree-group] *::before,
+[data-tree-group] *::after,
+[data-pane-hidden],
+[data-pane-hidden] *,
+[data-pane-hidden] *::before,
+[data-pane-hidden] *::after,
+[data-session-switching],
+[data-session-switching] *,
+[data-session-switching] *::before,
+[data-session-switching] *::after {
+  transition: none !important;
+}
+
 /* ── Error card (Error System Overhaul · Figma "Error handling", node 222:7762) ──
  * One layout for every severity; severity only changes the tint and the icon colour.
  * blocking: rust tint + rust icon. degraded: white card + muted icon + dismiss. */

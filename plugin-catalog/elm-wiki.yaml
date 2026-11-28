@@ -1,0 +1,32 @@
+name: elm-wiki
+title: ELM Wiki (experimental)
+repo: https://github.com/Miawd3/ELM-Hermes-plugin
+sha: cf536f81417e16fd7a47b58e3ed3358e3877ecbf
+subdir: elm
+version: "0.2.0-experimental"
+description: >-
+  Experimental, unsupported memory provider (`memory.provider: elm-wiki`). Memory is a folder of reviewable
+  local Markdown files with a derived SQLite FTS5 index; the model calls elm_context for bounded
+  source-linked evidence and elm_read to expand one exact section. Read-only and explicit-only recall by
+  default; elm_note writes pending proposals only if the owner chooses a write mode. Separate from the `elm`
+  plugin (different store and tools). Set up from a terminal with the bundled setup_profile.py.
+  Disclosure — no network calls, model calls, dependencies, telemetry, updater or daemon of its own.
+  Reads and writes only the store folder you name, elm*.json files and (with capture on) an elm/episodes
+  folder in the profile. Tool results enter
+  the conversation and so reach your model provider. Optional episode capture keeps scrubbed turn text
+  locally (3 days by default, at most 7). Registers six static starter skills.
+maintainer: Miawd3
+tier: community
+category: memory
+docs_url: https://github.com/Miawd3/ELM-Hermes-plugin/blob/cf536f81417e16fd7a47b58e3ed3358e3877ecbf/elm/README.md
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Experimental and unmaintained; the maintained memory plugin is `elm`.
+  - Recall is keyword search over Markdown sections (no embeddings).
+  - Measured token budgets need tiktoken and a local vocabulary file; use --budget-mode legacy-estimate without them.
+  - Tested on Windows 11 with Hermes 0.23.1 only.
+requires_hermes: ">=0.23.1"

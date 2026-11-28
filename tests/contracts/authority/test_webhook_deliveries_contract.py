@@ -74,7 +74,7 @@ def test_owner_gate_is_rechecked_inside_publication(backend, scope_a):
 
 
 def test_bounded_candidates_and_inspection_are_profile_scoped_payload_free(backend, scope_a, scope_b):
-    store, epoch, proposed = producer(backend, scope_a)
+    store, epoch, _proposed = producer(backend, scope_a)
     for origin_id in ('a' * 64, 'b' * 64):
         item = obligation(origin_id, ledger=WebhookLedger.ORIGIN)
         store.webhook_deliveries.publish(epoch=epoch, record=item)

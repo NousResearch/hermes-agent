@@ -312,6 +312,11 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
     ),
     "session_search": _session_search,
+    # Sibling-subagent note (delegation.peer_messages): injected into wired batch children only.
+    "message_peer": _tool(
+        "tools.delegate_tool_peers", "message_peer_tool", ("to", "to", ""), ("message", "message", ""),
+        agent=lambda agent, ctx: agent,
+    ),
     "memory": _memory,
     "clarify": _tool(
         "tools.clarify_tool", "clarify_tool", ("questions", "questions"),

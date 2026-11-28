@@ -57,6 +57,38 @@ def _idle_entry(scratch: Path, name: str) -> Path:
     return entry
 
 
+@pytest.mark.platforms("posix")
+def test_prune_leaves_no_zombie_with_a_launcher_that_never_spawns_again(tmp_path):
+    """A long-lived launcher must not need another Popen to reap its completed prune."""
+    scratch = get_scratch_dir(tmp_path, prune=False)
+    doomed = _idle_entry(scratch, "idle")
+    launcher = """
+import sys
+from pathlib import Path
+import psutil
+from hermes_constants_scratch_detach import spawn_prune
+from tests.waiting import wait_until
+
+scratch, doomed = map(Path, sys.argv[1:])
+log_file = scratch.parent.parent / "logs" / "scratch-prune.log"
+spawn_prune(scratch)
+wait_until(lambda: log_file.exists() and f"removed {str(doomed)!r} (" in
+           log_file.read_text(encoding="utf-8-sig"), timeout=60, what="the idle entry removal")
+wait_until(lambda: all(child.status() == psutil.STATUS_ZOMBIE for child in psutil.Process().children()),
+           timeout=60, what="the prune child exiting")
+zombies = [child.pid for child in psutil.Process().children() if child.status() == psutil.STATUS_ZOMBIE]
+assert not zombies, f"completed prune left zombie children: {zombies}"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", launcher, str(scratch), str(doomed)],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**os.environ, "HERMES_HOME": str(tmp_path)},
+        capture_output=True, text=True, timeout=150, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not doomed.exists()
+
+
 def test_a_short_lived_process_still_completes_its_due_prune(tmp_path):
     """A `hermes` command that exits right after boot still gets its pass: the detached child
     removes the idle entry of the (routed) home the command resolved, after the command is gone,

@@ -2,6 +2,7 @@
 client; messages are polled over a local HTTP API and responses are posted back through it."""
 
 import asyncio
+import json
 import logging
 import mimetypes
 import os
@@ -245,6 +246,39 @@ def _write_bridge_pidfile(session_path: Path, pid: int, port: Optional[int] = No
         start = get_process_start_time(pid)
         text = str(pid) if start is None else f"{pid}\n{start}" + ("" if port is None else f"\n{port}")
         (session_path / "bridge.pid").write_text(text, encoding="utf-8")
+
+
+# Exit reasons that end the session for good, recorded by the bridge in
+# ``bridge-exit.json`` (see scripts/whatsapp-bridge/bridge_helpers.js). WhatsApp
+# answers 401 both for an explicit logout and for a device removed from the
+# phone, so in neither case can the stored credentials work again.
+_BRIDGE_EXIT_REASONS = {
+    "logged_out": "The WhatsApp session was ended from the phone (logged out, or the linked device was removed). "
+                  "Re-pair with `hermes whatsapp`, then restart the gateway.",
+}
+
+
+def _read_bridge_exit_reason(session_path: Optional[Path]) -> Optional[str]:
+    """Terminal exit reason the bridge recorded, else ``None``.
+
+    The gateway sees only the child's exit code, where a logged-out session is
+    indistinguishable from a crash. The bridge records the reason beside the
+    session before it exits. An unreadable or unrecognized record is treated as
+    an ordinary crash, so an exit nobody explained stays retryable.
+    """
+    if session_path is None:
+        return None
+    try:
+        record = json.loads((session_path / "bridge-exit.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    reason = record.get("reason") if isinstance(record, dict) else None
+    return reason if reason in _BRIDGE_EXIT_REASONS else None
+
+
+def _clear_bridge_exit(session_path: Path) -> None:
+    """Drop a recorded reason before starting a bridge, so a stale record cannot classify the new process's exit."""
+    _unlink_quietly(session_path / "bridge-exit.json")
 
 
 def _spawn_bridge_process(argv: list, log_fh, env: dict, umask: int = -1) -> subprocess.Popen:
@@ -1025,6 +1059,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # A secondary that skipped the kills found the port free, so this returns at once on that path.
             if not await self._wait_bridge_port_free():
                 return False
+            _clear_bridge_exit(self._session_path)
             self._bridge_token = await self._mint_bridge_token(rotate=True)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
@@ -1128,6 +1163,20 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if (getattr(self, "_shutting_down", False) or runner_stop) and returncode in {0, -2, -15}:
             logger.info("[%s] Bridge exited during shutdown (code %d).", self.name, returncode)
             return None
+        # A terminal exit (logged out, or the device removed from the phone)
+        # cannot be fixed by another reconnect, so it is deliberately NOT
+        # retryable: the gateway's reconnect watcher re-spawns retryable
+        # platforms forever and drops non-retryable ones, which is what stops
+        # the re-pair-less respawn loop (#80088).
+        terminal = _read_bridge_exit_reason(getattr(self, "_session_path", None))
+        if terminal:
+            message = _BRIDGE_EXIT_REASONS[terminal]
+            if not self.has_fatal_error:
+                logger.error("[%s] Bridge exited with %s (code %d); the stored session is gone.", self.name, terminal, returncode)
+                self._set_fatal_error(f"whatsapp_{terminal}", message, retryable=False)
+                self._close_bridge_log()
+                await self._notify_fatal_error()
+            return self.fatal_error_message or message
         message = f"WhatsApp bridge process exited unexpectedly (code {returncode})."
         if not self.has_fatal_error:
             logger.error("[%s] %s", self.name, message)

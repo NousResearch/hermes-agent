@@ -1562,8 +1562,19 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] ({_len:,} chars result)"
 
 
+_PERSISTED_OUTPUT_PATH_RE = re.compile(r"^Full output saved to: (.+)$", re.MULTILINE)
+
+
+def _persisted_output_suffix(content: str) -> str:
+    """Keep the recovery path when a tool result is summarized after spillover."""
+    if "<persisted-output>" not in content:
+        return ""
+    match = _PERSISTED_OUTPUT_PATH_RE.search(content)
+    return f"; full output: {match.group(1).strip()}" if match else ""
+
+
 def _sum_terminal(name, args, content, content_len, line_count):
-    return terminal_stub(args, content, line_count)
+    return terminal_stub(args, content, line_count) + _persisted_output_suffix(content)
 
 
 def _sum_write_file(name, args, content, content_len, line_count):
@@ -1610,7 +1621,7 @@ def _sum_delegate_task(name, args, content, content_len, line_count):
 def _sum_execute_code(name, args, content, content_len, line_count):
     code_str = _str_arg(args, "code")
     code_preview = code_str[:60].replace("\n", " ") + ("..." if len(code_str) > 60 else "")
-    return f"[execute_code] `{code_preview}` ({line_count} lines output)"
+    return f"[execute_code] `{code_preview}` ({line_count} lines output){_persisted_output_suffix(content)}"
 
 
 def _sum_skill_view(name, args, content, content_len, line_count):

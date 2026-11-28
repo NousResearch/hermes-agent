@@ -763,6 +763,20 @@ def _is_summary_stub(content: str) -> bool:
     return (s := without_skill_safety_rule(content)).startswith("[") and (" chars)" in s or " chars result)" in s) and len(s) < 400 or is_demoted_stub(s)
 
 
+def _is_demotable_text(content: Any, min_prune_chars: int) -> bool:
+    """A string tool body the prune may still shorten: not empty, not already a placeholder or stub."""
+    return (
+        isinstance(content, str) and len(content) > min_prune_chars and content != _PRUNED_TOOL_PLACEHOLDER
+        and not content.startswith(("[Duplicate tool output", "[screenshot removed")) and not _is_summary_stub(content)
+    )
+
+
+def _is_protected_skill_row(tool_name: str, tool_args: str, protected_skills: Optional[set[str]]) -> bool:
+    """A skill_view result whose skill (lower-cased) is in ``protected_skills``; None protects nothing."""
+    skill = _json_dict(tool_args).get("name", "") if protected_skills and tool_name == "skill_view" else ""
+    return isinstance(skill, str) and bool(skill) and skill.lower() in protected_skills
+
+
 # Shared floor; the clarify summary cap must stay strictly BELOW it so a preserved
 # user answer is never re-summarized away on a later prune pass.
 _PRUNE_MIN_CHARS = 200
@@ -1850,6 +1864,8 @@ _JSON_ENVELOPE_TOOLS = frozenset({"terminal", "execute_code"})
 # Head and tail kept from an unread tool result that the pressure pass must still demote. Large enough to
 # carry the shape of the output (headers, the first rows, the final error), small enough to fit the tail share.
 _UNREAD_STUB_EXCERPT_CHARS = 600
+# Opens every excerpt: a later pass in the same prune must not excerpt (or one-line) an excerpt again.
+_UNREAD_EXCERPT_OPEN = "\n--- begin excerpt ---\n"
 
 # tool_name -> (name, args, content, content_len, line_count) -> one-line summary.
 _TOOL_RESULT_SUMMARIZERS = {
@@ -1951,8 +1967,8 @@ def _pending_round_demoted_stub(tool_name: str, tool_args: str, content: str) ->
     return (
         f"{summary} — the full output was demoted unread; its first {_UNREAD_STUB_EXCERPT_CHARS:,} and last "
         f"{_UNREAD_STUB_EXCERPT_CHARS:,} chars follow. Re-read the rest from the source (or page it with a "
-        f"narrower command) rather than re-running this call.\n"
-        f"--- begin excerpt ---\n{head}\n--- end of head / start of tail ---\n{tail}\n--- end excerpt ---"
+        f"narrower command) rather than re-running this call."
+        f"{_UNREAD_EXCERPT_OPEN}{head}\n--- end of head / start of tail ---\n{tail}\n--- end excerpt ---"
     )
 
 
@@ -3102,40 +3118,36 @@ class ContextCompressor(
             if new_msg is not None:
                 result[idx] = new_msg
             return new_msg is not None
-        if (
-            not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
-            or content.startswith(("[Duplicate tool output", "[screenshot removed"))
-            or _is_summary_stub(content) or len(content) <= min_prune_chars
-        ):
+        if not _is_demotable_text(content, min_prune_chars):
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
-        if protected_skills and tool_name == "skill_view":
-            _skill = _json_dict(tool_args).get("name", "")
-            if isinstance(_skill, str) and _skill.lower() in protected_skills:
-                return False
+        if _is_protected_skill_row(tool_name, tool_args, protected_skills):
+            return False
         result[idx] = {**msg, "content": _summarize_tool_result(tool_name, tool_args, content)}
         return True
 
-    @staticmethod
+    @classmethod
     def _demote_unread_at(
-        result: list[dict[str, Any]], idx: int, call_id_to_tool: dict[str, tuple[str, str]],
-        min_prune_chars: int,
+        cls, result: list[dict[str, Any]], idx: int, call_id_to_tool: dict[str, tuple[str, str]],
+        min_prune_chars: int, protected_skills: Optional[set[str]] = None,
     ) -> bool:
         """Like ``_demote_tool_result_at`` but keeps a head/tail excerpt: the row is output the model has
-        not read yet, so a one-line stub makes it answer blind or re-run the call (#137105)."""
+        not read yet, so a one-line stub makes it answer blind or re-run the call (#137105). A row the
+        excerpt cannot shrink (an image payload, a body barely past the excerpt size) takes the ordinary
+        demotion instead: an unread round over the hard share must still give way."""
         msg = result[idx]
-        if msg.get("role") != "tool":
-            return False
         content = msg.get("content", "")
-        if (
-            not isinstance(content, str) or not content or content == _PRUNED_TOOL_PLACEHOLDER
-            or content.startswith(("[Duplicate tool output", "[screenshot removed"))
-            or _is_summary_stub(content) or len(content) <= min_prune_chars
-        ):
+        if isinstance(content, str) and _UNREAD_EXCERPT_OPEN in content:
             return False
         tool_name, tool_args = call_id_to_tool.get(msg.get("tool_call_id", ""), ("unknown", ""))
-        result[idx] = {**msg, "content": _pending_round_demoted_stub(tool_name, tool_args, content)}
-        return True
+        if (
+            msg.get("role") == "tool" and _is_demotable_text(content, min_prune_chars)
+            and not _is_protected_skill_row(tool_name, tool_args, protected_skills)
+            and len(excerpt := _pending_round_demoted_stub(tool_name, tool_args, content)) < len(content)
+        ):
+            result[idx] = {**msg, "content": excerpt}
+            return True
+        return cls._demote_tool_result_at(result, idx, call_id_to_tool, min_prune_chars, protected_skills)
 
     def _tail_soft_ceiling(self, token_budget: int) -> int:
         """Optional tail rows may overrun the budget by 1.5x so whole rows are kept, but never past
@@ -3173,19 +3185,8 @@ class ContextCompressor(
                 return
             # An unread row keeps a head/tail excerpt: a one-line stub for output the model never saw
             # invites the same blind answer or re-run this PR exists to stop (#137105, kvnloo on #156097).
-            if i in pending_round:
-                demoted += self._demote_unread_at(result, i, call_id_to_tool, min_prune_chars)
-            else:
-                demoted += self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars)
-
-        def _shrink_unread(round_indices: range) -> None:
-            """Demote unread rows that cannot be spared, each keeping a head/tail excerpt (#137105)."""
-            nonlocal demoted
-            for i in round_indices:
-                if i in spared or i not in pending_round:
-                    continue
-                if self._demote_unread_at(result, i, call_id_to_tool, min_prune_chars):
-                    demoted += 1
+            demote = self._demote_unread_at if i in pending_round else self._demote_tool_result_at
+            demoted += demote(result, i, call_id_to_tool, min_prune_chars)
 
         if demote_end <= prune_boundary or _protected_region_tokens() <= soft_ceiling:
             return 0
@@ -3205,15 +3206,7 @@ class ContextCompressor(
                 last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
                 and _protected_region_tokens() > soft_ceiling
             ):
-                if not self._demote_unread_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
-                    if self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
-                        demoted += 1
-                else:
-                    demoted += 1
-                # A parallel round's earlier rows keep their excerpts through _shrink_at above; anything
-                # still over budget has not been read either (kvnloo on #156097).
-                if _protected_region_tokens() > soft_ceiling:
-                    _shrink_unread(pending_round)
+                _shrink_at(last_tool_idx)
         if demoted and not self.quiet_mode:
             logger.info(
                 "Pre-compression pressure demotion: reclaimed protected-tail tool output (%d change(s); "

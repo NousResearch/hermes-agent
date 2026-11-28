@@ -156,6 +156,50 @@ def test_an_oversize_unread_result_keeps_a_head_and_tail_excerpt():
     assert "excerpt" not in older.lower() and len(older) < 500, older
 
 
+def _wide_round(*results: dict) -> list[dict]:
+    """Older answered rounds, then one assistant calling every tool in *results*, none of them read yet."""
+    msgs = _transcript()[:-2]
+    calls = [{"id": r["tool_call_id"], "type": "function",
+              "function": {"name": "terminal", "arguments": json.dumps({"command": f"cat {r['tool_call_id']}"})}}
+             for r in results]
+    return msgs + [{"role": "assistant", "content": "", "tool_calls": calls}, *results]
+
+
+def test_an_unread_image_result_in_an_oversize_round_still_gives_way():
+    """The excerpt is for text: an unread screenshot in a round over the hard share must still lose its
+    payload, or the round the pressure pass cannot spare keeps 400 KB of base64 in the tail."""
+    image = {"role": "tool", "tool_call_id": "shot", "content": [
+        {"type": "text", "text": "screenshot"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 400_000}}]}
+    msgs = _wide_round(image, _result(0, body="HEAD\n" + "y" * 200_000 + "\nTAIL") | {"tool_call_id": "big"})
+    pruned, _ = _compressor()._prune_old_tool_results(msgs, protect_tail_count=10, protect_tail_tokens=5_000)
+    shot = next(m for m in pruned if m.get("tool_call_id") == "shot")
+    assert "base64" not in json.dumps(shot), "the unread image payload survived the pressure pass"
+
+
+def test_a_wide_unread_round_keeps_one_excerpt_per_result_and_never_grows_a_row():
+    """Two passes walk the tail: an excerpt from the first is not demoted again by the second, and a body
+    barely past the excerpt size takes the one-line stub instead of growing by the excerpt's framing."""
+    small = _result(0, body="s" * 1_300) | {"tool_call_id": "small"}
+    wide = [_result(k, body=f"HEAD_{k}\n" + "q" * 60_000 + f"\nTAIL_{k}") | {"tool_call_id": f"w{k}"} for k in range(5)]
+    pruned, _ = _compressor()._prune_old_tool_results(
+        _wide_round(small, *wide), protect_tail_count=10, protect_tail_tokens=5_000)
+    bodies = {m["tool_call_id"]: m["content"] for m in pruned if m.get("role") == "tool"}
+    for k in range(5):
+        assert f"HEAD_{k}" in bodies[f"w{k}"] and f"TAIL_{k}" in bodies[f"w{k}"], bodies[f"w{k}"][:80]
+        assert len(bodies[f"w{k}"]) < 5_000
+    assert len(bodies["small"]) < len(small["content"]), f"demotion grew the row to {len(bodies['small']):,} chars"
+
+
+def test_an_answered_newest_result_takes_the_plain_stub_in_the_last_resort():
+    """Only an unread row earns an excerpt: a result the model already answered gives way to the one-liner."""
+    msgs = _transcript()[:-1] + [_result(99, body="HEAD\n" + "n" * 200_000 + "\nTAIL"),
+                                 {"role": "assistant", "content": "done"}, {"role": "user", "content": "next"}]
+    pruned, _ = _compressor()._prune_old_tool_results(msgs, protect_tail_count=10, protect_tail_tokens=5_000)
+    body = next(m for m in pruned if m.get("tool_call_id") == "c99")["content"]
+    assert "excerpt" not in body.lower() and len(body) < 500, body[:120]
+
+
 # --- 3. the line count comes from the tool's output, not the JSON envelope -------------------------------
 
 def test_terminal_stub_counts_lines_in_the_output_not_the_envelope():

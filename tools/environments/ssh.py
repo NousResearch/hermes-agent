@@ -16,7 +16,8 @@ from hermes_constants import socket_safe_tmpdir
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
-    FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
+    FileSyncManager, iter_sync_files, pushed_cache_excludes, quoted_mkdir_command, quoted_rm_command,
+    unique_parent_dirs)
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 from tools.spill_safety import ensure_owned_private_dir
@@ -307,9 +308,10 @@ class SSHEnvironment(BaseEnvironment):
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
         # "socket ignored" and some builds exit 2, which failed every sync-back and left a
-        # multi-GB temp tar behind on each retry. Exclude them up front.
+        # multi-GB temp tar behind on each retry. Exclude them up front, with the cache mounts,
+        # which only hold copies of host files.
         ssh_cmd = self._build_ssh_command() + [
-            f"tar cf - --exclude='*.sock' -C / {shlex.quote(rel_base)}"]
+            f"tar cf - --exclude='*.sock' {pushed_cache_excludes(rel_base)} -C / {shlex.quote(rel_base)}"]
         with open(dest, "wb") as f:
             result = subprocess.run(ssh_cmd, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.PIPE, timeout=120, check=False)
         if result.returncode != 0:

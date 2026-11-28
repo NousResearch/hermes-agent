@@ -388,6 +388,9 @@ class TestFileSync:
         tar_scripts = [args[1] for cmd, args, _ in sandbox.run_command_calls
                        if cmd == "bash" and args and args[1].startswith("tar cf ")]
         assert tar_scripts and all("--exclude='*.sock'" in script for script in tar_scripts)
+        # The cache mounts hold copies of host files, so the archive leaves them out.
+        assert all("--exclude=home/vercel/.hermes/attachments" in script
+                   and "--exclude=home/vercel/.hermes/cache/images" in script for script in tar_scripts)
 
         # Credential mounts are upload-only since bcfc7458fa ("fix remote
         # sync-back credential overwrite"): the sandbox must never rewrite a

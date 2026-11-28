@@ -10,10 +10,12 @@ namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
 from __future__ import annotations
 
 import subprocess
+import threading
+import time
 from contextlib import AbstractContextManager, nullcontext
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
 
@@ -79,19 +81,73 @@ def run_with_stdin_secret(argv: Sequence[str], *, env: dict[str, str], secret: s
 
 
 def run_with_secret_env(argv: Sequence[str], *, env: dict[str, str], secret_env: str, secret: str, timeout: float,
-                        label: str) -> subprocess.CompletedProcess:
+                        label: str, answered: Callable[[str], bool]) -> subprocess.CompletedProcess:
     """Run a manager CLI whose non-interactive contract reads the secret from a named env var.
     The variable is set on the child's environment only (never argv, never our process)."""
     child_env = dict(env)
     child_env[secret_env] = secret
+    return run_until_answered(argv, env=child_env, timeout=timeout, label=label, answered=answered,
+                              timeout_message=f"{label} unlock timed out after {timeout:.0f}s")
+
+
+_ANSWER_QUIET_S = 0.5
+
+
+def run_until_answered(argv: Sequence[str], *, env: dict[str, str], timeout: float, label: str,
+                       timeout_message: str, answered: Callable[[str], bool],
+                       quiet: float = _ANSWER_QUIET_S) -> subprocess.CompletedProcess:
+    """Run a manager CLI that may print its whole answer and then never exit.
+
+    ``bw`` (2026.9+) leaves a keep-alive TLS socket in Node's event loop after any network command
+    and its success path never calls ``process.exit()`` (#145121), so waiting for exit turns a
+    delivered session token or JSON document into a timeout. A child that exits is returned as
+    ``subprocess.run`` would. A child still running once stdout satisfies *answered* and has been
+    quiet for *quiet* seconds has finished its work: it is killed and its output returned with
+    returncode 0. Spawn failure or the *timeout* deadline -> ``RuntimeError``."""
     try:
-        return subprocess.run(
-            list(argv), env=child_env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"{label} unlock timed out after {timeout:.0f}s") from exc
+        proc = subprocess.Popen(list(argv), env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
+    out, err = bytearray(), bytearray()
+    last_out = [time.monotonic()]
+
+    def pump(stream, buf: bytearray, stamp: bool) -> None:
+        for chunk in iter(lambda: stream.read1(65536), b""):
+            buf.extend(chunk)
+            if stamp:
+                last_out[0] = time.monotonic()
+
+    pipes = ((proc.stdout, out, True), (proc.stderr, err, False))
+    readers = [threading.Thread(target=pump, args=pipe, daemon=True)  # health: allow HX012 -- pipe byte pump, reads no profile state
+               for pipe in pipes]
+    for reader in readers:
+        reader.start()
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                returncode = proc.wait(timeout=0.1)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.monotonic()
+            if out and now - last_out[0] >= quiet and answered(_decode(out)):
+                returncode = 0
+                break
+            if now >= deadline:
+                raise RuntimeError(timeout_message)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        for reader in readers:
+            reader.join(timeout=2)
+    return subprocess.CompletedProcess(list(argv), returncode, _decode(out), _decode(err))
+
+
+def _decode(buf: bytearray) -> str:
+    return bytes(buf).decode("utf-8", errors="replace")
 
 
 def _cfg() -> dict:

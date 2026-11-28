@@ -37,6 +37,7 @@ import type {
   KanbanBoard,
   KanbanProfile,
   KanbanProject,
+  KanbanStats,
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
@@ -154,7 +155,16 @@ function eventsUrl(slug: string, since: number | undefined): string {
 }
 
 function boardSnapshotPath(slug: string): string {
-  return slug ? `/board?board=${encodeURIComponent(slug)}` : '/board'
+  const params = new URLSearchParams()
+
+  if (slug) {
+    params.set('board', slug)
+  }
+
+  // Same done cap as fetchBoard: this snapshot fills the page's cache entry.
+  params.set('done_limit', String($doneLimit.get()))
+
+  return `/board?${params.toString()}`
 }
 
 /** Cache-scope id for the active connection — the segment every query key
@@ -425,8 +435,26 @@ export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', s
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
+/** The done column is completion history and grows without bound — one busy
+ *  board reached 12,000 done cards, a ~49 MB board every poll. The board asks
+ *  for the newest `$doneLimit` done cards (the response's `done_total` keeps
+ *  the full count); the Done lane's "show more" raises it a page at a time.
+ *  Servers without `done_limit` ignore it and return every card. */
+export const DONE_PAGE = 100
+export const $doneLimit = atom<number>(DONE_PAGE)
+
 export const fetchBoard = (archived: boolean) =>
-  call<KanbanBoard>(withBoard('/board', archived ? { include_archived: 'true' } : {}))
+  call<KanbanBoard>(
+    withBoard('/board', {
+      ...(archived ? { include_archived: 'true' } : {}),
+      done_limit: String($doneLimit.get())
+    })
+  )
+
+/** Per-status counts (`GET /stats`, one GROUP BY) for the status-bar pill.
+ *  Under the board prefix, so every board invalidation refreshes it too. */
+export const statsKey = (scope: string, slug: string) => [...boardKeyPrefix(scope), slug, 'stats'] as const
+export const fetchStats = () => call<KanbanStats>(withBoard('/stats'))
 
 export const fetchTask = async (id: string) => {
   const downloadAttachment = captureGatewayFileDownload()

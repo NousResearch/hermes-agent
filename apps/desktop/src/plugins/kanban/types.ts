@@ -47,6 +47,18 @@ export interface KanbanBoard {
   assignees: string[]
   latest_event_id: number
   now: number
+  /** Every done card on the board, also when the done column was capped. */
+  done_total?: number
+  /** The cap applied to the done column; null/absent when it holds them all. */
+  done_limit?: null | number
+}
+
+/** `GET /stats`: per-status and per-assignee counts (archived excluded). */
+export interface KanbanStats {
+  by_status: Record<string, number>
+  by_assignee: Record<string, Record<string, number>>
+  oldest_ready_age_seconds: null | number
+  now: number
 }
 
 /** A structured recovery action attached to a diagnostic. */

@@ -30,31 +30,33 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
-import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
+import { $boardSlug, bindApi, fetchStats, statsKey, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
 import { $newTaskLane, useKanban } from './ui'
 
 // Live "N running / ready" pill — one glance at fleet activity from anywhere,
-// clicks through to the board. Shares the board query (one cache, one poll with
-// the page); hidden when nothing is in flight (or unloaded).
+// clicks through to the board. Reads the per-status counts (`/stats`), not the
+// board: it renders on every page, and a busy board's done history made each
+// poll a multi-MB fetch. Hidden when nothing is in flight (or unloaded).
 function KanbanCount() {
   const k = useKanban()
   const scope = useKanbanScope()
   const slug = useValue($boardSlug)
 
-  // Socket-invalidated like the page (same cache); slow socketless heartbeat.
-  const { data: board } = useQuery({
-    queryFn: () => fetchBoard(false),
-    queryKey: boardKey(scope, slug, false),
+  // Under the board key prefix: the page's socket and mutation invalidations
+  // refresh it too; slow socketless heartbeat.
+  const { data: stats } = useQuery({
+    queryFn: fetchStats,
+    queryKey: statsKey(scope, slug),
     refetchInterval: 60_000
   })
 
-  if (!board) {
+  if (!stats) {
     return null
   }
 
-  const count = (name: string) => board.columns.find(col => col.name === name)?.tasks.length ?? 0
+  const count = (name: string) => stats.by_status?.[name] ?? 0
   const active = count('running') + count('ready')
 
   if (active === 0) {

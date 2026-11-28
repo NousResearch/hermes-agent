@@ -90,7 +90,7 @@ describe('authoritative baseline', () => {
 
     expect(fired).toBe(false)
     expect(hostMock.notify).not.toHaveBeenCalled()
-    expect(rest).toHaveBeenCalledWith('/board?board=smoke')
+    expect(rest).toHaveBeenCalledWith('/board?board=smoke&done_limit=1')
   })
 
   it('post-baseline completion notifies exactly once', async () => {

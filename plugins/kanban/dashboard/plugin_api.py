@@ -285,18 +285,51 @@ def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[d
 
 # --- GET /board -------------------------------------------------------------
 
+def _done_order(tasks: list) -> list:
+    """Done column order: newest-completed-first. Two stable sorts compose into the
+    "completed_at DESC NULLS LAST, id DESC" SQL key."""
+    ordered = sorted(tasks, key=lambda t: t.id, reverse=True)
+    ordered.sort(key=lambda t: (t.completed_at is None, -(t.completed_at or 0)))
+    return ordered
+
+
+def _board_done_limit(requested: Optional[int]) -> Optional[int]:
+    """Cards to return in the done column: the request's ``done_limit``, else the
+    ``dashboard.kanban.board_done_limit`` config value; ``None`` or ``0`` means all."""
+    if requested is None:
+        k_cfg = (_load_config_or_empty().get("dashboard") or {}).get("kanban") or {}
+        try:
+            requested = int(k_cfg.get("board_done_limit") or 0)
+        except (TypeError, ValueError):
+            requested = 0
+    return requested if requested and requested > 0 else None
+
+
 def get_board(
     tenant: Optional[str] = Query(None, description="Filter to a single tenant"),
     include_archived: bool = Query(False),
     board: Optional[str] = _BOARD_Q,
     workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
-    current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key")):
-    """Full board grouped by status column; omitting ``board`` uses the active board
-    (``HERMES_KANBAN_BOARD`` env → on-disk ``current`` pointer → ``default``)."""
+    current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key"),
+    done_limit: Optional[int] = Query(
+        None, ge=0, description="Newest done cards to return (0 = all); default dashboard.kanban.board_done_limit")):
+    """Board grouped by status column; omitting ``board`` uses the active board
+    (``HERMES_KANBAN_BOARD`` env → on-disk ``current`` pointer → ``default``).
+
+    The done column is history and grows without bound, so it can be capped to its
+    newest ``done_limit`` cards; ``done_total`` always carries the full count. Per-card
+    rollups (summaries, run clocks, diagnostics) are computed only for returned cards."""
     with _board_conn(board) as (board, conn):
         tasks = kanban_db.list_tasks(
             conn, tenant=tenant, include_archived=include_archived,
             workflow_template_id=workflow_template_id, current_step_key=current_step_key)
+        # Queue lanes keep the list_tasks dispatch order (priority DESC, created_at ASC).
+        done_tasks = _done_order([t for t in tasks if t.status == "done"])
+        done_total = len(done_tasks)
+        limit = _board_done_limit(done_limit)
+        capped = limit is not None and done_total > limit
+        if capped:
+            tasks = [t for t in tasks if t.status != "done"] + done_tasks[:limit]
         # Link / comment / progress rollups are each one aggregate query rather than N per-task lookups.
         link_counts: dict[str, dict[str, int]] = {}
         for row in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall():
@@ -310,7 +343,8 @@ def get_board(
             p = progress.setdefault(row["pid"], {"done": 0, "total": 0})
             p["total"] += 1
             p["done"] += row["cstatus"] == "done"
-        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=None)
+        # Whole-board query when nothing was dropped; otherwise only the returned cards.
+        diagnostics_per_task = _compute_task_diagnostics(conn, task_ids=[t.id for t in tasks] if capped else None)
         latest_event_id = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM task_events").fetchone()["m"]
         columns: dict[str, list[dict]] = {c: [] for c in BOARD_COLUMNS}
         if include_archived:
@@ -332,8 +366,7 @@ def get_board(
             columns[t.status if t.status in columns else "todo"].append(d)
 
         # Queue lanes keep the list_tasks dispatch order; the done column is
-        # history, so order it newest-completed-first. Two stable sorts compose
-        # into the "completed_at DESC NULLS LAST, id DESC" SQL key.
+        # history, so order it newest-completed-first (same key as _done_order).
         columns["done"].sort(key=lambda d: d["id"], reverse=True)
         columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
 
@@ -348,7 +381,8 @@ def get_board(
         assignees = [entry["name"] for entry in kanban_db.known_assignees(conn)]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
-            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
+            "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time()),
+            "done_total": done_total, "done_limit": limit}
 
 
 _read_board = coalesced_read(get_board)
@@ -361,6 +395,8 @@ async def get_board_endpoint(
     board: Optional[str] = _BOARD_Q,
     workflow_template_id: Optional[str] = Query(None, description="Restrict to tasks using this workflow template id"),
     current_step_key: Optional[str] = Query(None, description="Restrict to tasks at this workflow step key"),
+    done_limit: Optional[int] = Query(
+        None, ge=0, description="Newest done cards to return (0 = all); default dashboard.kanban.board_done_limit"),
 ):
     # Resolve selection before keying so a board switch cannot join an older read.
     return await _read_board(
@@ -369,6 +405,7 @@ async def get_board_endpoint(
         board=board or kanban_db.get_current_board(),
         workflow_template_id=workflow_template_id,
         current_step_key=current_step_key,
+        done_limit=done_limit,
     )
 
 

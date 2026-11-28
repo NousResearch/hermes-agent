@@ -360,6 +360,14 @@ def enabled_plugin_entries(*, proposed_home=None, enabled=None, disabled=None,
     return entries
 
 
+def _same_dir(path: Path, tree: Path) -> bool:
+    """*path* is the directory *tree* (``os.path.samefile``: a case-insensitive filesystem's other spelling too)."""
+    try:
+        return path == tree or os.path.samefile(path, tree)
+    except OSError:
+        return False
+
+
 def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None = None) -> Path | None:
     """The tree a home's selection key names: the first installed tree in *plugins_dir* the key names
     (``hermes_cli.plugin_identity``, the loader's rule), else by path a tree discovery does not read as a
@@ -377,7 +385,8 @@ def selected_plugin_dir(plugins_dir: Path, name: str, *, installing: Path | None
     plugin_dir = plugins_dir / relative
     if installing is not None and plugin_dir.resolve() == installing.resolve():
         return plugin_dir
-    if plugin_dir in trees or not _is_directory(plugin_dir):  # a plugin there answers to other names
+    if any(_same_dir(plugin_dir, tree) for tree in trees) or not _is_directory(plugin_dir):
+        # a plugin there answers to other names (on a case-insensitive filesystem, a spelling of its dir too)
         plugin_dir = paths.repo_root() / "plugins" / relative
     return plugin_dir if _is_directory(plugin_dir) else None
 

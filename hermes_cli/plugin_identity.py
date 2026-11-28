@@ -19,6 +19,7 @@ Import-light on purpose: PM's isolated runtime reads selections through here wit
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -133,11 +134,17 @@ BUNDLED_OWN_DISCOVERY = frozenset({
 })
 
 
+def bundled_plugins_dir() -> Path:
+    """Bundled ``plugins/`` dir: ``HERMES_BUNDLED_PLUGINS`` (Nix wrapper / packaged installs, read-only store
+    paths) first, else the in-repo path. Stdlib only, so PM's isolated runtime resolves it too."""
+    from hermes_cli._startup_fast import project_root_str
+    return Path(os.getenv("HERMES_BUNDLED_PLUGINS") or Path(project_root_str()) / "plugins")
+
+
 def _bundled_dirs() -> dict[str, str]:
     """Registry key -> directory name of every bundled plugin the general sweep reads."""
-    from hermes_cli import plugins as _origin  # patched names resolve through the origin, as in discovery
     try:
-        found = _walk(Path(_origin.get_bundled_plugins_dir()), skip_names=BUNDLED_OWN_DISCOVERY)
+        found = _walk(bundled_plugins_dir(), skip_names=BUNDLED_OWN_DISCOVERY)
         return {key: tree.name for tree, key, _name in found}
     except ValueError:
         return {}  # discovery reads no bundled plugin from an unlistable dir either

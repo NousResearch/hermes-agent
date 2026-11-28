@@ -116,8 +116,9 @@ def _check(home: Path, row, entry, plugin: str, enabled: list, disabled: list, t
     # A tree discovery does not read (no manifest) has no loader verdict; PM resolves it by path.
     by_path = {tree for tree in trees if os.access(tree, os.R_OK) and not (tree / "plugin.yaml").exists()}
     entries = enabled_plugin_entries()
-    pm_selected = {plugin_dir for _d, _n, plugin_dir in entries
-                   if plugin_dir.is_relative_to(home / "plugins") and plugin_dir not in by_path}
+    # Each selected dir as the tree it is (a case-insensitive filesystem reaches one tree by several spellings).
+    pm_selected = {next((t for t in trees if os.path.samefile(t, plugin_dir)), plugin_dir)
+                   for _d, _n, plugin_dir in entries if plugin_dir.is_relative_to(home / "plugins")} - by_path
     expected_pm = {tree for tree, verdict in loader.items() if verdict == "load"}
     if pm_selected != expected_pm:
         failures.append(("pm", sorted(map(str, pm_selected)), sorted(map(str, expected_pm))))

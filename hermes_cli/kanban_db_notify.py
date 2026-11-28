@@ -212,6 +212,7 @@ def count_notify_subs(
     platform: Optional[str] = None,
     chat_id: Optional[str] = None,
     thread_id: Optional[str] = None,
+    task_statuses: Optional[Iterable[str]] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection — the
     notifier's cheap zero-subscription early exit. Unlike :func:`connect` it
@@ -219,7 +220,8 @@ def count_notify_subs(
     still visible so a fresh sub is never missed. Missing DB / missing table
     counts as zero; platform matches case-insensitively (as notifier routing),
     chat/thread exactly. Raises :class:`sqlite3.Error` if the DB exists but is
-    unreadable — callers pick their own fallback.
+    unreadable — callers pick their own fallback. ``task_statuses`` counts only
+    subscriptions whose task is currently in one of those statuses.
     """
     path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
     if not path.exists():
@@ -240,9 +242,65 @@ def count_notify_subs(
         if value is not None:
             clauses.append(clause)
             params.append(value)
+    if task_statuses is not None:
+        statuses = list(task_statuses)
+        clauses.append(f"task_id IN (SELECT id FROM tasks WHERE status IN ({', '.join('?' * len(statuses)) or 'NULL'}))")
+        params.extend(statuses)
     query = "SELECT COUNT(*) FROM kanban_notify_subs"
     if clauses:
         query += " WHERE " + " AND ".join(clauses)
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
+    try:
+        try:
+            row = conn.execute(query, params).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return 0
+            raise
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def count_unclaimed_notify_events(
+    *,
+    db_path: Optional[Path] = None,
+    board: Optional[str] = None,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    kinds: Optional[Iterable[str]] = None,
+    max_age_seconds: Optional[float] = None,
+) -> int:
+    """Count unseen/unclaimed task events across ``kanban_notify_subs`` via a read-only connection.
+    Missing DB / missing table counts as zero. ``max_age_seconds`` optionally ignores events older
+    than that age relative to the current wall clock.
+    """
+    path = db_path if db_path is not None else _kb.kanban_db_path(board=board)
+    if not path.exists():
+        return 0
+    clauses: list[str] = ["e.id > s.last_event_id"]
+    params: list[Any] = []
+    for clause, value in (
+        ("LOWER(s.platform) = LOWER(?)", platform),
+        ("s.chat_id = ?", chat_id),
+        ("s.thread_id = ?", thread_id),
+    ):
+        if value is not None:
+            clauses.append(clause)
+            params.append(value)
+    if kinds is not None:
+        kind_list = list(kinds)
+        clauses.append(f"e.kind IN ({', '.join('?' * len(kind_list)) or 'NULL'})")
+        params.extend(kind_list)
+    if max_age_seconds is not None:
+        clauses.append("e.created_at >= ?")
+        params.append(int(time.time() - max_age_seconds))
+    query = (
+        "SELECT COUNT(*) FROM kanban_notify_subs s "
+        "JOIN task_events e ON e.task_id = s.task_id WHERE "
+        + " AND ".join(clauses)
+    )
     conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         try:

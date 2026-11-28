@@ -1956,9 +1956,9 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
-            # Tools replaced by the bridge by default. This list intentionally includes cold,
-            # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
-            # tool eager. The runtime fallback in tools/tool_search.py derives from this value.
+            # Plugin/MCP tools kept visible even when deferrable (overrides `defer`); [] by default.
+            "eager": [],
+            # Replaces the curated default; [] keeps every tool eager (runtime fallback in tools/tool_search.py).
             "defer": [
                 "computer_use", "session_search", "image_generate",
                 "todo_list", "process_manage", "cronjob_manage", "browser_vault", "text_to_speech", "manage_connections",

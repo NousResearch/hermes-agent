@@ -154,6 +154,12 @@ RULES: tuple[Rule, ...] = (
          " flag? `is_truthy_value(...)`, which is False for any non-flag string such as a key",
          "ast", blocking=WARN_UNTIL_REPLAYED),
     # Structure.
+    # An import inside a function hides a dependency, usually one a module-level cycle forced.
+    # Scoped to tools/ while its rework removes those cycles.
+    Rule("PLC0415", "import inside a function", "import it at module top. When that makes a cycle,"
+         " the cycle is the bug: move the names both modules need down into a module both import."
+         " A deliberate lazy import (an optional extra, a measured startup cost) takes"
+         " `# health: allow PLC0415 -- <why>`", "ruff", include=("tools/*",)),
     Rule("HX011", "if/elif ladder on one name", "use a dict/table -> handler (`_SLASH_DISPATCH`"
          " is the shape)", "ast", exclude=()),
     # Session store: an fd the lock-safety registry cannot see (closing any raw fd on the file

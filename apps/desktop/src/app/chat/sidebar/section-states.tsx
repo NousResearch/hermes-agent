@@ -8,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { AlertTriangle, ExternalLink } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { openCommandPalette } from '@/store/command-palette'
 import { $corruptSessionStores } from '@/store/session'
 
 import { SidebarRowCluster, SidebarRowShell, SidebarRowStack } from './chrome'
@@ -49,7 +50,19 @@ export function hasSessionArea(counts: SessionAreaCounts): boolean {
   return loading || sessions > 0 || projects > 0 || messaging > 0 || cronJobs > 0 || profileGroups > 1
 }
 
-export function SidebarBlankState({ onNewProject }: { onNewProject: () => void }) {
+interface SidebarBlankStateProps {
+  onNewProject: () => void
+  /** Start a plain chat in the current workspace — the same seam the header '+'
+   *  uses (path null → whatever profile the live gateway is on). */
+  onNewChat: () => void
+  /** Open the command palette; injectable so tests can spy the seam. */
+  onDiscoverCommands?: () => void
+}
+
+// A profile with nothing in it shouldn't dead-end you: the blank state is where
+// a first chat is most valuable, so offer the two moves the rest of the sidebar
+// already has — start a chat, or discover what Hermes can do via the palette.
+export function SidebarBlankState({ onNewChat, onNewProject, onDiscoverCommands = openCommandPalette }: SidebarBlankStateProps) {
   const { t } = useI18n()
   const s = t.sidebar
 
@@ -58,10 +71,26 @@ export function SidebarBlankState({ onNewProject }: { onNewProject: () => void }
       <div className="flex flex-col items-center gap-2">
         <Codicon className="text-(--ui-text-quaternary)" name="root-folder" size="1.25rem" />
         <p className="text-xs text-(--ui-text-tertiary)">{s.noSessions}</p>
-        <Button className="mt-0.5 text-(--ui-text-secondary)" onClick={onNewProject} size="sm" variant="ghost">
-          <Codicon name="add" size="0.75rem" />
-          {s.projects.newButton}
-        </Button>
+        <div className="mt-0.5 flex flex-col items-center gap-1">
+          <Button className="text-(--ui-text-secondary)" data-testid="blank-start-chat" onClick={onNewChat} size="sm" variant="ghost">
+            <Codicon name="comment" size="0.75rem" />
+            {s.startNewChat}
+          </Button>
+          <Button
+            className="text-(--ui-text-secondary)"
+            data-testid="blank-discover-commands"
+            onClick={onDiscoverCommands}
+            size="sm"
+            variant="ghost"
+          >
+            <Codicon name="search" size="0.75rem" />
+            {s.discoverCommands}
+          </Button>
+          <Button className="text-(--ui-text-secondary)" onClick={onNewProject} size="sm" variant="ghost">
+            <Codicon name="add" size="0.75rem" />
+            {s.projects.newButton}
+          </Button>
+        </div>
       </div>
     </div>
   )

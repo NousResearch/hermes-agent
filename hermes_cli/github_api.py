@@ -8,8 +8,8 @@ Authenticating moves the caller onto the token's 5,000/hour budget.
 
 Credential ladder: GITHUB_TOKEN, then GH_TOKEN, then ``gh auth token`` (the
 gh CLI's own login — the only rung most desktop users have, since a
-GUI-launched app inherits a minimal environment; its answer is cached per
-process so the check never spawns gh more than once), then anonymous. A
+GUI-launched app inherits a minimal environment; its lookup of PATH and
+PM-managed gh is cached per process), then anonymous. A
 token GitHub rejects (401) drops that request to anonymous. The token itself
 never reaches a log line or an error string.
 """
@@ -44,19 +44,34 @@ def _gh_cli_token() -> Optional[str]:
     if _gh_cli_probed:
         return _gh_cli_cache
     _gh_cli_probed = True
+    _gh_cli_cache = _probe_gh_cli("gh")
+    if _gh_cli_cache is None:
+        try:
+            from pm.install import installed_package
+
+            # Desktop processes need not inherit the shell's PM tool PATH.
+            managed = installed_package("gh", allow_outdated=True)
+            if managed is not None and managed.binary is not None:
+                _gh_cli_cache = _probe_gh_cli(str(managed.binary))
+        except (OSError, ValueError, KeyError, ImportError) as exc:
+            logger.debug("Managed gh CLI lookup unavailable (%s)", type(exc).__name__)
+    return _gh_cli_cache
+
+
+def _probe_gh_cli(command: str) -> Optional[str]:
+    """Read an existing CLI login without prompts, installs, or token persistence."""
     from hermes_cli._subprocess_compat import windows_hide_flags
+
     try:
         result = subprocess.run(
-            ["gh", "auth", "token"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+            [command, "auth", "token"], capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=_GH_CLI_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags(),
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        logger.debug("gh CLI token lookup unavailable: %s", exc)
+        logger.debug("gh CLI token lookup unavailable (%s)", type(exc).__name__)
         return None
-    token = result.stdout.strip() if result.returncode == 0 else ""
-    _gh_cli_cache = token or None
-    return _gh_cli_cache
+    return (result.stdout.strip() or None) if result.returncode == 0 else None
 
 
 def github_token() -> Optional[str]:

@@ -268,6 +268,10 @@ _NONRETRYABLE_COPY: dict[str, str] = {
         "Prompt injection detection to Redact or Flag, or allowlist the phrase under Settings → "
         "Privacy; the matched pattern names are in the error details."
     ),
+    FailoverReason.timeout.value: (
+        "{label} didn't respond after several attempts, so the call was aborted. Switch models "
+        "with /model to continue."
+    ),
 }
 _NONRETRYABLE_DEFAULT_COPY = (
     "{label} rejected the request and retrying won't help. Pick another model with /model, "
@@ -457,6 +461,25 @@ def limit_reset_copy(resets_at: float, now: Optional[float] = None) -> str:
     hours, minutes = divmod((remaining + 59) // 60, 60)
     wait = f"{hours}h {minutes:02d}m" if hours else f"{minutes}m"
     return f"Limit resets at {time.strftime('%H:%M', time.localtime(resets_at))} (in {wait})."
+
+
+def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_failure: bool) -> str:
+    """Status line announcing an eager fallback switch."""
+    if is_upstream:
+        _upstream_name = (classified.error_context or {}).get("upstream_provider", "aggregator")
+        return f"⚠️ Upstream {_upstream_name} rate-limited — switching to fallback model..."
+    if classified.reason == FailoverReason.billing:
+        if classified.billing_unverified:
+            # Ambiguous body — don't assert billing.
+            return (
+                "⚠️ Provider reported usage/credit exhaustion "
+                "(unverified — may be a content-filter rejection) "
+                "— switching to fallback provider..."
+            )
+        return "⚠️ Billing or credits exhausted — switching to fallback provider..."
+    if is_transport_failure:
+        return "⚠️ Provider unreachable — switching to fallback provider..."
+    return "⚠️ Rate limited — switching to fallback provider..."
 
 
 def oauth_relogin_command(provider: Any) -> str:

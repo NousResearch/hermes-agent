@@ -9,11 +9,13 @@ _MCP_PREFIX = "mcp__"
 _THINKING_TYPES = ("thinking", "redacted_thinking")
 
 
-def _unprefix_oauth_tool_name(name: str) -> str:
+def registered_tool_name(name: str, *, strip_tool_prefix: bool) -> str:
     """Reverse the OAuth-wire ``mcp__`` prefix back to the registered tool name.
     Two originals map onto one wire name (``read_file`` / ``mcp_linear_get_issue``), so
     resolve by registry lookup, never rewriting a name that already resolves natively.
     OAuth wire aliases are checked LAST so a real tool under the wire name still wins."""
+    if not strip_tool_prefix or not name.startswith(_MCP_PREFIX):
+        return name
     from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
     from tools.registry import registry as _tool_registry
     bare = name[len(_MCP_PREFIX):]
@@ -86,9 +88,7 @@ class AnthropicTransport(ProviderTransport):
                 if isinstance(detail, dict):
                     reasoning_details.append(detail)
             elif block.type == "tool_use":
-                name = block.name
-                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = _unprefix_oauth_tool_name(name)
+                name = registered_tool_name(block.name, strip_tool_prefix=strip_tool_prefix)
                 tool_calls.append(ToolCall(id=block.id, name=name, arguments=json.dumps(block.input)))
         provider_data = {"reasoning_details": reasoning_details} if reasoning_details else {}
         stop_details = _to_plain_data(getattr(response, "stop_details", None))

@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, field_validator
+from pydantic import BaseModel, Field, SecretStr, StrictBool, StrictInt, ValidationInfo, field_validator
+
+from tools.voice_live import MAX_SESSION_INSTRUCTIONS_LENGTH, MAX_SESSION_VOICE_LENGTH, validate_session_overrides
 
 
 class ConfigUpdate(BaseModel):
@@ -252,9 +254,21 @@ class TTSSpeakRequest(BaseModel):
 
 class VoiceLiveSessionRequest(BaseModel):
     """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
-    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model."""
+    text turns (``{"type":"message","role":..,"content":[..]}``) to seed the live voice model.
+    Instructions add call-local context; voice selects a call-local speaking voice.
+    Omitted or null settings retain the profile defaults without writing configuration.
+    """
     sdp: str
     history: Optional[list[dict[str, Any]]] = None
+    instructions: Optional[str] = Field(default=None, max_length=MAX_SESSION_INSTRUCTIONS_LENGTH)
+    voice: Optional[str] = Field(default=None, max_length=MAX_SESSION_VOICE_LENGTH)
+
+    @field_validator("instructions", "voice")
+    @classmethod
+    def _validate_live_override(cls, value: Optional[str], info: ValidationInfo) -> Optional[str]:
+        validate_session_overrides(**{info.field_name: value})
+        return value
+
 
 class TTSLeaseRequest(BaseModel):
     """POST /api/audio/tts-lease: ``lease`` names the toggle/surface holding the lease

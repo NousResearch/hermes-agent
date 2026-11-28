@@ -660,9 +660,23 @@ class GatewayTurnPersistenceMixin:
                             _user_msg_id_attached = True
                         await store.append_to_transcript(sid, entry, skip_db=agent_persisted)
 
+        # If a deferred watermark-fenced hygiene compaction adopted while this uncompressed turn
+        # was still running (#160944), do not overwrite its token reset with the stale pre-compaction
+        # prompt size.
+        _deferred_adoptions = getattr(self, "_hygiene_deferred_turn_adoptions", None)
+        _deferred_state = (
+            _deferred_adoptions.pop(session_entry.session_key, None)
+            if isinstance(_deferred_adoptions, dict)
+            else None
+        )
+        _persisted_prompt_tokens = (
+            0
+            if (_deferred_state and _deferred_state.get("committed"))
+            else agent_result.get("last_prompt_tokens", 0)
+        )
         # The agent persists token counts/model itself; keep only last_prompt_tokens for hygiene.
         await store.update_session(
-            session_entry.session_key, last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+            session_entry.session_key, last_prompt_tokens=_persisted_prompt_tokens,
             touch_activity=not bool(getattr(event, "internal", False)),
         )
 

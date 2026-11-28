@@ -355,9 +355,20 @@ class GatewayTurnHygieneMixin:
             # NO retry-after here (it would also block the agent-side preflight compressor); spacing
             # comes from the durable compression lock. The done-callback records the flat retry-after
             # ONLY if the worker ends without committing anything.
-            _sid, _skey, _agent = session_entry.session_id, session_key, attempt.agent
+            _sid, _skey, _agent, _entry = (
+                session_entry.session_id, session_key, attempt.agent, session_entry,
+            )
+            _deferred_state = {"committed": False}
+            _turn_adoptions = getattr(self, "_hygiene_deferred_turn_adoptions", None)
+            if _turn_adoptions is None:
+                _turn_adoptions = {}
+                self._hygiene_deferred_turn_adoptions = _turn_adoptions
+            _turn_adoptions[_skey] = _deferred_state
 
-            def _hyg_adopt_or_space_retry(_fut, _gw=self, _sid=_sid, _skey=_skey, _agent=_agent):
+            def _hyg_adopt_or_space_retry(
+                _fut, _gw=self, _sid=_sid, _skey=_skey, _agent=_agent,
+                _entry=_entry, _state=_deferred_state,
+            ):
                 try:
                     _exc = _fut.exception()
                 except (asyncio.CancelledError, Exception):
@@ -368,11 +379,22 @@ class GatewayTurnHygieneMixin:
                         or getattr(_agent, "session_id", _sid) != _sid
                     )
                 if _committed:
+                    _state["committed"] = True
+                    _entry.last_prompt_tokens = 0
                     logger.info(
                         "Session hygiene compression for session %s finished after the "
                         "turn-hold was released — summary adopted at the watermark-fenced "
                         "commit boundary (#97963)", _sid,
                     )
+                    try:
+                        _store = getattr(_gw, "session_store", None)
+                        if _store is not None:
+                            _store.update_session(_skey, last_prompt_tokens=0, touch_activity=False)
+                    except Exception as _tok_err:
+                        logger.debug(
+                            "hygiene last_prompt_tokens reset after deferred adoption failed: %s",
+                            _tok_err,
+                        )
                     try:
                         _reset_hygiene_failure_streak(_gw, _skey)
                     except Exception as _rs_err:

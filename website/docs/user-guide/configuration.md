@@ -1618,6 +1618,35 @@ Hermes uses "auxiliary" models for side tasks like image analysis, browser scree
 Earlier builds split aggregator users (OpenRouter, Nous Portal) onto a cheap provider-side default. That was surprising — users who paid for an aggregator subscription would see a different model handling their auxiliary traffic. `auto` now uses the main model for everyone, and per-task overrides in `config.yaml` still win (see [Full auxiliary config reference](#full-auxiliary-config-reference) below).
 :::
 
+### Reasoning and output budgets
+
+Reasoning and output budgets can also be pinned per task. For example:
+
+```yaml
+auxiliary:
+  title_generation:
+    reasoning_effort: medium
+    max_tokens: 4096
+  approval:
+    reasoning_effort: low
+    max_tokens: 4096
+  voice_chat:
+    reasoning_effort: medium
+```
+
+For titles and smart approvals, `max_tokens` overrides the caller's short-output
+default (512 and 16 respectively). It must be a positive integer. Reasoning can
+consume the output budget before any visible answer, so configure an adequate
+budget when enabling it; the values above are examples, not guaranteed minima.
+Output limits are forwarded only on routes that support them. The ChatGPT Codex
+backend continues to omit its unsupported output-cap parameter.
+
+Title and approval task settings override their caller's default reasoning-off
+choice. Voice turns use the configured voice effort and restore the main session
+setting afterward. For automatic continuation after thinking-only truncation,
+an explicit session/model reasoning setting takes precedence over the default
+reasoning-off request.
+
 ### Configuring auxiliary models interactively
 
 Instead of hand-editing YAML, run `hermes model` and pick **"Configure auxiliary models"** from the menu. You'll get an interactive per-task picker:

@@ -978,6 +978,14 @@ compression:
 #     model: ""
 #     timeout: 30
 #     language: ""           # empty = match the user's language; or e.g. "English"
+#     reasoning_effort: "low" # Optional: overrides the title caller's default thinking-off
+#     max_tokens: 4096        # Optional positive integer; default is 512, including reasoning
+#
+#   # Smart command approval (failed/empty verdicts still ask for manual approval)
+#   approval:
+#     reasoning_effort: "low" # Optional: overrides the default thinking-off
+#     max_tokens: 4096        # Optional positive integer; default is 16, including reasoning
+#                            # Output caps are omitted on subscription Codex, which rejects them.
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:

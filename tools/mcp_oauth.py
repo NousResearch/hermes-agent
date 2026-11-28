@@ -1253,29 +1253,37 @@ def _maybe_preregister_client(storage: HermesTokenStorage, cfg: dict, client_met
 
 def humanize_oauth_registration_error(
     server_name: str, exc: BaseException | str, *, server_url: str | None = None) -> str | None:
-    """Turn a DCR 403/Forbidden or 404 into a useful next step; None for anything else so the caller keeps the
-    original text. Figma gates DCR on exact ``client_name`` (auto-set to ``Claude Code``), so this fires
-    when the user overrode it or an older Hermes is running."""
-    msg = str(exc)
-    lowered = msg.lower()
-    from tools.mcp_oauth_provider import _DISCOVERY_CONTEXT_LEAD
-    if msg.startswith(_DISCOVERY_CONTEXT_LEAD):  # the 403 there is the metadata fetch, not a DCR refusal
+    """Explain a confirmed registration 403 or 404, leaving other errors to the caller."""
+    if isinstance(exc, str):
+        message = exc.strip()
+        if not message.lower().startswith("registration failed:"):
+            return None
+    else:
+        try:
+            from mcp.client.auth import OAuthRegistrationError
+        except ImportError:
+            return None
+        from tools.mcp_tool_errors import _iter_exception_nodes
+
+        registration_error = next(
+            (node for node in _iter_exception_nodes(exc) if isinstance(node, OAuthRegistrationError)),
+            None,
+        )
+        if registration_error is None:
+            return None
+        message = str(registration_error).strip()
+
+    # Read the SDK's status prefix. Codes in a response body (or in a discovery
+    # failure that wraps registration) do not identify a registration response.
+    status = re.match(r"(?:registration failed:\s*)?(403|404)\b", message, re.IGNORECASE)
+    if status is None:
         return None
-    # A 404 on registration (Google's hosted Gmail/Drive MCP servers answer the SDK's guessed /register with
-    # one) is the same permanent "no RFC 7591 DCR" class as a 403 refusal (#78190).
-    if ("404" in msg and ("not found" in lowered or "/register" in lowered)
-            and any(k in lowered for k in ("regist", "dcr", "dynamic client"))):
+    if status[1] == "404":
         return (
             f"'{server_name}' does not support automatic client registration — the registration request returned "
             "404 (typical for Google's hosted Gmail/Drive MCP servers and other providers without RFC 7591 dynamic "
             "client registration). Create an OAuth client for this provider and add it under config.yaml as "
             f"`oauth: {{client_id: ..., client_secret: ...}}`, then re-run:\n  hermes mcp login {server_name}")
-    looks_like_registration = ("403" in msg or "forbidden" in lowered) and (
-        any(k in lowered for k in ("regist", "dcr", "dynamic client"))
-        or lowered.strip() in {"forbidden", "403 forbidden", "http 403: forbidden"}
-        or ("403" in msg and "forbidden" in lowered))
-    if not looks_like_registration:
-        return None
     if _is_figma_remote_mcp(server_name, server_url):
         return (
             f"'{server_name}' is Figma's remote MCP — DCR is allowlisted by exact client_name "
@@ -1283,7 +1291,6 @@ def humanize_oauth_registration_error(
             f"client_name: {_FIGMA_DCR_CLIENT_NAME!r} automatically. If you set oauth.client_name yourself, "
             f"change it to one of those, or clear it and re-run:\n  hermes mcp login {server_name}")
     return (
-        f"'{server_name}' only allows pre-approved OAuth clients — it rejected client registration (403), so no "
-        "browser flow can start. Options: set oauth.client_name to a name the provider allowlists, add a "
-        "pre-registered client (oauth: {client_id: ..., client_secret: ...}), or use the provider's stdio / "
-        "API-key / local server instead.")
+        f"'{server_name}' rejected client registration (403). Use an OAuth client approved by the provider "
+        "(oauth: {client_id: ..., client_secret: ...}), or check the provider's supported authentication methods."
+    )

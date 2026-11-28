@@ -16,6 +16,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli import kanban_endpoint_caps as kbec
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
 
 
@@ -69,6 +70,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None
         )
+        max_in_progress_per_endpoint = kbec.parse_caps(
+            _kanban_cfg.get("max_in_progress_per_endpoint")
+        )
         # Memory-derived default when unset — same fallback the gateway applies.
         max_in_progress = kbd.resolve_max_in_progress(
             kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
@@ -80,6 +84,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     except Exception:
         default_assignee = max_in_progress_per_profile = max_in_progress = None
+        max_in_progress_per_endpoint = None
         max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
@@ -90,9 +95,10 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             failure_limit=getattr(args, "failure_limit", kbd.DEFAULT_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            max_in_progress_per_endpoint=max_in_progress_per_endpoint,
         )
     if getattr(args, "json", False):
-        _print_json({
+        out = {
             **{k: getattr(res, k)
                for k in ("reclaimed", "crashed", "timed_out", "stale", "auto_blocked", "promoted",
                          "reaped_terminal_workers")},
@@ -113,7 +119,17 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
-        }, ascii=True)
+        }
+        # Only present when kanban.max_in_progress_per_endpoint is configured, so
+        # an install without the key keeps the exact JSON it always printed.
+        if res.skipped_endpoint_capped:
+            out["skipped_endpoint_capped"] = [
+                {"task_id": tid, "endpoint": endpoint, "current": current}
+                for (tid, endpoint, current) in res.skipped_endpoint_capped
+            ]
+        if res.endpoint_by_task:
+            out["endpoint_by_task"] = res.endpoint_by_task
+        _print_json(out, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")
     if res.reaped_terminal_workers:
@@ -141,6 +157,8 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
     for tid, who, current in res.skipped_per_profile_capped:
         print(f"Deferred ({who} at per-profile cap, {current} running): {tid}")
+    for tid, endpoint, current in res.skipped_endpoint_capped:
+        print(f"Deferred ({endpoint} at per-endpoint cap, {current} running): {tid}")
     if res.skipped_nonspawnable:
         print(
             f"Skipped (non-spawnable assignee — terminal lane, OK): "

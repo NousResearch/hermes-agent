@@ -28,6 +28,7 @@ from agent.skill_utils import (
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
+from tools.environments.command_context import command_context
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_cache_version
 
@@ -857,7 +858,8 @@ def _run_backend_probe(env_type: str, terminal_tool) -> str:
         probe_only=True,
     )
     try:
-        result = env.execute(_BACKEND_PROBE_CMD, timeout=4)
+        with command_context("internal"):
+            result = env.execute(_BACKEND_PROBE_CMD, timeout=4)
     finally:
         # One-shot `uname`; without teardown the backend leaves a second idle sandbox
         # (task_id="prompt-backend-probe") running for the whole process next to the agent's own.

@@ -24,6 +24,7 @@ from pathlib import Path
 
 from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
+from tools.environments.command_context import command_context
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
@@ -245,7 +246,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
-        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        with command_context("file_op"):
+            result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
         output = result.get("output", "")
         # The command wrapper's own ``builtin cd -- <cwd> || exit 126`` failed: the

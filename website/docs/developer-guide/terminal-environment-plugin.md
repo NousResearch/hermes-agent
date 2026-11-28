@@ -188,6 +188,76 @@ is `False`. Hermes v0.22.5 and earlier ignore the attribute and use the host
 fast path for every `LocalEnvironment` subclass, so pin `requires_hermes` past
 that.
 
+## Who is calling: the command context
+
+Your `execute()` is reached by every caller, not just the terminal tool: the
+background process registry, `execute_code` and its RPC traffic, the file
+tools, media reads, result spills and Hermes's own probes. Inside `execute()`,
+ask `current_command_context()` rather than inspecting the call stack:
+
+```python
+from agent.terminal_env_provider import current_command_context
+
+class AcmeEnvironment(BaseEnvironment):
+    def execute(self, command, **kwargs):
+        ctx = current_command_context()
+        if ctx is not None and ctx.origin == "background_poll":
+            ...  # cheap poll read: don't bill it as a user command
+        return super().execute(command, **kwargs)
+```
+
+It returns a `CommandContext` or `None` (the default for any caller that has
+not opted in, your own calls included):
+
+| Field | Meaning |
+|---|---|
+| `origin` | `terminal`, `background_spawn` / `background_poll` / `background_kill`, `execute_code`, `execute_code_rpc`, `file_op`, `media_read`, `spill`, `guard_probe`, `internal` |
+| `job_id` | the background job's session id (`background_*` only) |
+| `inner_command` | the command a background wrapper carries (the one the gate approved) |
+| `task_id`, `session_key` | the owning task and session, when known |
+| `approval` | `CommandApproval(command, kind)`, or `None` |
+| `command` | the exact text Hermes's own code sends in this block, for its job traffic (the background wrapper, each poll and status read, the kill) and `execute_code`'s removal of its own folder; `None` otherwise |
+
+`kind` is how the dangerous-command gate let the command through:
+
+| `kind` | How the command passed | Someone approved this exact command |
+|---|---|---|
+| `user` | a person answered the approval prompt | yes |
+| `smart` | smart approval (the guardian model) approved the flagged command | yes |
+| `pre_approved` | an earlier session/always answer or an allowlist entry covers it | yes |
+| `batch` | the batch approval flow collected the decision before the run | yes |
+| `forced` | the caller ran it with `force`, which skips the gate | no |
+| `no_findings` | the scan ran and found nothing to flag | yes (Hermes's rules) |
+| `bypass` | yolo or `approvals.mode: off`; nothing was scanned | no |
+| `unattended` | no reviewer was present and an approve policy (cron, `-q`, webhook) applied; nothing was scanned | no |
+| `gate_skipped` | the gate did not run (an isolated backend, or `execute_code` leaving the script to per-call guards) | no |
+
+Treat `user`, `smart`, `pre_approved`, `batch` and `no_findings` as "a person or
+Hermes's rules approved this command". Treat `bypass`, `unattended`, `forced`
+and `gate_skipped` as "nobody judged it".
+
+**Trust `approval` only when** `origin == "terminal"` and
+`approval.command` is exactly the `command` argument your `execute()` received
+(the gate approves the raw command before Hermes rewrites it), or for a
+background spawn when `inner_command` matches it. Anything else is provenance
+only: an `execute_code` script is gated as a whole and stamped
+`execute_code:<kind>` (with `origin == "execute_code"` on the command that ships
+the script), which says nothing about the commands inside it.
+
+**Treat a command as Hermes's own only when** the context's `command` is
+exactly the `command` your `execute()` received. A backend that runs a job's
+poll or kill where the job started, or runs Hermes's cleanup without asking,
+should require this match too: anything else that runs inside the same block
+then gets no special treatment.
+
+You can read the context, not set it: only Hermes stamps one, so a plugin cannot
+forge an approval.
+
+The value rides a `ContextVar`, so it needs no `execute()` keyword: it is set
+for the duration of one call and reset on return, and a nested call (a
+`terminal` tool call dispatched from inside `execute_code`'s RPC) replaces it
+with its own. Nothing leaks into later polls or requests.
+
 ## Images
 
 Your backend reads its own image setting (a `config_schema` key, or a

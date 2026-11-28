@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from tools.environments.command_context import command_context
+
 # Raw-bytes INGEST budget for sandbox and data: sources (50 MiB). The sandbox exec-read returns
 # the file as base64 on stdout, so captured text + decoded bytes + copies peak near 4x the file
 # in this process; it stays at the 50MB download cap. HTTP downloads keep their own stream cap
@@ -326,7 +328,8 @@ async def _resolve_container_fallback(
     cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
-        last_res = await asyncio.to_thread(env.execute, cmd)
+        with command_context("media_read"):
+            last_res = await asyncio.to_thread(env.execute, cmd)
         if last_res.get("returncode", 1) == 0:
             break
         if attempt == 0:

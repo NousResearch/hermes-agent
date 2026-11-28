@@ -25,6 +25,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
+from tools.environments.command_context import CommandApproval, command_context
 from tools.environments.sandbox_scope import hosted_scope, producer_fields
 from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env, routed_terminal_base
 from hermes_cli._subprocess_compat import windows_hide_flags
@@ -41,7 +42,6 @@ from tools.process_registry_output_log import ProcessOutputLogMixin, open_output
 from tools.process_registry_ownership import ProcessOwnershipMixin
 from tools.process_registry_termination import ProcessTerminationMixin
 from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
 from tools.process_registry_wsl import _is_wsl_launcher_command
 from tools.process_registry_wait import max_wait_timeout, process_deadline_floor
 
@@ -1271,10 +1271,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def spawn_via_env(
         self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False, allow_cwd_fallback: bool = False,
+        approval: Optional[CommandApproval] = None,
     ) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox: wrapped to capture its in-sandbox PID
         and log to a file later execute() calls poll (no live pipe/stdin). ``persist_on_release`` keeps it out of
-        agent-lifecycle kill sweeps (#41225). ``allow_cwd_fallback`` is ``execute``'s; a fallback sets ``session.cwd``."""
+        agent-lifecycle kill sweeps (#41225). ``allow_cwd_fallback`` is ``execute``'s; a fallback sets ``session.cwd``.
+        ``approval`` is the gate verdict the environment sees alongside ``inner_command`` (the wrapped command)."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
                                     persist_on_release=persist_on_release)
         temp_dir = self._env_temp_dir(env)
@@ -1285,7 +1287,12 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")
-        result = env.execute(bg_command, cwd=cwd or "", timeout=timeout, rewrite_compound_background=False, allow_cwd_fallback=allow_cwd_fallback)
+        with command_context("background_spawn", job_id=session.id, task_id=task_id or None,
+                             session_key=session_key or None, inner_command=command,
+                             approval=approval, command=bg_command):
+            result = env.execute(
+                bg_command, cwd=cwd or "", timeout=timeout,
+                rewrite_compound_background=False, allow_cwd_fallback=allow_cwd_fallback)
         session.cwd = (result.get("cwd_fallback") or {}).get("used") or session.cwd
         output = result.get("output", "").strip()
         session.pid = next((int(ln) for ln in map(str.strip, output.splitlines()) if ln.isdigit()), None)
@@ -1413,54 +1420,6 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             logger.warning("%s wait failed; recording known exit status: %s", label, e)
         self._finish_exited(session, exit_code())
 
-
-    def _env_poller_loop(self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str):
-        """Background thread: poll a sandbox log file for non-local backends.
-
-        One ``execute()`` per tick: the read command also reports the process
-        status (see ``log_delta_command``). Sandboxes rate-limit exec starts."""
-        q = shlex.quote
-        # Byte offset already read from the log (bytes, not chars: the shell counts bytes).
-        prev_output_bytes = 0
-        while not session.exited:
-            time.sleep(2)
-            try:
-                # Read only the bytes written since the last poll, plus the process status.
-                raw = env.execute(  # absolute paths only: "/" survives the job deleting its cwd
-                    log_delta_command(q(log_path), prev_output_bytes, q(pid_path), q(exit_path)),
-                    cwd="/", timeout=10).get("output", "")
-                reply = parse_log_delta_reply(raw)
-                delta = reply.delta if reply else ""
-                if reply:
-                    if reply.offset < prev_output_bytes:
-                        # Log rotated/truncated: what we hold no longer lines up. Restart.
-                        with session._lock:
-                            if session.exited:
-                                return
-                            session.output_buffer = ""
-                    prev_output_bytes = reply.size
-                if delta:
-                    # A kill that landed after this fetch already published its output
-                    # snapshot: leave the output as the kill reported it (as the PTY reader does).
-                    with session._lock:
-                        if session.exited:
-                            return
-                        session.output_buffer += delta
-                        if len(session.output_buffer) > session.max_output_chars:
-                            session.output_buffer = session.output_buffer[-session.max_output_chars:]
-                    self._check_watch_patterns(session, delta)
-                    self._emit_output(session, delta)
-
-                # Unreadable reply: separate liveness and exit-code reads, as before the combined read.
-                exit_code = reply.exit_code if reply else fallback_exit_code(env, q(pid_path), q(exit_path))
-                if exit_code is not None:
-                    self._finish_exited(session, exit_code)
-                    return
-            except Exception:
-                # Environment might be gone (sandbox reaped, etc.). A kill that already
-                # settled the session keeps its result.
-                self._finish_exited(session, -1, reason="lost", source="backend_lost")
-                return
 
     def _pty_reader_loop(self, session: ProcessSession):
         """Background thread: read output from a PTY process."""
@@ -2238,7 +2197,10 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
             # leaves Git Bash descendants behind.
             self._terminate_host_pid(session.process.pid, session.host_start_time)
         elif session.env_ref and session.pid:
-            session.env_ref.execute(f"kill {session.pid} 2>/dev/null", cwd="/", timeout=5)
+            kill_command = f"kill {session.pid} 2>/dev/null"
+            with command_context("background_kill", job_id=session.id, task_id=session.task_id,
+                                 session_key=session.session_key, command=kill_command):
+                session.env_ref.execute(kill_command, cwd="/", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
             # Same fate as poll/list: a gone or reused PID means our process is
             # gone — never tree-kill the stranger — but a live PID with an

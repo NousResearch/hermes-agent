@@ -14,8 +14,10 @@ import shlex
 import socket
 import threading
 import time
+from typing import Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
+from tools.environments.command_context import CommandApproval, command_context
 from tools.registry import tool_error
 
 # Logger name kept as the origin module's so existing log expectations hold.
@@ -47,20 +49,32 @@ def _private_dirs_cmd(root: str, *subdirs: str) -> str:
     return f"umask 077 && mkdir -p {mkdir} && chmod 700 {chmod}"
 
 
-def _execute_checked(env, cmd: str, what: str, *, timeout: int, **kwargs) -> dict:
+def _rpc_or_script_context(approval: Optional[CommandApproval], task_id: Optional[str]):
+    """The stamp for a shipped file: ``execute_code`` carrying the gate's *approval* when the file
+    IS the model's script (a kernel cell request), else ``execute_code_rpc`` for Hermes's traffic."""
+    if approval is None:
+        return command_context("execute_code_rpc", task_id=task_id)
+    return command_context("execute_code", task_id=task_id, approval=approval)
+
+
+def _execute_checked(env, cmd: str, what: str, *, timeout: int,
+                     approval: Optional[CommandApproval] = None, task_id: Optional[str] = None,
+                     **kwargs) -> dict:
     """Run *cmd* from ``/`` and raise ``RuntimeError`` on a non-zero exit.
 
     Used where a silent failure would ship secrets or code into a missing,
     half-written, or still-permissive remote path. The error carries the
     command output only, never the payload."""
-    result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
+    with _rpc_or_script_context(approval, task_id):
+        result = env.execute(cmd, cwd="/", timeout=timeout, **kwargs)
     if result.get("returncode", 1) != 0:
         raise RuntimeError(f"{what} failed: {result.get('output')!r}")
     return result
 
 
 def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
-                  timeout: int = 30, check: bool = False):
+                  timeout: int = 30, check: bool = False,
+                  approval: Optional[CommandApproval] = None, task_id: Optional[str] = None):
     """Write *content* owner-only to *remote_path*; returns the execute() result
     (``check=True`` raises on failure via _execute_checked).
 
@@ -70,7 +84,11 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     ``/proc/*/cmdline``; ``BaseEnvironment.execute`` embeds it as a heredoc
     for heredoc-mode backends (modal, daytona, vercel), and managed_modal
     forwards it as ``stdinData``, the same contract ``_write_to_sandbox``
-    relies on."""
+    relies on.
+
+    ``approval`` is set only when *content* carries the model's script (a kernel cell request):
+    the write is then stamped ``execute_code`` with the gate's verdict instead of
+    ``execute_code_rpc``."""
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     target = shlex.quote(remote_path)
     write = (f"base64 -d > {target}.tmp && mv -f {target}.tmp {target}"
@@ -78,8 +96,9 @@ def _remote_write(env, remote_path: str, content: str, *, atomic: bool = False,
     cmd = f"umask 077 && {write}"
     if check:
         return _execute_checked(env, cmd, f"remote file ship for {remote_path!r}",
-                                timeout=timeout, stdin_data=encoded)
-    return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded)
+                                timeout=timeout, stdin_data=encoded, approval=approval, task_id=task_id)
+    with _rpc_or_script_context(approval, task_id):
+        return env.execute(cmd, cwd="/", timeout=timeout, stdin_data=encoded)
 
 
 def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
@@ -211,51 +230,54 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
     dispatch = _default_dispatch(task_id, session_id, turn_id, conversation_id)
     poll_interval = 0.1
     quoted_rpc_dir = shlex.quote(rpc_dir)
-    while not stop_event.is_set():
-        try:
-            ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="/", timeout=10)
-            output = ls_result.get("output", "").strip()
-            if not output:
-                stop_event.wait(poll_interval)
-                continue
-            req_files = sorted(f for f in (line.strip() for line in output.split("\n"))
-                               if f and not f.endswith(".tmp") and "/req_" in f)
-            for req_file in req_files:
-                if stop_event.is_set():
-                    break
-                call_start = time.monotonic()
-                quoted_req_file = shlex.quote(req_file)
-                read_result = env.execute(f"cat {quoted_req_file}", cwd="/", timeout=10)
-                try:
-                    request = json.loads(read_result.get("output", ""))
-                except (json.JSONDecodeError, ValueError):
-                    logger.debug("Malformed RPC request in %s", req_file)
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+    # Explicitly: this thread inherits the launch context, but every execute() here is
+    # Hermes's own RPC traffic, never the gated script launch.
+    with command_context("execute_code_rpc", task_id=task_id):
+        while not stop_event.is_set():
+            try:
+                ls_result = env.execute(f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true", cwd="/", timeout=10)
+                output = ls_result.get("output", "").strip()
+                if not output:
+                    stop_event.wait(poll_interval)
                     continue
-                if not _rpc_token_ok(request, rpc_token):
-                    logger.debug("Unauthorized RPC request in %s", req_file)
+                req_files = sorted(f for f in (line.strip() for line in output.split("\n"))
+                                   if f and not f.endswith(".tmp") and "/req_" in f)
+                for req_file in req_files:
+                    if stop_event.is_set():
+                        break
+                    call_start = time.monotonic()
+                    quoted_req_file = shlex.quote(req_file)
+                    read_result = env.execute(f"cat {quoted_req_file}", cwd="/", timeout=10)
+                    try:
+                        request = json.loads(read_result.get("output", ""))
+                    except (json.JSONDecodeError, ValueError):
+                        logger.debug("Malformed RPC request in %s", req_file)
+                        env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                        continue
+                    if not _rpc_token_ok(request, rpc_token):
+                        logger.debug("Unauthorized RPC request in %s", req_file)
+                        env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                        continue
+                    seq = request.get("seq", 0)
+                    if not isinstance(seq, int):
+                        # A non-int seq cannot form the res_NNNNNN name the caller
+                        # polls; formatting it after dispatch would raise, leave the
+                        # request in place, and replay the tool call every cycle.
+                        logger.debug("RPC request with malformed seq in %s", req_file)
+                        env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
+                        continue
+                    tool_result = _handle_rpc_request(
+                        request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
+                        max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
+                        call_start=call_start, where="remote sandbox",
+                    )
+                    # Atomic (tmp + rename) and owner-only; results carry tool output
+                    # on a shared-host backend.
+                    _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
+                                  atomic=True, timeout=60)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
-                    continue
-                seq = request.get("seq", 0)
-                if not isinstance(seq, int):
-                    # A non-int seq cannot form the res_NNNNNN name the caller
-                    # polls; formatting it after dispatch would raise, leave the
-                    # request in place, and replay the tool call every cycle.
-                    logger.debug("RPC request with malformed seq in %s", req_file)
-                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
-                    continue
-                tool_result = _handle_rpc_request(
-                    request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
-                    max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
-                    call_start=call_start, where="remote sandbox",
-                )
-                # Atomic (tmp + rename) and owner-only; results carry tool output
-                # on a shared-host backend.
-                _remote_write(env, f"{rpc_dir}/res_{seq:06d}", tool_result,
-                              atomic=True, timeout=60)
-                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
-        except Exception as e:
+            except Exception as e:
+                if not stop_event.is_set():
+                    logger.debug("RPC poll error: %s", e, exc_info=True)
             if not stop_event.is_set():
-                logger.debug("RPC poll error: %s", e, exc_info=True)
-        if not stop_event.is_set():
-            stop_event.wait(poll_interval)
+                stop_event.wait(poll_interval)

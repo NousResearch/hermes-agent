@@ -31,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd, _remote_write
 from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry, stale_modules_warning
+from tools.environments.command_context import CommandApproval, command_context
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,8 @@ if __name__ == "__main__":
 
 def _sh(env, cmd: str, timeout: int = 15) -> str:
     """Run *cmd* on the remote from ``/`` and return its output text."""
-    result = env.execute(cmd, cwd="/", timeout=timeout)
+    with command_context("execute_code_rpc"):
+        result = env.execute(cmd, cwd="/", timeout=timeout)
     return (result.get("output", "") if isinstance(result, dict) else "") or ""
 
 
@@ -329,14 +331,18 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
     return kernel, reused, state_reset, state_lost
 
 
-def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
-    """Ship one cell request and poll for its result: (cell status, payload)."""
+def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int, *,
+                     approval: Optional[CommandApproval] = None,
+                     task_id: Optional[str] = None) -> tuple[str, dict[str, Any]]:
+    """Ship one cell request and poll for its result: (cell status, payload). The request ship
+    carries the model's code, so it alone is stamped ``execute_code`` with the gate's *approval*."""
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
     # One round-trip: tmp write + rename publishes the request atomically.
     _remote_write(kernel.env, f"{kernel.kernel_dir}/cells/cell_req_{seq}.json",
-                  json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True, check=True)
+                  json.dumps({"id": seq, "code": code}, ensure_ascii=False), atomic=True, check=True,
+                  approval=approval, task_id=task_id)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -366,6 +372,7 @@ def execute_in_remote_kernel(
     code: str, *, env, env_type: str, task_env_id: str, sandbox_tools: frozenset,
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
     session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
+    approval: Optional[CommandApproval] = None,
 ) -> Optional[dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
@@ -387,7 +394,8 @@ def execute_in_remote_kernel(
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
                                   reused=reused, state_reset=state_reset, state_lost=state_lost,
-                                  session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+                                  session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                                  approval=approval)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -398,7 +406,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
                        reused: bool, state_reset: bool, state_lost: bool,
                        session_id: str | None = None, turn_id: str | None = None,
-                       conversation_id: str | None = None) -> dict[str, Any]:
+                       conversation_id: str | None = None,
+                       approval: Optional[CommandApproval] = None) -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -420,7 +429,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:
-        cell_status, cell_payload = _run_remote_cell(kernel, code, timeout)
+        cell_status, cell_payload = _run_remote_cell(kernel, code, timeout, approval=approval, task_id=task_env_id)
     except Exception:
         # The atomic ship is the only remote call here that can raise (the poll
         # and result cleanup are best-effort), so the request never reached the runner and the

@@ -10,6 +10,8 @@ import logging
 import sys
 from typing import Any, List, Optional
 
+from tools.environments.command_context import CommandApproval
+
 logger = logging.getLogger("tools.terminal_tool")
 
 # A silent background process (no notify_on_complete / watch_patterns) is right
@@ -93,7 +95,8 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False):
+           session_key, effective_pty, persist_on_release: bool = False, allow_cwd_fallback: bool = False,
+           approval: Optional[CommandApproval] = None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key,
                   persist_on_release=persist_on_release)
@@ -101,7 +104,8 @@ def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, 
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty,
             restore_login_path=True, **common)
-    return process_registry.spawn_via_env(env=env, allow_cwd_fallback=allow_cwd_fallback, **common)
+    return process_registry.spawn_via_env(env=env, allow_cwd_fallback=allow_cwd_fallback,
+                                          approval=approval, **common)
 
 
 def _apply_async_support(proc_session, result_data, notify_on_complete, watch_patterns):
@@ -154,6 +158,7 @@ def spawn_background_process(
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
     cwd_key: Optional[str] = None,
     notify_on_complete: bool, watch_patterns: Optional[list[str]], approval_note: Optional[str],
+    approval: Optional[CommandApproval] = None,
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
     heartbeat_seconds: int = 0,
@@ -184,6 +189,7 @@ def spawn_background_process(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
             effective_pty=effective_pty, persist_on_release=persist_on_release,
+            approval=approval,
             allow_cwd_fallback=not workdir,  # a named workdir is refused, never swapped for a parent
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,

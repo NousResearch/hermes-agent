@@ -40,6 +40,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 
 
 from tools.registry import tool_error
+from tools.environments.command_context import CommandApproval, command_context
 from tools.terminal_tool_lifecycle import (
     _call_in_flight, _cleanup_inactive_envs, _create_configured_env,
     _evict_environment_for_task, cleanup_all_environments, ensure_task_env,
@@ -139,6 +140,7 @@ def _container_profile() -> str:
 
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    gate_approval_kind,
 )
 
 
@@ -1187,9 +1189,11 @@ class _ApprovalVerdict:
     when the user explicitly approved (or pre-confirmed via ``force``); it drives
     the clean-interrupt-slate clear before ``env.execute`` so an approved command
     can't be SIGINT-killed by a bit that landed during the approval-wait.
+    ``approval`` is the public stamp (command + how it passed) the environment sees.
     """
     note: Optional[str] = None
     approved_run: bool = False
+    approval: Optional[CommandApproval] = None
 
 
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
@@ -1197,7 +1201,7 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
     Raises :class:`_Rejected` when the command may not run (denied, or pending
     gateway approval)."""
     if force:
-        return _ApprovalVerdict(approved_run=True)
+        return _ApprovalVerdict(approved_run=True, approval=CommandApproval(command, "forced"))
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
     if not approval["approved"]:
         if approval.get("status") == "pending_approval":  # gateway ask mode
@@ -1218,17 +1222,20 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
         raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
                                     **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
     desc = approval.get("description", "flagged as dangerous")
+    kind = gate_approval_kind(approval)
+    stamp = CommandApproval(command, kind)
     if approval.get("user_approved"):
         return _ApprovalVerdict(
             note=f"Command required approval ({desc}) and was approved by the user.",
-            approved_run=True,
+            approved_run=True, approval=stamp,
         )
     if approval.get("smart_approved"):
-        return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.")
+        return _ApprovalVerdict(note=f"Command was flagged ({desc}) and auto-approved by smart approval.",
+                                approval=stamp)
     if approval.get("pre_approved"):
         from tools.approval_provenance import preapproval_note
-        return _ApprovalVerdict(note=preapproval_note(approval["pre_approved"]))
-    return _ApprovalVerdict()
+        return _ApprovalVerdict(note=preapproval_note(approval["pre_approved"]), approval=stamp)
+    return _ApprovalVerdict(approval=stamp)
 
 
 @dataclass
@@ -1424,10 +1431,13 @@ def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str, cwd_key: str,
     workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
-    metered: bool = True,
+    approval: Optional[CommandApproval] = None, metered: bool = True,
 ) -> str:
     """Execute in the foreground with retry on transient errors, then finalize. ``metered``
-    is False for Hermes' own control-plane commands (``_host_local``)."""
+    is False for Hermes' own control-plane commands (``_host_local``).
+
+    The ``execute()`` call runs under an ``origin="terminal"`` command context carrying the
+    gate's verdict, so a plugin backend can tell a model command from Hermes's own traffic."""
     from hermes_cli.observability.shared_metrics_harness import record_terminal_outcome
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
@@ -1453,12 +1463,14 @@ def _run_foreground(
             # internal env.execute() consumers stay unbounded.
             # Only the session's inherited cwd may fall back (the result tells the model); a
             # ``workdir`` the model named is refused, or a typo would run ``rm -f ./*`` a level up.
-            result = env.execute(
-                command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
-                allow_cwd_fallback=not workdir,
-                **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
-                                task_id=task_id, session_key=session_key),
-            )
+            with command_context("terminal", task_id=task_id, session_key=session_key or None,
+                                 approval=approval):
+                result = env.execute(
+                    command, timeout=effective_timeout, cwd=command_cwd, bounded_capture=True,
+                    allow_cwd_fallback=not workdir,
+                    **_yield_kwargs(command, env_type=env_type, cwd=command_cwd, effective_task_id=eff,
+                                    task_id=task_id, session_key=session_key),
+                )
             break
         except Exception as e:
             # A backend exception (e.g. an SSH connect timeout) never reached an exit status, so it
@@ -1686,6 +1698,7 @@ def terminal_tool(
                     mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                     effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                     watch_patterns=watch_patterns, approval_note=verdict.note,
+                    approval=verdict.approval,
                     pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
                     completion_output_chars=_completion_output_chars,
                     heartbeat_seconds=heartbeat,
@@ -1699,7 +1712,7 @@ def terminal_tool(
                 command, env, plan,
                 task_id=task_id, session_id=session_id, session_key=session_key, cwd_key=cwd_key,
                 workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
-                metered=not _host_local,
+                approval=verdict.approval, metered=not _host_local,
             ))
     except _Rejected as r:
         return r.result_json

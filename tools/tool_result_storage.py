@@ -19,6 +19,7 @@ from typing import Any, NamedTuple
 
 from session_rules.media import PRUNED_SUBDIR, SPILLOVER_SUBDIR, archive_refs_in_text
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
+from tools.environments.command_context import command_context
 
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
@@ -249,7 +250,9 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     except Exception as exc:
         logger.debug("Spillover sync failed: %s", exc)
     try:
-        if env.execute(f"test -r {shlex.quote(visible)}", timeout=15).get("returncode", 1) == 0:
+        with command_context("spill"):
+            readable = env.execute(f"test -r {shlex.quote(visible)}", timeout=15)
+        if readable.get("returncode", 1) == 0:
             return visible
     except Exception as exc:
         logger.debug("Spillover readability probe failed: %s", exc)
@@ -698,12 +701,14 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     from tools.code_execution_rpc import _private_dirs_cmd
     cmd = (f"{_private_dirs_cmd(storage_dir)} "
            f"&& cat > {shlex.quote(remote_path)}")
-    if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
-        return False
+    with command_context("spill"):
+        if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
+            return False
 
     expected = len(content.encode("utf-8", errors="replace"))
     try:
-        probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
+        with command_context("spill"):
+            probe = env.execute(f"wc -c < {shlex.quote(remote_path)}", timeout=15)
     except Exception as exc:
         logger.debug("Sandbox size probe failed for %s: %s", remote_path, exc)
         return True
@@ -718,7 +723,8 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
                    remote_path, persisted_size, expected)
     try:
-        env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
+        with command_context("spill"):
+            env.execute(f"rm -f {shlex.quote(remote_path)}", timeout=15)
     except Exception:
         pass
     return False

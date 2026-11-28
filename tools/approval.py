@@ -404,6 +404,15 @@ def _yolo_active() -> bool:
     return unattended_turn()
 
 
+def _bypass_kind() -> str:
+    """Why :func:`_yolo_active` / ``approvals.mode: off`` skipped the scan, as a ``CommandApproval.kind``:
+    ``"bypass"`` for yolo or mode off, ``"unattended"`` when only an unattended turn made yolo active."""
+    from gateway.session_finite import unattended_turn
+    explicit = (_YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+                or approval_context._get_approval_mode() == "off")
+    return "unattended" if unattended_turn() and not explicit else "bypass"
+
+
 def _permanent_set() -> set:
     """The permanent allowlist that governs the ACTIVE profile. Unscoped (single-profile process,
     or the multiplexer's own launch profile) → the module-level set tests and the CLI seed. A routed
@@ -620,8 +629,34 @@ def is_approval_bypass_active() -> bool:
 
 # --- Result builders shared by the gates ----------------------------------------------------------------------------
 
-def _approved() -> dict:
-    return {"approved": True, "message": None}
+def _approved(**extra: bool | str) -> dict:
+    """An approved gate result. ``gate_skipped=True`` marks a gate that never ran; ``unscanned``
+    (``"bypass"`` or ``"unattended"``) marks an approval that came from policy without a scan."""
+    return {"approved": True, "message": None, **extra}
+
+
+def gate_approval_kind(result: dict, *, forced: bool = False) -> str:
+    """How *result* let the command through, as a ``CommandApproval.kind``.
+
+    ``batch`` outranks the underlying answer: the batch flow collected the decision before the
+    run (a human answer or a policy one), and that provenance is what a terminal provider logs."""
+    if forced:
+        return "forced"
+    if result.get("batch"):
+        return "batch"
+    if result.get("user_approved"):
+        return "user"
+    if result.get("smart_approved"):
+        return "smart"
+    if result.get("pre_approved"):
+        return "pre_approved"
+    if result.get("gate_skipped"):
+        return "gate_skipped"
+    # Approved with no scan: yolo / ``approvals.mode: off`` ("bypass"), or no reviewer present
+    # under an approve policy ("unattended"). Neither judged this command.
+    if unscanned := result.get("unscanned"):
+        return unscanned
+    return "no_findings"
 
 
 # ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
@@ -1229,7 +1264,7 @@ def _run_approval_gate(
     # guards honour it, so every action routed through this gate (computer_use, plugin rules, SSH-config writes,
     # dangerous-pattern prompts) must too, or "off" still prompts on those surfaces.
     if _yolo_active() or approval_context._get_approval_mode() == "off":
-        return _approved()
+        return _approved(unscanned=_bypass_kind())
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return _approved()
@@ -1257,7 +1292,7 @@ def _run_approval_gate(
                 # otherwise block what single_query_mode: approve just authorized.
                 logger.warning("%s (pattern: %s): %s — single-query auto-approve "
                                "(approvals.single_query_mode: approve).", *log_args)
-                return _approved()
+                return _approved(unscanned="unattended")
             break  # cron/unattended approve-mode: auto-approve below
         else:
             if fail_closed_when_no_human:
@@ -1270,7 +1305,7 @@ def _run_approval_gate(
                     pattern_key=pattern_key, description=description)
         logger.warning("%s (pattern: %s): %s — set HERMES_INTERACTIVE or "
                        "HERMES_GATEWAY_SESSION to require approval.", *log_args)
-        return _approved()
+        return _approved(unscanned="unattended")
 
     return _human_decision(
         _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
@@ -1346,7 +1381,7 @@ def check_dangerous_command(command: str, env_type: str,
         return blocked
     unread = hardline_scan_incomplete(command)
     if _yolo_active() or approval_context._get_approval_mode() == "off":
-        return _scan_incomplete_block(_NO_REVIEWER_BYPASS) if unread else _approved()
+        return _scan_incomplete_block(_NO_REVIEWER_BYPASS) if unread else _approved(unscanned=_bypass_kind())
     if unread:
         _approval_callback, is_cli, is_gateway, is_ask = _presence(approval_callback)
         if not (is_cli or is_gateway or is_ask):
@@ -1384,7 +1419,7 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
     if not rule_key:
         rule_key = f"{tool_name}:{hashlib.sha256(description.encode('utf-8')).hexdigest()[:12]}"
     subject = f"Tool '{tool_name}' requires approval ({description})"
-    return _run_approval_gate(
+    result = _run_approval_gate(
         # Namespaced so plugin-rule approvals share the allowlist machinery without ever colliding with a real
         # command pattern key; the display target is a synthetic label for the display/allowlist layer.
         pattern_key=f"plugin_rule:{rule_key}", description=description,
@@ -1395,6 +1430,8 @@ def request_tool_approval(tool_name: str, reason: str, *, rule_key: str = "", ap
         no_human_block_message=(f"BLOCKED: {subject} but no interactive user or gateway is present "
                                 "to approve it. A plugin flagged this action for human confirmation."),
     )
+    result.pop("unscanned", None)   # the command stamp's marker; this plugin-facing result keeps its shape
+    return result
 
 
 # --- Combined pre-exec guard (floors + dangerous command detection) ------------------------------------------------
@@ -1406,7 +1443,7 @@ def check_all_command_guards(command: str, env_type: str,
     want to veto or escalate a command do it from ``pre_tool_call``.
     ``has_host_access``: a Docker sandbox with bind-mounted host paths takes the normal flow."""
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _user_deny_block(command) or _approved()
+        return _user_deny_block(command) or _approved(gate_skipped=True)
 
     blocked = _floor_block(command, sudo_guard=True)
     if blocked is not None:
@@ -1415,14 +1452,14 @@ def check_all_command_guards(command: str, env_type: str,
     from agent.terminal_approval_batch import consume_prepared_guard
     prepared = consume_prepared_guard(command, env_type, has_host_access)
     if prepared is not None:
-        return prepared
+        return {**prepared, "batch": True}
 
     approval_mode = approval_context._get_approval_mode()
     # A command the hardline scan could not finish is human-only: no bypass, allowlist glob,
     # unattended approve-mode or guardian LLM approves it (see _human_decision).
     unread = hardline_scan_incomplete(command)
     if _yolo_active() or approval_mode == "off":
-        return _scan_incomplete_block(_NO_REVIEWER_BYPASS) if unread else _approved()
+        return _scan_incomplete_block(_NO_REVIEWER_BYPASS) if unread else _approved(unscanned=_bypass_kind())
     if not unread and _command_matches_permanent_allowlist(command):
         return _allowlisted(command)
 
@@ -1436,7 +1473,7 @@ def check_all_command_guards(command: str, env_type: str,
             result = _unattended_deny(command, ctx)
             if result is not None:
                 return result
-        return _approved()
+        return _approved(unscanned="unattended")
 
     session_key = get_current_session_key()
     findings = _command_findings(command)
@@ -1494,10 +1531,10 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
     # Isolated backends already sandbox the child.
     if _should_skip_container_guards(env_type, has_host_access=has_host_access):
-        return _approved()
+        return _approved(gate_skipped=True)
     approval_mode = approval_context._get_approval_mode()
     if _yolo_active() or approval_mode == "off":
-        return _approved()
+        return _approved(unscanned=_bypass_kind())
 
     # (-q clears the presence flags, but its unattended context resolves first anyway.)
     approval_callback, is_cli, is_gateway, is_ask = _presence()
@@ -1510,7 +1547,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
                 "subprocess calls that bypass shell-string approval checks). " + ctx.exec_tail,
                 pattern_key=pattern_key, description=description, outcome="blocked", noun="code",
             )
-        return _approved()
+        return _approved(unscanned="unattended")
 
     # Only gateway/ask contexts get the one-shot whole-script approval. In an interactive CLI the script's terminal()
     # calls are guarded per-call (context propagates into the RPC thread, #33057), so a whole-script prompt would fire
@@ -1521,7 +1558,7 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # calls reach the session's own prompt per call, so no whole-script prompt. Injected and automation turns keep the
     # gate (cron/-q resolved above; messaging/API unchanged).
     if (not is_gateway and not is_ask) or _is_local_viewer_turn():
-        return _approved()
+        return _approved(gate_skipped=True)
 
     session_key = get_current_session_key()
     # Built only past the early-return gates so common paths don't copy a potentially-large script into this string.

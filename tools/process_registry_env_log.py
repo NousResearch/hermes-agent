@@ -85,12 +85,16 @@ def fallback_exit_code(env: Any, quoted_pid_path: str, quoted_exit_path: str) ->
     """Separate liveness and exit-code reads for a reply the combined command
     could not deliver, so a backend that mangles it still sees the exit.
     ``None`` while the process looks alive, else the recorded code (-1 if none)."""
-    check = env.execute(
-        f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?", cwd="/", timeout=5)
+    from tools.environments.command_context import exact_command
+    alive = f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?"
+    with exact_command(alive):
+        check = env.execute(alive, cwd="/", timeout=5)
     check_output = check.get("output", "").strip()
     if not check_output or check_output.splitlines()[-1].strip() == "0":
         return None
-    exit_str = env.execute(f"cat {quoted_exit_path} 2>/dev/null", cwd="/", timeout=5).get("output", "").strip()
+    read_exit = f"cat {quoted_exit_path} 2>/dev/null"
+    with exact_command(read_exit):
+        exit_str = env.execute(read_exit, cwd="/", timeout=5).get("output", "").strip()
     try:
         return int(exit_str.splitlines()[-1].strip())
     except (ValueError, IndexError):

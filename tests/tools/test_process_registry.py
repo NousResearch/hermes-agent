@@ -952,7 +952,7 @@ class TestSpawnEnvSanitization:
 
         env = FakeEnv()
 
-        with patch("tools.process_registry.time.sleep", return_value=None), \
+        with patch("tools.process_registry_env_scope.time.sleep", return_value=None), \
             patch.object(registry, "_move_to_finished"):
             registry._env_poller_loop(
                 session,

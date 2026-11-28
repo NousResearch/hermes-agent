@@ -133,6 +133,9 @@ with a name allows that one name only.
 | `hermes_cli.plugins_ledger` | `PluginRegistration` | PluginContext (hermes_cli/plugins_context.py) |
 | `hermes_cli.plugins_state` | `PluginState` | PluginContext (hermes_cli/plugins_context.py) |
 | `agent.runtime_cwd` | `resolve_agent_cwd` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
+| `agent.terminal_env_provider` | `CommandApproval` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
+| `agent.terminal_env_provider` | `CommandContext` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
+| `agent.terminal_env_provider` | `current_command_context` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `agent.usage_pricing` | `CostResult` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `hermes_cli.auth_constants` | `AuthError` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |
 | `tools.environments.base` | `BaseEnvironment` | prose in memory-provider / model-provider / terminal-environment plugin pages (tools.environments:BaseEnvironment is the package's `__all__` re-export) |

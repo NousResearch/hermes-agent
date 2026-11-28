@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import hermes_yaml as yaml
+import pytest
 
 from hermes_cli.plugin_validate import validate_plugin_dir
 
@@ -283,6 +284,28 @@ def test_every_published_plugin_api_entry_passes_validate(tmp_path):
 
     sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
     assert sites == [f"uses_api.py:{len(imports)} hermes_cli.plugins.get_plugin_manager"], sites
+
+
+def test_command_context_reader_is_public_but_the_setter_is_not(tmp_path):
+    """A plugin may read the stamp and use its value types; the setter (and the module that holds
+    it) stays private, so a plugin cannot forge an approval."""
+    published = _published_entries()
+    assert "agent.terminal_env_provider:current_command_context" in published
+    assert "agent.terminal_env_provider:command_context" not in published
+    assert "tools.environments.command_context" not in published
+
+    plugin = _plugin(tmp_path / "stamper", {"env.py": (
+        "from agent.terminal_env_provider import CommandApproval, CommandContext, current_command_context\n"
+        "from tools.environments.command_context import command_context as setter\n"
+    )})
+
+    [warning] = _private_warnings(validate_plugin_dir(plugin))
+
+    sites = warning.split("release): ", 1)[1].split(". Use ctx.*")[0].split("; ")
+    assert sites == ["env.py:2 tools.environments.command_context.command_context"], sites
+    # ``agent.terminal_env_provider`` is a whole-module entry, so the setter must simply not be there.
+    with pytest.raises(ImportError):
+        from agent.terminal_env_provider import command_context
 
 
 def test_public_api_docs_page_is_generated_from_the_data_file():

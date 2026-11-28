@@ -32,6 +32,7 @@ from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
 from tools.code_execution_rpc import (
     _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
 )
+from tools.environments.command_context import CommandApproval, command_context
 from tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
@@ -606,7 +607,8 @@ def _sandbox_tools_for(enabled_tools: Optional[list[str]]) -> frozenset:
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
                          exec_start: float, session_id: Optional[str] = None,
-                         turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
+                         turn_id: Optional[str] = None, conversation_id: Optional[str] = None,
+                         approval: Optional[CommandApproval] = None) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
@@ -637,7 +639,10 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             env, sandbox_dir, "sandbox.env", "exec python3 script.py",
             rpc_dir=f"{sandbox_dir}/rpc", rpc_token=rpc_token)
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
-        script_result = env.execute(launch_cmd, timeout=timeout)
+        # The gate approved the script as a whole (not any command inside it), so the backend
+        # gets "execute_code:<kind>" and must not read it as a terminal-command approval.
+        with command_context("execute_code", task_id=effective_task_id, approval=approval):
+            script_result = env.execute(launch_cmd, timeout=timeout)
         stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)
         # Backend exit codes: 124 = timeout wrapper, 130 = SIGINT.
@@ -649,7 +654,9 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
         try:
-            env.execute(f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15)
+            cleanup = f"rm -rf {quoted_sandbox_dir}"
+            with command_context("execute_code_rpc", task_id=effective_task_id, command=cleanup):
+                env.execute(cleanup, cwd="/", timeout=15)
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
     result = _remote_result(status, stdout_text, exec_start,
@@ -671,7 +678,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[list[str]],
                     reset: bool = False, session_id: Optional[str] = None,
-                    turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
+                    turn_id: Optional[str] = None, conversation_id: Optional[str] = None,
+                    approval: Optional[CommandApproval] = None) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
@@ -684,7 +692,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
     with _call_in_flight(_resolve_container_task_id(effective_task_id)):
         exec_start = time.monotonic()
         try:
-            py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
+            with command_context("internal", task_id=effective_task_id):
+                py_check = env.execute("command -v python3 >/dev/null 2>&1 && echo OK", cwd="/", timeout=15)
             if "OK" not in py_check.get("output", ""):
                 return _error_result(f"Python 3 is not available in the {env_type} terminal "
                                      "environment. Install Python to use execute_code with remote backends.")
@@ -702,6 +711,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                     max_tool_calls=max_tool_calls, reset=bool(reset),
                     idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
                     session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                    approval=approval,
                 )
             except Exception:
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
@@ -713,7 +723,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
             return _remote_failure(exc, exec_start, 0)
         return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
                                     timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
-                                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+                                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                                    approval=approval)
 
 
 # ---- Main entry point ----
@@ -775,7 +786,7 @@ def execute_code(
     # script before either dispatch path spawns it — in this (tool-executor) thread, which holds
     # the session context. A Docker sandbox with host bind mounts gets no container fast-path.
     # See #30882.
-    from tools.approval import check_execute_code_guard
+    from tools.approval import check_execute_code_guard, gate_approval_kind
     _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
     if not _guard.get("approved", False):
         return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
@@ -791,7 +802,8 @@ def execute_code(
     if env_type != "local" or hosted_scope() is not None:
         return record_execution_backend("code", "remote", _execute_remote(
             code, task_id, enabled_tools, reset=bool(reset), session_id=session_id, turn_id=turn_id,
-            conversation_id=conversation_id))
+            conversation_id=conversation_id,
+            approval=CommandApproval(code, f"execute_code:{gate_approval_kind(_guard)}")))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.

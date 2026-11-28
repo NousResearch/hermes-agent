@@ -875,8 +875,8 @@ gateway:
     action_shutting_down: "besig om af te sluit"
     action_restarting: "besig om te herbegin"
     cron_interrupted: "⚠️ Geskeduleerde taak '{job}' is kortgeknip omdat Hermes {action} is; geen resultaat vir hierdie lopie nie. Dit sal weer volgens skedule loop, of voer dit nou uit met `hermes cron run {job}` sodra Hermes terug is."
-    notice_shutdown: "⚠️ Hermes sluit af — jou huidige taak sal onderbreek word. Wanneer dit weer aanlyn is, stuur enige boodskap en ek sal probeer voortgaan waar ons opgehou het."
-    notice_restart: "⚠️ Hermes herbegin — jou huidige taak sal onderbreek word. Stuur enige boodskap na die herbegin en ek sal probeer voortgaan waar jy opgehou het."
+    notice_shutdown: "⚠️ Hermes sluit af — jou huidige taak sal onderbreek word. As jou taak nie vanself hervat wanneer Hermes weer aanlyn is nie, stuur ’n boodskap om voort te gaan."
+    notice_restart: "⚠️ Hermes herbegin — jou huidige taak sal onderbreek word. As jou taak nie vanself hervat wanneer Hermes weer aanlyn is nie, stuur ’n boodskap om voort te gaan."
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ Gateway suksesvol herbegin. Jou sessie gaan voort."

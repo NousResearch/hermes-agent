@@ -341,6 +341,25 @@ async def test_shutdown_notifications_use_cached_live_thread_source_when_origin_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("restarting", [False, True])
+async def test_shutdown_notice_only_suggests_a_message_if_the_task_does_not_resume(monkeypatch, restarting):
+    monkeypatch.setenv("HERMES_LANGUAGE", "en")
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = restarting
+    source = make_restart_source()
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = object()
+    runner.session_store._entries[session_key] = MagicMock(origin=source)
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="notice"))
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    message = adapter.send.await_args.args[1]
+    assert "restarting" in message if restarting else "shutting down" in message
+    assert "If your task doesn't resume on its own" in message
+
+
+@pytest.mark.asyncio
 async def test_shutdown_home_channel_broadcast_carries_interim_marker():
     """Active-chat and home-channel shutdown sends are interim sends (#98432): a
     stream-is-the-message adapter must not seal an in-flight answer with the advisory,

@@ -900,8 +900,8 @@ gateway:
     action_shutting_down: "shutting down"
     action_restarting: "restarting"
     cron_interrupted: "⚠️ Scheduled job '{job}' was cut short because Hermes is {action}; no result this run. It will run again on schedule, or run it now with `hermes cron run {job}` once Hermes is back."
-    notice_shutdown: "⚠️ Hermes is shutting down — your current task will be interrupted. When it is back online, send any message and I'll try to pick up where we left off."
-    notice_restart: "⚠️ Hermes is restarting — your current task will be interrupted. Send any message after the restart and I'll try to resume where you left off."
+    notice_shutdown: "⚠️ Hermes is shutting down — your current task will be interrupted. If your task doesn't resume on its own when Hermes is back online, send a message to continue."
+    notice_restart: "⚠️ Hermes is restarting — your current task will be interrupted. If your task doesn't resume on its own when Hermes is back online, send a message to continue."
 
   startup:
     handoff_thread_title: "Hermes — {title}"

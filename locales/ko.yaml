@@ -875,8 +875,8 @@ gateway:
     action_shutting_down: "종료 중"
     action_restarting: "재시작 중"
     cron_interrupted: "⚠️ Hermes가 {action}이어서 예약 작업 '{job}'이(가) 중단되었고, 이번 실행의 결과는 없어요. 예약대로 다시 실행되며, Hermes가 돌아온 뒤 `hermes cron run {job}`으로 지금 실행할 수도 있어요."
-    notice_shutdown: "⚠️ Hermes가 종료 중이에요 — 현재 작업이 중단돼요. 다시 온라인이 되면 아무 메시지나 보내 주세요. 중단된 곳부터 이어서 진행해 볼게요."
-    notice_restart: "⚠️ Hermes가 재시작 중이에요 — 현재 작업이 중단돼요. 재시작 후 아무 메시지나 보내 주시면 중단된 곳부터 이어서 진행해 볼게요."
+    notice_shutdown: "⚠️ Hermes가 종료 중이에요 — 현재 작업이 중단돼요. Hermes가 다시 온라인이 된 뒤에도 작업이 자동으로 재개되지 않으면 메시지를 보내 계속 진행하세요."
+    notice_restart: "⚠️ Hermes가 재시작 중이에요 — 현재 작업이 중단돼요. Hermes가 다시 온라인이 된 뒤에도 작업이 자동으로 재개되지 않으면 메시지를 보내 계속 진행하세요."
   startup:
     handoff_thread_title: "Hermes — {title}"
     restarted: "♻ 게이트웨이가 성공적으로 재시작되었어요. 세션은 계속 이어져요."

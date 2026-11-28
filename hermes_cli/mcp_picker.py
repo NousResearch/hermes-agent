@@ -6,6 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import List, Optional
 
+from agent.redact import redact_sensitive_text
 from hermes_cli.colors import Colors
 from hermes_cli.cli_output import prompt_yes_no
 from hermes_cli.curses_ui import curses_single_select
@@ -57,7 +58,12 @@ def _build_rows() -> list[_Row]:
         if name in catalog_names:
             continue
         status = _STATUS_CUSTOM_ENABLED if server_enabled(cfg) else _STATUS_CUSTOM_DISABLED
-        rows.append(_Row(name, str(cfg.get("url") or cfg.get("command") or "(no transport)"), status))
+        url = cfg.get("url")
+        if url:
+            description = redact_sensitive_text(str(url), force=True, redact_url_credentials=True)
+        else:
+            description = str(cfg.get("command") or "(no transport)")
+        rows.append(_Row(name, description, status))
     return rows
 
 

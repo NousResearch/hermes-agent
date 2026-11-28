@@ -485,6 +485,25 @@ def test_android_python_reaches_the_unmanaged_start(tmp_path, monkeypatch):
     assert spawned == [home.resolve()]
 
 
+@pytest.mark.parametrize("platform", ["openbsd8", "freebsd14", "netbsd10", "dragonfly"])
+def test_bsd_python_reaches_the_unmanaged_start(tmp_path, monkeypatch, platform):
+    """CPython suffixes the release major (openbsd8, freebsd14, netbsd10). None of those
+    has systemd, launchd, or Task Scheduler, so chat's ensure must detached-start the
+    gateway the way Android does — not refuse with unsupported_supervisor_platform."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service, gateway_runtime_start as start
+
+    home = tmp_path / "profile"
+    home.mkdir(mode=0o700)
+    spawned = []
+    monkeypatch.setattr(service.sys, "platform", platform)
+    monkeypatch.setattr(service, "_run", lambda *a, **k: pytest.fail(f"no supervisor to query on {platform}"))
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", lambda target, **k: spawned.append(Path(target)))
+    result = runtime.ensure_gateway_runtime(home, timeout=0.3)
+    assert result.reason_code != "unsupported_supervisor_platform"
+    assert spawned == [home.resolve()]
+
+
 def test_s6_runtime_ensure_starts_the_registered_gateway_slot(tmp_path, monkeypatch):
     """A Docker TUI client starts its s6 gateway instead of probing systemd."""
     from hermes_cli import gateway_runtime_service as service

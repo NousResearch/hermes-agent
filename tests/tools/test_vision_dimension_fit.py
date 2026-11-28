@@ -31,13 +31,14 @@ def test_dimension_only_resize_fits_long_edge_and_reports_scale(tmp_path, size):
     assert source.read_bytes() == original
 
 
-def test_byte_budget_can_shrink_further_after_dimension_fit(tmp_path):
+@pytest.mark.parametrize("budget", [256 * 1024, 20 * 1024])
+def test_byte_budget_can_shrink_further_after_dimension_fit(tmp_path, budget):
     source = tmp_path / "dense.png"
     Image.frombytes("RGB", (1600, 900), random.Random(0).randbytes(1600 * 900 * 3)).save(source)
     result = _resize_image_for_vision(
         source, mime_type="image/png", max_dimension=1568,
-        max_base64_bytes=256 * 1024,
+        max_base64_bytes=budget,
     )
     with Image.open(BytesIO(base64.b64decode(result.partition(",")[2]))) as output:
         assert max(output.size) < 1568
-    assert len(result) <= 256 * 1024
+    assert len(result) <= budget

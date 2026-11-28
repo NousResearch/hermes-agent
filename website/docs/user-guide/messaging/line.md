@@ -146,6 +146,14 @@ display:
 
 ---
 
+## Clarify choices
+
+When the agent asks a multiple-choice question with the `clarify` tool, LINE shows the numbered question with a [Quick Reply](https://developers.line.biz/en/docs/messaging-api/using-quick-reply/) button for each choice. Tapping a button sends that choice's number, exactly as if the user had typed it.
+
+Typing still works: the number, the option text, an answer of your own, or `skip`. Quick Reply buttons disappear as soon as anyone sends another message in the chat, so the numbered list stays answerable after that. Multi-select questions and questions with more than 13 choices get the numbered list only.
+
+---
+
 ## Cron / notification delivery
 
 ```env

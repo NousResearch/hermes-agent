@@ -2159,3 +2159,47 @@ class TestStreamingRenderFormatError:
         e = MockAPIError("Error rendering prompt with jinja template: ...", status_code=500)
         result = classify_api_error(e, provider="lm-studio", model="x")
         assert result.reason != FailoverReason.format_error
+
+
+# ── DashScope/Alibaba Model Studio TPM throttle (issue #151622) ─────────
+
+
+class TestAlibabaTpmThrottle:
+    """Model Studio stamps the billing code name ``insufficient_quota`` on
+    per-minute TPM throttling: HTTP 429 + that code + the token-limit help
+    URL is a transient window, not a hard billing wall."""
+
+    _TPM_MSG = (
+        "Allocated quota exceeded, please increase your quota limit. "
+        "For details, see: https://www.alibabacloud.com/help/en/"
+        "model-studio/error-code#token-limit"
+    )
+
+    def test_429_aliyun_tpm_stays_rate_limit(self):
+        e = MockAPIError(
+            self._TPM_MSG, status_code=429,
+            body={"error": {"message": self._TPM_MSG,
+                            "type": "insufficient_quota",
+                            "code": "insufficient_quota"}},
+        )
+        result = classify_api_error(e, provider="alibaba-token-plan-cn", model="glm-5.3")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert not result.error_context.get("quota_exhausted")
+
+    def test_bare_insufficient_quota_without_token_limit_is_still_billing(self):
+        # The carve-out must stay vendor-signature-specific: an account-level
+        # exhaustion that only shares the code name keeps the old promotion.
+        e = MockAPIError(
+            "Your account quota is exhausted.", status_code=429,
+            body={"error": {"message": "Your account quota is exhausted.",
+                            "code": "insufficient_quota"}},
+        )
+        result = classify_api_error(e, provider="someapi", model="m")
+        assert result.reason == FailoverReason.billing
+
+    def test_named_daily_window_promotion_unaffected(self):
+        e = MockAPIError("You have reached your daily limit of 1M tokens per day",
+                         status_code=429)
+        result = classify_api_error(e, provider="someapi", model="m")
+        assert result.error_context.get("quota_exhausted") is True

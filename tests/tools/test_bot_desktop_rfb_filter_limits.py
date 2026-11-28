@@ -53,3 +53,37 @@ def test_truncated_set_desktop_size_waits_for_the_rest():
     for byte in msg[:-1]:
         assert parser.feed(bytes([byte])) == b""
     assert parser.feed(msg[-1:]) == msg
+
+
+def extended_clipboard_msg(flags: int, payload: bytes = b"") -> bytes:
+    body = flags.to_bytes(4, "big") + payload
+    return clipboard_header(-len(body)) + body
+
+
+@pytest.mark.parametrize("holder", [False, True])
+def test_extended_clipboard_caps_passes_even_in_watch_mode(holder):
+    """Extended Clipboard Caps negotiation carries no clipboard text and must pass before Take over."""
+    parser = RfbClientFilter(lambda: holder)
+    parser.feed(_HANDSHAKE)
+    caps_text = extended_clipboard_msg((1 << 24) | 1, b"\x00\x00\x00\x00")
+    caps_empty = extended_clipboard_msg(1 << 24)
+    assert parser.feed(caps_text + caps_empty) == caps_text + caps_empty
+
+
+@pytest.mark.parametrize("holder", [False, True])
+def test_malformed_extended_clipboard_caps_requires_lease(holder):
+    """A Caps frame with extra trailing bytes (length mismatch) must not bypass the lease gate."""
+    parser = RfbClientFilter(lambda: holder)
+    parser.feed(_HANDSHAKE)
+    malformed = extended_clipboard_msg((1 << 24) | 1, b"\x00\x00\x00\x00extra")
+    assert parser.feed(malformed) == (malformed if holder else b"")
+
+
+@pytest.mark.parametrize("holder", [False, True])
+def test_clipboard_data_messages_still_require_lease(holder):
+    """Plain ClientCutText and Extended Clipboard Notify/Provide stay gated by the lease."""
+    parser = RfbClientFilter(lambda: holder)
+    parser.feed(_HANDSHAKE)
+    plain = clipboard_header(6) + b"secret"
+    notify = extended_clipboard_msg((1 << 27) | 1)
+    assert parser.feed(plain + notify) == (plain + notify if holder else b"")

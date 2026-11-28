@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-11-23T20:38:09Z",
+  "updated_at": "2026-11-24T04:46:04Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -549,6 +549,2653 @@
           "id": "stealth/space-bunny-alpha"
         }
       ]
+    },
+    "openai": {
+      "models": [
+        {
+          "id": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5-mini"
+        },
+        {
+          "id": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-5.2-codex"
+        },
+        {
+          "id": "gpt-4.1"
+        },
+        {
+          "id": "gpt-4o"
+        },
+        {
+          "id": "gpt-4o-mini"
+        }
+      ]
+    },
+    "openai-api": {
+      "models": [
+        {
+          "id": "gpt-6.2-sol",
+          "requires": [
+            "openai_gpt62_contract"
+          ]
+        },
+        {
+          "id": "gpt-6.2-astra",
+          "requires": [
+            "openai_gpt62_contract"
+          ]
+        },
+        {
+          "id": "gpt-6.1-sol"
+        },
+        {
+          "id": "gpt-6.1-sol-pro"
+        },
+        {
+          "id": "gpt-6-sol"
+        },
+        {
+          "id": "gpt-6-sol-pro"
+        },
+        {
+          "id": "gpt-6-luna"
+        },
+        {
+          "id": "gpt-6-luna-pro"
+        },
+        {
+          "id": "gpt-5.6-sol"
+        },
+        {
+          "id": "gpt-5.6-sol-pro"
+        },
+        {
+          "id": "gpt-5.6-terra"
+        },
+        {
+          "id": "gpt-5.6-terra-pro"
+        },
+        {
+          "id": "gpt-5.6-luna"
+        },
+        {
+          "id": "gpt-5.6-luna-pro"
+        },
+        {
+          "id": "gpt-5.5"
+        },
+        {
+          "id": "gpt-5.5-pro"
+        },
+        {
+          "id": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5.4-nano"
+        },
+        {
+          "id": "gpt-5-mini"
+        },
+        {
+          "id": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-4.1"
+        },
+        {
+          "id": "gpt-4o"
+        },
+        {
+          "id": "gpt-4o-mini"
+        }
+      ]
+    },
+    "gemini": {
+      "models": [
+        {
+          "id": "gemini-3.8-flash"
+        },
+        {
+          "id": "gemini-4-neon"
+        },
+        {
+          "id": "gemini-4-hydrogen"
+        },
+        {
+          "id": "gemini-4-carbon"
+        },
+        {
+          "id": "gemini-4-argon"
+        },
+        {
+          "id": "gemini-3.7-flash"
+        },
+        {
+          "id": "gemini-3.1-pro-preview"
+        },
+        {
+          "id": "gemini-3-pro-preview"
+        },
+        {
+          "id": "gemini-3.6-flash"
+        },
+        {
+          "id": "gemini-3.1-flash-lite-preview"
+        }
+      ]
+    },
+    "zai": {
+      "models": [
+        {
+          "id": "glm-5.3"
+        },
+        {
+          "id": "glm-5.3-flash"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-5v-turbo"
+        },
+        {
+          "id": "glm-5-turbo"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "glm-4.5"
+        },
+        {
+          "id": "glm-4.5-flash"
+        }
+      ]
+    },
+    "nvidia": {
+      "models": [
+        {
+          "id": "nvidia/nemotron-3.5-super-vl-120b-a12b"
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b"
+        },
+        {
+          "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "nvidia/nemotron-3.5-lightning-30b-a3b"
+        },
+        {
+          "id": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+        },
+        {
+          "id": "z-ai/glm-5.3"
+        },
+        {
+          "id": "z-ai/glm-5.2"
+        },
+        {
+          "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "minimaxai/minimax-m3"
+        }
+      ]
+    },
+    "kimi-coding": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-for-coding"
+        },
+        {
+          "id": "kimi-for-coding-highspeed"
+        },
+        {
+          "id": "kimi-k2-thinking"
+        },
+        {
+          "id": "kimi-k2-thinking-turbo"
+        },
+        {
+          "id": "kimi-k2-turbo-preview"
+        },
+        {
+          "id": "kimi-k2-0905-preview"
+        }
+      ]
+    },
+    "kimi-coding-cn": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.7-code-highspeed"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-k2-thinking"
+        },
+        {
+          "id": "kimi-k2-turbo-preview"
+        },
+        {
+          "id": "kimi-k2-0905-preview"
+        }
+      ]
+    },
+    "stepfun": {
+      "models": [
+        {
+          "id": "step-3.7-flash"
+        },
+        {
+          "id": "step-3.5-flash"
+        },
+        {
+          "id": "step-3.5-flash-2603"
+        }
+      ]
+    },
+    "moonshot": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-k2-thinking"
+        },
+        {
+          "id": "kimi-k2-turbo-preview"
+        },
+        {
+          "id": "kimi-k2-0905-preview"
+        }
+      ]
+    },
+    "minimax": {
+      "models": [
+        {
+          "id": "MiniMax-M3"
+        },
+        {
+          "id": "MiniMax-M2.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        },
+        {
+          "id": "MiniMax-M2.1"
+        },
+        {
+          "id": "MiniMax-M2"
+        }
+      ]
+    },
+    "minimax-oauth": {
+      "models": [
+        {
+          "id": "MiniMax-M3"
+        },
+        {
+          "id": "MiniMax-M2.7"
+        },
+        {
+          "id": "MiniMax-M2.7-highspeed"
+        }
+      ]
+    },
+    "minimax-cn": {
+      "models": [
+        {
+          "id": "MiniMax-M3"
+        },
+        {
+          "id": "MiniMax-M2.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        },
+        {
+          "id": "MiniMax-M2.1"
+        },
+        {
+          "id": "MiniMax-M2"
+        }
+      ]
+    },
+    "anthropic": {
+      "models": [
+        {
+          "id": "claude-fable-5-2"
+        },
+        {
+          "id": "claude-fable-5.1"
+        },
+        {
+          "id": "claude-fable-5"
+        },
+        {
+          "id": "claude-opus-5-5"
+        },
+        {
+          "id": "claude-opus-5"
+        },
+        {
+          "id": "claude-sonnet-5"
+        },
+        {
+          "id": "claude-opus-4-8"
+        },
+        {
+          "id": "claude-opus-4-7"
+        },
+        {
+          "id": "claude-opus-4-6"
+        },
+        {
+          "id": "claude-sonnet-4-6"
+        },
+        {
+          "id": "claude-opus-4-5-20251101"
+        },
+        {
+          "id": "claude-sonnet-4-5-20250929"
+        },
+        {
+          "id": "claude-opus-4-20250514"
+        },
+        {
+          "id": "claude-sonnet-4-20250514"
+        },
+        {
+          "id": "claude-haiku-4-5-20251001"
+        }
+      ]
+    },
+    "deepseek": {
+      "models": [
+        {
+          "id": "deepseek-flash"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        }
+      ]
+    },
+    "xiaomi": {
+      "models": [
+        {
+          "id": "mimo-v2.6-pro"
+        },
+        {
+          "id": "mimo-v2.6-flash"
+        },
+        {
+          "id": "mimo-v2.6-pro-ultraspeed"
+        },
+        {
+          "id": "mimo-v2.5-pro"
+        },
+        {
+          "id": "mimo-v2.5"
+        },
+        {
+          "id": "mimo-v2-pro"
+        },
+        {
+          "id": "mimo-v2-omni"
+        },
+        {
+          "id": "mimo-v2-flash"
+        }
+      ]
+    },
+    "tencent-tokenhub": {
+      "models": [
+        {
+          "id": "hy4-preview"
+        },
+        {
+          "id": "hy3"
+        },
+        {
+          "id": "hy3-preview"
+        }
+      ]
+    },
+    "tencent-tokenplan": {
+      "models": [
+        {
+          "id": "hy4-preview"
+        },
+        {
+          "id": "hy3"
+        },
+        {
+          "id": "hy3-preview"
+        }
+      ]
+    },
+    "arcee": {
+      "models": [
+        {
+          "id": "trinity-large-thinking"
+        },
+        {
+          "id": "trinity-large-preview"
+        },
+        {
+          "id": "trinity-mini"
+        }
+      ]
+    },
+    "gmi": {
+      "models": [
+        {
+          "id": "zai-org/GLM-5.1-FP8"
+        },
+        {
+          "id": "deepseek-ai/DeepSeek-V3.2"
+        },
+        {
+          "id": "moonshotai/Kimi-K2.5"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "anthropic/claude-sonnet-5"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "openai/gpt-5.4"
+        }
+      ]
+    },
+    "opencode-zen": {
+      "models": [
+        {
+          "id": "x-preview-f-free"
+        },
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "gpt-5.6-sol"
+        },
+        {
+          "id": "gpt-5.6-terra"
+        },
+        {
+          "id": "gpt-5.6-luna"
+        },
+        {
+          "id": "gpt-5.5"
+        },
+        {
+          "id": "gpt-5.5-pro"
+        },
+        {
+          "id": "gpt-5.4-pro"
+        },
+        {
+          "id": "gpt-5.4"
+        },
+        {
+          "id": "gpt-5.4-mini"
+        },
+        {
+          "id": "gpt-5.4-nano"
+        },
+        {
+          "id": "gpt-5.3-codex"
+        },
+        {
+          "id": "gpt-5.3-codex-spark"
+        },
+        {
+          "id": "gpt-5.2"
+        },
+        {
+          "id": "gpt-5.2-codex"
+        },
+        {
+          "id": "gpt-5.1"
+        },
+        {
+          "id": "gpt-5.1-codex"
+        },
+        {
+          "id": "gpt-5.1-codex-max"
+        },
+        {
+          "id": "gpt-5.1-codex-mini"
+        },
+        {
+          "id": "gpt-5"
+        },
+        {
+          "id": "gpt-5-codex"
+        },
+        {
+          "id": "gpt-5-nano"
+        },
+        {
+          "id": "claude-fable-5"
+        },
+        {
+          "id": "claude-opus-5"
+        },
+        {
+          "id": "claude-sonnet-5"
+        },
+        {
+          "id": "claude-opus-4-8"
+        },
+        {
+          "id": "claude-opus-4-7"
+        },
+        {
+          "id": "claude-opus-4-6"
+        },
+        {
+          "id": "claude-opus-4-5"
+        },
+        {
+          "id": "claude-sonnet-4-6"
+        },
+        {
+          "id": "claude-sonnet-4-5"
+        },
+        {
+          "id": "claude-sonnet-4"
+        },
+        {
+          "id": "claude-haiku-4-5"
+        },
+        {
+          "id": "gemini-3.8-flash"
+        },
+        {
+          "id": "gemini-3.7-flash"
+        },
+        {
+          "id": "gemini-3.6-flash"
+        },
+        {
+          "id": "gemini-3.5-flash"
+        },
+        {
+          "id": "gemini-3.5-flash-lite"
+        },
+        {
+          "id": "gemini-3.1-pro"
+        },
+        {
+          "id": "gemini-3-flash"
+        },
+        {
+          "id": "grok-4.6"
+        },
+        {
+          "id": "grok-4.5"
+        },
+        {
+          "id": "grok-build-0.1"
+        },
+        {
+          "id": "muse-spark-1.2"
+        },
+        {
+          "id": "minimax-m3"
+        },
+        {
+          "id": "minimax-m2.7"
+        },
+        {
+          "id": "minimax-m2.5"
+        },
+        {
+          "id": "glm-5.3"
+        },
+        {
+          "id": "glm-5.3-flash"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "big-pickle"
+        },
+        {
+          "id": "mimo-v2.5-free"
+        },
+        {
+          "id": "nemotron-3-ultra-free"
+        },
+        {
+          "id": "nemotron-3.5-lightning-free"
+        },
+        {
+          "id": "muse-spark-1.2-contributor-free"
+        },
+        {
+          "id": "muse-spark-1.3-contributor-free"
+        }
+      ]
+    },
+    "opencode-go": {
+      "models": [
+        {
+          "id": "kimi-k3"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "gpt-5.6-luna"
+        },
+        {
+          "id": "grok-4.5"
+        },
+        {
+          "id": "glm-5.3"
+        },
+        {
+          "id": "glm-5.3-flash"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "mimo-v2.5-pro"
+        },
+        {
+          "id": "mimo-v2.5"
+        },
+        {
+          "id": "mimo-v2-pro"
+        },
+        {
+          "id": "mimo-v2-omni"
+        },
+        {
+          "id": "minimax-m3"
+        },
+        {
+          "id": "minimax-m2.7"
+        },
+        {
+          "id": "minimax-m2.5"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "qwen3.8-max"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "hy3"
+        },
+        {
+          "id": "hy3-preview"
+        },
+        {
+          "id": "muse-spark-1.2-contributor"
+        },
+        {
+          "id": "muse-spark-1.3-contributor"
+        }
+      ]
+    },
+    "kilocode": {
+      "models": [
+        {
+          "id": "anthropic/claude-opus-4.6"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "openai/gpt-5.4"
+        },
+        {
+          "id": "google/gemini-3-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-flash-preview"
+        }
+      ]
+    },
+    "alibaba": {
+      "models": [
+        {
+          "id": "qwen3.8-max"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash-0731"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-cn": {
+      "models": [
+        {
+          "id": "qwen3.8-max"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash-0731"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-coding-plan": {
+      "models": [
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-max-2026-01-23"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-coding-plan-cn": {
+      "models": [
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.5-plus"
+        },
+        {
+          "id": "qwen3-max-2026-01-23"
+        },
+        {
+          "id": "qwen3-coder-plus"
+        },
+        {
+          "id": "qwen3-coder-next"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5"
+        },
+        {
+          "id": "glm-4.7"
+        },
+        {
+          "id": "MiniMax-M2.5"
+        }
+      ]
+    },
+    "alibaba-token-plan": {
+      "models": [
+        {
+          "id": "qwen3.8-max-0902"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "deepseek-v3.2"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        }
+      ]
+    },
+    "alibaba-token-plan-cn": {
+      "models": [
+        {
+          "id": "qwen3.8-max-0902"
+        },
+        {
+          "id": "qwen3.7-max"
+        },
+        {
+          "id": "qwen3.7-plus"
+        },
+        {
+          "id": "qwen3.6-plus"
+        },
+        {
+          "id": "qwen3.6-flash"
+        },
+        {
+          "id": "deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek-v4-flash"
+        },
+        {
+          "id": "deepseek-v3.2"
+        },
+        {
+          "id": "kimi-k2.7-code"
+        },
+        {
+          "id": "kimi-k2.6"
+        },
+        {
+          "id": "kimi-k2.5"
+        },
+        {
+          "id": "glm-5.2"
+        },
+        {
+          "id": "glm-5.1"
+        },
+        {
+          "id": "glm-5"
+        }
+      ]
+    },
+    "huggingface": {
+      "models": [
+        {
+          "id": "moonshotai/Kimi-K2.5"
+        },
+        {
+          "id": "Qwen/Qwen3.5-397B-A17B"
+        },
+        {
+          "id": "Qwen/Qwen3.5-35B-A3B"
+        },
+        {
+          "id": "deepseek-ai/DeepSeek-V3.2"
+        },
+        {
+          "id": "MiniMaxAI/MiniMax-M2.5"
+        },
+        {
+          "id": "zai-org/GLM-5"
+        },
+        {
+          "id": "XiaomiMiMo/MiMo-V2-Flash"
+        },
+        {
+          "id": "moonshotai/Kimi-K2-Thinking"
+        },
+        {
+          "id": "moonshotai/Kimi-K2.6"
+        }
+      ]
+    },
+    "bedrock": {
+      "models": [
+        {
+          "id": "us.anthropic.claude-sonnet-5"
+        },
+        {
+          "id": "us.anthropic.claude-opus-5-5"
+        },
+        {
+          "id": "us.anthropic.claude-sonnet-4-6"
+        },
+        {
+          "id": "us.anthropic.claude-opus-4-6-v1"
+        },
+        {
+          "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+        },
+        {
+          "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        },
+        {
+          "id": "openai.gpt-6-astra",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-6.1-sol",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-6.1-terra",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-6-sol",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-6-luna",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-5.5",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-5.6-sol",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-5.6-terra",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-5.6-luna",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "openai.gpt-5.4",
+          "requires": [
+            "bedrock_openai_responses"
+          ]
+        },
+        {
+          "id": "us.amazon.nova-pro-v1:0"
+        },
+        {
+          "id": "us.amazon.nova-lite-v1:0"
+        },
+        {
+          "id": "us.amazon.nova-micro-v1:0"
+        },
+        {
+          "id": "deepseek.v3.2"
+        },
+        {
+          "id": "us.meta.llama4-maverick-17b-instruct-v1:0"
+        },
+        {
+          "id": "us.meta.llama4-scout-17b-instruct-v1:0"
+        }
+      ]
+    },
+    "vertex": {
+      "models": [
+        {
+          "id": "google/gemini-3.8-flash"
+        },
+        {
+          "id": "google/gemini-4-neon"
+        },
+        {
+          "id": "google/gemini-4-hydrogen"
+        },
+        {
+          "id": "google/gemini-4-carbon"
+        },
+        {
+          "id": "google/gemini-4-argon"
+        },
+        {
+          "id": "google/gemini-3.7-flash"
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-pro-preview"
+        },
+        {
+          "id": "google/gemini-3.6-flash"
+        },
+        {
+          "id": "google/gemini-3.5-flash"
+        },
+        {
+          "id": "google/gemini-3.5-flash-lite"
+        },
+        {
+          "id": "google/gemini-3-flash-preview"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite"
+        }
+      ]
+    },
+    "novita": {
+      "models": [
+        {
+          "id": "moonshotai/kimi-k2.5"
+        },
+        {
+          "id": "minimax/minimax-m2.7"
+        },
+        {
+          "id": "zai-org/glm-5"
+        },
+        {
+          "id": "deepseek/deepseek-v3-0324"
+        },
+        {
+          "id": "deepseek/deepseek-r1-0528"
+        },
+        {
+          "id": "qwen/qwen3-235b-a22b-fp8"
+        }
+      ]
+    },
+    "ai-gateway": {
+      "models": [
+        {
+          "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "alibaba/qwen3.6-plus"
+        },
+        {
+          "id": "zai/glm-5.1"
+        },
+        {
+          "id": "minimax/minimax-m2.7"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "anthropic/claude-opus-4.7"
+        },
+        {
+          "id": "anthropic/claude-opus-4.6"
+        },
+        {
+          "id": "anthropic/claude-haiku-4.5"
+        },
+        {
+          "id": "openai/gpt-5.4"
+        },
+        {
+          "id": "openai/gpt-5.4-mini"
+        },
+        {
+          "id": "openai/gpt-5.3-codex"
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-flash"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "xai/grok-4.20-reasoning"
+        }
+      ]
+    }
+  },
+  "model_sets": {
+    "openai_gpt62_contract": [
+      "gpt-6.2-astra",
+      "gpt-6.2-sol"
+    ],
+    "bedrock_openai_responses": [
+      "openai.gpt-5.4",
+      "openai.gpt-5.5",
+      "openai.gpt-5.6-luna",
+      "openai.gpt-5.6-sol",
+      "openai.gpt-5.6-terra",
+      "openai.gpt-6-astra",
+      "openai.gpt-6-luna",
+      "openai.gpt-6-sol",
+      "openai.gpt-6.1-sol",
+      "openai.gpt-6.1-terra"
+    ],
+    "anthropic_fast_mode": [
+      "claude-fable-5-2",
+      "claude-mythos-5-2",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-opus-5-5"
+    ],
+    "openai_ultrafast": [
+      "gpt-6-astra",
+      "gpt-6.1-sol",
+      "gpt-6.2-astra",
+      "gpt-6.2-sol"
+    ],
+    "openai_fast_eu": [
+      "gpt-6-luna",
+      "gpt-6.1-sol",
+      "gpt-6.1-terra",
+      "gpt-6.2-astra",
+      "gpt-6.2-sol"
+    ]
+  },
+  "model_metadata": {
+    "openai": {
+      "gpt-6.2-astra": {
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "structured_output": true,
+        "temperature": false,
+        "family": "gpt-6"
+      },
+      "gpt-6.2-sol": {
+        "limit": {
+          "context": 1050000,
+          "input": 922000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "structured_output": true,
+        "temperature": false,
+        "family": "gpt-6"
+      },
+      "gpt-6-astra": {
+        "limit": {
+          "context": 1050000,
+          "output": 128000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "gpt-6"
+      }
+    },
+    "deepseek": {
+      "deepseek-flash": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      },
+      "deepseek-v4-flash": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      },
+      "deepseek-v4.1-flash": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      },
+      "deepseek-v4-flash-vision-exp": {
+        "limit": {
+          "context": 1000000,
+          "output": 384000
+        },
+        "modalities": {
+          "input": [
+            "text",
+            "image"
+          ],
+          "output": [
+            "text"
+          ]
+        },
+        "tool_call": true,
+        "reasoning": true,
+        "family": "deepseek-flash"
+      }
+    }
+  },
+  "context_lengths": {
+    "default": {
+      "claude-fable-5": 1000000,
+      "claude-fable": 1000000,
+      "claude-mythos": 1000000,
+      "claude-opus-5": 1000000,
+      "claude-sonnet-5": 1000000,
+      "claude-haiku-5": 1000000,
+      "claude-opus-4-8": 1000000,
+      "claude-opus-4.8": 1000000,
+      "claude-opus-4-7": 1000000,
+      "claude-opus-4.7": 1000000,
+      "claude-opus-4-6": 1000000,
+      "claude-sonnet-4-6": 1000000,
+      "claude-opus-4.6": 1000000,
+      "claude-sonnet-4.6": 1000000,
+      "claude": 200000,
+      "gpt-6.2-astra": 1050000,
+      "gpt-6.2-sol": 1050000,
+      "gpt-6-astra": 1050000,
+      "gpt-6.1-sol": 1050000,
+      "gpt-6.1-terra": 1050000,
+      "gpt-6-sol": 1050000,
+      "gpt-6-luna": 1050000,
+      "gpt-5.6": 1050000,
+      "gpt-5.6-luna": 1050000,
+      "gpt-5.6-terra": 1050000,
+      "gpt-5.6-sol": 1050000,
+      "gpt-5.5": 1050000,
+      "gpt-5.4-nano": 400000,
+      "gpt-5.4-mini": 400000,
+      "gpt-5.4": 1050000,
+      "gpt-5.3-codex-spark": 128000,
+      "gpt-5.1-chat": 128000,
+      "gpt-5": 400000,
+      "gpt-4.1": 1047576,
+      "gpt-4": 128000,
+      "gemini": 1048576,
+      "gemma-4": 256000,
+      "gemma4": 256000,
+      "gemma-4-31b": 256000,
+      "gemma-3": 131072,
+      "gemma": 8192,
+      "deepseek-v4-pro": 1000000,
+      "deepseek-v4.1-flash": 1000000,
+      "deepseek-v4-flash": 1000000,
+      "deepseek-chat": 1000000,
+      "deepseek-reasoner": 1000000,
+      "deepseek-flash": 1000000,
+      "deepseek": 128000,
+      "llama": 131072,
+      "muse-spark-1.3": 1048576,
+      "muse-spark": 1048576,
+      "inkling": 1048576,
+      "qwen3.8-max": 1000000,
+      "qwen3.8-flash": 1000000,
+      "qwen3.6-plus": 1048576,
+      "qwen3.7-plus": 1048576,
+      "qwen3-coder-plus": 1000000,
+      "qwen3-coder": 262144,
+      "qwen3-max": 262144,
+      "qwen": 131072,
+      "minimax-m3": 1000000,
+      "minimax": 204800,
+      "glm-5.3": 1048576,
+      "glm-5.3-flash": 1048576,
+      "glm-5.3:batch": 1048576,
+      "glm-5.3:us": 1048576,
+      "glm-5.3-flash:batch": 1048576,
+      "glm-5.3-flash:us": 1048576,
+      "glm-5.3-flashx": 1048576,
+      "glm-5.2": 1048576,
+      "glm-5.2:free": 256000,
+      "glm-5.1": 204800,
+      "glm-5-turbo": 202752,
+      "glm-5v-turbo": 202752,
+      "glm-5": 204800,
+      "glm-4.7-flash": 202752,
+      "glm-4.7": 204800,
+      "glm-4.6v": 131072,
+      "glm-4.6": 204800,
+      "glm": 202752,
+      "grok-composer": 200000,
+      "grok-build-latest": 500000,
+      "grok-build": 256000,
+      "grok-code-fast": 256000,
+      "grok-2-vision": 8192,
+      "grok-4-fast": 2000000,
+      "grok-4.20": 1000000,
+      "grok-4.7": 500000,
+      "grok-4.6": 500000,
+      "grok-4.5": 500000,
+      "grok-4.3": 1000000,
+      "grok-4": 256000,
+      "grok-3": 131072,
+      "grok-2": 131072,
+      "grok": 131072,
+      "kimi-k3": 1048576,
+      "kimi": 262144,
+      "solar-open2": 262144,
+      "solar-pro3": 131072,
+      "solar-pro2": 65536,
+      "solar-mini": 32768,
+      "solar-": 524288,
+      "hy4-preview": 1048576,
+      "hy3-preview": 262144,
+      "hy3": 262144,
+      "x-preview-f": 1048576,
+      "ox-alpha": 1048576,
+      "union-alpha": 262144,
+      "nemotron-3.5-lightning": 1000000,
+      "nemotron-3.5-super-vl": 1000000,
+      "nemotron": 131072,
+      "laguna-s-2.1": 262144,
+      "laguna-xs-2.1": 262144,
+      "trinity": 262144,
+      "elephant": 262144,
+      "Qwen/Qwen3.5-397B-A17B": 131072,
+      "Qwen/Qwen3.5-35B-A3B": 131072,
+      "deepseek-ai/DeepSeek-V3.2": 65536,
+      "moonshotai/Kimi-K2.5": 262144,
+      "moonshotai/Kimi-K2.6": 262144,
+      "moonshotai/Kimi-K2-Thinking": 262144,
+      "MiniMaxAI/MiniMax-M2.5": 204800,
+      "XiaomiMiMo/MiMo-V2-Flash": 262144,
+      "mimo-v2.6-pro-ultraspeed": 1048576,
+      "mimo-v2.6-pro": 1048576,
+      "mimo-v2.6-flash": 1048576,
+      "mimo-v2-pro": 1048576,
+      "mimo-v2.5-pro": 1048576,
+      "mimo-v2.5": 1048576,
+      "mimo-v2-omni": 262144,
+      "mimo-v2-flash": 262144,
+      "zai-org/GLM-5": 202752
+    },
+    "bedrock": {
+      "xai.grok-4.6": 500000,
+      "anthropic.claude-fable-5": 1000000,
+      "anthropic.claude-fable": 1000000,
+      "anthropic.claude-sonnet-5": 1000000,
+      "anthropic.claude-opus-5": 1000000,
+      "anthropic.claude-opus-4-8": 1000000,
+      "anthropic.claude-opus-4-7": 1000000,
+      "anthropic.claude-mythos": 1000000,
+      "anthropic.claude-opus-4-6": 1000000,
+      "anthropic.claude-sonnet-4-6": 1000000,
+      "anthropic.claude-sonnet-4-5": 200000,
+      "anthropic.claude-haiku-4-5": 200000,
+      "anthropic.claude-opus-4": 200000,
+      "anthropic.claude-sonnet-4": 200000,
+      "anthropic.claude-3-5-sonnet": 200000,
+      "anthropic.claude-3-5-haiku": 200000,
+      "anthropic.claude-3-opus": 200000,
+      "anthropic.claude-3-sonnet": 200000,
+      "anthropic.claude-3-haiku": 200000,
+      "amazon.nova-pro": 300000,
+      "amazon.nova-lite": 300000,
+      "amazon.nova-micro": 128000,
+      "meta.llama4-maverick": 128000,
+      "meta.llama4-scout": 128000,
+      "meta.llama3-3-70b-instruct": 128000,
+      "mistral.mistral-large": 128000,
+      "deepseek.v3": 128000,
+      "amazon.nova-2-lite": 1000000,
+      "ai21.jamba-1-5": 256000,
+      "google.gemma-4-26b": 256000,
+      "google.gemma-4-31b": 256000,
+      "minimax.minimax-m2.1": 196000,
+      "minimax.minimax-m2.5": 196000,
+      "mistral.devstral-2": 256000,
+      "mistral.mistral-large-3": 256000,
+      "moonshotai.kimi-k2.5": 256000,
+      "moonshot.kimi-k2-thinking": 256000,
+      "moonshotai.kimi-k2-thinking": 256000,
+      "moonshotai.kimi-k3": 1000000,
+      "qwen.qwen3-coder": 256000,
+      "zai.glm-4.7": 203000,
+      "zai.glm-5": 200000,
+      "zai.glm-5.3": 1000000,
+      "openai.gpt-6.1-sol": 1000000,
+      "openai.gpt-6-astra": 1050000,
+      "openai.gpt-6.1-terra": 1050000,
+      "openai.gpt-6-sol": 1050000,
+      "openai.gpt-6-luna": 1050000,
+      "openai.gpt-5.5": 1050000,
+      "openai.gpt-5.6-sol": 1050000,
+      "openai.gpt-5.6-terra": 1050000,
+      "openai.gpt-5.6-luna": 1050000,
+      "openai.gpt-5.4": 1050000
+    },
+    "codex_oauth": {
+      "gpt-6.2-astra": 272000,
+      "gpt-6.2-sol": 500000,
+      "gpt-6-astra": 272000,
+      "gpt-6.1-sol": 272000,
+      "gpt-6-sol": 272000,
+      "gpt-6-luna": 272000,
+      "gpt-5.1-codex-max": 272000,
+      "gpt-5.1-codex-mini": 272000,
+      "gpt-5.3-codex": 272000,
+      "gpt-5.3-codex-spark": 128000,
+      "gpt-5.2-codex": 272000,
+      "gpt-5.4-mini": 272000,
+      "gpt-5.6-sol": 272000,
+      "gpt-5.6-terra": 272000,
+      "gpt-5.6-luna": 272000,
+      "gpt-daybreak-blue-latest": 272000,
+      "gpt-5.5": 272000,
+      "gpt-5.4": 272000,
+      "gpt-5.2": 272000,
+      "gpt-5": 272000
+    }
+  },
+  "pricing": {
+    "official_docs": {
+      "openai": {
+        "gpt-5.6-sol": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "30.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-terra": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.25",
+          "cache_write_cost_per_million": "3.125",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-luna": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "6.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-4o": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "1.25",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4o-mini": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4.1": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.50",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4.1-mini": {
+          "input_cost_per_million": "0.40",
+          "output_cost_per_million": "1.60",
+          "cache_read_cost_per_million": "0.10",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-4.1-nano": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.40",
+          "cache_read_cost_per_million": "0.025",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "o3": {
+          "input_cost_per_million": "10.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "2.50",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "o3-mini": {
+          "input_cost_per_million": "1.10",
+          "output_cost_per_million": "4.40",
+          "cache_read_cost_per_million": "0.55",
+          "source_url": "https://openai.com/api/pricing/",
+          "pricing_version": "openai-pricing-2026-03-16"
+        },
+        "gpt-6-astra": {
+          "input_cost_per_million": "10.00",
+          "output_cost_per_million": "50.00",
+          "cache_read_cost_per_million": "1.00",
+          "cache_write_cost_per_million": "12.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
+          "pricing_version": "openai-gpt-6-astra-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "20.00",
+          "output_cost_per_million_above": "75.00",
+          "cache_read_cost_per_million_above": "2.00",
+          "cache_write_cost_per_million_above": "25.00"
+        },
+        "gpt-6-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.40",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6.1-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6-luna": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.50",
+          "cache_read_cost_per_million": "0.01",
+          "cache_write_cost_per_million": "0.125",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "0.20",
+          "output_cost_per_million_above": "0.75",
+          "cache_read_cost_per_million_above": "0.02",
+          "cache_write_cost_per_million_above": "0.25"
+        },
+        "gpt-6.2-astra": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.40",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.2-astra",
+          "pricing_version": "openai-gpt-6.2-2026-11",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "16.00",
+          "output_cost_per_million_above": "60.000",
+          "cache_read_cost_per_million_above": "0.80",
+          "cache_write_cost_per_million_above": "20.00"
+        },
+        "gpt-6.2-sol": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.2-sol",
+          "pricing_version": "openai-gpt-6.2-2026-11",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.000",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-5.6-sol-pro": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "30.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-sol-900k": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "30.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-terra-pro": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.25",
+          "cache_write_cost_per_million": "3.125",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-terra-900k": {
+          "input_cost_per_million": "2.50",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.25",
+          "cache_write_cost_per_million": "3.125",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-luna-pro": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "6.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-5.6-luna-900k": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "6.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://openai.com/index/previewing-gpt-5-6-sol/",
+          "pricing_version": "openai-gpt-5.6-2026-07"
+        },
+        "gpt-6-sol-pro": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.40",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6-sol-900k": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.40",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6-luna-pro": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.50",
+          "cache_read_cost_per_million": "0.01",
+          "cache_write_cost_per_million": "0.125",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "0.20",
+          "output_cost_per_million_above": "0.75",
+          "cache_read_cost_per_million_above": "0.02",
+          "cache_write_cost_per_million_above": "0.25"
+        },
+        "gpt-6-luna-900k": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.50",
+          "cache_read_cost_per_million": "0.01",
+          "cache_write_cost_per_million": "0.125",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "0.20",
+          "output_cost_per_million_above": "0.75",
+          "cache_read_cost_per_million_above": "0.02",
+          "cache_write_cost_per_million_above": "0.25"
+        },
+        "gpt-6.1-sol-pro": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        },
+        "gpt-6.1-sol-900k": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+          "pricing_version": "openai-gpt-6-tiers-2026-09",
+          "tier_threshold_tokens": 272000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "15.00",
+          "cache_read_cost_per_million_above": "0.20",
+          "cache_write_cost_per_million_above": "5.00"
+        }
+      },
+      "anthropic": {
+        "claude-opus-4-8": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-7": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-7-20250507": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-6": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-6-20250414": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-5": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-6": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-6-20250414": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-5": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-4-20250514": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-5-sonnet-20241022": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-haiku-4-5": {
+          "input_cost_per_million": "1.00",
+          "output_cost_per_million": "5.00",
+          "cache_read_cost_per_million": "0.10",
+          "cache_write_cost_per_million": "1.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-20250514": {
+          "input_cost_per_million": "15.00",
+          "output_cost_per_million": "75.00",
+          "cache_read_cost_per_million": "1.50",
+          "cache_write_cost_per_million": "18.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-opus-20240229": {
+          "input_cost_per_million": "15.00",
+          "output_cost_per_million": "75.00",
+          "cache_read_cost_per_million": "1.50",
+          "cache_write_cost_per_million": "18.75",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-5-haiku-20241022": {
+          "input_cost_per_million": "0.80",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.08",
+          "cache_write_cost_per_million": "1.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-3-haiku-20240307": {
+          "input_cost_per_million": "0.25",
+          "output_cost_per_million": "1.25",
+          "cache_read_cost_per_million": "0.03",
+          "cache_write_cost_per_million": "0.30",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-opus-4-8-fast": {
+          "input_cost_per_million": "10.00",
+          "output_cost_per_million": "50.00",
+          "cache_read_cost_per_million": "1.00",
+          "cache_write_cost_per_million": "12.50",
+          "source_url": "https://openrouter.ai/anthropic/claude-opus-4.8-fast",
+          "pricing_version": "anthropic-pricing-2026-05"
+        },
+        "claude-sonnet-5": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "2.50",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-06-intro"
+        },
+        "claude-opus-5": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-09"
+        },
+        "claude-opus-5-5": {
+          "input_cost_per_million": "4.00",
+          "output_cost_per_million": "20.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "5.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-09"
+        },
+        "claude-fable-5-2": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-11"
+        },
+        "claude-mythos-5-2": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://platform.claude.com/docs/en/about-claude/pricing",
+          "pricing_version": "anthropic-pricing-2026-11"
+        }
+      },
+      "deepseek": {
+        "deepseek-flash": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-v4-flash": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-chat": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-reasoner": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.003",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        },
+        "deepseek-v4-pro": {
+          "input_cost_per_million": "0.66",
+          "output_cost_per_million": "1.98",
+          "cache_read_cost_per_million": "0.022",
+          "source_url": "https://api-docs.deepseek.com/quick_start/pricing",
+          "pricing_version": "deepseek-pricing-2026-09-10"
+        }
+      },
+      "google": {
+        "gemini-4-neon": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.15",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-11-18"
+        },
+        "gemini-4-hydrogen": {
+          "input_cost_per_million": "1.50",
+          "output_cost_per_million": "7.50",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-11-12"
+        },
+        "gemini-4-carbon": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-11-10"
+        },
+        "gemini-4-argon": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.10",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-10-13"
+        },
+        "gemini-3.8-flash": {
+          "input_cost_per_million": "0.75",
+          "output_cost_per_million": "3.75",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-09-02"
+        },
+        "gemini-3.7-flash": {
+          "input_cost_per_million": "0.75",
+          "output_cost_per_million": "3.75",
+          "cache_read_cost_per_million": "0.075",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-09-02"
+        },
+        "gemini-3.6-flash": {
+          "input_cost_per_million": "1.50",
+          "output_cost_per_million": "7.50",
+          "cache_read_cost_per_million": "0.15",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-07-28"
+        },
+        "gemini-3.5-flash-lite": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "2.50",
+          "cache_read_cost_per_million": "0.03",
+          "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+          "pricing_version": "google-pricing-2026-07-28"
+        },
+        "gemini-3.5-flash": {
+          "input_cost_per_million": "1.50",
+          "output_cost_per_million": "9.00",
+          "cache_read_cost_per_million": "0.15",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3.1-flash-lite": {
+          "input_cost_per_million": "0.25",
+          "output_cost_per_million": "1.50",
+          "cache_read_cost_per_million": "0.025",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3-pro-preview": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "12.00",
+          "cache_read_cost_per_million": "0.20",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3-flash-preview": {
+          "input_cost_per_million": "0.50",
+          "output_cost_per_million": "3.00",
+          "cache_read_cost_per_million": "0.05",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-2.5-flash": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.015",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-2.0-flash": {
+          "input_cost_per_million": "0.10",
+          "output_cost_per_million": "0.40",
+          "cache_read_cost_per_million": "0.01",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        },
+        "gemini-3.1-pro": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "12.00",
+          "cache_read_cost_per_million": "0.20",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07",
+          "tier_threshold_tokens": 200000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "18.00",
+          "cache_read_cost_per_million_above": "0.40"
+        },
+        "gemini-2.5-pro": {
+          "input_cost_per_million": "1.25",
+          "output_cost_per_million": "10.00",
+          "cache_read_cost_per_million": "0.125",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07",
+          "tier_threshold_tokens": 200000,
+          "input_cost_per_million_above": "2.50",
+          "output_cost_per_million_above": "15.00"
+        },
+        "gemini-3.1-pro-preview": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "12.00",
+          "cache_read_cost_per_million": "0.20",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07",
+          "tier_threshold_tokens": 200000,
+          "input_cost_per_million_above": "4.00",
+          "output_cost_per_million_above": "18.00",
+          "cache_read_cost_per_million_above": "0.40"
+        },
+        "gemini-3.1-flash-lite-preview": {
+          "input_cost_per_million": "0.25",
+          "output_cost_per_million": "1.50",
+          "cache_read_cost_per_million": "0.025",
+          "source_url": "https://ai.google.dev/pricing",
+          "pricing_version": "google-pricing-2026-07-07"
+        }
+      },
+      "bedrock": {
+        "anthropic.claude-opus-4-8": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-07"
+        },
+        "anthropic.claude-opus-4-7": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-07"
+        },
+        "anthropic.claude-opus-4-6": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-07"
+        },
+        "anthropic.claude-opus-5": {
+          "input_cost_per_million": "5.00",
+          "output_cost_per_million": "25.00",
+          "cache_read_cost_per_million": "0.50",
+          "cache_write_cost_per_million": "6.25",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-09"
+        },
+        "anthropic.claude-opus-5-5": {
+          "input_cost_per_million": "4.00",
+          "output_cost_per_million": "20.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "5.00",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-09"
+        },
+        "anthropic.claude-fable-5-2": {
+          "input_cost_per_million": "8.00",
+          "output_cost_per_million": "40.00",
+          "cache_read_cost_per_million": "0.20",
+          "cache_write_cost_per_million": "10.00",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "anthropic-list-2026-11"
+        },
+        "anthropic.claude-sonnet-5": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-06"
+        },
+        "anthropic.claude-sonnet-4-6": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "anthropic.claude-sonnet-4-5": {
+          "input_cost_per_million": "3.00",
+          "output_cost_per_million": "15.00",
+          "cache_read_cost_per_million": "0.30",
+          "cache_write_cost_per_million": "3.75",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "anthropic.claude-haiku-4-5": {
+          "input_cost_per_million": "0.80",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.08",
+          "cache_write_cost_per_million": "1.00",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "amazon.nova-pro": {
+          "input_cost_per_million": "0.80",
+          "output_cost_per_million": "3.20",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "amazon.nova-lite": {
+          "input_cost_per_million": "0.06",
+          "output_cost_per_million": "0.24",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        },
+        "amazon.nova-micro": {
+          "input_cost_per_million": "0.035",
+          "output_cost_per_million": "0.14",
+          "source_url": "https://aws.amazon.com/bedrock/pricing/",
+          "pricing_version": "bedrock-pricing-2026-04"
+        }
+      },
+      "minimax": {
+        "minimax-m2.7": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "pricing_version": "minimax-pricing-2026-04"
+        }
+      },
+      "minimax-cn": {
+        "minimax-m2.7": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "pricing_version": "minimax-pricing-2026-04"
+        }
+      },
+      "fireworks": {
+        "kimi-k2p6": {
+          "input_cost_per_million": "0.95",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.16",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p7-code": {
+          "input_cost_per_million": "0.95",
+          "output_cost_per_million": "4.00",
+          "cache_read_cost_per_million": "0.19",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p2": {
+          "input_cost_per_million": "1.40",
+          "output_cost_per_million": "4.40",
+          "cache_read_cost_per_million": "0.14",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "deepseek-v4-pro": {
+          "input_cost_per_million": "1.74",
+          "output_cost_per_million": "3.48",
+          "cache_read_cost_per_million": "0.145",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "deepseek-v4-flash": {
+          "input_cost_per_million": "0.14",
+          "output_cost_per_million": "0.28",
+          "cache_read_cost_per_million": "0.028",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "qwen3p7-plus": {
+          "input_cost_per_million": "0.40",
+          "output_cost_per_million": "1.60",
+          "cache_read_cost_per_million": "0.08",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "minimax-m3": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "cache_read_cost_per_million": "0.06",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "gpt-oss-120b": {
+          "input_cost_per_million": "0.15",
+          "output_cost_per_million": "0.60",
+          "cache_read_cost_per_million": "0.015",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "gpt-oss-20b": {
+          "input_cost_per_million": "0.07",
+          "output_cost_per_million": "0.30",
+          "cache_read_cost_per_million": "0.035",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p1": {
+          "input_cost_per_million": "1.40",
+          "output_cost_per_million": "4.40",
+          "cache_read_cost_per_million": "0.26",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "minimax-m2p7": {
+          "input_cost_per_million": "0.30",
+          "output_cost_per_million": "1.20",
+          "cache_read_cost_per_million": "0.06",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p6-fast": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.30",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p6-turbo": {
+          "input_cost_per_million": "2.00",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.30",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "kimi-k2p7-code-fast": {
+          "input_cost_per_million": "1.90",
+          "output_cost_per_million": "8.00",
+          "cache_read_cost_per_million": "0.38",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p2-fast": {
+          "input_cost_per_million": "2.10",
+          "output_cost_per_million": "6.60",
+          "cache_read_cost_per_million": "0.21",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        },
+        "glm-5p1-fast": {
+          "input_cost_per_million": "2.80",
+          "output_cost_per_million": "8.80",
+          "cache_read_cost_per_million": "0.52",
+          "source_url": "https://docs.fireworks.ai/serverless/pricing",
+          "pricing_version": "fireworks-pricing-2026-07"
+        }
+      }
+    },
+    "anthropic_fast_mode": {
+      "claude-opus-4-8": {
+        "input_cost_per_million": "10.00",
+        "output_cost_per_million": "50.00",
+        "cache_read_cost_per_million": "1.00",
+        "cache_write_cost_per_million": "12.50",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-opus-5": {
+        "input_cost_per_million": "10.00",
+        "output_cost_per_million": "50.00",
+        "cache_read_cost_per_million": "1.00",
+        "cache_write_cost_per_million": "12.50",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-opus-5-5": {
+        "input_cost_per_million": "8.00",
+        "output_cost_per_million": "40.00",
+        "cache_read_cost_per_million": "0.40",
+        "cache_write_cost_per_million": "10.00",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-fable-5-2": {
+        "input_cost_per_million": "16.00",
+        "output_cost_per_million": "80.00",
+        "cache_read_cost_per_million": "0.40",
+        "cache_write_cost_per_million": "20.00",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      },
+      "claude-mythos-5-2": {
+        "input_cost_per_million": "16.00",
+        "output_cost_per_million": "80.00",
+        "cache_read_cost_per_million": "0.40",
+        "cache_write_cost_per_million": "20.00",
+        "source_url": "https://platform.claude.com/docs/en/about-claude/pricing#fast-mode-pricing",
+        "pricing_version": "anthropic-fast-mode-2026-09"
+      }
+    },
+    "openai_ultrafast": {
+      "gpt-6-astra": {
+        "input_cost_per_million": "60.00",
+        "output_cost_per_million": "300.00",
+        "cache_read_cost_per_million": "6.00",
+        "cache_write_cost_per_million": "75.00",
+        "source_url": "https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
+        "pricing_version": "openai-ultrafast-2026-09",
+        "tier_threshold_tokens": 272000,
+        "input_cost_per_million_above": "120.00",
+        "output_cost_per_million_above": "450.00",
+        "cache_read_cost_per_million_above": "12.00",
+        "cache_write_cost_per_million_above": "150.00"
+      },
+      "gpt-6.1-sol": {
+        "input_cost_per_million": "12.00",
+        "output_cost_per_million": "60.00",
+        "cache_read_cost_per_million": "0.60",
+        "cache_write_cost_per_million": "15.00",
+        "source_url": "https://developers.openai.com/api/docs/pricing?latest-pricing=ultrafast",
+        "pricing_version": "openai-ultrafast-2026-10-08",
+        "tier_threshold_tokens": 272000,
+        "input_cost_per_million_above": "24.00",
+        "output_cost_per_million_above": "90.00",
+        "cache_read_cost_per_million_above": "1.20",
+        "cache_write_cost_per_million_above": "30.00"
+      }
     }
   }
 }

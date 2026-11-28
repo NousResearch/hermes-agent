@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from hermes_cli.model_catalog import extend_context_lengths
+
 logger = logging.getLogger(__name__)
 
 _warned_pins: set = set()
@@ -100,7 +102,7 @@ def advertised_context_length(model: str, base_url: str = "") -> Optional[int]:
     ctx = entry.get("context_length") if isinstance(entry, dict) else None
     if isinstance(ctx, int) and ctx > 0:
         return ctx
-    hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, model.lower())
+    hit = _longest_key_match(extend_context_lengths("default", DEFAULT_CONTEXT_LENGTHS), model.lower())
     return hit[1] if hit else None
 
 

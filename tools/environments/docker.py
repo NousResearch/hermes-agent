@@ -117,6 +117,13 @@ def _get_active_profile_name() -> str:
     return home_profile_name()
 
 
+def _new_container_name() -> str:
+    """``hermes-<profile>-<rand>``: the profile segment is display-only (identity lives in the
+    ``hermes-profile`` label and reuse fingerprint), so lossy sanitization is fine; the random
+    tail keeps same-profile sandboxes distinct."""
+    return f"hermes-{_sanitize_label_value(_get_active_profile_name())}-{uuid.uuid4().hex[:6]}"
+
+
 def _container_identity(shared_key: str = "") -> str:
     """Profile label used for container reuse and orphan reaping. Profiles are isolated by default; an
     explicit shared key lets trusted profiles share one Docker identity. Label sanitization is lossy
@@ -1036,7 +1043,7 @@ class DockerEnvironment(BaseEnvironment):
         """Start a fresh container and return its id. A failed ``docker run`` (exit 125, timeout
         mid-pull) can leave a "Created" orphan the exited-only reaper never catches, so it is
         removed by name before re-raising."""
-        container_name = f"hermes-{uuid.uuid4().hex[:8]}"
+        container_name = _new_container_name()
         run_cmd = self._run_command(container_name, cwd)
         logger.debug("Starting container: %s", ' '.join(run_cmd))
         try:
@@ -1158,7 +1165,7 @@ class DockerEnvironment(BaseEnvironment):
                 logger.error("Recovery: no saved image name, cannot recreate container")
                 return False
             try:
-                new_name = f"hermes-{uuid.uuid4().hex[:8]}"
+                new_name = _new_container_name()
                 result = run_capture(
                     self._run_command(new_name, self.cwd), timeout=120, check=True,
                     env=self._docker_client_env(self._run_env_values))

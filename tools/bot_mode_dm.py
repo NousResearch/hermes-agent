@@ -68,7 +68,17 @@ def _default_home() -> str:
 
 
 def message_agent_tool_schema() -> dict:
-    """OpenAI-format schema for ``message_agent`` (injected, not registered)."""
+    """OpenAI-format schema for ``message_agent`` (injected, not registered). ``mode`` appears only while
+    ``bot_mode.consult_roster`` lists teammates, so an install without one keeps the exact bytes."""
+    from tools.bot_mode_consult import consult_mode_schema, consult_roster
+
+    schema = _base_schema()
+    if roster := consult_roster():
+        schema["function"]["parameters"]["properties"]["mode"] = consult_mode_schema(roster)
+    return schema
+
+
+def _base_schema() -> dict:
     return {
         "type": "function",
         "function": {
@@ -251,7 +261,8 @@ def _wants_reply(value: Any) -> bool:
 
 
 def message_agent_tool(target: str = "", message: str = "", task_id: Optional[str] = None, agent: Any = None,
-                       expects_reply: Any = True, cancel: str = "", constraints: str = "", expecting: str = "") -> str:
+                       expects_reply: Any = True, cancel: str = "", constraints: str = "", expecting: str = "",
+                       mode: str = "") -> str:
     """Deliver ``message`` to ``target``'s Bot Chat (several comma-separated targets fan out),
     or withdraw the caller's own request ``cancel``. Returns a JSON ack/error.
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
@@ -290,6 +301,12 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
+    # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
+    signature = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
+    if str(mode or "").strip().lower() == "consult":
+        from tools.bot_mode_consult import consult_teammate
+
+        return consult_teammate(target, body, sender, signature)
     from tools.bot_mode_dm_coordination import split_targets
 
     targets = split_targets(target, sender)
@@ -298,8 +315,6 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     if len(targets) > FAN_OUT_MAX:
         return _err(f"Too many targets ({len(targets)} > {FAN_OUT_MAX}); message the ones the task needs.")
     reply = _wants_reply(expects_reply)
-    # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
-    signature = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
     from tools.bot_mode_dm_chain import send_gated
 
     # The runtime's chain rules run before any transport (hop cap, repeated ask, reply to a bot: #137027).

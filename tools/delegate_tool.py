@@ -538,6 +538,8 @@ def _build_children(
                 _close_child(built, "Failed to close child after a refused sibling")
             return [], str(exc)
         pin_child_service_tier(child, route.creds)
+        if route.session_marks and isinstance(getattr(child, "_session_init_model_config", None), dict):
+            child._session_init_model_config.update(route.session_marks)
         if isinstance(getattr(child, "_delegate_resume", None), dict):
             child._delegate_resume["route"] = route
         if _task_schema is not None:

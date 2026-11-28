@@ -176,3 +176,18 @@ def oneshot_instant(value: Any, zone: Optional[ZoneInfo] = None) -> Optional[dat
     if dt.tzinfo is None and zone is not None:
         return dt.replace(tzinfo=zone)
     return _ensure_aware(dt, zone)
+
+
+def repeated_hour_folds(expr: str) -> tuple[int, ...]:
+    """The passes (``fold`` values) of a repeated DST fall-back wall clock that *expr* runs in.
+
+    Following cronie, a job with ``*`` leading its minute or hour field (MIN_STAR/HR_STAR), and
+    croniter's ``@hourly`` alias, keeps its real-time cadence and runs both times through. A
+    fixed-time job (``30 1 * * *``, ``@daily``) runs once per wall clock, in the first pass: a
+    base inside the second pass (a run that ended there, a recompute from "now") must not
+    schedule the same wall clock again that night.
+    """
+    fields = str(expr).lower().split()
+    if fields == ["@hourly"] or any(field.startswith("*") for field in fields[:2]):
+        return (0, 1)
+    return (0,)

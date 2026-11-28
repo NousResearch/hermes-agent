@@ -11,7 +11,7 @@ Leaves read facade-owned state (``_lock``, queues, denial breaker) back through 
 call time; sibling-defined names are imported from their defining module.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import importlib
 import logging
@@ -977,6 +977,8 @@ _ACTION_GATE = _GateSpec(
     smart_log="",
 )
 
+_DESKTOP_GATE = replace(_ACTION_GATE, transport=True, transport_denied="BLOCKED: User denied the desktop action." + _STOP_ACTION)
+
 
 def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: str,
                 pattern_keys: list[str], session_key: str, *,
@@ -1013,7 +1015,7 @@ def _smart_gate(spec: _GateSpec, command: str, description: str, pattern_key: st
 def _human_decision(spec: _GateSpec, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str],
                     session_key: str, approval_callback, is_cli: bool, is_gateway: bool,
-                    is_ask: bool, smart: bool = False, pending_body=None) -> dict:
+                    is_ask: bool, smart: bool = False, pending_body=None, transport_target: str | None = None) -> dict:
     """Ask a human (after the optional guardian-LLM step) and turn the answer into the gate result.
 
     ``pattern_keys`` are what :func:`_persist_choice` stores on session/always; a smart-DENY
@@ -1071,8 +1073,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
 
     if spec.transport:
         attempt = _present_with_selected_transport(
-            command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, allow_session=not one_shot, allow_permanent=allow_permanent,
+            command=transport_target if transport_target is not None else command, description=description,
+            pattern_key=pattern_key, pattern_keys=pattern_keys, session_key=session_key, allow_session=not one_shot, allow_permanent=allow_permanent,
             surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
@@ -1210,7 +1212,7 @@ def _run_approval_gate(
     advice: str = "Find an alternative approach that avoids this action.",
     cron_deny_message: str = "", single_query_deny_message: str = "", unattended_deny_message: str = "",
     autoapprove_log_prefix: str, fail_closed_when_no_human: bool = False, no_human_block_message: str = "",
-    pattern_keys: list[str] | None = None,
+    pattern_keys: list[str] | None = None, desktop_transport_target: str | None = None,
 ) -> dict:
     """Shared human-approval gate for a flagged action (tool call or write): decision core for
     :func:`request_tool_approval` and the file-tool write gates.
@@ -1273,7 +1275,8 @@ def _run_approval_gate(
         return _approved()
 
     return _human_decision(
-        _ACTION_GATE, command=display_target, description=description, pattern_key=pattern_key,
+        _DESKTOP_GATE if desktop_transport_target is not None else _ACTION_GATE, command=display_target,
+        transport_target=desktop_transport_target, description=description, pattern_key=pattern_key,
         pattern_keys=pattern_keys or [pattern_key], session_key=session_key,
         approval_callback=approval_callback, is_cli=is_cli, is_gateway=is_gateway, is_ask=is_ask,
     )

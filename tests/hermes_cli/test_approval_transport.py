@@ -292,6 +292,42 @@ def test_cli_selected_transport_replaces_builtin_prompt(monkeypatch):
     assert seen[0].allowed_choices == ("once", "session", "always", "deny")
 
 
+@pytest.mark.parametrize("action,field", [("type", "text"), ("set_value", "value"), ("key", "keys")])
+def test_desktop_transport_denial_is_final_without_disclosing_input(monkeypatch, action, field):
+    from tools import approval
+    from tools.computer_use import tool
+
+    manager = PluginManager()
+    requests = []
+    _context(manager).register_approval_transport(
+        "phone", lambda req: requests.append(req) or req.respond("deny")
+    )
+    _configure_manual_guard(monkeypatch, approval, manager, fallback="builtin")
+    monkeypatch.setattr(tool, "_approval_callback", lambda *a, **kw: "once")
+    result = tool._request_approval(action, {field: "private fixture value", "delivery_mode": "foreground"})
+    assert result and "denied" in json.loads(result)["error"].lower()
+    request, = requests
+    assert request.pattern_keys == (f"cua:{action}:foreground",)
+    assert "foreground" in request.command.lower()
+    assert "private fixture value" not in repr(request)
+
+
+def test_delegated_desktop_approval_keeps_existing_surface(monkeypatch):
+    from agent.delegation_context import delegated_child_context
+    from tools import approval
+    from tools.computer_use import tool
+
+    manager = PluginManager()
+    requests = []
+    _context(manager).register_approval_transport("phone", lambda req: requests.append(req) or req.respond("once"))
+    _configure_manual_guard(monkeypatch, approval, manager)
+    monkeypatch.setattr(tool, "_approval_callback", lambda *a, **kw: "deny")
+    with delegated_child_context():
+        result = tool._request_approval("click", {})
+        assert result and "denied" in json.loads(result)["error"].lower()
+    assert not requests
+
+
 def test_gateway_selected_transport_does_not_require_gateway_notifier(monkeypatch):
     from tools import approval
     import tools.approval_context as tools_approval_context

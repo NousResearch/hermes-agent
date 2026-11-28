@@ -10,6 +10,7 @@ existing skills (bundled, hub, user) are modified in place. Layout:
 import contextvars as _ctxvars
 import hashlib
 import json
+import os
 from contextlib import ExitStack, suppress
 import logging
 import re
@@ -220,8 +221,13 @@ def _resolve_skill_dir(name: str, category: str | None = None) -> Path:
 
 
 def _iter_skill_dirs(root: Path):
-    from agent.skill_utils import is_excluded_skill_path
-    for skill_md in root.rglob("SKILL.md"):
+    # iter_skill_index_files walks with followlinks=True: skills installed as
+    # per-skill symlinks (e.g. a dotfiles-managed library linked into
+    # ~/.hermes/skills) are invisible to Path.rglob, which never descends into
+    # symlinked directories — skill_view/skills_list saw them but every
+    # skill_manage write failed with "not found in active profile".
+    from agent.skill_utils import is_excluded_skill_path, iter_skill_index_files
+    for skill_md in iter_skill_index_files(root, "SKILL.md"):
         if not is_excluded_skill_path(skill_md):
             yield skill_md.parent
 
@@ -304,6 +310,23 @@ def _find_skill(name: str) -> Optional[dict[str, Any]]:
     return None
 
 
+def _skill_symlink_hint(name: str) -> str:
+    """Extra not-found guidance when a per-skill symlink hides the skill from the walker.
+
+    ``iter_skill_index_files`` follows symlinks, but a link whose TARGET is gone (moved
+    dotfiles checkout, unmounted volume) still yields nothing. Point at the link itself so
+    the error names the real problem instead of a bare 'not found'."""
+    try:
+        root = _skills_dir()
+        for link in root.rglob(name):
+            if link.is_symlink() and not link.exists():
+                return (f" A broken symlink exists at {link} (target {os.readlink(link)} is missing) — "
+                        "repair or remove the link.")
+    except OSError:
+        pass
+    return ""
+
+
 def _find_skill_in_other_profiles(name: str) -> list[tuple[str, Path]]:
     """``(profile, skill_dir)`` pairs for OTHER profiles holding ``name`` (so the not-found
     error can explain a wrong-profile mistake). Fail-quiet."""
@@ -360,6 +383,7 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
             f"<name>`) to edit there, or edit the files directly (file tools / terminal).")
     else:
         base += " Use skills_list() to see available skills."
+    base += _skill_symlink_hint(name)
     return base + suffix
 
 

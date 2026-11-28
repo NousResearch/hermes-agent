@@ -1056,12 +1056,18 @@ class WebhookAdapter(BasePlatformAdapter):
         # (``self.gateway_runner.config`` is the default profile's), and the adapter's send reads its
         # credentials through the profile secret scope.
         with self._profile_scope(profile):
+            home_thread = None
             if not chat_id:
                 home = self._delivery_config(profile).get_home_channel(target_platform)
                 if not home:
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
-            thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
+                # The home channel may be a topic (``<ENV>_THREAD_ID``, or where /sethome ran): a
+                # bare ``deliver: telegram`` lands there, as every other home-channel delivery does,
+                # rather than in the chat's root — which in Telegram's topic mode is a lobby the
+                # person cannot reply in.
+                home_thread = home.thread_id
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id") or home_thread  # Telegram forum topics
             # Runtime gate on the FINAL target (payload-rendered chat_id included): a shared-bot
             # satellite rides the primary's bot only to chats routed to it (#147602).
             if not self.gateway_runner._shared_bot_target_allowed(target_platform, profile, chat_id, thread_id):

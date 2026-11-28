@@ -1,0 +1,21 @@
+name: board-rooms
+repo: https://github.com/biondogs/hermes-board-rooms
+sha: 56f007dcb3712285bf5d941085999f3e05e73249
+description: "Board-scoped teams for Hermes: fenced peer messaging and team status via public hooks. Disclosure — no third-party network, no stored credentials, no background daemons; message_peer spawns a local hermes one-shot turn (subprocess, 120s timeout), board_pulse reads a local JSONL cache, setup script does local-only gateway RPC (127.0.0.1)."
+maintainer: biondogs
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/biondogs/hermes-board-rooms#readme
+version: "3.0.0"
+capabilities:
+  provides_tools:
+    - message_peer
+    - board_pulse
+  provides_hooks:
+    - kanban_task_claimed
+    - kanban_task_completed
+    - kanban_task_blocked
+    - on_kanban_task_updated
+  provides_middleware: []
+  requires_env: []

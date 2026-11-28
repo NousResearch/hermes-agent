@@ -321,14 +321,21 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url registers a literal loopback of the bind's address family for local binds:
+    the BlueBubbles server resolves the host itself, and "localhost" → ::1 never reaches an
+    IPv4 bind."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
-        assert str(adapter.webhook_port) in adapter._webhook_url
-        assert adapter.webhook_path in adapter._webhook_url
+        assert adapter._webhook_url == f"http://127.0.0.1:{adapter.webhook_port}{adapter.webhook_path}"
+
+    @pytest.mark.parametrize("bind, registered", [
+        ("127.0.0.1", "127.0.0.1"), ("0.0.0.0", "127.0.0.1"), ("localhost", "127.0.0.1"),
+        ("::", "[::1]"), ("::1", "[::1]"), ("192.168.1.20", "192.168.1.20"),
+    ])
+    def test_bind_registers_a_host_that_reaches_it(self, monkeypatch, bind, registered):
+        adapter = _make_adapter(monkeypatch, webhook_host=bind)
+        assert adapter._webhook_url == f"http://{registered}:{adapter.webhook_port}{adapter.webhook_path}"
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):

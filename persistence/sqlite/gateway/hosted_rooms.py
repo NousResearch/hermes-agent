@@ -873,6 +873,19 @@ class SQLiteHostedRoomRepository:
             row, claim_row = self._files._hosted_read(placement, read)
         return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
 
+    def has_user_message_after(self, *, placement: HostedPlacement, room_id: str, seq: int) -> bool:
+        def read(conn: sqlite3.Connection) -> bool:
+            row = _room_row(
+                conn, """SELECT next_seq, EXISTS (
+                    SELECT 1 FROM hosted_room_events WHERE room_id=? AND kind='message.user' AND seq>?
+                ) AS has_user FROM hosted_rooms WHERE room_id=? AND disbanded_at IS NULL""",
+                (room_id, seq, room_id), room_id)
+            if seq >= row["next_seq"]:
+                raise HostedRoomError("since_seq is ahead of the hosted room log")
+            return bool(row["has_user"])
+        with translated():
+            return self._files._hosted_read(placement, read)
+
     def read_events(self, *, placement: HostedPlacement, room_id: str, since_seq: int = 0, limit: int = 100, include_disbanded: bool = False) -> Mapping[str, JsonValue]:
         with translated():
             return self._files._hosted_read(placement, lambda conn: read_events_page(

@@ -127,6 +127,8 @@ class InMemoryHostedRoomReplicaRepository:
             events = tables.rows("hosted_room_events", room_id)
             for seq, row in sorted(tables["hosted_room_replica_events"].get(room_id, {}).items()):
                 events[seq] = dict(row)
+                if row["kind"] == "message.user":
+                    tables["hosted_rooms"][room_id]["last_user_seq"] = seq
             insert_event(tables, room_id, claim_seq, event_id, kind, actor_json, target_epoch, payload_json, timestamp)
             tables["hosted_room_replica_events"].pop(room_id, None)
             del tables["hosted_room_replicas"][room_id]

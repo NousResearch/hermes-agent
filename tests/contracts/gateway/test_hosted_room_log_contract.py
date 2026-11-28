@@ -40,6 +40,30 @@ def _disband(store, room_id: str = "room", *, placement: str = "profile", gatewa
     return store.hosted_rooms.disband_room(placement=placement, room_id=room_id, expected_gateway_id=gateway, expected_epoch=epoch, now=now)
 
 
+@pytest.mark.parametrize("placement", ["profile", "shared"])
+def test_user_message_after_fence_is_scoped_and_strict(backend, scope_a, placement):
+    store = backend.open(scope_a)
+    other = "shared" if placement == "profile" else "profile"
+    for place in (placement, other):
+        _create(store, placement=place)
+    _append(store, "elsewhere", placement=other)
+    _create(store, room_id="other", placement=placement)
+    _append(store, "other-room", room_id="other", placement=placement)
+    probe = store.hosted_rooms.has_user_message_after
+    args = {"room_id": "room", "placement": placement}
+    assert not probe(**args, seq=0)
+    _append(store, "one", placement=placement)
+    store.hosted_rooms.rename_room(**args, event_id="rename", name="Renamed")
+    assert probe(**args, seq=0)
+    assert not probe(**args, seq=1)
+    assert not probe(**args, seq=2)
+    with pytest.raises(HostedRoomError, match="ahead"):
+        probe(**args, seq=3)
+    _disband(store, placement=placement)
+    with pytest.raises(RoomNotFoundError):
+        probe(**args, seq=0)
+
+
 # ── create_room ───────────────────────────────────────────────────────────────
 
 

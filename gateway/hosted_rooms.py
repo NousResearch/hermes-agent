@@ -916,6 +916,13 @@ def room_state(
     return store.hosted_rooms.room_state(placement=placement, room_id=room_id, include_disbanded=include_disbanded)
 
 
+def has_user_message_after(store: Persistence, *, placement: HostedPlacement, room_id: str, seq: int) -> bool:
+    """Only a user message after the Stop fence can open newer work."""
+    return store.hosted_rooms.has_user_message_after(
+        placement=placement, room_id=_room_id(room_id), seq=_non_negative(seq, "since_seq"))
+
+
+
 def request_room_stop(
     store: Persistence, *, placement: HostedPlacement, room_id: Any, cancel_id: Any, expected_gateway_id: Any,
     expected_epoch: Any) -> dict[str, Any]:

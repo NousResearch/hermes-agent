@@ -23,6 +23,11 @@ export interface CanonicalDriverStatus<Action extends { kind: string } = { kind:
   peer_routes?: { member_id: string; status: string }[]
 }
 
+/** An uncertain peer turn can have no action row while its gateway tries to recover it. */
+export const hasCanonicalGroupPendingWork = (driver?: CanonicalDriverStatus) =>
+  !!driver?.pending_actions?.length || ['queued', 'running', 'stopping', 'indeterminate', 'deferred']
+    .some(status => (driver?.counts?.[status] ?? 0) > 0)
+
 export interface CanonicalActivityLabels extends RoomStatusLabels {
   groupWorking: string
   memberWorking: string

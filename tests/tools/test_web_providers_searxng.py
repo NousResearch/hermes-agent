@@ -105,6 +105,63 @@ class TestSearXNGSearchProviderSearch:
 
         assert calls[0] == "http://localhost:8080/search", f"Got: {calls[0]}"
 
+    _UNRESPONSIVE_FIVE = {
+        "results": [],
+        "unresponsive_engines": [
+            ["brave", "Suspended: too many requests"],
+            ["duckduckgo", "Suspended: CAPTCHA"],
+            ["google", "Suspended: CAPTCHA"],
+            ["mojeek", "Suspended: access denied"],
+            ["startpage", "Suspended: CAPTCHA"],
+        ],
+    }
+
+    def test_no_results_with_unresponsive_engines_is_a_failure(self, monkeypatch):
+        """Zero rows plus >=1 unresponsive engine is inconclusive, not a clean empty success."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response(self._UNRESPONSIVE_FIVE)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("test query", limit=5)
+
+        assert result["success"] is False
+        assert set(result) == {"success", "error"}
+        for engine in ("brave", "duckduckgo", "google", "mojeek", "startpage"):
+            assert engine in result["error"]
+        assert "CAPTCHA" in result["error"]
+
+    _SAMPLE_ROWS = [
+        {"title": "Result A", "url": "https://a.example.com", "description": "Desc A", "position": 1},
+        {"title": "Result B", "url": "https://b.example.com", "description": "Desc B", "position": 2},
+        {"title": "Result C", "url": "https://c.example.com", "description": "Desc C", "position": 3},
+    ]
+
+    @pytest.mark.parametrize(
+        ("json_data", "expected_rows"),
+        [
+            ({"results": []}, []),
+            ({"results": [], "unresponsive_engines": []}, []),
+            ({"results": [], "unresponsive_engines": [None, "startpage: timeout", ["only-one"], ["", "x"]]}, []),
+            ({"results": [], "unresponsive_engines": {"bing": "timeout"}}, []),
+            (dict(_SAMPLE_RESPONSE, unresponsive_engines=[["startpage", "Suspended: CAPTCHA"]]), _SAMPLE_ROWS),
+        ],
+        ids=["field_absent", "field_empty_list", "garbage_list_entries", "dict_instead_of_list", "rows_present"],
+    )
+    def test_success_shape_is_unchanged_unless_empty_with_unresponsive_engines(self, monkeypatch, json_data, expected_rows):
+        """Only "zero rows AND >=1 parseable [engine, reason] pair" is reclassified. Everything else
+        keeps today's exact success shape: no diagnostics, an empty or malformed field (a future
+        SearXNG shape change must not black out an instance), or rows alongside a partial outage
+        (no new key on success)."""
+        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        from plugins.web.searxng.provider import SearXNGWebSearchProvider
+        mock_resp = self._make_mock_response(json_data)
+
+        with patch("httpx.get", return_value=mock_resp):
+            result = SearXNGWebSearchProvider().search("test query", limit=5)
+
+        assert result == {"success": True, "data": {"web": expected_rows}}
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available recognizes "searxng"

@@ -1004,6 +1004,22 @@ def _log_noise_prefixes() -> tuple[str, ...]:
     return ("session_id:", "Query:", t("cli.chat.initializing_agent"))
 
 
+# The lines that FOLLOW ``_exit_summary_marker()`` in a completed attempt's log. Chrome, never the
+# worker's own words — and only the exit summary's own session line, so a managed worker's
+# ``Session: local-…`` preamble (the resume pointer a refused claim needs) is kept.
+_EXIT_SUMMARY_LINE = re.compile(
+    r"^\s*(?:hermes\s+(?:--resume\s|-c\s)|Title:|Duration:|Messages:|Session:\s{2,}\S)")
+
+
+def _has_own_output(text: str) -> bool:
+    """True when *text* carries at least one line that is not chrome, noise or exit summary."""
+    for line in text.splitlines():
+        stripped = _LOG_CHROME.sub("", line).strip()
+        if stripped and not stripped.startswith(_log_noise_prefixes()) and not _EXIT_SUMMARY_LINE.match(stripped):
+            return True
+    return False
+
+
 def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     """Best-effort read of a dead worker's last printed text, for the board diagnostic.
 
@@ -1026,13 +1042,22 @@ def _worker_final_output(task_id: str, board: Optional[str] = None) -> str:
     if not raw:
         return ""
     raw = _EXIT_TRAILER_RE.sub("", raw)
-    cut = raw.rfind(_exit_summary_marker())
+    marker = _exit_summary_marker()
+    cut = raw.rfind(marker)
     if cut != -1:
-        raw = raw[:cut]
+        # The per-task log is append-only across attempts, so the LAST exit summary belongs to
+        # whichever attempt finished most recently — not necessarily the one that just died. An attempt
+        # that fails fast (a preload error, a refused claim) writes its reason AFTER that summary;
+        # truncating at the marker threw the reason away and quoted the PREVIOUS attempt's ending,
+        # which booked two qa crashes with another run's text (t_d9e8f954 runs 679/680: the recorded
+        # cause was run 678's closing bullets while the log's own tail said
+        # ``Error: Unknown skill(s): sdlc-review``). Keep the newer tail when it has content of its own.
+        newer = raw[cut + len(marker):]
+        raw = newer if _has_own_output(newer) else raw[:cut]
     lines = []
     for ln in raw.splitlines():
         ln = _LOG_CHROME.sub("", ln).strip()
-        if ln and not ln.startswith(_log_noise_prefixes()):
+        if ln and not ln.startswith(_log_noise_prefixes()) and not _EXIT_SUMMARY_LINE.match(ln):
             lines.append(ln)
     return " ".join(lines)[-400:]
 

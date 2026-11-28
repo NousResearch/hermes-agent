@@ -291,8 +291,8 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 | 变量 | 是否必填 | 默认值 | 描述 |
 |----------|----------|---------|-------------|
 | `DISCORD_BOT_TOKEN` | **是** | — | 来自 [Discord 开发者门户](https://discord.com/developers/applications) 的机器人 token。 |
-| `DISCORD_ALLOWED_USERS` | **是** | — | 允许与机器人交互的 Discord 用户 ID，逗号分隔。没有此项**或** `DISCORD_ALLOWED_ROLES`，网关将拒绝所有用户。 |
-| `DISCORD_ALLOWED_ROLES` | 否 | — | Discord 角色 ID，逗号分隔。拥有其中任一角色的成员即被授权——与 `DISCORD_ALLOWED_USERS` 为 OR 语义。连接时自动启用 **Server Members Intent**。适用于管理团队频繁变动的场景：新管理员一旦被授予角色即可获得访问权限，无需推送配置。 |
+| `DISCORD_ALLOWED_USERS` | 视情况而定 | — | 允许与机器人交互的 Discord 用户 ID，逗号分隔。没有用户或角色允许列表、已批准的 Hermes 配对时，网关拒绝访问，除非设置了 `DISCORD_ALLOW_ALL_USERS=true`、`GATEWAY_ALLOW_ALL_USERS=true` 或通过 `DISCORD_ALLOWED_CHANNELS` 明确授予服务器频道访问权限。 |
+| `DISCORD_ALLOWED_ROLES` | 否 | — | Discord 角色 ID，逗号分隔。仅检查消息或斜杠命令所属服务器中的角色，与 `DISCORD_ALLOWED_USERS` 为 OR 语义。连接时自动启用 **Server Members Intent**。私信中的角色授权需在 `config.yaml` 中设置 `discord.dm_role_auth_guild`。 |
 | `DISCORD_HOME_CHANNEL` | 否 | — | 机器人发送主动消息（cron 输出、提醒、通知）的频道 ID。 |
 | `DISCORD_HOME_CHANNEL_NAME` | 否 | `"Home"` | 主频道在日志和状态输出中的显示名称。 |
 | `DISCORD_COMMAND_SYNC_POLICY` | 否 | `"safe"` | 控制原生斜杠命令启动同步。`"safe"` 对现有全局命令进行差异比较，仅更新已更改的内容，当 Discord 元数据更改无法通过补丁应用时重新创建命令。`"bulk"` 保留旧的 `tree.sync()` 行为。`"off"` 完全跳过启动同步。 |
@@ -321,7 +321,7 @@ Discord 行为通过两个文件控制：**`~/.hermes/.env`** 用于凭据和环
 
 ### 配置文件（`config.yaml`）
 
-`~/.hermes/config.yaml` 中的 `discord` 部分与上述环境变量对应。config.yaml 设置作为默认值应用——如果已设置等效的环境变量，则环境变量优先。
+`~/.hermes/config.yaml` 中的 `discord` 部分对应上述大多数环境变量，还包含 `dm_role_auth_guild` 等仅通过配置文件设置的选项。配置文件提供默认值；如果设置了对应的环境变量，则环境变量优先。
 
 ```yaml
 # Discord 特定设置
@@ -342,6 +342,7 @@ discord:
     limit: 100                    # 每次重连的全局扫描上限
     max_dispatches: 10            # 每次重连的恢复分发上限
   channel_prompts: {}             # 每个频道的临时系统 prompt（提示词）
+  dm_role_auth_guild: ""          # 可选：用于私信角色授权的受信任服务器 ID
   allow_mentions:                 # 机器人允许 ping 的内容（安全默认值）
     everyone: false               # @everyone / @here ping（默认：false）
     roles: false                  # @role ping（默认：false）
@@ -791,12 +792,12 @@ group_sessions_per_user: true
 ## 安全
 
 :::warning
-始终设置 `DISCORD_ALLOWED_USERS`（或 `DISCORD_ALLOWED_ROLES`）以限制谁可以与机器人交互。没有任何一项，网关默认拒绝所有用户作为安全措施。只授权你信任的人——授权用户对 agent 的功能拥有完全访问权限，包括工具调用和系统访问。
+使用 `DISCORD_ALLOWED_USERS`、`DISCORD_ALLOWED_ROLES` 或已批准的 Hermes 配对来授权受信任的用户。没有这些授权时，网关拒绝访问，除非显式开放访问或经过验证的服务器频道允许列表授予访问权限。只授权你信任的人——授权用户对 agent 的功能拥有完全访问权限，包括工具调用和系统访问。
 :::
 
 ### 基于角色的访问控制
 
-对于通过角色而非个人用户列表管理访问权限的服务器（管理团队、支持人员、内部工具），使用 `DISCORD_ALLOWED_ROLES`——逗号分隔的角色 ID 列表。拥有其中任一角色的成员即被授权。
+对于通过角色而非个人用户列表管理访问权限的服务器（管理团队、支持人员、内部工具），使用 `DISCORD_ALLOWED_ROLES`——逗号分隔的角色 ID 列表。在消息所属服务器中拥有允许角色的成员会被授权。私信中的角色授权使用下述单独配置的受信任服务器。
 
 ```bash
 # ~/.hermes/.env — 与 DISCORD_ALLOWED_USERS 配合使用或替代使用
@@ -805,10 +806,16 @@ DISCORD_ALLOWED_ROLES=987654321098765432,876543210987654321
 
 语义：
 
-- **与用户允许列表为 OR 关系。** 如果用户 ID 在 `DISCORD_ALLOWED_USERS` 中**或**拥有 `DISCORD_ALLOWED_ROLES` 中的任一角色，则该用户被授权。
+- **与用户允许列表为 OR 关系。** 如果用户 ID 在 `DISCORD_ALLOWED_USERS` 中，或在本次交互所检查的服务器中拥有允许角色，则该用户被授权；检查范围见下文。
 - **自动启用 Server Members Intent。** 设置 `DISCORD_ALLOWED_ROLES` 后，机器人在连接时启用 Members intent——Discord 需要此 intent 才能在成员记录中发送角色信息。
 - **角色 ID，不是名称。** 从 Discord 获取：**用户设置 → 高级 → 开启开发者模式**，然后右键点击任意角色 → **Copy Role ID**。
-- **私信回退。** 在私信中，角色检查会扫描共同服务器；在任何共享服务器中拥有允许角色的用户在私信中也被授权。
+- **检查范围限于所属服务器。** 服务器消息和斜杠命令仅检查其所属服务器中的角色，不扫描其他共同服务器。
+- **私信角色授权需主动启用。** 默认情况下，角色不会授予私信访问权限。在 `config.yaml` 中将 `discord.dm_role_auth_guild` 设置为一个受信任的服务器 ID 后，机器人只检查私信发送者在该服务器中的成员身份和允许角色，不扫描其他共同服务器。用户允许列表和已批准的 Hermes 配对不依赖此设置，可独立授权。
+
+```yaml
+discord:
+  dm_role_auth_guild: "123456789012345678"
+```
 
 当管理团队频繁变动时，这是首选模式——新管理员一旦被授予角色即可获得访问权限，无需编辑 `.env` 或重启网关。
 

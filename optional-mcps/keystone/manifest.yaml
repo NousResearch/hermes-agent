@@ -1,0 +1,40 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: keystone
+description: Calls, ads, Google Maps rank, reviews and CRM for businesses and agencies.
+source: https://keystonecloud.ai/connect-your-ai
+
+# Official vendor-hosted remote MCP (URL-only - Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: 401 with WWW-Authenticate resource_metadata ->
+# RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint https://keystonecloud.ai/register, PKCE S256).
+# Also listed in the official MCP Registry as ai.keystonecloud/keystone.
+
+transport:
+  type: http
+  url: https://keystonecloud.ai/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - keystone
+    - google ads
+    - google business profile
+    - call tracking
+  hosts:
+    - keystonecloud.ai
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to Keystone
+  (or run `hermes mcp login keystone`). Approve access, then restart
+  the session so tools load. A 14-day free trial is at
+  https://keystonecloud.ai/signin.
+
+  Start with `whoami` to see the active workspace and connected apps.
+  Agencies switch clients with `workspaces_list` and `workspace_use`.

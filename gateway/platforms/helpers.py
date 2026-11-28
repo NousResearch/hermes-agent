@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Iterator, MutableMapping, Optional
 from urllib.parse import urljoin, urlsplit
 from gateway.platforms.event import MessageEvent
-from utils import atomic_json_write
+from utils import atomic_json_write, publish_new_file
 
 logger = logging.getLogger(__name__)
 
@@ -490,26 +490,19 @@ def _read_or_create_log_hash_salt(home: Path) -> bytes:
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
             try:
                 os.link(temporary, path)
             except FileExistsError:
                 data = path.read_bytes()
-            except OSError:  # no hard links (Android SELinux, exFAT): exclusive create, first wins
-                data = _create_log_hash_salt_exclusive(path, data)
+            except (OSError, AttributeError):  # no hard links (Android SELinux/exFAT, Termux's Python has no os.link)
+                if not publish_new_file(temporary, path):
+                    data = path.read_bytes()
         finally:
             temporary.unlink(missing_ok=True)
     if len(data) != 32:
         raise ValueError("log hash salt is invalid")
-    return data
-
-
-def _create_log_hash_salt_exclusive(path: Path, data: bytes) -> bytes:
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return path.read_bytes()
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
     return data
 
 

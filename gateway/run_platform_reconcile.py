@@ -335,8 +335,18 @@ class GatewayPlatformReconcileMixin:
             self._primary_dotenv = await asyncio.to_thread(_read_dotenv, home)
             self._primary_platform_signature = await asyncio.to_thread(profile_serve_signature, home)
 
+    def _primary_config_is_file_backed(self) -> bool:
+        """Only a config ``load_gateway_config()`` produced belongs to this home's config.yaml/.env.
+        An explicit ``gateway --config <file>`` or programmatic ``GatewayConfig`` keeps its own
+        platforms: reconciling it against the home's files would replace the caller's platforms
+        when an unrelated write (such as onboarding state) touches config.yaml."""
+        cfg = getattr(self, "config", None)
+        return bool(getattr(cfg, "loaded_from_home", True))
+
     async def _start_primary_platform_watch(self) -> None:
         """Watcher start: apply at once whatever changed since boot read its config."""
+        if not self._primary_config_is_file_backed():
+            return
         if self._primary_platform_signature is None:
             await self._note_boot_platform_signature()
             return
@@ -345,6 +355,8 @@ class GatewayPlatformReconcileMixin:
 
     async def _reconcile_primary_platforms_if_changed(self, reason: str = "watcher") -> None:
         """Watcher tick: rebuild the launch profile's changed platforms when its config/.env changed."""
+        if not self._primary_config_is_file_backed():
+            return
         from gateway.run_profile_reconcile import profile_serve_signature
         signature = await asyncio.to_thread(profile_serve_signature, self._primary_platform_home())
         primary = getattr(self, "_primary_profile_name", None) or "default"
@@ -395,6 +407,10 @@ class GatewayPlatformReconcileMixin:
             return await self._reconcile_primary_locked(primary, signature, reason)
 
     async def _reconcile_primary_locked(self, primary: str, signature, reason: str) -> dict:
+        if not self._primary_config_is_file_backed():
+            self._primary_platform_signature = signature
+            return self._recorded(_receipt(primary, [], [], [], self._primary_platform_states(),
+                                           dict(getattr(self, "_primary_blocked_platforms", None) or {}), []))
         try:
             plan, installed, own_write = await self._apply_primary_platform_plan(reason)
         except PlatformConfigUnreadable as exc:

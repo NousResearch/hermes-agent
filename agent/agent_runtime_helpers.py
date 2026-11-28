@@ -30,6 +30,7 @@ from agent.credential_pool import (
     credential_pool_matches_provider,
 )
 from agent.error_classifier import FailoverReason
+from agent.credential_pool_model_cooldowns import record_plan_window, usage_allowance_spent
 from agent.retry_utils import parse_retry_after_seconds, reset_delay_from_message
 from agent.agent_runtime_helpers_placeholders import _INTERRUPTED_PLACEHOLDER
 from agent.primary_runtime_snapshot import _build_primary_runtime_snapshot
@@ -459,8 +460,6 @@ _STATUS_TO_FAILOVER_REASON = {
     402: FailoverReason.billing, 429: FailoverReason.rate_limit, 401: FailoverReason.auth,
     403: FailoverReason.auth,
 }
-_USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
-_USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
 
 
 def _failed_credential_identity(agent, pool) -> tuple[Optional[str], Optional[str]]:
@@ -543,14 +542,7 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
             current_last_status,
         )
         return (True, False) if rotate_and_swap(429, "rate limit, pre-exhausted") else (False, True)
-    usage_limit_reached = False
-    if error_context:
-        context_reason = str(error_context.get("reason") or "").lower()
-        context_message = str(error_context.get("message") or "").lower()
-        usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
-            t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
-        )
-    if not has_retried_429 and not usage_limit_reached:
+    if not has_retried_429 and not usage_allowance_spent(error_context):
         return False, True
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 
@@ -3163,7 +3155,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
             message = payload.get("error")
         if isinstance(message, str) and message.strip():
             context["message"] = message.strip()
-        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in {None, ""}), None)
+        reset = next((payload.get(k) for k in ("resets_at", "reset_at") if payload.get(k) not in (None, "")), None)
         if reset is not None:
             context["reset_at"] = reset
         elif isinstance(payload.get("resets_in_seconds"), (int, float)):
@@ -3176,6 +3168,7 @@ def extract_api_error_context(error: Exception) -> dict[str, Any]:
         ratelimit_reset = headers.get("x-ratelimit-reset")
         if ratelimit_reset and "reset_at" not in context:
             context["reset_at"] = ratelimit_reset
+        record_plan_window(context, headers)
         if "reset_at" not in context:
             _set_reset_from_vendor_headers(context, headers)
     if "message" not in context and str(error).strip():

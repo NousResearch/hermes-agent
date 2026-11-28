@@ -365,6 +365,98 @@ def test_clt_stub_skips_gh_calls_that_make_gh_run_git(tmp_path, clt_stub_env):
 
 
 @pytest.mark.platforms("posix")
+def test_clt_stub_refuses_direct_review_push(tmp_path, clt_stub_env):
+    from hermes_cli import web_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    with pytest.raises(RuntimeError, match="git is not available"):
+        web_git.review_push(str(repo))
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
+def test_clt_stub_refuses_review_revert(tmp_path, clt_stub_env):
+    from hermes_cli import web_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _trap_bin, _trap_git, spawn_log = clt_stub_env
+
+    with pytest.raises(RuntimeError, match="git is not available"):
+        web_git.review_revert(str(repo), "tracked.txt")
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
+def test_relative_path_entry_is_resolved_against_child_cwd(tmp_path, clt_stub_env, monkeypatch):
+    from hermes_cli import web_git
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    child.mkdir()
+    _make_exe(parent / "bin" / "git", "#!/usr/bin/env bash\necho parent-ok\n")
+    monkeypatch.chdir(parent)
+    env = {"PATH": f"bin{os.pathsep}{trap_bin}"}
+
+    assert _subprocess_compat.bounded_probe_run(["git", "status"], timeout=5, env=env, cwd=child) is None
+    assert web_git._run(["git", "status"], str(child), 5, env) is None
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+    _make_exe(child / "bin" / "git", "#!/usr/bin/env bash\necho child-ok\n")
+    child_only_parent = tmp_path / "empty_parent"
+    child_only_parent.mkdir()
+    monkeypatch.chdir(child_only_parent)
+    proc = _subprocess_compat.bounded_probe_run(["git", "status"], timeout=5, env=env, cwd=child)
+    assert proc is not None and proc.returncode == 0 and proc.stdout.strip() == "child-ok"
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
+def test_bare_git_readers_with_a_child_cwd_resolve_relative_path_entries_there(tmp_path, clt_stub_env, monkeypatch):
+    """Callers that gate on a usable git and then launch bare ``git`` with ``cwd=`` must look it up from that cwd."""
+    from agent import trace_upload
+    from hermes_cli import dump
+    from tui_gateway import host_supervisor
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    child.mkdir()
+    _make_exe(parent / "bin" / "git", "#!/usr/bin/env bash\necho parent-ok\n")
+    monkeypatch.chdir(parent)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{trap_bin}")
+    monkeypatch.setattr(host_supervisor, "_repo_root", lambda: child)
+
+    assert dump._git_output(child, "rev-parse", "HEAD") == ""
+    assert trace_upload._git_branch(str(child)) == ""
+    assert host_supervisor._build_sha() == "unknown"
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
+def test_git_context_reference_resolves_relative_path_entries_from_the_repo(tmp_path, clt_stub_env, monkeypatch):
+    """``@diff`` gates once, then launches bare ``git`` with ``cwd=`` the repo: look git up from there."""
+    from agent import context_references
+
+    trap_bin, _trap_git, spawn_log = clt_stub_env
+    parent = tmp_path / "parent"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _make_exe(parent / "bin" / "git", "#!/usr/bin/env bash\nexit 0\n")
+    monkeypatch.chdir(parent)
+    monkeypatch.setenv("PATH", f"bin{os.pathsep}{trap_bin}")
+
+    ref = context_references.ContextReference(kind="diff", target="", raw="@diff", start=0, end=5)
+    err, block = context_references._expand_git_reference(ref, repo, ["diff"], "git diff")
+    assert err == "@diff: git is not available" and block is None
+    assert not spawn_log.exists(), f"git stub was spawned: {spawn_log.read_text()}"
+
+
+@pytest.mark.platforms("posix")
 def test_clt_stub_never_spawns_review_commit_identity_or_commit(tmp_path, clt_stub_env):
     """The review pane's commit reads the identity with ``git var`` before any ``_git_in`` call."""
     from hermes_cli import web_git

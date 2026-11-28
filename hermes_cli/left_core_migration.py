@@ -44,7 +44,7 @@ from typing import Callable, Optional
 
 from hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,
-    _note_failure, _unattended_consent,
+    _note_failure, _unattended_consent, kept_off_sentence,
 )
 from hermes_cli._startup_fast import project_root_str
 
@@ -214,11 +214,8 @@ _YUANBAO_NOTICE = ("Yuanbao is now a Hermes Labs plugin: built by Nous Research,
 
 
 def _yuanbao_notice(home: Path, *, process_env: bool = False) -> str:
-    # Core's adapter ignored a bare ``yuanbao`` there; the catalog plugin does not. The install's enable
-    # purges the entry from the user's list, so this fires only when it survived (a managed overlay pin).
-    if plugin_present("yuanbao", home) and _plugins_listed(home, ("yuanbao",))[1]:
-        return (f"{_YUANBAO_NOTICE} plugins.disabled lists 'yuanbao', which now turns Yuanbao off; "
-                "remove it to keep using Yuanbao.")
+    # Core's adapter ignored a bare ``yuanbao`` in plugins.disabled; the catalog plugin does not, and the
+    # automatic install keeps the entry: its kept-off notice (_install_locked) names the enable command.
     return _YUANBAO_NOTICE
 
 
@@ -1264,7 +1261,11 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
-    def _install(name: str, discard: Optional[Path] = None) -> dict:
+    """The unattended install both automatic installers (this migrator, ``default_plugins``) run in *home*.
+    A plugin *home*'s ``plugins.disabled`` names when the enable runs (also an entry the operator wrote while
+    the download ran) is placed but left off (``kept_disabled``): only the user's own enable lifts it."""
+    def _install(name: str, discard: Optional[Path] = None,
+                 on_step: Optional[Callable[[object], None]] = None) -> dict:
         from hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
@@ -1272,9 +1273,9 @@ def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[st
             if discard is not None:  # the caller's own leftover tree, removed under this same binding
                 from hermes_cli.plugins_cmd_remove import _remove_plugin_core
                 _remove_plugin_core(discard)
-            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name,
+            return dashboard_install_plugin("", force=False, enable=True, catalog_name=name, unattended=True,
                                             assume_deps_consent=_unattended_consent() if consent is None
-                                            else consent)
+                                            else consent, on_step=on_step)
         finally:
             reset_hermes_home_override(token)
     return _install
@@ -1339,6 +1340,11 @@ def _install_locked(home: Path, feature: LeftCoreFeature, *, install: Callable[[
     if result.get("ok"):
         _placed(home, feature.plugin).unlink(missing_ok=True)
         _record_installed(home, feature)
+        if result.get("kept_disabled"):
+            say(_noticed(f"  ⚠ {feature.label}: installed the '{feature.plugin}' plugin from the catalog "
+                         f"({feature.unchanged}), but {kept_off_sentence(feature.plugin, home)}",
+                         home, feature, process_env))
+            return True
         say(_noticed(f"  ✓ Installed the '{feature.plugin}' plugin from the catalog for {feature.label}, which this "
                      f"profile is set up for ({feature.unchanged})." if default else
                      f"  ✓ {feature.label} moved out of core — installed the '{feature.plugin}' plugin from the "
@@ -1550,8 +1556,9 @@ def _attempt(home: Path, *, deliver: Callable[[str], None], gateway_start: bool,
             if _install_one(home, feature, install=_install_into(home, consent=True), say=report, process_env=True,
                             wait=startup_lock_wait(gateway_start=gateway_start)):
                 installed.append(feature.plugin)
-                if not gateway_start and feature.platform and _gateway_serves(home) \
-                        and not _running_gateway_serves(home, feature.platform):
+                # A plugin the install kept off (plugins.disabled) is served by no restart: its notice said so.
+                if not gateway_start and feature.platform and not _plugin_lists(home, feature.plugin)[1] \
+                        and _gateway_serves(home) and not _running_gateway_serves(home, feature.platform):
                     report(f"Restart the gateway (`hermes gateway restart`) so it serves {feature.label}.")
         return installed
     except Exception as exc:  # never take agent/gateway start down

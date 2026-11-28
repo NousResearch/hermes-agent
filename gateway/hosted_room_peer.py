@@ -48,7 +48,7 @@ _ROOM_GRANT_SECRET_FILE = ".room-link-grant-secret"
 @lru_cache(maxsize=32)
 def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
     """Load one restart-scoped grant secret for an exact installation root."""
-    from utils import fsync_directory
+    from utils import fsync_directory, publish_new_file
     (home := Path(home_value)).mkdir(parents=True, exist_ok=True)
     path = home / _ROOM_GRANT_SECRET_FILE
     def _read() -> bytes:
@@ -74,6 +74,12 @@ def _gateway_room_grant_secret_for_home(home_value: str) -> bytes:
                 os.link(temporary, path)
             except FileExistsError:
                 material = _read()
+            except (OSError, AttributeError):
+                # No hard links (Termux's Python has no os.link; FAT/exFAT): publish the synced
+                # temp without clobbering a winner, so a reader only ever sees no file or the whole
+                # secret, and a racing first user re-reads the winner.
+                if not publish_new_file(temporary, path):
+                    material = _read()
             else:
                 fsync_directory(home)
         finally:

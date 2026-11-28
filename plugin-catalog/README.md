@@ -234,14 +234,38 @@ the plugin integrates into Hermes, and that company is well known or reputable.
 `verified`; a contributor PR that sets either is changed to `community` in
 review (maintainer review is the gate; no CI check inspects the tier value).
 
-`default: true` ships an entry to every Hermes home: it is installed at its pin
-and enabled at the end of every install (source installer, Desktop, Docker, Nix,
-Termux: on first start where the installer runs no Hermes code), again by
-`hermes update` for a default added since, and when a profile is created. Each
-home gets it once: a user who removes or disables it keeps that choice through
-every later update. Only `official` and `verified` entries may set it; the
-validator refuses it elsewhere and Hermes ignores it on any other tier. Homes
-with `security.allow_lazy_installs: false` fetch nothing.
+`default: true` ships an entry to every Hermes home at its pinned commit and
+enables it automatically:
+
+- **Foreground preflight before first backend/gateway start:** Docker
+  (`docker/stage2-hook.sh`, default 300 s timeout), Desktop (DMG, MSIX,
+  AppImage, and local source backends, default 120 s timeout), and
+  `hermes profile create` (120 s timeout)
+  run `python -m hermes_cli.default_plugins ensure` in the foreground before
+  starting the local backend/gateway so default plugins and their Python
+  dependencies are live for the very first session. If the deadline is reached,
+  startup continues while the detached installer child finishes in the
+  background.
+- **Updates and CLI rechecks:** Source installs and `hermes update` install
+  defaults in the foreground across all profile homes. On CLI starts (including
+  Nix, Termux, and already-maintained revisions), boot bootstrap rechecks the
+  live catalog using local state only (zero network wait) and spawns the
+  detached installer child whenever the revision, cache, or default set needs a
+  pass.
+- **User choices stick:** Each home records automatic installs under
+  `_default_plugins_installed` in `config.yaml`, so a user who removes or
+  disables a default plugin keeps that choice through every later start and
+  update.
+- **Offline fail-open and retry:** When offline or if an install fails,
+  preflight fails open without stalling startup. Exponential retry backoff
+  applies to the background/CLI boot step (reopening Desktop or restarting a
+  container retries the foreground preflight immediately, failing open quickly
+  if still offline); an interrupted install leaves an in-progress marker so the
+  next pass reinstalls it cleanly.
+- **Tier and opt-out gates:** Only `official` and `verified` entries may set
+  `default: true` (the validator refuses it elsewhere and Hermes ignores it on
+  any other tier). Homes with `security.allow_lazy_installs: false` (or
+  `HERMES_DISABLE_LAZY_INSTALLS=1`) fetch nothing.
 
 `version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
 used to pick what installs. The sha stays the release; bump `version` in the

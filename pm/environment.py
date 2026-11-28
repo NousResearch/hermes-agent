@@ -19,7 +19,7 @@ import tempfile
 import time
 from typing import TextIO
 
-from pm.filesystem import native
+from pm.filesystem import long_root, native
 from pm.index_config import TIMEOUT_HINT, bridged_index_settings, is_forwarded, is_index_redirect
 from pm.package import InstallError
 from pm.progress import LiveTail, TextSink, verbose_output
@@ -282,6 +282,50 @@ def _same_executable(candidate: Path, pinned: Path) -> bool:
         return False
 
 
+def _git_path_dirs() -> list[str]:
+    """PATH entries for PM's installed git (if any), ordinary spelling; never installs or raises."""
+    try:
+        from pm.install import installed_package
+        from pm.packages import Git
+        from pm.store import current_target
+
+        installed = installed_package("git")
+        if installed is None:
+            return []
+        raw = Git().env(installed.path, current_target()).get("PATH") or []
+    except (OSError, ValueError, KeyError, RuntimeError):
+        return []
+    entries = [raw] if isinstance(raw, str) else raw
+    return [native(entry) for entry in entries if entry]
+
+
+def _prepend_installed_git(build_env: dict[str, str], *, explicit_env: bool) -> None:
+    """Expose PM's installed git to uv even before ``pm.activate()`` runs.
+
+    ``pyproject.toml`` carries git-sourced requirements that ``uv lock`` must
+    fetch on every platform; standalone processes on stock Windows without
+    system Git otherwise fail with ``Git executable not found``. Callers that
+    passed an explicit ``env`` with no/empty PATH opted out of ambient PATH.
+    """
+    key = next((k for k in build_env if k.upper() == "PATH"), "PATH")
+    existing = build_env.get(key, "")
+    if explicit_env and not existing:
+        return
+    dirs = _git_path_dirs()
+    if not dirs:
+        return
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for entry in dirs:
+        norm = os.path.normcase(entry)
+        if norm not in seen:
+            seen.add(norm)
+            ordered.append(entry)
+    rest = [entry for entry in existing.split(os.pathsep)
+            if entry and os.path.normcase(entry) not in seen]
+    build_env[key] = os.pathsep.join([*ordered, *rest])
+
+
 def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
@@ -295,6 +339,7 @@ def managed_environment(destination: Path, *, python: Path | None = None,
     uv, pinned_python = tools
     python = pinned_python if python is None else python.absolute()
     build_env = _base_environment(env)
+    _prepend_installed_git(build_env, explicit_env=env is not None)
     if _same_executable(python, pinned_python):
         # Staged copies (bundle payloads) share our interpreter's sysconfig; foreign ones (e.g. Nix) keep theirs.
         from pm.build_compilers import pinned_build_defaults
@@ -321,7 +366,7 @@ def _fresh_build(environment: PythonEnvironment, *, sealed: bool, lock: Path | N
         if sealed:
             prune_site_pth(out)
     except BaseException:
-        shutil.rmtree(out, ignore_errors=True)
+        shutil.rmtree(long_root(out), ignore_errors=True)
         raise
 
 

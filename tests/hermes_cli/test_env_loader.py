@@ -832,3 +832,55 @@ def test_lowercase_managed_dir_line_cannot_repoint_launch_value_on_windows(tmp_p
     load_hermes_dotenv(load_external_secrets=False)
 
     assert os.environ["HERMES_MANAGED_DIR"] == str(tmp_path / "admin")
+
+
+def test_a_name_kept_live_takes_the_live_expansion_and_later_lines_see_it(tmp_path, monkeypatch):
+    """``resolve_home_dotenv`` with a lookup env and *live_names*: every marked name gets the value the plain live
+    resolution gives it, through earlier lines of its layer and the layer before (the managed ``.env`` after the
+    home's), and an unmarked line naming one sees that value while its own references read the lookup env. A
+    marked name no line assigns reads the live env too, set or unset there; one an earlier line assigns reads that
+    line, not the environment."""
+    from hermes_cli import env_loader, managed_scope
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setenv("PIN_BASE", "/live")
+    monkeypatch.setenv("PIN_GENV", "/live-genv")
+    monkeypatch.delenv("PIN_GONE", raising=False)
+    monkeypatch.setenv("PIN_GSET", "/env")
+    home, managed = tmp_path / "home", tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / ".env").write_text("PIN_G1=${PIN_BASE}/g1\nPIN_G2=${PIN_G1}/g2\nPIN_REF=${PIN_G2}|${PIN_BASE}\n"
+                               "PIN_EREF=${PIN_GENV}|${PIN_GONE:-unset}\nPIN_GSET=/file\nPIN_GSREF=${PIN_GSET}\n",
+                               encoding="utf-8")
+    (managed / ".env").write_text("PIN_G3=${PIN_G2}/g3\nPIN_MREF=${PIN_G3}|${PIN_BASE}\n", encoding="utf-8")
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: managed)
+
+    live = env_loader.resolve_home_dotenv(home)
+    frozen = {"PIN_BASE": "/frozen", "PIN_GENV": "/frozen-genv", "PIN_GONE": "/frozen-gone"}
+    kept = env_loader.resolve_home_dotenv(home, lookup_env=frozen, live_names=lambda name: name.startswith("PIN_G"))
+
+    assert {k: kept[k] for k in ("PIN_G1", "PIN_G2", "PIN_G3")} == {k: live[k] for k in ("PIN_G1", "PIN_G2", "PIN_G3")}
+    assert live["PIN_G3"] == "/live/g1/g2/g3"
+    assert (kept["PIN_REF"], kept["PIN_MREF"]) == ("/live/g1/g2|/frozen", "/live/g1/g2/g3|/frozen")
+    assert kept["PIN_EREF"] == live["PIN_EREF"] == "/live-genv|unset"
+    assert kept["PIN_GSREF"] == live["PIN_GSREF"] == "/file"
+
+
+def test_a_home_resolved_with_names_kept_live_reads_itself_as_hermes_home(tmp_path, monkeypatch):
+    """With *live_names*, ``${HERMES_HOME}`` in the resolved home's dotenv layers reads that home, as the load that
+    published its values saw it, in the lookup and in a marked line's live expansion alike: an embedding host that
+    mirrors another profile's home into the live env must not move them."""
+    from hermes_cli import env_loader, managed_scope
+
+    monkeypatch.setattr(env_loader, "_DOTENV_PUBLISHED", {})
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: None)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "mirrored-profile"))
+    (home / ".env").write_text("PIN_HREF=${HERMES_HOME}/ref\nPIN_GH=${HERMES_HOME}/g\n", encoding="utf-8")
+
+    kept = env_loader.resolve_home_dotenv(home, lookup_env={"HERMES_HOME": str(tmp_path / "frozen")},
+                                          live_names=lambda name: name.startswith("PIN_G") or name == "HERMES_HOME")
+
+    assert (kept["PIN_HREF"], kept["PIN_GH"]) == (f"{home}/ref", f"{home}/g")

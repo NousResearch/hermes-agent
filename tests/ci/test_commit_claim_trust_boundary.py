@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.releases import handoff
 from scripts.releases import lanes as lane_set
 from tests.ci import workflow_steps
 from tests.ci.desktop_release_roles import (
@@ -319,6 +320,7 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
     extra_bin = tmp_path / "bin"
     extra_bin.mkdir()
     _built_packages(staged, target)
+    built = {path.relative_to(staged).as_posix() for path in staged.rglob("*") if path.is_file()}
     if target == "darwin-arm64":
         ditto = extra_bin / "ditto"
         ditto.write_text("#!/usr/bin/env bash\nset -e\n[ \"$1\" = -x ] && [ \"$2\" = -k ] && mkdir -p \"$4/Hermes.app\"\n", encoding="utf-8")
@@ -349,6 +351,13 @@ def test_claim_staging_runs_the_controller_recorder_on_the_built_artifacts(
                 assert path.is_relative_to(staged.resolve()), (flag, call)
     (record,) = [call for call in calls if call["module"] == "scripts.bundles.release_artifacts"]
     assert ("--legacy-commit-build" in record["argv"]) == (legacy == "true")
+    # The upload's patterns select exactly the built packages and the metadata the record step wrote.
+    metadata = Path(record["cwd"], record["argv"][record["argv"].index("--out") + 1])
+    metadata.write_text("{}", encoding="utf-8")
+    (upload,) = [call for call in calls if call["module"] == "scripts.releases.handoff"]
+    root = Path(upload["cwd"], upload["argv"][upload["argv"].index("--root") + 1])
+    includes = [upload["argv"][i + 1] for i, arg in enumerate(upload["argv"]) if arg == "--include"]
+    assert set(handoff._select_files(root, includes)) == built | {metadata.relative_to(staged).as_posix()}
 
 
 @pytest.mark.parametrize("target", [*NATIVE_TARGETS, "termux"])
@@ -372,18 +381,20 @@ def test_claim_staging_reads_the_unreviewed_packages_without_the_r2_secrets(targ
 
 # What a build leg that rewrote its own upload could add next to its packages: a sidecar the
 # recorder would trust, a metadata file or a package the recorder never reads (Store, another
-# arch, a second DMG, a stray blockmap, any of them hidden), a nested package, or a symlinked
-# deb directory.
+# arch, a second DMG, a stray blockmap, any of them hidden), a nested package, a blockmap whose
+# package isn't there, or a symlink in place of a package or the deb directory.
 _PLANTED = {"win32-x64": ("version-info-x64.json", "nested/HermesBundled-0.33.0-win-x64.msix",
-                          "Store-HermesBundled-0.33.0-win-x64.msix", "HermesBundled-0.33.0-win-arm64.msix"),
+                          "Store-HermesBundled-0.33.0-win-x64.msix", "HermesBundled-0.33.0-win-arm64.msix",
+                          "<package symlink>"),
             "win32-arm64": ("version-info-arm64.json", "metadata-windows-arm64.json",
                             ".Other-0.33.0-win-arm64.msix"),
             "darwin-arm64": ("metadata-macos-arm64.json", "nested/HermesBundled-0.33.0-mac-arm64.zip",
                              "Other-0.33.0-mac-arm64.dmg", "HermesBundled-0.33.0-mac-x64.dmg", "evil.blockmap",
                              ".Other-0.33.0-mac-arm64.dmg", ".evil.blockmap",
-                             "HermesBundled-0.33.0-mac-arm64.dmg.blockmap.blockmap"),
+                             "HermesBundled-0.33.0-mac-arm64.dmg.blockmap.blockmap",
+                             "Other-0.33.0-mac-arm64.dmg.blockmap", "<package symlink>"),
             "termux": ("metadata-termux-aarch64.json", "deb/nested/hermes-agent_0.33.0_aarch64.deb", "<deb symlink>",
-                       "deb/.other_0.33.0_aarch64.deb")}
+                       "deb/.other_0.33.0_aarch64.deb", "<package symlink>")}
 
 
 @pytest.mark.parametrize("target,planted", [(t, p) for t, paths in _PLANTED.items() for p in paths])
@@ -401,6 +412,10 @@ def test_claim_staging_refuses_anything_but_the_built_packages(tmp_path, target,
     if planted == "<deb symlink>":
         (staged / "deb").rename(tmp_path / "elsewhere")
         (staged / "deb").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+    elif planted == "<package symlink>":
+        package = min(path for path in staged.rglob("*") if path.is_file())
+        package.rename(tmp_path / package.name)
+        package.symlink_to(tmp_path / package.name)
     else:
         (staged / planted).parent.mkdir(parents=True, exist_ok=True)
         (staged / planted).write_text("{}", encoding="utf-8")

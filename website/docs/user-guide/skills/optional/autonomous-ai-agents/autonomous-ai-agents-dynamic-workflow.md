@@ -16,7 +16,7 @@ Plan-in-code fan-outs, adversarial verification, waves.
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/dynamic-workflow` |
 | Path | `optional-skills/autonomous-ai-agents/dynamic-workflow` |
-| Version | `2.0.0` |
+| Version | `2.1.0` |
 | Author | Teknium + Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -85,6 +85,8 @@ orchestrator subagent (depth > 0) is synchronous.
 ## Quick Reference
 
 - Unit must be answerable without sibling output, else it is serial.
+- Delete fake edges: for each "and then" in an existing pipeline, check the next
+  step actually reads the previous step's output; if it does not, run both in parallel.
 - Manifest: one unit per line in `<run>/manifest.jsonl`; print count + run dir.
 - Per child: ~8-12 mechanical edits, or ~2-3k lines of reading, or ~50-70 KB of
   corpus; size by the LARGEST unit. Structured output goes to files, never the
@@ -182,6 +184,12 @@ The one-shot recipe does not scale to a whole-codebase pass. What did:
   and dies with the process. Durable graph = kanban swarm; one-off = `cronjob`.
 - Trusting `summary` for content, or `status=completed` for completion.
 - Same framing in every "independent" attempt: they collapse to one answer.
+- Splitting sequential work: multi-agent setups lose to one agent when each step
+  needs the full picture. Split only the pieces that never read each other's
+  results, and keep exactly one owner of the merge (unowned merges compound errors).
+- Irreversible steps (send, publish, delete, deploy, refund) inside a fan-out:
+  route each through the user's approval, placed where a mistake is expensive to
+  undo, not on every step.
 - `git stash` anywhere in a worktree campaign: `refs/stash` is shared across
   worktrees and another worker will pop your edits. Compare via a temp worktree.
 - Reporting a hit target when the honest number is lower. Say "16% so far, here

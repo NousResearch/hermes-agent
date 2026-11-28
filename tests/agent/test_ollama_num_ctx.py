@@ -41,7 +41,8 @@ class TestQueryOllamaNumCtx:
         }
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata._ollama_ps_fingerprint", return_value=True):
             # httpx is imported inside the function — patch the module import
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
@@ -57,7 +58,8 @@ class TestQueryOllamaNumCtx:
         }
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata._ollama_ps_fingerprint", return_value=True):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("custom-model", "http://localhost:11434")
@@ -75,7 +77,8 @@ class TestQueryOllamaNumCtx:
         }
         mock_ctx, mock_client = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata._ollama_ps_fingerprint", return_value=True):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("local:qwen2.5:7b", "http://localhost:11434/v1")
@@ -95,7 +98,8 @@ class TestQueryOllamaSupportsVision:
         show_data = {"capabilities": ["completion", "vision"]}
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata._ollama_ps_fingerprint", return_value=True):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_supports_vision("gemma4:e2b", "http://localhost:11434/v1")
@@ -107,7 +111,8 @@ class TestQueryOllamaSupportsVision:
         show_data = {"model_info": {"gemma3.vision.block_count": 27}}
         mock_ctx, _ = _mock_httpx_client(show_data)
 
-        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata._ollama_ps_fingerprint", return_value=True):
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_supports_vision("llava", "http://localhost:11434")
@@ -118,6 +123,49 @@ class TestQueryOllamaSupportsVision:
         with patch("agent.model_metadata.detect_local_server_type", return_value="vllm"):
             result = query_ollama_supports_vision("llava", "http://localhost:8000/v1")
         assert result is None
+
+
+class TestOllamaEmulatorIsNotTreatedAsOllama:
+    """A loopback OpenAI-compat router can answer the whole Ollama probe surface.
+
+    magpie (127.0.0.1:3425) serves /api/tags, /api/version and /api/show, so
+    ``detect_local_server_type`` says "ollama". If that verdict alone drove num_ctx,
+    the agent would inject Ollama's ``options`` into an OpenAI-wire request and any
+    strict upstream behind the router 400s the whole run with
+    "Unsupported parameter(s): `options`". /api/ps is the fingerprint that separates
+    a real Ollama from an emulator (real: 200 {"models": [...]}, emulator: 404).
+    """
+
+    def test_emulator_without_api_ps_gets_no_num_ctx(self):
+        from agent.model_metadata import _is_ollama_server
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("agent.model_metadata._ollama_ps_fingerprint", return_value=False):
+            assert _is_ollama_server("http://127.0.0.1:3425/v1", "magpie") is False
+            assert query_ollama_num_ctx("auto/GLM-5.3-Flash", "http://127.0.0.1:3425/v1", api_key="magpie") is None
+
+    def test_ps_fingerprint_requires_200_with_models(self):
+        from agent import model_metadata as mm
+
+        def _client_returning(status_code, text):
+            mock_resp = MagicMock(status_code=status_code, text=text)
+            mock_client = MagicMock()
+            mock_client.get.return_value = mock_resp
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__ = MagicMock(return_value=mock_client)
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            return mock_ctx
+
+        import httpx
+
+        mm._OLLAMA_PS_CACHE.clear()
+        with patch.object(httpx, "Client", return_value=_client_returning(404, '{"error": "not_found"}')):
+            assert mm._ollama_ps_fingerprint("http://127.0.0.1:3425/v1", "") is False
+
+        mm._OLLAMA_PS_CACHE.clear()
+        with patch.object(httpx, "Client", return_value=_client_returning(200, '{"models": []}')):
+            assert mm._ollama_ps_fingerprint("http://127.0.0.1:11434/v1", "") is True
+        mm._OLLAMA_PS_CACHE.clear()
 
 
 # ═══════════════════════════════════════════════════════════════════════

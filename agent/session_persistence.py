@@ -6,6 +6,7 @@ import hashlib
 import logging
 import re
 from contextlib import nullcontext
+from copy import deepcopy
 
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -59,6 +60,47 @@ def _override_replaces_content(msg: dict, content: Any, override: Any) -> bool:
         and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
         and (not isinstance(content, list) or isinstance(override, list))
     )
+
+
+PERSIST_USER_ANCHOR = "_persist_user_message_anchor"
+PERSIST_USER_ANCHOR_ROW = "_persist_user_message_anchor_row"
+
+
+def note_persist_user_anchor(agent, messages: list) -> None:
+    """Freeze the complete turn payload; unknown ownership must never authorize a rewrite."""
+    idx = getattr(agent, "_persist_user_message_idx", None)
+    msg = messages[idx] if isinstance(idx, int) and 0 <= idx < len(messages) else None
+    owner = msg if isinstance(msg, dict) and msg.get("role") == "user" else None
+    content = owner.get("content") if owner is not None else None
+    # None is reserved for legacy callers that never stage an anchor. An unresolvable staged row
+    # gets a non-payload sentinel instead, so losing the row fails closed.
+    agent._persist_user_message_anchor = deepcopy(content) if isinstance(content, (str, list)) else object()
+    agent._persist_user_message_anchor_row = owner
+
+
+def refresh_persist_user_anchor(agent, msg: dict, previous_content: Any) -> None:
+    """Carry ownership only across an in-place Hermes mutation of the owned row's frozen payload."""
+    anchor = getattr(agent, PERSIST_USER_ANCHOR, None)
+    owner = getattr(agent, PERSIST_USER_ANCHOR_ROW, None)
+    if anchor is None or owner is None or msg is not owner or anchor != previous_content:
+        return
+    agent._persist_user_message_anchor = deepcopy(msg.get("content"))
+    agent._persist_user_message_anchor_row = msg
+
+
+def adopt_persist_user_anchor(agent, target: dict, source: dict) -> None:
+    """Transfer ownership when a merge absorbs the unchanged current-turn row."""
+    anchor = getattr(agent, PERSIST_USER_ANCHOR, None)
+    owner = getattr(agent, PERSIST_USER_ANCHOR_ROW, None)
+    if anchor is None or owner is None or source is not owner or anchor != source.get("content"):
+        return
+    agent._persist_user_message_anchor = deepcopy(target.get("content"))
+    agent._persist_user_message_anchor_row = target
+
+
+def _row_holds_anchored_ask(anchor: Any, msg: dict) -> bool:
+    """Legacy unstaged callers remain compatible; staged rows require complete deep equality."""
+    return anchor is None or anchor == msg.get("content")
 
 
 def _content_with_turn_override(msg: dict, content: Any, override: Any) -> Any:
@@ -492,17 +534,27 @@ class SessionPersistenceMixin:
 
     def _apply_persist_user_message_override(self, messages: list[dict]) -> None:
         """Rewrite the current-turn user message in place: some paths send an API-only variant that must not
-        leak into transcripts or resumed history."""
+        leak into transcripts or resumed history.
+
+        The row must still be this turn's user row (:func:`_row_holds_anchored_ask`): a context engine that
+        compacted in place during the turn leaves its summary at the anchored index, and that summary is the
+        live context the next request replays."""
         idx = getattr(self, "_persist_user_message_idx", None)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
         platform_id = getattr(self, "_persist_user_message_platform_id", None)
+        anchor = getattr(self, PERSIST_USER_ANCHOR, None)
+        owner = getattr(self, PERSIST_USER_ANCHOR_ROW, None)
         if idx is None or (override is None and timestamp is None and platform_id is None):
             return
         msg = messages[idx] if 0 <= idx < len(messages) else None
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             return
-        if _override_replaces_content(msg, msg.get("content"), override):
+        if (
+            _override_replaces_content(msg, msg.get("content"), override)
+            and _row_holds_anchored_ask(anchor, msg)
+            and (anchor is None or owner is None or owner is msg)
+        ):
             msg["content"] = _content_with_turn_override(msg, msg.get("content"), override)
         if timestamp is not None:
             msg["timestamp"] = timestamp

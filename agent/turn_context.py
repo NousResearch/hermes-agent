@@ -637,6 +637,8 @@ def _bind_turn_identity(
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
     agent._persist_user_message_platform_id = persist_user_platform_id
+    # The anchor describes the row at an index that no longer is this turn's: re-frozen below.
+    agent._persist_user_message_anchor = None
     # Unique task_id when not provided isolates VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -1163,7 +1165,12 @@ def _append_multimodal_context(
     if _mm_ctx:
         _stamp_typed_ask_once(agent, turn_user_msg)
     # A stamp means injected context landed on the parts (here or as gateway notes): backfill either way.
+    from copy import deepcopy
+    from agent.session_persistence import refresh_persist_user_anchor
+
+    previous_content = deepcopy(turn_user_msg.get("content"))
     appended = append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx)
+    refresh_persist_user_anchor(agent, turn_user_msg, previous_content)
     if not appended and typed_ask_text(turn_user_msg) is None:
         return
     from agent.session_persistence import _persist_lock
@@ -1305,6 +1312,10 @@ def build_turn_context(
     append_message(messages, user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+    # Freeze the ask this row holds: the turn-end override must not overwrite a row a context engine
+    # compacted in place over during this turn (its summary is the live context, #157402).
+    from agent.session_persistence import note_persist_user_anchor
+    note_persist_user_anchor(agent, messages)
 
     agent._user_turn_count += 1
     # cache_ttl auto: a person's chat moves from 5m to 1h once this message finds its 5m entry expired.

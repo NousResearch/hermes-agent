@@ -124,3 +124,37 @@ def test_progress_stamped_during_the_sweep_keeps_the_run(monkeypatch):
 
     assert recover_interrupted_executions() == 0
     assert _status(eid) == "running"
+
+
+def test_host_sleep_is_not_silence(monkeypatch):
+    """A host that slept for hours froze the stamper with the run (#160680): the wall clock says
+    the owner has been silent past the bound, the awake clock says seconds. Only awake silence
+    counts while the awake stamp is comparable; a stamp from another boot falls back to wall."""
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "600")
+    bound = executions_mod._live_owner_stale_after_seconds()
+    monkeypatch.setattr(executions_mod, "awake_seconds", lambda: 5000.0)
+
+    slept = _seed_running("job-slept", age_seconds=bound + 3600)
+    with _transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET progress_at=?, progress_awake=? WHERE id=?",
+            ((_hermes_now() - timedelta(seconds=bound + 1800)).isoformat(), 4999.0, slept),
+        )
+    assert recover_interrupted_executions() == 0
+    assert _status(slept) == "running"
+
+    # Silent for longer than the bound in awake time too: a real wedge is still reclaimed.
+    with _transaction() as conn:
+        conn.execute("UPDATE executions SET progress_awake=? WHERE id=?", (5000.0 - bound - 1, slept))
+    assert recover_interrupted_executions() == 1
+    assert _status(slept) == "unknown"
+
+    # The awake clock went backwards (a reboot rebased it): the stamp cannot be compared.
+    rebooted = _seed_running("job-rebooted", age_seconds=bound + 3600, pid=55555)
+    with _transaction() as conn:
+        conn.execute(
+            "UPDATE executions SET progress_at=?, progress_awake=? WHERE id=?",
+            ((_hermes_now() - timedelta(seconds=bound + 1800)).isoformat(), 9000.0, rebooted),
+        )
+    assert recover_interrupted_executions() == 1
+    assert _status(rebooted) == "unknown"

@@ -166,7 +166,8 @@ async def automation(connection, ref, params):
     meta = authority_persistence(authority).state_meta
     rows = lambda: tuple(meta.get(f"{k}:{target}") for k in ("goal", "loop", "heartbeat"))
     # A "read" can still write: is_waiting / goal_blocks_tick clear a satisfied goal barrier.
-    before = rows() if call in _READS else None
+    # get_meta preserves writer-local visibility and may wait for the writer mutex.
+    before = await asyncio.to_thread(rows) if call in _READS else None
     # The judge and gates block for seconds: off the loop, with the caller's context (profile scope).
     result = await asyncio.to_thread(run)
     if kind == "heartbeat" and call in _WATCHDOG_CALLS and (call == "due_prompt" or result.get("value") is not None):
@@ -174,8 +175,8 @@ async def automation(connection, ref, params):
         if not hasattr(authority, "viewer_heartbeat"):
             authority.viewer_heartbeat = {}
         authority.viewer_heartbeat[ref.session_id] = connection
-    if before is None or rows() != before:
+    if before is None or await asyncio.to_thread(rows) != before:
         # The classic CLI drives this session's automation: other viewers (Ink, Desktop) repaint from the event.
-        from gateway.session_control_actions import publish
-        publish(authority, ref.session_id)
+        from gateway.session_control_actions import publish_async
+        await publish_async(authority, ref.session_id)
     return result

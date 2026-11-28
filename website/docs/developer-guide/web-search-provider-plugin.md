@@ -247,7 +247,7 @@ Declare a third-party plugin's own dependencies in its manifest or
 - **`plugins/web/brave_free/`** — small, API-key-gated, search-only HTTP provider. Good starting template.
 - **`plugins/web/ddgs/`** — no-key provider that lazy-installs its SDK. Useful pattern for backends that wrap a Python package.
 - **`plugins/web/firecrawl/`** — full multi-capability provider (search + extract + crawl) with multiple format modes.
-- **`plugins/web/searxng/`** — self-hosted, URL-configured backend with no auth.
+- **`plugins/web/searxng/`** — self-hosted, URL-configured backend; can send a signed-in provider's credential (`web.searxng.auth_provider`).
 - **`plugins/web/xai/`** — LLM-backed search via Grok's server-side `web_search` tool. Shows how to reuse an existing OAuth/env-var credential surface (`tools/xai_http.py`) without adding new env vars, and how to write a cheap `is_available()` that honors the no-network contract.
 
 ## Distribute via pip

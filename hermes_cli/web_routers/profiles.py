@@ -748,17 +748,27 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody, profile: Optio
 @functools.partial(coalesced_read, thread_runner=lambda func: run_in_threadpool(func))
 def _read_profiles():
     from hermes_cli import profiles as profiles_mod
+    source = "canonical"
     try:
         # Polled by the Desktop on every focus/roster tick: never walk skill trees in-request.
         profiles = [_profile_to_dict(p) for p in profiles_mod.list_profiles(lazy_skill_count=True)]
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        profiles = _fallback_profile_dicts(profiles_mod)
-    return {"profiles": scope_to_launch_profile(profiles, lambda row: row.get("name"))}
+        try:
+            profiles = _fallback_profile_dicts(profiles_mod)
+        except Exception as exc:
+            _log.exception("GET /api/profiles fallback failed")
+            raise HTTPException(status_code=500, detail="Unable to list profiles.") from exc
+        source = "filesystem_fallback"
+    return {
+        "profiles": scope_to_launch_profile(profiles, lambda row: row.get("name")),
+        "provenance": {"source": source, "degraded": source == "filesystem_fallback"},
+    }
 
 
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
+    """List profiles and disclose whether reduced fallback data was used."""
     return await _read_profiles()
 
 

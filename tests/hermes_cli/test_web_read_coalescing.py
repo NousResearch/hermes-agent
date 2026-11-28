@@ -63,6 +63,9 @@ async def test_profiles_burst_leaves_threadpool_status_responsive(monkeypatch):
                 release.set()
                 responses = await asyncio.gather(*tasks)
             assert all(r.status_code == 200 for r in responses)
-            assert all(r.json() == {"profiles": [{"name": "example"}]} for r in responses)
+            assert all(r.json()["profiles"] == [{"name": "example"}] for r in responses)
+            assert all(r.json()["provenance"] == {
+                "source": "canonical", "degraded": False,
+            } for r in responses)
     finally:
         limiter.total_tokens = previous

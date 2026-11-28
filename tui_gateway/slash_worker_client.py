@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
@@ -60,6 +61,10 @@ class _SlashWorker:
             + (["--provider", provider] if provider else []) \
             + (["--base-url", base_url] if base_url else [])
         self._closed = False
+        # Wall-clock stamp of when this worker last ran a command; construction counts, so a fresh
+        # worker gets a full idle window. slash.exec re-stamps it on every command, and the reaper
+        # evicts on it (see close_if_idle and session_reaper._evict_idle_slash_workers).
+        self.last_used = time.time()
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
@@ -155,6 +160,27 @@ class _SlashWorker:
             for stream in (proc.stdin, proc.stdout, proc.stderr):
                 with contextlib.suppress(Exception):
                     stream.close()
+
+    def close_if_idle(self) -> bool:
+        """Close the worker iff no command is running on it; return True when this call closed it.
+
+        ``run()`` holds ``_lock`` for the whole command, so a non-blocking acquire IS the busy
+        test — no separate flag to drift. Closing under the lock means a command is never
+        mid-flight against a dying process: a ``run()`` either wins the lock first (this returns
+        False, and the caller retries on a later scan) or starts after the close and fails fast
+        on the dead process, which slash.exec already turns into a respawn. An already-closed
+        worker returns False: ``_finalize_session`` owns that close, and double-closing is its
+        business, not the evictor's.
+        """
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if getattr(self, "_closed", False):
+                return False
+            self.close()
+            return True
+        finally:
+            self._lock.release()
 
 
 def _stop_worker_group(proc) -> None:

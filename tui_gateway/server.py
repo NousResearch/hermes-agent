@@ -278,6 +278,12 @@ _REAPER_SCAN_S = 300.0
 # mid-update loses at most one flush interval of session state.
 _EXIT_FLUSH_BUDGET_S = max(0.0, env_float("HERMES_TUI_EXIT_FLUSH_BUDGET_S", 5.0))
 _INCREMENTAL_FLUSH_INTERVAL_S = max(0.0, env_float("HERMES_TUI_SESSION_FLUSH_INTERVAL_S", _REAPER_SCAN_S))
+# Slash-worker idle eviction (session_reaper.py piggybacks it on the same scan): a session's worker is a
+# cache that slash.exec respawns on demand, so the reaper closes one that has not run a command for this
+# long — even on a live transport, where no teardown funnel will ever finalize the session. The scan runs
+# every _REAPER_SCAN_S (300 s), so at the 900 s default a worker is evicted 15-20 min after its last
+# command. 0 disables eviction entirely.
+_SLASH_WORKER_IDLE_S = max(0.0, env_float("HERMES_TUI_SLASH_WORKER_IDLE_S", 900.0))
 
 
 def _start_idle_reaper() -> None:

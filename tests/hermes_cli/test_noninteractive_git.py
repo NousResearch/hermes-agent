@@ -219,6 +219,20 @@ class TestNoninteractiveGitEnv:
         override = "ssh -i custom-key -o BatchMode=no"
         assert noninteractive_git_env({"GIT_SSH_COMMAND": override})["GIT_SSH_COMMAND"] == override
 
+    def test_user_ssh_client_kept_and_batched(self):
+        """A custom GIT_SSH_COMMAND gets its no-prompt flag; GIT_SSH (outranked by the
+        core.sshCommand pin) becomes the pin, so a plink user's client is not swapped for ssh."""
+        def pin(env):
+            return {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"]
+                    for i in range(int(env["GIT_CONFIG_COUNT"]))}["core.sshCommand"]
+
+        assert noninteractive_git_env({"GIT_SSH_COMMAND": "ssh -i k"})["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes -i k"
+        assert noninteractive_git_env({"GIT_SSH_COMMAND": '"C:/T G/TortoiseGitPlink.exe" -i k.ppk'})[
+            "GIT_SSH_COMMAND"] == '"C:/T G/TortoiseGitPlink.exe" -batch -i k.ppk'
+        assert pin(noninteractive_git_env({"GIT_SSH": r"C:\Program Files\PuTTY\plink.exe"})) == (
+            r'"C:\Program Files\PuTTY\plink.exe" -batch')
+        assert pin(noninteractive_git_env({"GIT_SSH": "/usr/bin/ssh"})) == "/usr/bin/ssh -o BatchMode=yes"
+
 
 # ---------------------------------------------------------------------------
 # 2. Real-git E2E: 401 remote fails fast instead of prompting

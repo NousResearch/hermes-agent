@@ -104,6 +104,24 @@ class TestGetProxyUrl:
         with patch("gateway.run._load_gateway_config", return_value=cfg):
             assert runner._get_proxy_url() == "http://10.0.0.1:8642"
 
+    @pytest.mark.parametrize("gateway", ["running", "stopped", "", 0, [], ["running"]])
+    def test_a_status_scalar_gateway_section_reads_as_no_proxy(self, monkeypatch, gateway):
+        """A profile config carries its own status line ``gateway: running`` under the same key the
+        nested proxy settings live in, so the reader has to answer "no proxy" instead of calling
+        ``.get`` on a string — that AttributeError aborted every proxied turn (#148585's shape)."""
+        monkeypatch.delenv("GATEWAY_PROXY_URL", raising=False)
+        runner = _make_runner()
+        with patch("gateway.run._load_gateway_config", return_value={"gateway": gateway}):
+            assert runner._get_proxy_url() is None
+
+    def test_a_scalar_section_does_not_shadow_the_scoped_env_url(self, monkeypatch):
+        """The env read comes first, so an unreadable ``gateway:`` section never disables a proxy the
+        profile configured through ``GATEWAY_PROXY_URL``."""
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://proxy.local:8642/")
+        runner = _make_runner()
+        with patch("gateway.run._load_gateway_config", return_value={"gateway": "running"}):
+            assert runner._get_proxy_url() == "http://proxy.local:8642"
+
 class _SelectiveScope(dict):
     """Bound scope that resolves GATEWAY_PROXY_URL but fails on the KEY read."""
     def get(self, name, default=None):

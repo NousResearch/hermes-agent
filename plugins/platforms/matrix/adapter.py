@@ -1968,7 +1968,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 body = self._strip_mention(body)
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
-        if not thread_id:
+        # An event that already carries a relation cannot root a thread (Synapse answers 400
+        # "Cannot start threads from an event with a relation"), so it is answered unthreaded.
+        if not thread_id and not relates_to.get("rel_type"):
             if is_dm:
                 synthetic = (self._dm_mention_threads and is_mentioned) or self._dm_auto_thread
             else:

@@ -48,6 +48,7 @@ Fixes #
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)
 - [ ] I've run `just test` on the tests for the code I changed, and they pass
 - [ ] `just check` passes (the blocking lint and code-health checks CI runs)
+- [ ] I've run `scripts/run_tests.sh` and all tests pass (it enforces CI parity; bare `pytest` has caused "works locally, fails in CI" flips — see `AGENTS.md`)
 - [ ] I've added tests for my changes (required for bug fixes, strongly encouraged for features)
 - [ ] I've tested on my platform: <!-- e.g. Ubuntu 24.04, macOS 15.2, Windows 11 -->
 

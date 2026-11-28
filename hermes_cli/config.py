@@ -2999,13 +2999,13 @@ _SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.di
 def _expected_container_type(key: str, user_config: dict[str, Any]) -> Optional[str]:
     """``"list"`` / ``"mapping"`` when the schema (``DEFAULT_CONFIG``, the known-container table,
     or the value already on disk) fixes *key* to a container; ``None`` for scalars and open paths.
-    A single-segment key that is a mapping *section* in the schema skips the lookup: replacing a
-    whole section is ``_guard_section_overwrite``'s call (``--force``, the bare ``model`` shorthand)."""
+    A single-segment mapping *section* root defers to ``_guard_section_overwrite`` (its ``--force``
+    escape) only when the user already wrote it as a dict; an unset root stays ``"mapping"``."""
     parts = _split_key_path(key)
     schema_node = cfg_get(DEFAULT_CONFIG, *parts)
-    if len(parts) == 1 and isinstance(schema_node, dict):
-        schema_node = None
     existing = _get_nested(user_config, key)
+    if len(parts) == 1 and isinstance(schema_node, dict) and isinstance(existing, dict):
+        schema_node = None
     for node in (schema_node, _KNOWN_CONTAINER_TYPES.get(key), existing):
         if isinstance(node, dict) or node == "mapping":
             return "mapping"

@@ -52,6 +52,23 @@ test('slash compress refreshes its transcript on the owner route and previews st
   expect(calls).toHaveLength(1)
 })
 
+test.each([
+  { kind: 'a provider refusal', error: { data: { reason: 'compression_provider_unavailable' } }, revision: 5, retainsId: false },
+  { kind: 'a timeout', error: new Error('request timed out'), revision: 4, retainsId: true }
+])('compress retry after $kind uses the right revision and identity', ({ error, revision, retainsId }) => {
+  const protocol = new CanonicalDesktopProtocol()
+  const params = { session_id: 's', profile: 'sibling' }
+  protocol.result('session.resume', params, { session_id: 's', revision: 4, execution_generation: 9 })
+  const first = protocol.prepare('session.compress', params)
+
+  protocol.failure(first, error)
+  protocol.event({ type: 'session.info', ...params, payload: { revision: 5, execution_generation: 10 } })
+
+  const retry = protocol.prepare('session.compress', params)
+  expect(retry).toMatchObject({ profile: 'sibling', expected_revision: revision, expected_generation: retainsId ? 9 : 10 })
+  expect(retry.request_id === first.request_id).toBe(retainsId)
+})
+
 test('corrections preserve intent and fence the observed session generation', () => {
   const protocol = new CanonicalDesktopProtocol()
 

@@ -366,6 +366,7 @@ def execute_in_remote_kernel(
     code: str, *, env, env_type: str, task_env_id: str, sandbox_tools: frozenset,
     timeout: int, max_tool_calls: int, reset: bool, idle_exit: int = 1800,
     session_id: str | None = None, turn_id: str | None = None, conversation_id: str | None = None,
+    tool_call_id: str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
@@ -387,7 +388,8 @@ def execute_in_remote_kernel(
         return _run_attached_cell(kernel, key, code, env=env, task_env_id=task_env_id,
                                   sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
                                   reused=reused, state_reset=state_reset, state_lost=state_lost,
-                                  session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+                                  session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                                  tool_call_id=tool_call_id)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -398,7 +400,8 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
                        reused: bool, state_reset: bool, state_lost: bool,
                        session_id: str | None = None, turn_id: str | None = None,
-                       conversation_id: str | None = None) -> dict[str, Any]:
+                       conversation_id: str | None = None,
+                       tool_call_id: str | None = None) -> dict[str, Any]:
     from tools.code_execution_rpc import tool_errors_since
     from tools.code_execution_tool import _rpc_poll_loop
     from tools.thread_context import propagate_context_to_thread
@@ -416,7 +419,7 @@ def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task
         target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
         args=(env, f"{kernel.kernel_dir}/rpc", task_env_id, tool_call_log, tool_call_counter,
               max_tool_calls, sandbox_tools, stop_event, kernel.rpc_token, session_id, turn_id,
-              conversation_id))
+              conversation_id, tool_call_id))
     rpc_thread.start()
     cell_status, cell_payload = "no-result", {}
     try:

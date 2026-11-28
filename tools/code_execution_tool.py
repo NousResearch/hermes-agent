@@ -606,7 +606,8 @@ def _sandbox_tools_for(enabled_tools: Optional[list[str]]) -> frozenset:
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                          sandbox_tools: frozenset, *, timeout: int, max_tool_calls: int,
                          exec_start: float, session_id: Optional[str] = None,
-                         turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
+                         turn_id: Optional[str] = None, conversation_id: Optional[str] = None,
+                         tool_call_id: Optional[str] = None) -> str:
     """Per-call script ship: stage hermes_tools.py + script.py in a fresh remote sandbox dir,
     serve file-RPC from a polling thread, run, clean up."""
     sandbox_dir = f"{_env_temp_dir(env)}/hermes_exec_{uuid.uuid4().hex[:12]}"
@@ -628,7 +629,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, tool_call_log, tool_call_counter,
-                  max_tool_calls, sandbox_tools, stop_event, rpc_token, session_id, turn_id, conversation_id))
+                  max_tool_calls, sandbox_tools, stop_event, rpc_token, session_id, turn_id,
+                  conversation_id, tool_call_id))
         rpc_thread.start()
         # The token travels in a sourced env file, never in argv. No umask on
         # the launch command: the 700 dirs + explicit 0600 writes cover Hermes'
@@ -671,7 +673,8 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[list[str]],
                     reset: bool = False, session_id: Optional[str] = None,
-                    turn_id: Optional[str] = None, conversation_id: Optional[str] = None) -> str:
+                    turn_id: Optional[str] = None, conversation_id: Optional[str] = None,
+                    tool_call_id: Optional[str] = None) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
     (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
@@ -702,6 +705,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                     max_tool_calls=max_tool_calls, reset=bool(reset),
                     idle_exit=int(_cfg.get("kernel_idle_timeout", 1800)),
                     session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                    tool_call_id=tool_call_id,
                 )
             except Exception:
                 logger.warning("remote session-kernel path failed; falling back to per-call", exc_info=True)
@@ -713,7 +717,8 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
             return _remote_failure(exc, exec_start, 0)
         return _run_remote_per_call(env, env_type, code, effective_task_id, sandbox_tools,
                                     timeout=timeout, max_tool_calls=max_tool_calls, exec_start=exec_start,
-                                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id)
+                                    session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+                                    tool_call_id=tool_call_id)
 
 
 # ---- Main entry point ----
@@ -727,6 +732,7 @@ def execute_code(
     session_id: Optional[str] = None,
     turn_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
@@ -791,7 +797,7 @@ def execute_code(
     if env_type != "local" or hosted_scope() is not None:
         return record_execution_backend("code", "remote", _execute_remote(
             code, task_id, enabled_tools, reset=bool(reset), session_id=session_id, turn_id=turn_id,
-            conversation_id=conversation_id))
+            conversation_id=conversation_id, tool_call_id=tool_call_id))
     from tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
@@ -806,6 +812,7 @@ def execute_code(
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
         session_id=session_id, turn_id=turn_id, conversation_id=conversation_id,
+        tool_call_id=tool_call_id,
     ))
 
 
@@ -942,7 +949,8 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
                         enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
                         session_id=kwargs.get("session_id"), turn_id=kwargs.get("turn_id"),
-                        conversation_id=kwargs.get("conversation_id"))
+                        conversation_id=kwargs.get("conversation_id"),
+                        tool_call_id=kwargs.get("tool_call_id"))
 
 
 registry.register(

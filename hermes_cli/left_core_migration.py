@@ -1112,11 +1112,14 @@ def _placed(home: Path, plugin: str) -> Path:
 
 
 def _installed_for_good(home: Path, plugin: str) -> bool:
-    """*plugin* is in *home* to stay: on disk, and not just the tree a refused automatic enable left that
-    nobody enabled or disabled since (that one is owed, and the next attempt enables it in place)."""
+    """*plugin* is in *home* to stay: on disk, and not just the tree a refused or interrupted automatic install
+    (this migrator's or ``default_plugins``') left that nobody enabled or disabled since (that one is owed, and
+    the next attempt enables it in place)."""
+    from hermes_cli.default_plugins import left_unfinished
     if not plugin_present(plugin, home):
         return False
-    return not _placed(home, plugin).exists() or any(_tree_lists(home, plugin))
+    owed = _placed(home, plugin).exists() or left_unfinished(home, plugin)
+    return not owed or any(_tree_lists(home, plugin))
 
 
 def _core_carried(feature: LeftCoreFeature, selection: list) -> bool:

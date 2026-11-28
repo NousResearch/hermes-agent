@@ -162,19 +162,22 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
+const renderRow = (
+  session: SessionInfo,
+  extra?: { card?: boolean; isPinned?: boolean; isSelected?: boolean; unread?: boolean }
+) =>
   render(
     <SidebarSessionRow
       card={extra?.card}
-      isPinned={false}
-      isSelected={false}
+      isPinned={extra?.isPinned ?? false}
+      isSelected={extra?.isSelected ?? false}
       onArchive={noop}
       onDelete={noop}
       onPin={noop}
       onResume={noop}
       onToggleUnread={noop}
       session={session}
-      unread={false}
+      unread={extra?.unread ?? false}
     />
   )
 
@@ -201,6 +204,42 @@ describe('SidebarSessionRow running arc', () => {
     const { container } = renderRow(makeSession({ title: 'Running' }))
 
     expect(arc(container)).toBeTruthy()
+  })
+})
+
+// Themes and plugins style rows by these attributes, not by the Tailwind
+// classes that happen to paint the state today (see the plugin SDK's
+// "the contract is the attribute").
+describe('SidebarSessionRow state attributes', () => {
+  afterEach(() => {
+    clearAllSessionStates()
+  })
+
+  const row = (container: HTMLElement) => container.querySelector('[data-session-row]') as HTMLElement | null
+
+  it('marks a settled row idle and unselected', () => {
+    const { container } = renderRow(makeSession({ title: 'Settled' }))
+
+    expect(row(container)?.dataset.status).toBe('idle')
+    expect(row(container)?.hasAttribute('data-selected')).toBe(false)
+    expect(row(container)?.hasAttribute('data-pinned')).toBe(false)
+    expect(row(container)?.hasAttribute('data-unread')).toBe(false)
+  })
+
+  it('reports selection, pin and unread', () => {
+    const { container } = renderRow(makeSession({ title: 'Picked' }), { isPinned: true, isSelected: true, unread: true })
+
+    expect(row(container)?.hasAttribute('data-selected')).toBe(true)
+    expect(row(container)?.hasAttribute('data-pinned')).toBe(true)
+    expect(row(container)?.hasAttribute('data-unread')).toBe(true)
+  })
+
+  it('reports the same status the dot paints while running', () => {
+    publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
+
+    const { container } = renderRow(makeSession({ title: 'Running' }))
+
+    expect(row(container)?.dataset.status).toBe('working')
   })
 })
 

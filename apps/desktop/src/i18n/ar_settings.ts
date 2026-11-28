@@ -15,6 +15,10 @@ export const arSettings = {
   },
   settings: {
     memoryLayers: arMemoryLayers,
+    connections: {
+      updateSkippedExternal: (command: string) =>
+        command ? `تتم إدارته خارجيًا. حدّثه باستخدام ${command}` : 'تتم إدارته خارجيًا. حدّثه بأداته الخاصة.'
+    },
     // Window plans (Nous subscription with included usage). Other billing strings: overlay-gaps.json.
     billing: {
       keepGoingOnCredits: {

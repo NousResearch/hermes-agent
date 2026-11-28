@@ -1,3 +1,5 @@
+# health: allow FILE_LINES -- one new web.* default (web.local_rescue, #155838) with its
+# documented comment; the defaults table is at its main value and grows only by documented keys.
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
 Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
@@ -391,6 +393,8 @@ DEFAULT_CONFIG = {
         # keyless ring; the next call tries the chosen backend again (no sticky failover). Off when
         # keyless_fallback is false.
         "keyless_rescue": True,
+        # Fail-closed privacy default (#155838): private/local backends never silently retry on the cloud ring; opt in with true.
+        "local_rescue": False,
         # Per-vendor tier for vendors with both a keyless free endpoint and a keyed paid path (exa,
         # parallel, firecrawl, keenable; tavily is opt-in keyless via `hermes tools`, not a ring
         # member). Set by the `hermes tools` picker. "free" = always anonymous endpoint even with a

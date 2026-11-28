@@ -1,7 +1,8 @@
 """One-shot keyless-ring rescue for failed keyed/configured web calls.
 
 Stateless by design: a rescue routes THIS call through the free-tier ring (plugins/web/keyless_mcp.py);
-the next web_search/web_extract call attempts the chosen backend again. Callers must never cache a
+the next web_search/web_extract call attempts the chosen backend again. Private/local backends are
+fail-closed out of the rescue unless the user opts in via ``web.local_rescue`` (#155838). Callers must never cache a
 rescue-served response, or the one-shot rescue becomes sticky for a whole TTL. Logs under the origin
 (tools.web_tools) logger.
 """
@@ -28,6 +29,72 @@ def _keyless_rescue_enabled() -> bool:
     except Exception as exc:
         logger.debug("keyless rescue tier check failed: %s", exc)
         return False
+
+
+def _local_rescue_enabled() -> bool:
+    """``web.local_rescue`` (default OFF): a private backend's failed call may ride the ring.
+
+    Fail-closed privacy default (#155838): a local/private backend — SearXNG, a self-hosted
+    instance, a plugin backend — never silently sends the query/URLs to outside vendors.
+    """
+    try:
+        from tools.web_tools import _load_web_config
+        return bool(_load_web_config().get("local_rescue", False))
+    except Exception:
+        logger.debug("local rescue config read failed", exc_info=True)
+        return False
+
+
+# Bundled backends that are cloud services themselves: their failed call already went to a vendor, so
+# the documented keyed rescue stays (free fast search on managed Perplexity relies on it). Any other
+# name not in the ring (SearXNG, a plugin backend, a name added later) stays private: fail closed.
+_CLOUD_BACKENDS = frozenset({"perplexity", "tavily", "brave-free", "ddgs", "xai", "openai-native"})
+
+
+def _is_private_backend(provider) -> bool:
+    """True when the backend has no ring-vendor key relationship (local, self-hosted, plugin).
+
+    These never rode the keyless ring, so rescuing their failure routes local-only traffic to
+    cloud vendors (#155838).
+    """
+    try:
+        from plugins.web.keyless_mcp import _KEYLESS_RING
+        name = getattr(provider, "name", "")
+        if name == "firecrawl":
+            # A direct Firecrawl instance is private even though the vendor is in the cloud ring.
+            from plugins.web.firecrawl.provider import _env, is_managed_route
+            if _env("FIRECRAWL_API_URL") and not is_managed_route():
+                return True
+        return name not in _KEYLESS_RING and name not in _CLOUD_BACKENDS
+    except Exception:
+        logger.debug("private-backend check failed", exc_info=True)
+        return False
+
+
+_LOCAL_RESCUE_REFUSED_NOTE = (
+    " [keyless cloud rescue skipped: private/local backend and web.local_rescue is off "
+    "(privacy default); opt in with web.local_rescue: true]"
+)
+
+
+def annotate_local_rescue_refusal(provider, result) -> None:
+    """Surface a skipped rescue on a private backend so the refusal is visible, not silent.
+
+    Appends the opt-in hint to the failed result's error(s) and logs once. No-op for ring
+    vendors, opted-in setups, or results without errors (#155838).
+    """
+    if result is None or not _is_private_backend(provider) or _local_rescue_enabled():
+        return
+    logger.warning(
+        "private backend '%s' failed; keyless cloud rescue skipped (web.local_rescue is off)",
+        getattr(provider, "name", ""),
+    )
+    if isinstance(result, dict) and result.get("error"):
+        result["error"] = f"{result['error']}{_LOCAL_RESCUE_REFUSED_NOTE}"
+    elif isinstance(result, list):
+        for entry in result:
+            if isinstance(entry, dict) and entry.get("error"):
+                entry["error"] = f"{entry['error']}{_LOCAL_RESCUE_REFUSED_NOTE}"
 
 
 def _ring_vendor_keyless(name: str) -> bool:
@@ -75,16 +142,24 @@ def _managed_search_fallback(provider, original_error: str, query: str, limit: i
 def _rescue_eligible(provider) -> bool:
     """True when a failed call on *provider* should get a one-shot rescue.
 
-    Eligible: any call that did NOT go through the keyless ring — a non-ring backend, a ring vendor
-    in keyed mode, or a ring vendor routed through the managed gateway / a self-hosted instance. A
-    ring vendor that walked the ring is NOT eligible: its failure means the ring already failed.
+    Eligible: a ring vendor in keyed mode, or one routed through the managed gateway / a
+    self-hosted instance — the documented "keyless rescue for keyed backends" surface. A ring
+    vendor that walked the ring is NOT eligible: its failure means the ring already failed.
+    A PRIVATE backend (local, self-hosted non-ring, plugin) is eligible only when the user
+    opted in via ``web.local_rescue`` (#155838): its failure must never silently send
+    local-only queries/URLs to cloud vendors.
     """
     if not _keyless_rescue_enabled() or provider is None:
         return False
     try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")
-        return name not in _KEYLESS_RING or not _ring_vendor_keyless(name)
+        if _is_private_backend(provider):
+            # Private backend (including direct self-hosted Firecrawl): opt-in only.
+            return _local_rescue_enabled()
+        from plugins.web.keyless_mcp import _KEYLESS_RING
+        if name not in _KEYLESS_RING:
+            return True  # a bundled cloud backend outside the ring: it never walked the ring
+        return not _ring_vendor_keyless(name)
     except Exception as exc:
         logger.debug("rescue eligibility check failed: %s", exc)
         return False

@@ -2,9 +2,10 @@
 the keyless ring; the NEXT call attempts the chosen backend again.
 
 Covers:
-- eligibility: keyed ring vendors and non-ring backends are eligible;
-  keyless-mode ring calls are not (they already walked the ring); config
-  gates (keyless_rescue / keyless_fallback) turn it off
+- eligibility: keyed ring vendors are eligible; keyless-mode ring calls are not (they
+  already walked the ring); config gates (keyless_rescue / keyless_fallback) turn it
+  off; PRIVATE/local backends are fail-closed out of the rescue unless the user opts
+  in via web.local_rescue, and a refused rescue says so in the error (#155838)
 - search dispatcher: failure-result and raised-exception paths both rescue,
   result annotated with rescued_from + backend_error
 - statelessness: the very next dispatch calls the chosen backend again
@@ -108,10 +109,23 @@ class TestEligibility:
         monkeypatch.setattr("plugins.web.keyless_mcp._web_config_selects", lambda name: name == "firecrawl")
         assert web_tools_rescue._rescue_eligible(_GatewayFirecrawlBoomProvider()) is False
 
-    def test_non_ring_backend_is_eligible(self):
+    def test_non_ring_backend_fail_closed_by_default(self, monkeypatch):
+        # A private/local backend (SearXNG, plugin, self-hosted) never silently rescues to
+        # the cloud ring — #155838's privacy default.
         class _SearxProvider(_KeyedBoomProvider):
             name = "searxng"
 
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        assert web_tools_rescue._rescue_eligible(_SearxProvider()) is False
+
+    def test_non_ring_backend_eligible_when_opted_in(self, monkeypatch):
+        class _SearxProvider(_KeyedBoomProvider):
+            name = "searxng"
+
+        monkeypatch.setattr(
+            web_tools, "_load_web_config",
+            lambda: {"backend": "searxng", "local_rescue": True},
+        )
         assert web_tools_rescue._rescue_eligible(_SearxProvider()) is True
 
     def test_config_gate_disables(self, monkeypatch):
@@ -287,3 +301,85 @@ class TestExtractRescue:
                 monkeypatch, _KeyedBoomProvider(), ["https://a", "https://b"]
             )
         assert all("HTTP 500" in r.get("error", "") for r in results)
+
+
+class TestLocalRescueRefusalSurfaced:
+    """#155838: a private backend's failed call keeps its local error, the cloud ring is
+    never touched, and the refusal says why (opt-in hint in the error, once in the log)."""
+
+    class _SearxBoom(_KeyedBoomProvider):
+        name = "searxng"
+
+    def _dispatch(self, monkeypatch, provider):
+        monkeypatch.setattr(web_tools, "_ensure_web_plugins_loaded", lambda: None)
+        monkeypatch.setattr(
+            "agent.web_search_registry.get_provider", lambda name: provider
+        )
+        return json.loads(web_tools.web_search_tool("q", limit=2))
+
+    def test_search_failure_carries_optin_hint(self, monkeypatch):
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
+        with patch.object(keyless_mcp, "search_with_failover") as ring:
+            out = self._dispatch(monkeypatch, self._SearxBoom())
+        assert out["success"] is False
+        assert "HTTP 500" in out["error"]
+        assert "web.local_rescue" in out["error"]
+        ring.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_extract_whole_batch_failure_carries_optin_hint(self):
+        import tools.web_tools_extract as wte
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            results, rescued = await wte._fetch_with_rescue(
+                self._SearxBoom(), ["https://a"], None
+            )
+        assert rescued is False
+        assert all("web.local_rescue" in r.get("error", "") for r in results)
+        ring.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_self_hosted_firecrawl_extract_does_not_cloud_rescue(self, monkeypatch):
+        # FIRECRAWL_API_URL selects the direct SDK against a private server; the
+        # vendor name "firecrawl" alone must not authorize a cloud ring fallback.
+        import tools.web_tools_extract as wte
+
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
+        monkeypatch.setattr(
+            "plugins.web.firecrawl.provider._env",
+            lambda name: "http://127.0.0.1:3002" if name == "FIRECRAWL_API_URL" else "",
+        )
+        monkeypatch.setattr(
+            "tools.tool_backend_helpers.read_web_capability_selection",
+            lambda capability=None: "firecrawl",
+        )
+        with patch.object(keyless_mcp, "extract_with_failover") as ring:
+            results, rescued = await wte._fetch_with_rescue(
+                _GatewayFirecrawlBoomProvider(), ["https://example.com/page"], None
+            )
+
+        assert rescued is False
+        assert "HTTP 500 upstream exploded" in results[0]["error"]
+        assert "web.local_rescue" in results[0]["error"]
+        ring.assert_not_called()
+
+    def test_keyed_vendor_failure_not_annotated(self, monkeypatch):
+        # Ring vendors keep the documented rescue: no hint, ring called.
+        with patch.object(
+            keyless_mcp, "search_with_failover", return_value=_ring_ok()
+        ) as ring:
+            out = self._dispatch(monkeypatch, _KeyedBoomProvider())
+        assert out["success"] is True
+        assert "web.local_rescue" not in json.dumps(out)
+        ring.assert_called_once()
+
+
+@pytest.mark.parametrize("name, private", [
+    ("searxng", True), ("webgraft", True), ("some-future-plugin", True),
+    ("perplexity", False), ("tavily", False), ("brave-free", False), ("ddgs", False), ("xai", False),
+    ("openai-native", False), ("exa", False),
+])
+def test_private_backend_is_local_or_unknown_not_every_non_ring_vendor(name, private):
+    # A bundled cloud backend outside the ring keeps the documented rescue; only local or unknown
+    # (plugin) backends are fail-closed out of it (#155838).
+    provider = type("P", (), {"name": name})()
+    assert web_tools_rescue._is_private_backend(provider) is private

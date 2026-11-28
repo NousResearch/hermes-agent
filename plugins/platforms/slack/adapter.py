@@ -1738,6 +1738,22 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         bot_user_id = auth_response.get("user_id", "")
         bot_name = auth_response.get("user", "unknown")
         team_name = auth_response.get("team", "unknown")
+        headers = getattr(auth_response, "headers", None) or {}
+        raw_scopes = headers.get("x-oauth-scopes") or headers.get("X-OAuth-Scopes") or ""
+        bot_id = auth_response.get("bot_id")
+        granted = {scope.strip() for scope in raw_scopes.split(",")}
+        if (self.config.extra.get("use_current_bot_display_name") is True
+                and bot_id and "chat:write.customize" in granted):
+            try:
+                info = await asyncio.wait_for(client.bots_info(bot=bot_id), timeout=3)
+                display_name = (info.get("bot") or {}).get("name")
+                if isinstance(display_name, str) and display_name.strip():
+                    client._hermes_outbound_display_name = display_name.strip()
+                    app = getattr(self, "_app", None)
+                    if not self._team_clients and app is not None:
+                        app.client._hermes_outbound_display_name = client._hermes_outbound_display_name
+            except Exception as exc:
+                logger.debug("[Slack] Bot display name lookup failed: %s", type(exc).__name__)
         self._team_clients[team_id] = client
         self._team_bot_user_ids[team_id] = bot_user_id
         self._team_bot_names[team_id] = bot_name
@@ -1750,6 +1766,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self._warn_if_missing_group_dm_scopes(auth_response, team_name)
         self._warn_if_not_bot_token(auth_response, team_name)
         self._warn_if_inchannel_without_flat_reply(team_name)
+
+    @staticmethod
+    def _outbound_display_identity(client: Any) -> dict[str, str]:
+        """Use the current bot name for presentation, not the install-time routing handle."""
+        name = getattr(client, "_hermes_outbound_display_name", None)
+        return {"username": name} if isinstance(name, str) and name else {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -2101,14 +2123,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 logger.error("[Slack] Native task-card progress error: %s", exc, exc_info=True)
                 return SendResult(success=False, error=str(exc), retryable=True)
 
-    @staticmethod
     async def _start_native_task_card_stream(
-        client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]]
+        self, client, stream: _NativeTaskCardStream, metadata: Optional[dict[str, Any]]
     ) -> None:
         """chat.startStream a plan-mode card in ``stream``'s thread; sets ``stream.stream_ts``."""
         start_payload: dict[str, Any] = {
             "channel": stream.channel, "thread_ts": stream.thread_ts,
-            "task_display_mode": "plan"}
+            "task_display_mode": "plan", **self._outbound_display_identity(client)}
         md = metadata or {}
         recipients = (
             ("recipient_team_id", ("recipient_team_id", "team_id", "slack_team_id")),
@@ -2179,9 +2200,15 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         self, client_fn: Callable[[], Any], method: str, kwargs: dict[str, Any], verb: str) -> Any:
         """``client_fn().<method>(**kwargs)``; on a Block Kit rejection retry once without
         ``blocks`` (an edit sends ``blocks=[]`` so the message drops its stale layout). The client
-        is re-resolved for the retry."""
+        is re-resolved for the retry, along with its sender identity."""
+        async def call(payload: dict[str, Any]) -> Any:
+            client = client_fn()
+            if method == "chat_postMessage":
+                payload = {**self._outbound_display_identity(client), **payload}
+            return await getattr(client, method)(**payload)
+
         try:
-            return await getattr(client_fn(), method)(**kwargs)
+            return await call(kwargs)
         except Exception as e:
             if kwargs.get("blocks") and self._is_block_payload_rejection(e):
                 retry_kwargs = dict(kwargs)
@@ -2191,7 +2218,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                     retry_kwargs.pop("blocks", None)
                 logger.info(
                     "[Slack] Block Kit payload rejected; retrying %s without blocks: %s", verb, e)
-                return await getattr(client_fn(), method)(**retry_kwargs)
+                return await call(retry_kwargs)
             raise
 
     async def send(
@@ -2261,6 +2288,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         broadcast = self.config.extra.get("reply_broadcast", False)
         blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
         last_result = None
+        client_fn = lambda: self._get_client(chat_id, team_id=team_id)
         for i, chunk in enumerate(chunks):
             kwargs = {
                 "channel": chat_id, "text": chunk,
@@ -2271,7 +2299,6 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 kwargs["thread_ts"] = thread_ts
                 if broadcast and i == 0:
                     kwargs["reply_broadcast"] = True
-            client_fn = lambda: self._get_client(chat_id, team_id=team_id)
             last_result = await self._call_with_block_fallback(
                 client_fn, "chat_postMessage", kwargs, "send")
         return last_result
@@ -2526,7 +2553,9 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
         rare). Channels require recipient team/user; harmless for DMs."""
         team_id, chat_id, thread_ts = stream_key
         await self._seal_stale_streams()
-        start_kwargs: dict[str, Any] = {"channel": chat_id, "thread_ts": thread_ts}
+        start_kwargs: dict[str, Any] = {
+            "channel": chat_id, "thread_ts": thread_ts, **self._outbound_display_identity(client),
+        }
         md = metadata or {}
         user_id = md.get("user_id") or md.get("sender_id")
         if user_id:
@@ -2735,10 +2764,12 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Set the Slack thread status (empty ``status`` clears it)."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            client = self._get_client(chat_id, team_id=team_id)
+            setter = _session_status_method(client)
+            identity = self._outbound_display_identity(client) if status else {}
+            await setter(channel_id=chat_id, thread_ts=thread_ts, status=status, **identity)
         except Exception as e:
             logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
 

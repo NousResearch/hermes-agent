@@ -13,6 +13,54 @@ const snapshot = {
   last_sequence: 0, running: false, info: { profile_name: 'engineer' }
 }
 
+// The composer options must cross the public negotiated path too: a private native dial
+// can convert these fields correctly while URL-based remote sessions still send legacy fields.
+test.each([
+  { credential: 'ticket', prefix: '', effort: 'none' },
+  { credential: 'ticket', prefix: '/hermes/team', effort: 'high' },
+  { credential: 'token', prefix: '', effort: 'high' },
+  { credential: 'token', prefix: '/hermes/team', effort: 'none' }
+])('a public $credential dial at $prefix retains its route and maps thinking $effort', async ({ credential, prefix, effort }) => {
+  const server = await listen()
+  const frames: FixtureFrame[] = []
+  let receivedUrl = ''
+  let subprotocol: unknown
+  server.on('connection', (socket: FixtureSocket, request: IncomingMessage) => {
+    receivedUrl = request.url ?? ''
+    subprotocol = request.headers['sec-websocket-protocol']
+    socket.on('message', bytes => {
+      const frame = JSON.parse(bytes.toString())
+      frames.push(frame)
+      reply(socket, frame, frame.method === 'session.create'
+        ? snapshot
+        : {})
+    })
+    socket.send(readyFrame())
+  })
+  const client = new HermesGateway()
+  const secret = 'synthetic+credential/with=escapes'
+  const route = `${prefix}/api/ws?${credential}=${encodeURIComponent(secret)}`
+
+  try {
+    await client.connect(`ws://127.0.0.1:${(server.address() as { port: number }).port}${route}`)
+    await client.request('session.create', {
+      source: 'desktop', profile: 'engineer', cols: 96, fast: false, reasoning_effort: effort
+    })
+    expect(receivedUrl).toBe(route)
+    expect(subprotocol).toBeUndefined()
+    const created = frames.find(frame => frame.method === 'session.create')?.params
+    expect(created).toMatchObject({ source: 'gui', profile: 'engineer', reasoning: effort, service_tier: 'normal', request_id: expect.any(String) })
+    expect(created).not.toHaveProperty('cols')
+    expect(created).not.toHaveProperty('reasoning_effort')
+    expect(created).not.toHaveProperty('fast')
+    expect(frames.some(frame => frame.method === 'client.capabilities' && frame.params.desktop_local)).toBe(false)
+    expect(JSON.stringify(frames)).not.toContain(secret)
+    expect(JSON.stringify(frames)).not.toContain(encodeURIComponent(secret))
+  } finally {
+    await shut(client, server)
+  }
+})
+
 test('a public authenticated canonical gateway retains the attached profile and prepares submissions', async () => {
   const server = await listen()
   const frames: FixtureFrame[] = []

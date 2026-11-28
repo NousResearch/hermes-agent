@@ -43,8 +43,13 @@ const { _resetSessionOwnerHintsForTests, setCronSessions, setMessagingSessions, 
   await import('@/store/session')
 
 const { isSessionOwnerResolutionError } = await import('@/store/session-owner-resolution')
-const { $sessionTiles, recordSessionEventScope } = await import('@/store/session-states')
+
+const { $sessionTiles, clearAllSessionStates, publishSessionState, recordSessionEventScope, requestForOwnedSession } =
+  await import('@/store/session-states')
+
 const { makeSessionInfo } = await import('@/test/session-info')
+const { createClientSessionState } = await import('@/lib/chat-runtime')
+const { searchResultToSession } = await import('@/app/chat/sidebar')
 
 function dispatcher(
   ambientRequest = vi.fn(async () => ({ ambient: true })),
@@ -74,6 +79,7 @@ afterEach(() => {
   setCronSessions([])
   setMessagingSessions([])
   $sessionTiles.set([])
+  clearAllSessionStates()
   $profiles.set([])
   _resetSessionOwnerHintsForTests({ storage: true })
   sessionMocks.requestSessionResume.mockReset()
@@ -236,6 +242,109 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
       session_id: 'stored-tg',
       text: 'hi'
     })
+  })
+
+  it('hands the owner probe the STORED id for a runtime-addressed read no loaded slice names', async () => {
+    // An archived-only session: the sidebar holds its tile (stored ← runtime),
+    // but its ROW lives in the archived query, so with that slice empty the
+    // gate's sync ladder names nobody and defers to the probe.
+    // `requestForOwnedSession` hands the probe whatever id the RPC carries — the
+    // RUNTIME id — while `resolveSessionOwner` reads by STORED id. Untranslated,
+    // the probe asked every backend for a row none of them has, the gate
+    // deferred the read, and no loaded slice ever re-armed it: no banner, and no
+    // `session.control.read` either.
+    $sessionTiles.set([{ runtimeId: 'rt-archived', storedSessionId: 'stored-archived' }])
+    probe.resolveSessionOwner.mockResolvedValue({ connectionId: 'local', profile: 'omar' } as never)
+
+    const { ambientRequest } = dispatcher() // wires the window's one probe
+
+    await expect(
+      requestForOwnedSession('rt-archived', ambientRequest as never, 'session.control.read', {
+        session_id: 'rt-archived'
+      })
+    ).resolves.toEqual({ routed: true })
+
+    expect(probe.resolveSessionOwner).toHaveBeenCalledWith('stored-archived')
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'session.control.read', {
+      session_id: 'rt-archived'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
+  it('translates a re-minted runtime id through the per-runtime mirror for the probe too', async () => {
+    // Archiving re-mints the runtime: the tile still names the stored id, and
+    // the resume that bound the NEW runtime published it into the mirror. The
+    // probe has to walk that same translation, or the fresh id probes dead.
+    publishSessionState('rt-reminted', createClientSessionState('stored-archived'))
+    probe.resolveSessionOwner.mockResolvedValue({ connectionId: 'local', profile: 'omar' } as never)
+
+    const { ambientRequest } = dispatcher()
+
+    await expect(
+      requestForOwnedSession('rt-reminted', ambientRequest as never, 'approval.respond', {
+        choice: 'once',
+        request_id: 'req-archived',
+        session_id: 'rt-reminted'
+      })
+    ).resolves.toEqual({ routed: true })
+
+    expect(probe.resolveSessionOwner).toHaveBeenCalledWith('stored-archived')
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'approval.respond', {
+      choice: 'once',
+      request_id: 'req-archived',
+      session_id: 'rt-reminted'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
+  })
+
+  it('leaves an already-stored (unmapped) id alone on its way to the probe', async () => {
+    probe.resolveSessionOwner.mockResolvedValue({ connectionId: 'homelab', profile: 'worker' } as never)
+
+    const { ambientRequest } = dispatcher()
+
+    await expect(
+      requestForOwnedSession('stored-unlisted', ambientRequest as never, 'session.control.read', {
+        session_id: 'stored-unlisted'
+      })
+    ).resolves.toEqual({ routed: true })
+
+    expect(probe.resolveSessionOwner).toHaveBeenCalledWith('stored-unlisted')
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('homelab', 'worker', 'session.control.read', {
+      session_id: 'stored-unlisted'
+    })
+  })
+
+  it('routes a full-text search hit, the other door onto a row no slice holds (#156566)', async () => {
+    // `mergeSearchResults` synthesizes its row per render through
+    // `searchResultToSession`, so a hit is a real session the sidebar renders
+    // without ever entering $sessions, $archivedSessions, cron or messaging —
+    // and it has no tile or mirror entry either. It carries a STORED id, so it
+    // rides the pass-through rung into the probe: the same branch the Archived
+    // view reaches, opened from search. This is the door the field report in
+    // #156566 used (1260 of 1633 sessions archived), not the archive list.
+    const hit = searchResultToSession({
+      lineage_root: 'root-archived',
+      model: 'deepseek-v4-flash',
+      role: 'agent',
+      session_id: 'stored-search-hit',
+      session_started: 1_753_450_000,
+      snippet: 'the archived conversation the query matched',
+      source: 'agent'
+    })
+
+    probe.resolveSessionOwner.mockResolvedValue({ connectionId: 'local', profile: 'omar' } as never)
+
+    const { ambientRequest } = dispatcher()
+
+    await expect(
+      requestForOwnedSession(hit.id, ambientRequest as never, 'session.control.read', { session_id: hit.id })
+    ).resolves.toEqual({ routed: true })
+
+    expect(probe.resolveSessionOwner).toHaveBeenCalledWith('stored-search-hit')
+    expect(gatewayMocks.requestGatewayForAgent).toHaveBeenCalledWith('local', 'omar', 'session.control.read', {
+      session_id: 'stored-search-hit'
+    })
+    expect(ambientRequest).not.toHaveBeenCalled()
   })
 })
 

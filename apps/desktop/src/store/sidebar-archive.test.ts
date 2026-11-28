@@ -4,6 +4,7 @@ import { $apiRequestScope } from '@/api/client'
 import type { SessionInfo } from '@/types/hermes'
 
 import { $sidebarShowArchived } from './layout'
+import { knownSessionOwner, ownerLookupSessionRows, setSessions } from './session'
 import {
   $archivedSessions,
   $archivedSessionsLoading,
@@ -306,5 +307,30 @@ describe('listEveryArchivedSession', () => {
     expect(sessions).toHaveLength(total)
     expect(listAllProfileSessions).toHaveBeenCalledTimes(2)
     expect(listAllProfileSessions).toHaveBeenNthCalledWith(1, 500, 0, 'only', 'recent', 'all', {}, 0)
+  })
+})
+
+// Archived rows are a SEPARATE backend query, so they are absent from $sessions.
+// The owner ladder's row rung must read this slice too, or a session opened from
+// the Archived view has no owner anywhere in the sync ladder and every
+// session-scoped RPC through requestForOwnedSession (session.control.read,
+// approvals) fails closed with SessionOwnerResolutionError while the transcript
+// — an id-only REST read — loads fine.
+describe('ownerLookupSessionRows', () => {
+  it('resolves the owner of a row that exists only in the archived slice', () => {
+    setSessions([])
+    $archivedSessions.set([row('archived-owner', { profile: 'work' })])
+
+    expect(ownerLookupSessionRows().some(session => session.id === 'archived-owner')).toBe(true)
+    expect(knownSessionOwner(ownerLookupSessionRows(), 'archived-owner')).toBe('work')
+  })
+
+  it('keeps the recents array identity while the archived slice is empty', () => {
+    const recents = [row('recent-1', { archived: false, profile: 'work' })]
+
+    setSessions(recents)
+
+    // Per-list memo caches (lineageAliases) key on this reference.
+    expect(ownerLookupSessionRows()).toBe(recents)
   })
 })

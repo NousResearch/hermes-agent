@@ -22,6 +22,7 @@ import {
   publishSessionState,
   recordSessionEventScope,
   requestForOwnedSession,
+  setSessionOwnerProbe,
   storedSessionIdForRuntimeId
 } from '@/store/session-states'
 import { makeSessionInfo } from '@/test/session-info'
@@ -106,6 +107,7 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
     setMessagingSessions([])
     setMessagingListServer(null)
     $profiles.set([])
+    setSessionOwnerProbe(null)
     _resetSessionOwnerHintsForTests({ storage: true })
   })
 
@@ -139,6 +141,53 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
       requestForOwnedSession('rt-orphan', ambient as never, 'approval.respond', { session_id: 'rt-orphan' })
     ).resolves.toEqual({ ok: true })
     expect(ambient).toHaveBeenCalledWith('approval.respond', { session_id: 'rt-orphan' })
+  })
+
+  // Archived rows are a separate backend query, so the sync ladder can miss a
+  // session the backend still holds. The async cross-profile probe is the same
+  // rung the RPC dispatcher uses; running it here is what lets session control
+  // work on an archived conversation instead of dead-ending on the owner error.
+  it('probes for a session no loaded slice names, then routes to the owner it found', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { connections: { list: async () => null } }
+    $connectionsRegistry.set({
+      activeConnectionId: 'local',
+      connections: [{ id: 'local', kind: 'local', label: 'Local' }]
+    } as never)
+    $profiles.set([{ name: 'default' }] as never)
+
+    const primaryRequest = vi.fn(async (method: string, params: unknown) => ({ method, params, via: 'primary' }))
+    setPrimaryGateway({ onEvent: () => () => undefined, request: primaryRequest, state: 'open' } as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'local' })
+
+    const ambient = vi.fn(async () => ({ via: 'ambient' }))
+    const probe = vi.fn(async () => ({ connectionId: 'local', profile: 'default' }))
+
+    setSessionOwnerProbe(probe as never)
+
+    await expect(
+      requestForOwnedSession('archived-only', ambient as never, 'session.control.read', { session_id: 'archived-only' })
+    ).resolves.toEqual({ method: 'session.control.read', params: { session_id: 'archived-only' }, via: 'primary' })
+
+    expect(probe).toHaveBeenCalledWith('archived-only')
+    expect(ambient).not.toHaveBeenCalled()
+  })
+
+  it('still fails closed when the probe finds no owner either', async () => {
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { connections: { list: async () => null } }
+    $connectionsRegistry.set({
+      activeConnectionId: 'local',
+      connections: [{ id: 'local', kind: 'local', label: 'Local' }]
+    } as never)
+    $profiles.set([{ name: 'default' }] as never)
+
+    const ambient = vi.fn(async () => ({ via: 'ambient' }))
+
+    setSessionOwnerProbe((async () => undefined) as never)
+
+    await expect(
+      requestForOwnedSession('gone-anywhere', ambient as never, 'session.control.read', { session_id: 'gone-anywhere' })
+    ).rejects.toSatisfy(isSessionOwnerResolutionError)
+    expect(ambient).not.toHaveBeenCalled()
   })
 
   it('routes a connection-tagged orphan runtime through the owner its inbound event recorded (#97511)', () => {

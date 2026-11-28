@@ -839,18 +839,27 @@ class GatewayAuthorizationMixin:
         if executing_admission.get() or getattr(event, "internal", False) or (
                 not is_bot and not self._bot_loop_guard_instance().tracking_chains):
             return True
+        # An observed Telegram group turn carries its author only on the event: a sender-less source
+        # made every peer bot the same "" sender (#155764).
+        sender = event.sender_id() or source.user_id
         allowed, state = self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().chain_admit(
-            self._bot_loop_guard_conversation(source), str(source.user_id or ""), str(event.text or ""), is_bot=is_bot))
+            self._bot_loop_guard_conversation(source), str(sender or ""), str(event.text or ""), is_bot=is_bot))
         if not allowed:
             logger.info("Bot loop guard ended a bot exchange in %s chat %s (%s from %s; gateway.bot_loop_guard).",
-                        source.platform.value if source.platform else "", source.chat_id, state, source.user_id)
+                        source.platform.value if source.platform else "", source.chat_id, state, sender)
         return allowed
 
-    def _note_bot_reply(self, source) -> None:
-        """This turn's reply to a bot peer went out: its next message answers an answer."""
-        if getattr(source, "is_bot", False):
+    def _note_bot_reply(self, source, event) -> None:
+        """This turn's reply to bot peer ``event``'s sender went out: its next message answers an answer.
+        An observed shared-session turn that absorbed another sender's input has no recipient: none is recorded."""
+        if not getattr(source, "is_bot", False):
+            return
+        # A merged turn deliberately uses event.user_id == "" to mean no single recipient.
+        # sender_id() already falls back to source.user_id when the event author is None.
+        sender = event.sender_id()
+        if sender:
             self._under_authorization_profile(source, lambda: self._bot_loop_guard_instance().note_reply(
-                self._bot_loop_guard_conversation(source), str(source.user_id or "")))
+                self._bot_loop_guard_conversation(source), str(sender)))
 
     def _is_user_authorized(self, source: SessionSource, *, allow_adapter_delegation: bool = True) -> bool:
         """Whether a user may use the bot.

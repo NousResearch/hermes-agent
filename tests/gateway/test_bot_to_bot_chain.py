@@ -99,7 +99,7 @@ async def test_ingress_drops_the_bot_reply_and_still_admits_the_human(monkeypatc
 
     first = _event(PEER, "question", True)
     assert await runner._hm_admit_event(first) is not None
-    runner._note_bot_reply(first.source)  # the turn's reply was delivered
+    runner._note_bot_reply(first.source, first)  # the turn's reply was delivered
     # The session authority executes the admitted row through the same handler: not a second hop.
     token = executing_admission.set(True)
     try:
@@ -117,3 +117,43 @@ def test_bot_users_marks_a_peer_on_a_platform_without_a_bot_flag():
     assert not configured_bot_user(config, HUMAN)
     assert configured_bot_user(SimpleNamespace(extra={"bot_users": "a,peer_bot"}), "peer_bot")
     assert not configured_bot_user(SimpleNamespace(extra={}), "peer_bot")
+
+
+@pytest.mark.asyncio
+async def test_a_merged_bot_turn_does_not_mark_a_sender_as_the_sole_recipient():
+    """An absorbed second bot must not turn the first bot's follow-up into reply_to_reply.
+
+    Event.user_id == "" denotes a merged, multi-author turn even when source.user_id
+    still names the original author (as with a non-observed group event).
+    """
+    from gateway.platforms.base import MessageEvent
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    guard = BotLoopGuard(settings=lambda: BotLoopGuardSettings(), clock=lambda: 1_000.0)
+    runner._bot_loop_guard = guard
+    runner._adapter_profile_for_source = lambda source: ""
+
+    async def _delivered(*args, **kwargs):
+        return True
+
+    runner._hmwa_deliver_turn_response = _delivered
+
+    first_source = SessionSource(
+        platform=Platform.MATTERMOST, chat_id=CHAT, chat_type="group", user_id=PEER, is_bot=True,
+    )
+    other_source = SessionSource(
+        platform=Platform.MATTERMOST, chat_id=CHAT, chat_type="group", user_id="other_bot", is_bot=True,
+    )
+    first = MessageEvent(text="question", source=first_source)
+    other = MessageEvent(text="please also check", source=other_source)
+    conversation = runner._bot_loop_guard_conversation(first_source)
+
+    assert guard.chain_admit(conversation, PEER, first.text, is_bot=True) == (True, "ok")
+    first.absorb_turn_input(other)
+    assert first.sender_id() == "" and first.source.user_id == PEER
+
+    await runner._deliver_turn_response_then_limit_offer(
+        first, first_source, None, None, None, {}, [], "answer", "", False,
+    )
+    assert guard.chain_admit(conversation, PEER, "follow-up", is_bot=True) == (True, "ok")

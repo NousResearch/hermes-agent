@@ -731,7 +731,7 @@ class GatewayTurnPersistenceMixin:
             agent_result, agent_messages, response, footer_line, intentional_silence,
         )
         if (delivered or agent_result.get("already_sent")) and not intentional_silence:
-            self._note_bot_reply(source)
+            self._note_bot_reply(source, event)
         if isinstance(agent_result.get("usage_limit"), dict):
             self._schedule_usage_limit_offer(event, agent_result["usage_limit"], session_key=session_key,
                                              generation=run_generation)

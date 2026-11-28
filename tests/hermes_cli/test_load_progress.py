@@ -148,13 +148,47 @@ def test_prefill_notice_for_managed_model(tmp_path, monkeypatch):
         base_url = "http://127.0.0.1:18434/v1"
 
     notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
-    assert notice == "⚙ processing prompt — 31%"
+    # Counts included; the denominator is only an estimate, so it carries "~".
+    assert notice == "⚙ processing prompt — 12,288 / ~39,551 tokens (31%)"
 
     # Counter past the estimate (estimator undercounted): no honest
-    # denominator, so no percent — never >100%.
+    # denominator, so no percent — never >100% — but the real count stays.
     monkeypatch.setattr(cch, "estimate_request_context_tokens", lambda kw: 100)
     notice = _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"})
-    assert notice == "⚙ processing prompt"
+    assert notice == "⚙ processing prompt — 12,288 tokens read"
+
+
+def test_queue_notice_when_all_slots_busy(tmp_path, monkeypatch):
+    """No slot is prompt-processing for this call, and every slot of the
+    model-scoped child is busy: the request MUST be queued behind another
+    call, so the wait says so instead of the generic stall."""
+    from agent.chat_completion_local import _managed_local_load_notice
+
+    state = tmp_path / "server.json"
+    state.write_text(json.dumps({"base_url": "http://127.0.0.1:18434/v1",
+                                 "api_key": "k"}), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
+                        lambda: state)
+    monkeypatch.setattr(lp, "_ensure_watcher", lambda: None)
+    monkeypatch.setattr(lp, "get_prefill_progress", lambda model: None)
+    monkeypatch.setattr(lp, "get_slot_pressure",
+                        lambda model: {"processing": 1, "total": 1})
+
+    class _Agent:
+        base_url = "http://127.0.0.1:18434/v1"
+
+    assert _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"}) == (
+        "⏳ waiting for a free slot — the local server is busy with another request")
+
+    # A free slot proves nothing about this request (it may not have arrived
+    # yet): no queue is claimed, and the generic wait owns the line instead.
+    monkeypatch.setattr(lp, "get_slot_pressure",
+                        lambda model: {"processing": 0, "total": 1})
+    assert _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"}) is None
+
+    # Pressure unknowable (server unreachable): also no claim.
+    monkeypatch.setattr(lp, "get_slot_pressure", lambda model: None)
+    assert _managed_local_load_notice(_Agent(), {"model": "Qwen-Test"}) is None
 
 
 def test_load_notice_outranks_prefill(tmp_path, monkeypatch):
@@ -217,6 +251,51 @@ def test_prefill_progress_reads_busiest_processing_slot(monkeypatch):
 
     monkeypatch.setattr(lp.urllib.request, "urlopen", _boom)
     assert lp.get_prefill_progress("m") is None
+
+
+def test_slot_pressure_counts_busy_slots(monkeypatch):
+    monkeypatch.setattr(lp, "_endpoint", lambda: ("http://127.0.0.1:1", "k"))
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    slots = [
+        {"id": 0, "is_processing": False, "n_prompt_tokens_processed": 500},
+        {"id": 1, "is_processing": True, "n_prompt_tokens_processed": 42},
+        {"id": 2, "is_processing": True, "n_prompt_tokens_processed": 32768},
+    ]
+    monkeypatch.setattr(lp.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(slots))
+    assert lp.get_slot_pressure("m") == {"processing": 2, "total": 3}
+
+    # All busy is the queue signal's precondition.
+    busy = [{"id": 0, "is_processing": True},
+            {"id": 1, "is_processing": True}]
+    monkeypatch.setattr(lp.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp(busy))
+    assert lp.get_slot_pressure("m") == {"processing": 2, "total": 2}
+
+    # A non-list payload is not slots.
+    monkeypatch.setattr(lp.urllib.request, "urlopen",
+                        lambda req, timeout=0: _Resp({"error": "nope"}))
+    assert lp.get_slot_pressure("m") is None
+
+    # Unreachable server -> None, never an exception.
+    def _boom(req, timeout=0):
+        raise OSError("refused")
+
+    monkeypatch.setattr(lp.urllib.request, "urlopen", _boom)
+    assert lp.get_slot_pressure("m") is None
 
 
 def test_endpoint_respects_ownership_guard(monkeypatch):

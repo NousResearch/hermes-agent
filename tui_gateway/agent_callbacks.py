@@ -421,6 +421,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                                      "acp_args", "ephemeral_system_prompt")},
         **{k: g(k) for k in ("providers_allowed", "providers_ignored", "providers_order", "provider_sort",
                              "provider_data_collection", "openrouter_min_coding_score")},
+        # Defensive copy: the child must not share the parent's live passthrough dict.
+        "provider_extra": dict(g("provider_extra") or {}),
         "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
         "disabled_toolsets": g("disabled_toolsets") or _load_disabled_toolsets(),

@@ -25,7 +25,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH, merge_provider_routing_prefs
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
@@ -466,13 +466,13 @@ def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
 def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     """Build the validated provider-routing object shared by request paths.
 
-    ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT
-    ``agent.model`` (so ``/model`` switches, fallbacks, and delegated children on another
-    model each get their own pins without any surface re-plumbing the kwargs)."""
+    ``provider_routing.models.<id>`` overlays the flat constructor values for the CURRENT ``agent.model`` (so ``/model``
+    switches, fallbacks, and delegated children on another model each get their own pins without any surface re-plumbing the kwargs).
+
+    Unrecognized ``provider_routing`` keys are forwarded verbatim (typed keys win on conflict) via ``hermes_constants.merge_provider_routing_prefs``."""
     flat = {"only": agent.providers_allowed, "ignore": agent.providers_ignored, "order": agent.providers_order,
-        "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters,
-        "data_collection": agent.provider_data_collection}
-    per_model = {}
+        "sort": agent.provider_sort, "require_parameters": agent.provider_require_parameters, "data_collection": agent.provider_data_collection}
+    per_model, extra = {}, getattr(agent, "provider_extra", None) or {}
     with contextlib.suppress(Exception):
         from hermes_cli.config import load_config_readonly
         from hermes_constants import resolve_per_model_provider_routing
@@ -481,7 +481,7 @@ def _provider_preferences_for_agent(agent) -> dict[str, Any]:
     merged = {**flat, **{k: v for k, v in per_model.items() if k in flat}}
     merged["sort"] = _validated_openrouter_provider_sort(merged["sort"])
     merged["require_parameters"] = True if merged["require_parameters"] else None
-    return {key: value for key, value in merged.items() if value}
+    return merge_provider_routing_prefs(merged, per_model, extra)
 
 
 def _prompt_cache_scope_for_agent(agent) -> str | None:

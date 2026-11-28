@@ -653,6 +653,7 @@ def _make_agent(
     cwd_override: str | None = None, auth_user_id: str | None = None, persistence=None):
     # AC-4 test seam: dead unless armed by the isolated certify harness.
     from tui_gateway.synthetic_turn import maybe_build_synthetic_agent
+    from hermes_constants import provider_routing_extra
     synthetic = maybe_build_synthetic_agent(session_id or key, model_override)
     if synthetic is not None:
         return synthetic
@@ -692,7 +693,8 @@ def _make_agent(
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
-        provider_data_collection=_pr.get("data_collection"), platform=platform, session_id=session_id or key,
+        provider_data_collection=_pr.get("data_collection"), provider_extra=provider_routing_extra(_pr),
+        platform=platform, session_id=session_id or key,
         cwd=cwd_override,
         # The dashboard login identity reaches memory providers as the runtime user, like a gateway user id.
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.

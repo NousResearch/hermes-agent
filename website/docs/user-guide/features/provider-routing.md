@@ -127,6 +127,28 @@ with or without the `openrouter/` prefix). The override follows the model the ag
 own pins. Edit `config.yaml` directly for these keys: model ids contain dots, which `hermes config set`
 reads as path separators.
 
+### Passthrough keys (OpenRouter only)
+
+Any key that is not one of the six typed options above (and not `models`) is forwarded
+verbatim into OpenRouter's `provider` object — including keys Hermes does not know about
+yet. Per-model entries accept passthrough keys too and outrank the flat value for that
+model. Typed keys always win on a name conflict; each forwarded key logs a warning so a
+typo surfaces immediately. Unset and empty values (`null`, `""`, `[]`, `{}`) send
+nothing; explicit scalars — `false` and `0` included — are sent verbatim.
+
+```yaml
+provider_routing:
+  zdr: true                       # zero-data-retention-only routing (fails closed)
+  quantizations: [fp8, bf16]      # never land on a 4-bit endpoint
+  allow_fallbacks: false          # strict: only the providers your filters admit
+  models:
+    "moonshotai/kimi-k3":
+      quantizations: [mxfp4]      # its native format beats the global fp8 floor
+```
+
+See the developer guide's [provider_routing passthrough](../../developer-guide/provider_routing_passthrough.md)
+page for the full field list and semantics.
+
 ## Practical Examples
 
 ### Optimize for Cost
@@ -206,6 +228,7 @@ providers_order    ← from provider_routing.order
 provider_sort      ← from provider_routing.sort
 provider_require_parameters ← from provider_routing.require_parameters
 provider_data_collection    ← from provider_routing.data_collection
+provider_extra              ← any other provider_routing.* key (OpenRouter passthrough)
 ```
 
 :::tip

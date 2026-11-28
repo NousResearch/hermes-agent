@@ -67,3 +67,17 @@ it('records a secondary under its registry id, else the backend its profile reso
   recordSecondaryWire(null, { mode: 'local' }, 'legacy')
   expect(connectionWire('local')).toBe('legacy')
 })
+
+// A profile pointed at a remote backend (connection.json `profiles.<name>`) dials under the local
+// scope, so its secondary reports `local` for both ids. A legacy remote must not flip the local
+// source's canonical wire, or local image attaches fall back to `image.attach` and fail.
+it('keeps a profile remote override from overwriting the local source wire', () => {
+  recordConnectionWire('local', 'canonical')
+  $connection.set({ connectionId: 'local', mode: 'local', wsUrl: 'ws://127.0.0.1:1/api/ws?native_dial=x' } as HermesConnection)
+  setSessionOwnerHint('chat', { connectionId: 'local', profile: 'mishu' })
+
+  recordSecondaryWire('local', { connectionId: 'local', mode: 'remote' }, 'legacy')
+
+  expect(connectionWire('local')).toBe('canonical')
+  expect(serverOwnsComposerQueue('chat')).toBe(true)
+})

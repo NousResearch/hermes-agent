@@ -41,7 +41,6 @@ def _isolate_approval_state(monkeypatch):
 class TestRequestToolApproval:
     def test_session_cached_approval_short_circuits(self, monkeypatch):
         monkeypatch.setattr(approval, "is_approved", lambda sk, pk: True)
-        # Should NOT prompt at all.
         monkeypatch.setattr(
             approval, "prompt_dangerous_approval",
             lambda *a, **k: pytest.fail("should not prompt when already approved"),
@@ -61,6 +60,24 @@ class TestRequestToolApproval:
         monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *a, **k: "once")
         res = request_tool_approval("write_file", "writing ~/.ssh/authorized_keys")
         assert res["approved"] is True
+        assert res["user_approved"] is True
+
+    def test_action_human_approval_marks_consent_without_resetting_denial_tally(self, monkeypatch):
+        monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "manual")
+        monkeypatch.setattr(approval, "_smart_verdict", lambda *a, **k: None)
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(tools_approval_context, "_is_gateway_approval_context", lambda: False)
+        monkeypatch.setattr(approval, "prompt_dangerous_approval", lambda *a, **k: "once")
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", lambda *a, **k: "once")
+        monkeypatch.setattr(approval, "_denial_tally", {"test-session": 2})
+
+        result = request_tool_approval("video_generate_approved", "exact quote only", rule_key="video_quote:abc")
+
+        assert result["approved"] is True
+        assert result["user_approved"] is True
+        assert approval._denial_tally["test-session"] == 2
+
 
     def test_cli_deny_blocks(self, monkeypatch):
         from hermes_cli import lifecycle

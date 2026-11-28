@@ -46,6 +46,7 @@ async def test_local_turn_runs_its_post_delivery_callbacks_after_settling(tmp_pa
 
         def after_delivery():  # what TurnRunner / the /goal judge register for the turn
             fired.append((event.text, db.admissions.get(admission_id=admission).status))
+        event._hermes_run_generation = 1
         adapter.register_post_delivery_callback(live.route, after_delivery, generation=1)
         if event.text == "fails":
             raise RuntimeError("turn failed")
@@ -78,6 +79,7 @@ async def test_post_delivery_is_taken_by_the_key_the_turn_registered_under(tmp_p
 
     async def turn(event):
         live = authority.sessions[ref.session_id]
+        event._hermes_run_generation = 1
         runner._delivery_adapter_for(live.source).register_post_delivery_callback(
             live.route, lambda: fired.append(event.text), generation=1)
         live.route = live.route + ":rebound"

@@ -19,6 +19,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
     monkeypatch.setattr(authority, '_schedule', lambda ref: None)
     started, allow_cleanup = threading.Event(), threading.Event()
     order, releases = [], []
+    expected_sender = 'adapter send' if path == 'waiter' else 'drain send'
     release = recovery._release_media
 
     def slow_release(owner, admission_id):
@@ -40,7 +41,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
 
     async def send(adapter, event, key, response):
         assert admission_row(db.admissions.get(admission_id=event.message_id))['status'] == 'terminal'
-        order.append('send')
+        order.append('drain send')
         if path == 'send_failure':
             raise OSError('transport unavailable')
 
@@ -64,14 +65,19 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
     with db:
         receipt = await _submit(authority, 'photo')
         if path == 'waiter':
-            authority.native_waiters.add(receipt.admission_id)
-            waiter = authority.waiters[receipt.admission_id] = asyncio.get_running_loop().create_future()
+            async def admit_native(event):
+                return receipt
+
+            monkeypatch.setattr(authority, 'admit_native', admit_native)
 
             async def send_waiter():
-                assert await waiter == 'reply'
-                order.append('send')
+                event = SimpleNamespace(message_id='photo')
+                assert await session_ingress.admit_message(authority, event) == 'reply'
+                order.append('adapter send')
 
             observer = asyncio.create_task(send_waiter())
+            await async_wait_until(lambda: receipt.admission_id in authority.native_waiters,
+                                   timeout=5, what='native delivery owner')
         drain = asyncio.create_task(authority._drain(REF))
         operation = drain
         try:
@@ -85,7 +91,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
             if not order:
                 await operation
             assert order
-            assert order[0] == 'send', 'media cleanup ran before the reply was delivered'
+            assert order[0] == expected_sender, 'the delivery owner must send before media cleanup'
             await async_wait_until(started.is_set, timeout=5, what='background media cleanup')
             await asyncio.wait_for(operation, 5)
             assert mutation_tasks(authority), 'cleanup must keep ownership until its worker exits'
@@ -97,6 +103,7 @@ async def test_delivery_precedes_slow_media_collection(tmp_path, monkeypatch, pa
             await async_wait_until(lambda: not mutation_tasks(authority), timeout=5, what='cleanup retirement')
             if path == 'waiter':
                 await observer
+        assert order == [expected_sender, 'cleanup']
         assert releases == [receipt.admission_id]
         assert await _retire_profile_authority(authority, timeout=5)
 

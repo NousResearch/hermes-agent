@@ -123,6 +123,55 @@ async def test_authority_busy_follow_up_deletes_its_own_progress_bubbles(monkeyp
     assert key not in adapter._post_delivery_callbacks, "the follow-up's slot was left behind"
 
 @pytest.mark.asyncio
+async def test_callback_stays_with_earlier_native_send_after_marker_release(monkeypatch):
+    from gateway.config import GatewayConfig
+    from gateway.run import GatewayRunner
+    from gateway.session_authority import initialize_session_authority
+
+    monkeypatch.setenv('TELEGRAM_ALLOWED_USERS', 'fixture-user')
+    runner = GatewayRunner(GatewayConfig())
+    adapter = _AuthorityAdapter()
+    monkeypatch.setattr(adapter, 'gateway_runner', runner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    authority = await initialize_session_authority(runner, profile_id='default', instance_id='owner')
+    runner._wire_adapter_handlers(adapter)
+    source = adapter.build_source(chat_id='busy-chat', chat_type='dm', user_id='fixture-user')
+    sending_first, finish_first = asyncio.Event(), asyncio.Event()
+    send = adapter.send
+
+    async def gated_send(chat_id, content, reply_to=None, metadata=None):
+        if content == 'reply to one':
+            # Entering the transport means the ledger owns the reply and the marker was released.
+            sending_first.set()
+            await finish_first.wait()
+        return await send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def turn(event, source, key, generation):
+        assert await runner._mark_durable_active_turn(event, key)
+        event._hermes_run_generation = generation
+        runner._bind_adapter_run_generation(adapter, key, generation)
+        if event.text == 'one':
+            _register_cleanup(adapter, generation, ['bubble-one'], key=key, chat_id=source.chat_id)
+        return 'reply to ' + event.text
+
+    monkeypatch.setattr(adapter, 'send', gated_send)
+    monkeypatch.setattr(runner, '_handle_message_with_agent', turn)
+    await adapter.handle_message(MessageEvent(text='one', source=source, message_id='m1'))
+    try:
+        await asyncio.wait_for(sending_first.wait(), 5)
+        # Like a producer, the second input uses the same native FIFO but leaves delivery to it.
+        receipt = await authority.admit_native(MessageEvent(text='two', source=source, message_id='m2'))
+        await asyncio.wait_for(authority.sessions[receipt.ref.session_id].task, 5)
+        assert adapter.sent == ['reply to two']
+        assert adapter.deleted == [], 'turn two must not run turn one’s cleanup'
+    finally:
+        finish_first.set()
+        await _wait_for(lambda: not adapter._background_tasks)
+    assert adapter.sent == ['reply to two', 'reply to one']
+    assert adapter.deleted == ['bubble-one']
+
+
+@pytest.mark.asyncio
 async def test_busy_follow_up_goal_notice_keeps_its_bubble_cleanup_without_adapter_guard(monkeypatch):
     """A queued authority turn's /goal notice must not erase its generated cleanup slot."""
     from gateway.config import GatewayConfig

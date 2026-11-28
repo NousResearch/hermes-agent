@@ -39,7 +39,7 @@ native_write_started = ContextVar('native_write_started', default=False)
 # Such an input is fenced by a later /stop or /new of its route (``fence_route``), and the future is
 # released once the input queues behind an earlier one of its chat, so a serial reader moves on
 # while acceptance itself still waits for the commit.
-messaging_admission = ContextVar('messaging_admission', default=None)
+messaging_admission: ContextVar[asyncio.Future[None] | bool | None] = ContextVar('messaging_admission', default=None)
 
 
 def admission_row(record):
@@ -162,7 +162,7 @@ class SessionAuthority:
         self.events = {}
         self.native_waiters = set()
         self.pending_results = {}
-        # Replies of recovered no-waiter turns, sent only once their terminal outcome commits.
+        # Captured replies owned by the drain until terminal settlement and a successful handoff.
         self.pending_deliveries = {}
         # Stops accepted for a running generation whose agent does not exist yet
         # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
@@ -679,7 +679,9 @@ class SessionAuthority:
             event._gateway_accepted = True
             if row['status'] == 'queued' and (committed := getattr(event, '_on_commit', None)) is not None:
                 committed()  # a queued slash command's ack follows its commit (``_queue_command_turn``)
-            mark_producer_admission(self, event, row)
+            if row['admission_id'] not in self.native_waiters:
+                # A queued retry must not install a second busy observer for the same turn.
+                mark_producer_admission(self, event, row)
         self._publish_pending(ref)
         return self._receipt(row)
 
@@ -1391,8 +1393,9 @@ class SessionAuthority:
             raise
         except Exception:
             import logging
+            from gateway.session_ingress import ADMITTED_TURN_FAILED_REPLY
             logging.getLogger(__name__).exception('Admitted turn %s failed', row['admission_id'])
-            return 'The admitted turn failed.', 'failed'
+            return ADMITTED_TURN_FAILED_REPLY, 'failed'
 
     async def _drain(self, ref):
         from gateway.session_managed_worker import ManagedExecutionUnknown
@@ -1474,21 +1477,14 @@ class SessionAuthority:
                 logging.getLogger(__name__).exception('Deferred auto-reset of %s failed', route)
 
     async def _resolve_settled_waiter(self, admission_id, response):
-        """Hand the settled reply to its waiter. The adapter sending it adopted the turn's crash marker
-        and releases it once the reply is ledgered (seconds with auto-TTS); a follower claimed before
-        that replaces the one-slot marker, so a kill in between would lose the persisted reply: the
-        drain waits for that release (bounded; never while draining or retiring)."""
-        adopter = getattr(self, 'marker_adopters', {}).get(admission_id)
-        released = None
-        if adopter is not None and getattr(adopter, '_gateway_active_turn_token', None):
-            released = adopter._gateway_marker_released = asyncio.Event()
-        waiter = self.waiters.pop(admission_id, None)
-        if waiter is None or waiter.done():
+        """Wake the observer; a native delivery waiter must explicitly take the reply."""
+        if admission_id in self.native_waiters:
+            from gateway.session_ingress import offer_native_reply
+            await offer_native_reply(self, admission_id, response, _MARKER_RELEASE_WAIT_S)
             return
-        waiter.set_result(response)
-        if released is not None and not (self.runner._draining or self.retiring):
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(released.wait(), _MARKER_RELEASE_WAIT_S)
+        waiter = self.waiters.pop(admission_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(response)
 
 
 def backfill_legacy_session_owners(store):

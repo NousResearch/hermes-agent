@@ -339,7 +339,8 @@ def request_elicitation_consent(message: str, description: str, *,
                 session_key, notify_cb, {"command": message, "description": description,
                                          "pattern_key": "mcp_elicitation",
                                          "pattern_keys": ["mcp_elicitation"],
-                                         "allow_session": scoped, "allow_permanent": scoped}, surface=surface)
+                                         "allow_session": scoped, "allow_permanent": scoped},
+                surface=surface, timeout_seconds=timeout_seconds)
         except Exception as exc:
             logger.error("Elicitation gateway dispatch failed: %s", exc, exc_info=True)
             return "decline"

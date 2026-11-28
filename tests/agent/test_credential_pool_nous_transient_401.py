@@ -118,3 +118,27 @@ def test_one_refresh_per_episode_then_bounded_backoff(tmp_path, monkeypatch):
     assert len(posts) == 1, f"one 401 episode redeemed the refresh token {len(posts)}x"
     assert agent.swapped and set(agent.swapped[1:]) == {agent.swapped[0]}, (
         "backoff retries must keep the freshly minted key, not re-mint")
+
+
+def test_a_served_response_does_not_hand_back_the_spent_nous_refresh(tmp_path, monkeypatch):
+    from agent import credential_auth_recovery
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared"))
+    _seed(tmp_path / "hermes", _invoke_jwt(seconds=3000), "rt-seed")
+    pool = load_pool("nous")
+    (entry,) = pool.entries()
+    posts = _count_refresh_posts(monkeypatch)
+    monkeypatch.setattr(credential_auth_recovery, "TRANSIENT_AUTH_BACKOFF_S", (0.01, 0.02, 0.03))
+    agent = _Agent(entry.runtime_api_key)
+
+    def _on_401():
+        return _recover_auth_failure(
+            agent, pool, status_code=401, has_retried_429=False,
+            error_context={"message": "authentication required"}, api_key_hint=agent.api_key,
+            credential_id=entry.id, rotate_and_swap=lambda *_a: False)
+
+    assert _on_401()[0] is True
+    credential_auth_recovery.end_auth_episodes(agent)
+    assert _on_401()[0] is True
+
+    assert len(posts) == 1, "a served response must not re-open the turn's one forced Nous refresh"

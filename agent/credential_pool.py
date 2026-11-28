@@ -1163,14 +1163,16 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         error_context: Optional[dict[str, Any]] = None,
         *,
         persist: bool = True,
-        failure_reason: Optional[str] = None,
+        failure_reason: Optional[str] = None, bench: bool = False,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context, (entry.access_token, entry.refresh_token, entry.agent_key))
         # Permanent OAuth failures become STATUS_DEAD, not STATUS_EXHAUSTED:
         # otherwise a revoked credential re-enters rotation every hour and
         # fails immediately until the user removes it (#32849); a row whose
-        # refresh grant just went DEAD stays DEAD on the 401 that follows.
-        terminal = entry.last_status == STATUS_DEAD or self._is_terminal_auth_failure(status_code, normalized_error)
+        # refresh grant just went DEAD stays DEAD on the 401 that follows. A ``bench`` row's grant just
+        # minted tokens, so its reason (Codex ``token_invalidated``) names the access token, not the grant.
+        terminal = entry.last_status == STATUS_DEAD or (
+            not bench and self._is_terminal_auth_failure(status_code, normalized_error))
         # Carry the classifier's verdict so the cooldown is sized by what
         # actually failed (a billing 403 must not get the sole-credential
         # transient cooldown); absent a classification, clear a stale one.
@@ -1463,7 +1465,8 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
 
     # ---- refresh -----------------------------------------------------------
 
-    def _refresh_entry(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None):
+    def _refresh_entry(self, entry: PooledCredential, *, force: bool, failed_key: Optional[str] = None,
+                       allow_post: bool = True):
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
                 self._mark_exhausted(entry, None)
@@ -1472,40 +1475,38 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         # the pool cannot know their grant semantics, and a needless in-lock re-read is cheaper than
         # a ``refresh_token_reused`` login loss. Eligibility comes from the hook, never a name set.
         if self.provider not in _SINGLE_USE_REFRESH_PROVIDERS and plugin_refresh_hook(self.provider) is None:
-            return self._refresh_entry_impl(entry, force=force, failed_key=failed_key)
+            return self._refresh_entry_impl(entry, force=force, failed_key=failed_key) if allow_post else None
 
-        # Single-use refresh tokens: sync -> POST -> write-back must be atomic
-        # across Hermes processes, or two processes adopt the same on-disk
-        # token, both POST it, and the loser gets ``refresh_token_reused`` /
-        # ``invalid_grant`` (for Anthropic sources other than claude_code
-        # there was no recovery path at all). Serialize through the shared
-        # cross-process auth-store flock; a waiter's in-lock re-sync picks up
-        # the winner's rotated token and skips the POST.
+        # Single-use refresh tokens: sync -> POST -> write-back must be atomic across Hermes processes, or two
+        # processes adopt the same on-disk token, both POST it, and the loser gets ``refresh_token_reused`` /
+        # ``invalid_grant`` (for Anthropic sources other than claude_code there was no recovery path at all).
+        # Serialize through the shared cross-process auth-store flock; a waiter's in-lock re-sync picks up the
+        # winner's rotated token and skips the POST.
         with _auth_store_lock(timeout_seconds=self._single_use_refresh_lock_timeout()):
             if self.provider == "openai-codex":
                 synced = self._sync_entry_from_auth_store(entry)
                 if synced is not entry and not force and not self._entry_needs_refresh(synced):
                     return synced
-                return self._refresh_entry_impl(synced, force=force)
+                return self._refresh_entry_impl(synced, force=force) if allow_post else None
             synced = self._sync_entry_from_pool_store(entry)
             if self.provider == "anthropic" and synced.source == "claude_code":
-                # claude_code entries are NOT profile-owned: the refresh token
-                # lives in one shared ~/.claude/.credentials.json (or Keychain)
-                # every profile reads. The profile-scoped lock above only covers
-                # THIS profile's auth.json, so take the dedicated shared-file
-                # lock (inner, per the ordering invariant on ``_auth_store_lock``)
-                # and re-read that authoritative file before any
-                # adopt-and-return shortcut fires. The official ``claude`` CLI
-                # rotating out-of-band is handled by the sync-and-retry-once
-                # fallback in ``_recover_failed_refresh``.
+                # claude_code entries are NOT profile-owned: the refresh token lives in one shared
+                # ~/.claude/.credentials.json (or Keychain) every profile reads. The profile-scoped lock above
+                # only covers THIS profile's auth.json, so take the dedicated shared-file lock (inner, per the
+                # ordering invariant on ``_auth_store_lock``) and re-read that authoritative file before any
+                # adopt-and-return shortcut fires. The official ``claude`` CLI rotating out-of-band is handled
+                # by the sync-and-retry-once fallback in ``_recover_failed_refresh``.
                 with self._claude_code_credentials_lock():
                     synced = self._sync_anthropic_entry_from_credentials_file(synced)
                     if synced.refresh_token != entry.refresh_token:
                         return synced
-                    return self._refresh_entry_impl(synced, force=force)
-            if synced.access_token != entry.access_token or synced.refresh_token != entry.refresh_token:
+                    return self._refresh_entry_impl(synced, force=force) if allow_post else None
+            # Judge the bearer the 401'd request sent, not this row's copy: re-POSTing revokes a sibling (#138337).
+            rotated = (synced.runtime_api_key not in ("", failed_key) and not self._entry_needs_refresh(synced)
+                       if failed_key else synced.access_token != entry.access_token)
+            if rotated or synced.refresh_token != entry.refresh_token:
                 return synced
-            return self._refresh_entry_impl(synced, force=force)
+            return self._refresh_entry_impl(synced, force=force) if allow_post else None
 
     def _claude_code_credentials_lock(self):
         """Cross-process lock keyed to the shared claude_code credentials file.
@@ -2175,7 +2176,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
         api_key_hint: Optional[str] = None,
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
-        model: Optional[str] = None,
+        model: Optional[str] = None, bench: bool = False,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2198,7 +2199,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 self._current_id = None
                 next_entry, _pending = self._select_unlocked(refresh=False, model=model)
                 return next_entry
-            self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason)
+            self._mark_exhausted(entry, status_code, error_context, failure_reason=failure_reason, bench=bench)
             # A 402/429/401 is a key-level failure, and the same key can back
             # several entries (an explicit entry plus a ``model_config`` row
             # auto-seeded from ``model.api_key``). Marking only the first
@@ -2212,7 +2213,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
                 ]
                 for sibling in siblings:
                     self._mark_exhausted(
-                        sibling, status_code, error_context, persist=False, failure_reason=failure_reason,
+                        sibling, status_code, error_context, persist=False, failure_reason=failure_reason, bench=bench,
                     )
                 if siblings:
                     self._persist()
@@ -2304,7 +2305,7 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
     def try_refresh_matching(
         self,
         api_key_hint: Optional[str] = None,
-        credential_id: Optional[str] = None,
+        credential_id: Optional[str] = None, allow_post: bool = True,
     ) -> Optional[PooledCredential]:
         """Force-refresh the entry that supplied the failed request.
 
@@ -2323,17 +2324,16 @@ class CredentialPool(CredentialPoolSelectionMixin, CredentialPoolAdminMixin, Cre
             if entry is None:
                 return None
             self._current_id = entry.id
-            return self._try_refresh_current_unlocked(failed_key=api_key_hint)
+            return self._try_refresh_current_unlocked(failed_key=api_key_hint, allow_post=allow_post)
 
-    def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None) -> Optional[PooledCredential]:
+    def _try_refresh_current_unlocked(self, failed_key: Optional[str] = None, allow_post: bool = True):
         entry = self._current_unlocked()
         if entry is None:
             return None
-        refreshed = self._refresh_entry(entry, force=True, failed_key=failed_key)
+        refreshed = self._refresh_entry(entry, force=True, failed_key=failed_key, allow_post=allow_post)
         if refreshed is not None:
             self._current_id = refreshed.id
         return refreshed
-
 
 
 # --- Seeding --------------------------------------------------------------

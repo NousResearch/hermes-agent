@@ -26,6 +26,10 @@ a context-note prepend into the agent's prompt — both wrong for an explicit
 /new or /reset.
 """
 
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
 from gateway.config import GatewayConfig, Platform
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
@@ -52,7 +56,19 @@ def _is_new_session(entry) -> bool:
         entry.created_at == entry.updated_at
         or getattr(entry, "was_auto_reset", False)
         or getattr(entry, "is_fresh_reset", False)
+        or getattr(entry, "is_new_session", False)
     )
+
+
+def _consume_first_turn(entry, source):
+    """Run the real first-turn open so the creation flag is consumed, the
+    way a first message's turn does in production."""
+    from gateway.run_turn_prepare import GatewayTurnPrepareMixin
+    preparer = object.__new__(GatewayTurnPrepareMixin)
+    preparer.hooks = SimpleNamespace(emit=AsyncMock())
+    preparer._clear_conversation_scope = MagicMock()
+    preparer._evict_cached_agent = MagicMock()
+    asyncio.run(preparer._hmwa_open_session(entry, entry.session_key, source))
 
 
 # ---------------------------------------------------------------------------
@@ -92,11 +108,15 @@ class TestVanillaBehaviorUnaffected:
     def test_ongoing_session_not_flagged_as_new(self, tmp_path):
         store = _make_store(tmp_path)
         source = _make_source()
-        store.get_or_create_session(source)
+        first = store.get_or_create_session(source)
+
+        # The first turn runs and consumes the creation flag.
+        _consume_first_turn(first, source)
 
         # Second message on the same session — updated_at bumps,
-        # is_fresh_reset was never set
+        # is_new_session was consumed by the first turn
         entry = store.get_or_create_session(source)
+        assert entry.is_new_session is False
         assert entry.is_fresh_reset is False
         assert _is_new_session(entry) is False
 

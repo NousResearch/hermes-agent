@@ -567,11 +567,20 @@ class GatewayTurnPrepareMixin:
             session_entry.was_auto_reset = False
 
         _is_fresh_reset = getattr(session_entry, "is_fresh_reset", False)
-        _is_new_session = session_entry.created_at == session_entry.updated_at or _was_auto_reset or _is_fresh_reset
+        _is_new_session = (
+            session_entry.created_at == session_entry.updated_at
+            or _was_auto_reset
+            or _is_fresh_reset
+            or getattr(session_entry, "is_new_session", False)
+        )
         # Consume is_fresh_reset so it doesn't leak onto later messages in the same session.
         if _is_fresh_reset:
             # See #6508.
             session_entry.is_fresh_reset = False
+        # Same consumption for is_new_session: a created session is new for its
+        # first turn only (#160217).
+        if getattr(session_entry, "is_new_session", False):
+            session_entry.is_new_session = False
         if _is_new_session:
             await self.hooks.emit("session:start", {
                 "platform": source.platform.value if source.platform else "",

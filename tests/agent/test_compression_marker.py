@@ -51,5 +51,5 @@ def test_real_renderers_emit_a_guard_visible_marker_never_the_imitable_idiom():
         assert out and _COMPRESSION_MARKER_RE.search(out), (name, out[-300:] if out else out)
         assert not IMITABLE_MARKER_RE.search(out), (name, out[-300:])
     # A budget too small for marker + content skips the straddler instead of a marker-only quote.
-    fills_budget = [{"role": "user", "content": "u" * 3_998}] * 6  # 23,988 of the 24,000 budget
+    fills_budget = [{"role": "user", "content": f"{i}" + "u" * 3_997} for i in range(6)]  # 23,988 of the 24,000 budget; distinct, so none is deduped
     assert "chars omitted" not in _build_verbatim_user_section([{"role": "user", "content": "v" * 500}, *fills_budget])

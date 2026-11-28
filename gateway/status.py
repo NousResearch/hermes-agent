@@ -550,8 +550,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         raw_tokens = shlex.split(command, posix=False)
     except ValueError:
         raw_tokens = command.split()
-    # Strip surrounding quotes, normalize slashes + case per token.
-    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    # Strip surrounding quotes first, but keep backslashes until after the inline-source
+    # bootstrap has been extracted: the source is program text and its Windows paths carry
+    # Python string-literal escapes (``C:\\Users``); normalizing those here produces
+    # ``C://Users`` and breaks the entry-point match (#160388).
+    quoted_tokens = [t.strip("\"'") for t in raw_tokens]
+    cased_tokens = [t.replace("\\", "/") for t in quoted_tokens]
     tokens = [t.lower() for t in cased_tokens]
     if not tokens:
         return None
@@ -559,12 +563,13 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
-    if command_line_runs_inline_source(cased_tokens):
+    if command_line_runs_inline_source(quoted_tokens):
         # …unless the source is a Hermes bootstrap running the entry point in THIS process (store
         # launcher, launcher script, venv_sync re-entry): then its argv is this process's (#124318).
-        cased_tokens = inline_bootstrap_argv(cased_tokens)
-        if cased_tokens is None:
+        extracted = inline_bootstrap_argv(quoted_tokens)
+        if extracted is None:
             return None
+        cased_tokens = [t.replace("\\", "/") for t in extracted]
         tokens = [t.lower() for t in cased_tokens]
         basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv

@@ -22,7 +22,8 @@ export const jaBoot = {
       gatewayConnectionLostDetail:
         'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
-      ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
+      ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。',
+      hostedAgentUnavailable: agentId => `Hermes エージェント「${agentId}」はこのアカウントでは利用できません。再試行すると、代わりにアカウントのプライマリエージェントが開きます。`
     },
     failure: {
       title: 'Hermes を起動できませんでした',

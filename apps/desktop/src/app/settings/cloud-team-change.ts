@@ -1,7 +1,7 @@
 import type { DesktopRegistryConnection } from '@/global'
 import { hostHas } from '@/lib/host-capabilities'
 
-import { normalizeGatewayUrl } from './connections-registry'
+import { normalizeGatewayUrl } from './connection-editor'
 
 // `org` values are the refs NAS echoes (`slug ?? id`) and are compared as
 // opaque strings. If a team gains or changes its slug, a connection saved under

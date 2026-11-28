@@ -29,7 +29,8 @@ export const esBoot = {
       gatewaySignInRequired: 'Tu Hermes remoto cerró tu sesión',
       gatewaySignInRequiredDetail: 'Vuelve a iniciar sesión para reconectar. Tus chats y ajustes están a salvo.',
       signInAgain: 'Volver a iniciar sesión',
-      ipcBridgeUnavailable: 'Hermes Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.'
+      ipcBridgeUnavailable: 'Hermes Desktop no pudo comunicarse con su propia capa en segundo plano. Reinicia la app.',
+      hostedAgentUnavailable: agentId => `El agente de Hermes «${agentId}» no está disponible para esta cuenta. Reintentar abre en su lugar el agente principal de la cuenta.`
     },
     causes: {
       exitedEarly: 'El servicio en segundo plano de Hermes se detuvo justo después de iniciarse.',

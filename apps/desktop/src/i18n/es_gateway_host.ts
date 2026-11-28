@@ -8,6 +8,8 @@ export const esGatewayHost: GatewayHostTranslations = {
   webappHostTitle: 'Host de Hermes',
   webappHostDesc:
     'La Webapp siempre se ejecuta en el host de Hermes que la sirve. Las conexiones guardadas de abajo son la lista de esta máquina, compartida con la app Hermes Desktop; los demás gateways se alcanzan a través de este host.',
+  webappAccountHostDesc:
+    'Estos son los agentes de tu organización de Hermes Cloud. Este host inicia sesión en cada uno por ti, y la lista sigue a tu cuenta.',
   webappOauthPaste: {
     title: 'Terminar de iniciar sesión',
     description: 'Si la pestaña de inicio de sesión terminó en una dirección que no carga (este navegador no está en la máquina del gateway), pega esa dirección aquí.',

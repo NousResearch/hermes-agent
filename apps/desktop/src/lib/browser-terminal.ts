@@ -23,6 +23,14 @@ interface BrowserTerminalOptions {
   defaultCwd: (profile: string | null, connectionId: string) => Promise<string>
   /** The tab's sign-in ended (a 4401 close or a 401 ticket): show the sign-in view. */
   onSignedOut?: () => void
+  /** The page's host closes the sockets it relays with 4401 to have them redialed with a fresh
+   *  ticket (the hosted dashboard): such a close reconnects, and a signed-out tab learns it from the
+   *  ticket route's 401. */
+  redialsOn4401?: boolean
+  /** On a host with no agent, the agent a terminal starts on: its saved attachment's, else the one
+   *  its tab names (with the tab's profile), else (`local`) the one the window is on. Kept, so every
+   *  redial and the saved attachment name that agent, not the one the window has moved to since. */
+  pinConnection?: (connectionId: string) => Promise<string>
 }
 
 interface TerminalState {
@@ -136,6 +144,17 @@ interface DialContext {
   forget: (state: TerminalState) => void
   finish: (state: TerminalState, signal: string | null) => void
   reconnect: (state: TerminalState) => void
+  closeSignal: (code: number) => string
+  pinned: boolean
+}
+
+// The session a dial resolves with. A pinned shell also says where it runs, so a tab that named no
+// agent records it.
+function startedSession(state: TerminalState, pinned: boolean): HermesTerminalSession {
+  return {
+    id: state.id, cwd: state.cwd, shell: state.shell, persistent: Boolean(state.terminalId),
+    ...(pinned ? { connectionId: state.connectionId, profile: state.profile } : {})
+  }
 }
 
 async function dialTerminal(state: TerminalState, context: DialContext): Promise<HermesTerminalSession> {
@@ -240,7 +259,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
             settled = true
             window.clearTimeout(timer)
             state.cancelDial = undefined
-            resolve({ id: state.id, cwd: state.cwd, shell: state.shell, persistent: Boolean(state.terminalId) })
+            resolve(startedSession(state, context.pinned))
           }
         } catch (error) {
           fail(error instanceof Error ? error : new Error('Host terminal returned invalid startup metadata'))
@@ -268,7 +287,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     socket.onclose = event => {
       if (!current()) {return}
       settleOpen(state)
-      const signal = CLOSE_SIGNALS[event.code] ?? 'disconnected'
+      const signal = context.closeSignal(event.code)
       const exited = event.code === 4410 && event.reason === PROCESS_EXITED_REASON
 
       if (signal === 'expired') {forget(state)}
@@ -398,8 +417,12 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
     }, reconnectBackoffDelayMs(state.retry++, RETRY_BACKOFF))
   }
 
+  const closeSignal = (code: number) =>
+    (code === 4401 && options.redialsOn4401 ? undefined : CLOSE_SIGNALS[code]) ?? 'disconnected'
+
   const dial = (state: TerminalState) => dialTerminal(state, {
-    websocketUrl: options.websocketUrl, storageKey, isPaused: () => paused, stopSocket, emitData, setStatus, forget, finish, reconnect
+    websocketUrl: options.websocketUrl, storageKey, isPaused: () => paused, stopSocket, emitData, setStatus, forget, finish, reconnect,
+    closeSignal, pinned: Boolean(options.pinConnection)
   })
 
   const detach = async (id: string) => {
@@ -561,6 +584,14 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
 
       terminals.set(state.id, state)
       state.started = (async () => {
+        if (options.pinConnection) {
+          const named = !saved && startOptions?.connectionId ? startOptions : null
+          state.connectionId = await options.pinConnection(named?.connectionId || state.connectionId)
+          // A tab that names its agent but no profile started on that agent's own profile (it opened
+          // before boot had one), so the new shell does too, not the profile now in view.
+          state.profile = named ? named.profile || null : state.profile
+        }
+
         if (!state.cwd && !saved) {
           state.cwd = await options.defaultCwd(state.profile, state.connectionId).catch(() => '')
         }

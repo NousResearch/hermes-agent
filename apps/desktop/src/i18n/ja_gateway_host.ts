@@ -7,6 +7,8 @@ export const jaGatewayHost: GatewayHostTranslations = {
   webappHostTitle: 'Hermes ホスト',
   webappHostDesc:
     'Webapp は常にそれを配信する Hermes ホスト上で動作します。下の保存済み接続はこのマシンの一覧で、Hermes Desktop アプリと共有されます。他のゲートウェイにはこのホスト経由で接続します。',
+  webappAccountHostDesc:
+    'これらはあなたの Hermes Cloud 組織のエージェントです。このホストが各エージェントへのサインインを代行し、一覧はアカウントに合わせて更新されます。',
   webappOauthPaste: {
     title: 'サインインを完了',
     description: 'サインインのタブが読み込めないアドレスで止まった場合（このブラウザがゲートウェイのマシン上にない場合）、そのアドレスをここに貼り付けてください。',

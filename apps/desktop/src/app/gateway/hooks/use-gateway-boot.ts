@@ -117,7 +117,7 @@ import {
   resetTileRuntimeBindings
 } from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
-import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+import { isPeerInstanceWindow, windowConnectionOverride, windowProfileOverride } from '@/store/windows'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { notifyPrimaryReauth } from './primary-reauth-notice'
@@ -190,18 +190,23 @@ export function primaryRuntimeConnectionId(connection: Pick<HermesConnection, 'c
  * origin's saved default, is selected on top of the primary instead of becoming it.
  */
 async function openWebappTabProfile(desktop: Window['hermesDesktop'], primary: string, startup: boolean) {
+  // An address naming the tab's agent but no profile (a hosted New Window on the agent's own profile)
+  // says where the tab opens as much as one naming a profile does: the saved default does not apply.
+  const savedDefault = startup && !isPeerInstanceWindow() && !windowConnectionOverride()
+
   const profile =
-    windowProfileOverride() ??
-    (startup && !isPeerInstanceWindow() ? (await desktop.profile?.getDefault?.())?.profile?.trim() : null)
+    windowProfileOverride() ?? (savedDefault ? (await desktop.profile?.getDefault?.())?.profile?.trim() : null)
 
   if (!profile || normalizeProfileKey(profile) === primary) {
     return
   }
 
   // A stale link or bookmark can name a profile this gateway no longer has or does not serve: stay on its own.
-  const routes = await desktop.getProfileRoutes?.([profile]).catch(() => null)
+  // Routes list other gateways' profiles too; this tab's socket is the serving one's, or marked primary.
+  const routes = await desktop.getProfileRoutes?.([profile], { own: true }).catch(() => null)
+  const own = routes?.filter(route => route.primary || route.connectionId === LOCAL_CONNECTION_ID)
 
-  if (routes && !routes.some(route => normalizeProfileKey(route.profile) === normalizeProfileKey(profile))) {
+  if (own && !own.some(route => normalizeProfileKey(route.profile) === normalizeProfileKey(profile))) {
     console.warn(`[gateway] this gateway has no profile "${profile}" or does not serve it; this tab stays on "${primary}"`)
     await desktop.profile?.remember?.(primary)
 

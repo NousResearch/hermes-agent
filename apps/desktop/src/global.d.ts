@@ -73,7 +73,9 @@ declare global {
       // Credential-free routes across the union connection registry. The
       // optional profile list is used only by the single-local v1 fallback;
       // endpoint and auth material never crosses the IPC boundary.
-      getProfileRoutes: (profiles: string[]) => Promise<DesktopPluginProfileRoute[]>
+      /** `own`: only the routes of the gateway this window's socket is on (Electron lists them all
+       *  either way, and the caller filters). */
+      getProfileRoutes: (profiles: string[], options?: { own?: boolean }) => Promise<DesktopPluginProfileRoute[]>
       // Loopback origin serving the YouTube player wrapper (packaged file:// renderer).
       getEmbedHostOrigin?: () => Promise<string>
       // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
@@ -241,6 +243,13 @@ declare global {
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections?: {
+        /** The host keeps this list for the signed-in account (the hosted dashboard): it can be
+         *  read, tested and ordered here, never added to, edited or removed from. */
+        managedByHost?: boolean
+        /** The profile a listed gateway runs as, where the host can read it (the hosted dashboard);
+         *  undefined when it names none. A pick that names no profile lands there. Rejects when the
+         *  read fails. */
+        launchProfile?: (id: string) => Promise<string | undefined>
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput
@@ -862,10 +871,12 @@ export interface DesktopMarketplaceThemeResult {
 export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
 
 export interface HermesTerminalSession {
-  /** Gateway the shell runs on (`local` = This device); Electron only. */
+  /** Gateway the shell runs on (`local` = This device); Electron, and a host that runs no agent. */
   connectionId?: null | string
   cwd: string
   id: string
+  /** Profile the shell runs as; a host that runs no agent only. */
+  profile?: null | string
   shell: string
   /** No shell was started: the tab's gateway was removed (`missing`) or has
    *  no shell transport (`no-shell`). */

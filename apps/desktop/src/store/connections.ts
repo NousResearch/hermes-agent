@@ -42,7 +42,7 @@ import {
 } from '@/store/session'
 import { currentUserSessionOpen, LAUNCH_USER_SESSION_OPEN } from '@/store/session-open-intent'
 import { reloadOpenStarmapGraph, resetStarmapGraph } from '@/store/starmap'
-import { isPeerInstanceWindow, windowProfileOverride } from '@/store/windows'
+import { isPeerInstanceWindow, windowNamesItsRoute } from '@/store/windows'
 
 import { launchTargetUnreachable, servedProfileSet, startupProfileForConnection } from './startup-profile-restore'
 
@@ -88,6 +88,12 @@ let pendingTarget: null | string = null
 let abandonInFlight: (() => void) | null = null
 let restoreAttempted = false
 let switchRevision = 0
+// Bumped as every pick starts: one still reading its landing profile when a newer pick starts
+// steps aside, as a pick superseded in flight does.
+let pickIntent = 0
+// Picks the user started (not boot's restore): one still reading its landing profile has not
+// claimed a revision yet, and boot must not restore over it.
+let userPicks = 0
 
 export const $pendingConnectionId = atom<null | string>(null)
 
@@ -156,6 +162,8 @@ export function _resetConnectionsForTests(): void {
   pendingTarget = null
   restoreAttempted = false
   switchRevision = 0
+  pickIntent = 0
+  userPicks = 0
   tentativeRehome = null
   $pendingConnectionId.set(null)
 }
@@ -216,6 +224,11 @@ let tentativeRehome: DraftRehome | null = null
 
 // The tentative re-home the draft shows when a pick starts, if any: the pick
 // ahead of it whose pick has not finished (landed or not).
+// The new-chat intent a pick counts from: the click's, when it waited for its landing profile.
+function pickDraftIntent(options: { draftIntent?: number }): number {
+  return options.draftIntent ?? currentNewChatIntent()
+}
+
 function rehomeAhead(draftIntent: number): DraftRehome | null {
   return tentativeRehome?.intent === draftIntent ? tentativeRehome : null
 }
@@ -354,10 +367,14 @@ function waitForInitialConnection(): Promise<void> {
  *  in without moving the window. A profile repair on the gateway already in
  *  front is not a fallback: the window is there, and a cached down row from an
  *  earlier failed read must not leave it on a profile the gateway lacks. */
-async function restoreConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
+function restoreConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
+  return withLandingProfile(connectionId, options, landing => watchRestore(connectionId, landing))
+}
+
+async function watchRestore(connectionId: string, options: SelectConnectionOptions): Promise<void> {
   const crossGateway = $activeConnectionId.get() !== connectionId
-  const restore = selectConnection(connectionId, { ...options, restore: true })
-  // selectConnection claims its revision before its first await.
+  const restore = switchConnection(connectionId, { ...options, restore: true })
+  // switchConnection claims its revision before its first await.
   const revision = switchRevision
   const ownsPick = () => revision === switchRevision && pendingTarget?.startsWith(`${connectionId}::`) === true
 
@@ -468,6 +485,7 @@ async function restorePreferredConnection(
 function userActedDuringBoot(freshSessionRequest: number, userOpenSince: number): boolean {
   return (
     switchRevision > 0 ||
+    userPicks > 0 ||
     pendingTarget !== null ||
     $freshSessionRequest.get() !== freshSessionRequest ||
     currentUserSessionOpen() !== userOpenSince
@@ -496,8 +514,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
   ])
 
   // Main may already have opened the explicit default. A failed preference
-  // read is not evidence of an absent preference; keep that live route.
-  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowProfileOverride()) {
+  // read is not evidence of an absent preference; keep that live route. An
+  // address that names the window's route already said where it opens.
+  if (!registry || !defaultLoaded || restoreAttempted || isPeerInstanceWindow() || windowNamesItsRoute()) {
     return registry
   }
 
@@ -585,6 +604,9 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
  * user never flips through it; one that times out loses its right to publish.
  */
 export interface SelectConnectionOptions {
+  /** The new-chat intent when the user picked (set internally when the pick first reads its
+   *  landing profile): a draft started after that is newer than the pick. */
+  draftIntent?: number
   /** Land on this profile of the target source instead of the one last used
    *  there. The fleet profile rail passes the exact square the user clicked. */
   profile?: null | string
@@ -648,7 +670,103 @@ async function settleLivePair(connectionId: string, targetProfile: string, resto
   await rememberConnection(connectionId)
 }
 
-export async function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
+// The profile a pick that names none lands on: the one last used on that gateway, else, where
+// the host can read it (the hosted dashboard), the one the gateway runs as. One launched as
+// `research` may serve no `default`, and asking for it there makes a healthy gateway look down.
+// Null: it takes a read.
+function knownLandingProfile(connectionId: string, profile?: null | string): null | string {
+  const named = String(profile ?? '').trim() || $lastProfileByConnection.get()[connectionId]
+
+  return named || (window.hermesDesktop?.connections?.launchProfile ? null : 'default')
+}
+
+// A failed read fails the pick: a guessed `default` would dial a profile the gateway may not serve.
+async function readLandingProfile(connectionId: string): Promise<string> {
+  return (await window.hermesDesktop?.connections?.launchProfile?.(connectionId)) || 'default'
+}
+
+// Runs *run* with the pick's profile settled. With nothing to read it runs at once, so the pick
+// claims its revision in the caller's tick, as it always has.
+function withLandingProfile(
+  connectionId: string,
+  options: SelectConnectionOptions,
+  run: (options: SelectConnectionOptions) => Promise<void>
+): Promise<void> {
+  const intent = ++pickIntent
+  const listed = $connectionsRegistry.get()?.connections.some(connection => connection.id === connectionId)
+  const known = listed ? knownLandingProfile(connectionId, options.profile) : String(options.profile ?? '')
+
+  if (known !== null) {
+    return run({ ...options, profile: known })
+  }
+
+  // A user's pick owns the switch from the click, as one that reads nothing does: an older pick
+  // still connecting steps aside now, not when this read answers, and the draft intent is the one at
+  // the click, so a draft started while the read is out stays the user's.
+  if (!options.restore) {
+    abandonPick()
+  }
+
+  const clicked = { ...options, draftIntent: pickDraftIntent(options) }
+
+  return readLandingProfile(connectionId).then(profile =>
+    intent === pickIntent ? run({ ...clicked, profile }) : undefined
+  )
+}
+
+export function selectConnection(connectionId: string, options: SelectConnectionOptions = {}): Promise<void> {
+  userPicks += 1
+
+  return withLandingProfile(connectionId, options, landing => switchConnection(connectionId, landing))
+}
+
+// Open the target WITHOUT activating it, so a dead gateway fails here and the one in front loses
+// nothing — not even the draft. Every registered gateway is normally connected already, so this
+// resolves at once. False: a newer pick owns the outcome.
+async function openPickTarget(
+  target: DesktopConnectionsRegistry['connections'][number],
+  profile: string,
+  revision: number,
+  timeoutMessage: string
+): Promise<boolean> {
+  await withTimeout(openGatewayAgent(target.id, profile), SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage)
+
+  if (revision !== switchRevision) {
+    return false
+  }
+
+  // A kept socket can outlive cookie/native OAuth REST auth. Prove the
+  // cheapest protected read before the draft is replaced; the exact failure
+  // reaches the caller (network failures are not sign-in errors).
+  if (target.authMode === 'oauth' && (target.kind === 'remote' || target.kind === 'cloud')) {
+    await withTimeout(getProfiles({ connectionId: target.id, profile }), SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage)
+  }
+
+  return revision === switchRevision
+}
+
+// Activate the opened target, bounded. A timeout after the target already became active has
+// landed; anything else that leaves it inactive fails the pick.
+async function activatePickTarget(
+  target: DesktopConnectionsRegistry['connections'][number],
+  profile: string,
+  options: { beforeActivate: () => boolean; signal: AbortSignal },
+  { abort, landed, timeoutMessage }: { abort: (error: unknown) => void; landed: () => boolean; timeoutMessage: string }
+): Promise<void> {
+  try {
+    await withTimeout(ensureGatewayAgent(target.id, profile, options), SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage, abort)
+  } catch (error) {
+    if (!isTimeoutError(error) || !landed()) {
+      throw error
+    }
+  }
+
+  if (!landed()) {
+    throw new Error(`Connection "${target.label}" did not become active.`)
+  }
+}
+
+async function switchConnection(connectionId: string, options: SelectConnectionOptions): Promise<void> {
   const registry = $connectionsRegistry.get()
   const targetConnection = registry?.connections.find(connection => connection.id === connectionId)
 
@@ -716,7 +834,7 @@ export async function selectConnection(connectionId: string, options: SelectConn
   const revision = ++switchRevision
   // A draft the user starts while this pick is in flight (a gateway group's
   // "+", a profile pick) is newer than it; the late re-home must not take it over.
-  const draftIntent = currentNewChatIntent()
+  const draftIntent = pickDraftIntent(options)
   const ahead = rehomeAhead(draftIntent)
   const openedSession = openSessionKey()
   const activation = new AbortController()
@@ -785,50 +903,16 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
   try {
     const timeoutMessage = `Timed out connecting to "${targetConnection.label}".`
-    // Open the target WITHOUT activating it, so a dead gateway fails here and
-    // the one in front loses nothing — not even the draft. Every registered
-    // gateway is normally connected already, so this resolves at once.
-    await withTimeout(openGatewayAgent(connectionId, targetProfile), SOURCE_SWITCH_DIAL_TIMEOUT_MS, timeoutMessage)
 
-    if (revision !== switchRevision) {
+    if (!(await openPickTarget(targetConnection, targetProfile, revision, timeoutMessage))) {
       return
     }
 
-    // A kept socket can outlive cookie/native OAuth REST auth. Prove the
-    // cheapest protected read before the draft is replaced; the exact failure
-    // reaches the caller (network failures are not sign-in errors).
-    if (
-      targetConnection.authMode === 'oauth' &&
-      (targetConnection.kind === 'remote' || targetConnection.kind === 'cloud')
-    ) {
-      await withTimeout(
-        getProfiles({ connectionId, profile: targetProfile }),
-        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-        timeoutMessage
-      )
-
-      if (revision !== switchRevision) {
-        return
-      }
-    }
-
-    try {
-      await withTimeout(
-        ensureGatewayAgent(connectionId, targetProfile, { beforeActivate, signal: activation.signal }),
-        SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-        timeoutMessage,
-        error => activation.abort(error)
-      )
-    } catch (error) {
-      // A timeout after the target already became active has landed.
-      if (!isTimeoutError(error) || !targetIsActive()) {
-        throw error
-      }
-    }
-
-    if (!targetIsActive()) {
-      throw new Error(`Connection "${targetConnection.label}" did not become active.`)
-    }
+    await activatePickTarget(targetConnection, targetProfile, { beforeActivate, signal: activation.signal }, {
+      abort: error => activation.abort(error),
+      landed: targetIsActive,
+      timeoutMessage
+    })
 
     if (revision !== switchRevision) {
       return

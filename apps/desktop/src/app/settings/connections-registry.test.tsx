@@ -6,13 +6,8 @@ import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-ros
 import { $connection } from '@/store/session'
 import { deferred } from '@/test/deferred'
 
-import {
-  ConnectionsRegistrySection,
-  findDuplicateConnection,
-  normalizeGatewayUrl,
-  sameBackendPeerLabel,
-  sshCompositeKey
-} from './connections-registry'
+import { findDuplicateConnection, normalizeGatewayUrl, sshCompositeKey } from './connection-editor'
+import { ConnectionsRegistrySection, sameBackendPeerLabel } from './connections-registry'
 
 const list = vi.fn()
 const save = vi.fn()
@@ -70,6 +65,17 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
+  it('offers no add, edit or remove on a list the host manages for the account, and keeps Test', async () => {
+    Object.assign(window.hermesDesktop.connections!, { managedByHost: true })
+    render(<ConnectionsRegistrySection />)
+
+    expect(await screen.findByText('Homelab')).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Test' }).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Add connection')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Remove' })).toBeNull()
+  })
+
   it('preserves, replaces and deletes stored headers through plaintext consent without selecting a source', async () => {
     const active = $connection.get()
 

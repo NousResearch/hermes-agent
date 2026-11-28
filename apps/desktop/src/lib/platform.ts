@@ -26,7 +26,20 @@ export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
   __HERMES_DASHBOARD_PROFILE__?: string
+  /** `false`: the page's host runs no agent of its own (the hosted dashboard). Absent: it does. */
+  __HERMES_HOST_AGENT__?: boolean
   __HERMES_UI_SURFACE__?: string
+}
+
+/**
+ * The page's host runs no agent of its own: it serves the Webapp, signs the user in and relays to
+ * the agents in its saved-connections list, and that is all. The window's own connection is then
+ * the list's primary, and nothing but the host's sign-in, list, UI-preference and relay-ticket
+ * routes is asked of the host itself. Only an explicit `false` turns it on, so every host that
+ * predates the flag keeps its own agent.
+ */
+export function browserHostRunsNoAgent(): boolean {
+  return (window as Window & BrowserHostGlobals).__HERMES_HOST_AGENT__ === false
 }
 
 /**
@@ -35,7 +48,35 @@ export interface BrowserHostGlobals {
  * HERMES_HOME), which the browser host reads as `default`.
  */
 export function browserLaunchProfile(): string {
-  return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim()
+  return String((window as Window & BrowserHostGlobals).__HERMES_DASHBOARD_PROFILE__ ?? '').trim() || adoptedLaunchProfile
+}
+
+// On a host that runs no agent the page names no profile: the agent the window opens on does.
+let adoptedLaunchProfile = ''
+
+/**
+ * Record the profile the agent this window opened on runs as, on a host that runs no agent
+ * (`browserHostRunsNoAgent`), before boot adopts its primary profile. A page that names its own
+ * profile keeps it, and the first agent's answer stands for the page's life, as a served page's does.
+ */
+export function adoptBrowserLaunchProfile(profile: null | string | undefined): void {
+  if (!adoptedLaunchProfile) {
+    adoptedLaunchProfile = String(profile ?? '').trim()
+  }
+}
+
+/** @internal */
+export function _resetAdoptedLaunchProfileForTests(): void {
+  adoptedLaunchProfile = ''
+}
+
+/**
+ * On a host that runs no agent, the profile the window's agent runs as is not known until boot
+ * reads it through the relay (`adoptBrowserLaunchProfile`). Until then a request names no profile,
+ * so the agent answers for its own; `default` may be another profile there.
+ */
+export function browserLaunchProfilePending(): boolean {
+  return isBrowserHostedDesktop() && browserHostRunsNoAgent() && !browserLaunchProfile()
 }
 
 /** The profile a request that names none reaches: the one the server runs as, else `default`. */

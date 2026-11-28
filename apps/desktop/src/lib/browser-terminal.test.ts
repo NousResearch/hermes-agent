@@ -46,6 +46,12 @@ class Socket {
   send(data: string) { this.sent.push(data) }
 }
 
+const hostedAgent = (id: string) =>
+  ({ authMode: 'oauth', headerNames: [], id, kind: 'cloud', label: id, url: `https://${id}.example` })
+
+/** The hosted dashboard's list: the account's cloud agents, no This device. */
+const hostedList = (...ids: string[]) => ({ connections: ids.map(hostedAgent), primary: ids[0], version: 2 })
+
 function install() {
   Reflect.deleteProperty(window, 'hermesDesktop')
   Object.assign(window, { __HERMES_AUTH_REQUIRED__: true, __HERMES_BASE_PATH__: '/one' })
@@ -70,6 +76,8 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'hermesDesktop')
   Reflect.deleteProperty(window, '__HERMES_AUTH_REQUIRED__')
   Reflect.deleteProperty(window, '__HERMES_BASE_PATH__')
+  Reflect.deleteProperty(window, '__HERMES_HOST_AGENT__')
+  Reflect.deleteProperty(window, '__HERMES_UI_SURFACE__')
   $connection.set(null)
   vi.useRealTimers()
   vi.unstubAllGlobals()
@@ -127,6 +135,102 @@ describe('persistent browser terminals', () => {
     expect(exit).not.toHaveBeenCalled()
     expect(resumed.sent.join('')).not.toContain('dangerous command')
     expect(resumed.sent.join('')).not.toContain('\u000c')
+  })
+
+  // The hosted dashboard relays the terminal and closes every relayed socket with 4401 within 15 minutes.
+  it('redials a terminal the hosted dashboard closes with 4401, with a fresh relay ticket', async () => {
+    let tickets = 0
+
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha') : { ticket: `relay-${++tickets}` }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    const api = install()
+    const session = await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    const exit = vi.fn()
+    api.onExit(session.id, exit)
+
+    Socket.instances[0].close(4401, 'relay session renewal')
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(exit).not.toHaveBeenCalled()
+    expect(Socket.instances.map(socket => socket.url.searchParams.get('relay_ticket'))).toEqual(['relay-1', 'relay-2'])
+    expect(Socket.instances[1].url.searchParams.get('attach')).toBe('opaque-server-id')
+  })
+
+  it('redials a hosted terminal on the agent it started on after the window moves to another', async () => {
+    let tickets = 0
+
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: `relay-${++tickets}` }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    const api = install()
+    await api.start({ cwd: '/original', restoreKey: 'tab-one' })
+    $connection.set({ connectionId: 'beta', profile: 'default' } as never)
+
+    Socket.instances[0].close(1006, '')
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(Socket.instances.map(socket => socket.url.pathname)).toEqual([
+      '/one/api/relay/alpha/api/host-terminal',
+      '/one/api/relay/alpha/api/host-terminal'
+    ])
+    expect(Socket.instances[1].url.searchParams.get('attach')).toBe('opaque-server-id')
+  })
+
+  // Enter on an expired tab starts a fresh shell: on the agent and profile the tab names, not the window's.
+  it('starts a fresh hosted shell on the agent and profile its tab names', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: 'relay-ticket' }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    $connection.set({ connectionId: 'beta', profile: 'research' } as never)
+    const api = install()
+
+    await api.start({ connectionId: 'alpha', cwd: '/original', profile: 'default', restoreKey: 'tab-expired' })
+
+    expect(Socket.instances.map(socket => socket.url.pathname)).toEqual(['/one/api/relay/alpha/api/host-terminal'])
+    expect(Socket.instances[0].url.searchParams.get('profile')).toBe('default')
+  })
+
+  // A tab opened before boot had a profile recorded its agent alone: that agent's own profile. Enter
+  // on it once expired starts the new shell there, not on the profile the window has moved to.
+  it("starts a fresh hosted shell on its agent's own profile when the tab recorded none", async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: 'relay-ticket' }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    $connection.set(null)
+    const api = install()
+
+    await expect(api.start({ cwd: '/original', restoreKey: 'tab-early' })).resolves.toMatchObject({
+      connectionId: 'alpha',
+      profile: null
+    })
+
+    $connection.set({ connectionId: 'beta', profile: 'research' } as never)
+    await api.start({ connectionId: 'alpha', cwd: '/original', restoreKey: 'tab-expired' })
+
+    expect(Socket.instances.map(socket => socket.url.pathname)).toEqual([
+      '/one/api/relay/alpha/api/host-terminal',
+      '/one/api/relay/alpha/api/host-terminal'
+    ])
+    expect(Socket.instances[1].url.searchParams.has('profile')).toBe(false)
+  })
+
+  // A tab opened before the renderer had the list names no agent: the session says which one it started on.
+  it('says which agent and profile a hosted shell started on', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => new Response(JSON.stringify(
+      url.pathname.endsWith('/api/gateway-connections') ? hostedList('alpha', 'beta') : { ticket: 'relay-ticket' }
+    ))))
+    Object.assign(window, { __HERMES_HOST_AGENT__: false, __HERMES_UI_SURFACE__: 'webapp' })
+    const api = install()
+
+    await expect(api.start({ cwd: '/original', restoreKey: 'tab-early' })).resolves.toMatchObject({
+      connectionId: 'alpha',
+      profile: 'original'
+    })
   })
 
   // A trimmed replay can start mid-way through a full-screen program; an unchanged size sends no SIGWINCH.

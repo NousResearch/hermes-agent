@@ -29,7 +29,8 @@ export const enBoot = {
       gatewaySignInRequired: 'Your remote Hermes signed you out',
       gatewaySignInRequiredDetail: 'Sign in again to reconnect. Your chats and settings are safe.',
       signInAgain: 'Sign in again',
-      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app."
+      ipcBridgeUnavailable: "Hermes Desktop couldn't talk to its own background layer. Restart the app.",
+      hostedAgentUnavailable: agentId => `The Hermes agent "${agentId}" is not available to this account. Retry opens the account's primary agent instead.`
     },
     // Plain causes for a local backend boot failure (`classifyBootFailure`);
     // the raw output stays behind "Show recent logs".

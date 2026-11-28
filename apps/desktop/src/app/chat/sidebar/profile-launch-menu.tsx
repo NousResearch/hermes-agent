@@ -13,6 +13,7 @@ import {
 import type { DesktopProfileRoute } from '@/global'
 import { useI18n } from '@/i18n'
 import { hostHas } from '@/lib/host-capabilities'
+import { browserHostRunsNoAgent } from '@/lib/platform'
 import { $defaultProfileRoute, setDefaultProfile } from '@/store/default-profile'
 import { notify, notifyError } from '@/store/notifications'
 import { canOpenNewWindow, openNewWindow } from '@/store/windows'
@@ -27,12 +28,17 @@ function launchesHere(connectionId: null | string): boolean {
   return !hostHas('servingOriginConnection') || !connectionId || connectionId === LOCAL_CONNECTION_ID
 }
 
+// On a host that runs no agent every profile is a named agent's, and a new window opens on the agent
+// its address names. The saved default is this host's alone, so only New Window is offered.
+const opensWindowHere = (connectionId: null | string) => launchesHere(connectionId) || browserHostRunsNoAgent()
+
 export function ProfileLaunchMenuItems({ connectionId, label, profile }: ProfileLaunchMenuProps) {
   const { t } = useI18n()
   const p = t.profiles
   const defaultRoute = useStore($defaultProfileRoute)
   const isDefault = defaultRoute?.connectionId === connectionId && defaultRoute.profile === profile
   const route = { connectionId, profile }
+  const defaultable = launchesHere(connectionId)
 
   const makeDefault = async () => {
     try {
@@ -51,13 +57,15 @@ export function ProfileLaunchMenuItems({ connectionId, label, profile }: Profile
           <span>{p.openInNewWindow}</span>
         </ContextMenuItem>
       )}
-      <ContextMenuItem
-        disabled={isDefault || !window.hermesDesktop?.profile?.setDefault}
-        onSelect={() => void makeDefault()}
-      >
-        <Codicon name={isDefault ? 'check' : 'home'} size="0.875rem" />
-        <span>{isDefault ? p.defaultProfile : p.setAsDefault}</span>
-      </ContextMenuItem>
+      {defaultable && (
+        <ContextMenuItem
+          disabled={isDefault || !window.hermesDesktop?.profile?.setDefault}
+          onSelect={() => void makeDefault()}
+        >
+          <Codicon name={isDefault ? 'check' : 'home'} size="0.875rem" />
+          <span>{isDefault ? p.defaultProfile : p.setAsDefault}</span>
+        </ContextMenuItem>
+      )}
     </>
   )
 }
@@ -65,7 +73,7 @@ export function ProfileLaunchMenuItems({ connectionId, label, profile }: Profile
 export function ProfileLaunchContextMenu({ children, ...route }: ProfileLaunchMenuProps & { children: ReactNode }) {
   const { t } = useI18n()
 
-  if (!launchesHere(route.connectionId)) {
+  if (!opensWindowHere(route.connectionId)) {
     return <>{children}</>
   }
 
@@ -87,7 +95,7 @@ export function ProfileLaunchContextMenu({ children, ...route }: ProfileLaunchMe
 }
 
 export function ProfileLaunchMenuSection(props: ProfileLaunchMenuProps) {
-  if (!launchesHere(props.connectionId)) {
+  if (!opensWindowHere(props.connectionId)) {
     return null
   }
 

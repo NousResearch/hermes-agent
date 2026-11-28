@@ -109,7 +109,41 @@ export interface BrowserSavedConnections {
   refreshServed: (connectionId: string) => Promise<void>
   /** The label this machine's own entry (`local`) carries in the list, once read. */
   localLabel: () => string | undefined
+  /**
+   * A host that runs no agent (`browserHostRunsNoAgent`): the connection a window opens on, the
+   * list's primary or else its first gateway, read from the list once if this page has not read it
+   * yet. Rejects with `NoHostedAgentError` when the list holds none.
+   */
+  windowConnection: () => Promise<string>
+  /** `windowConnection` as last read, without a read; undefined before the first one. */
+  knownWindowConnection: () => string | undefined
+  /** The profile *connectionId*'s gateway runs as, read once through the relay; undefined when it
+   *  names none. Rejects when the read fails twice. */
+  launchProfile: (connectionId: string) => Promise<string | undefined>
   connections: Bridge
+}
+
+/** A host that runs no agent keeps the list for the account; this page cannot change it. */
+export class ManagedConnectionsError extends Error {
+  constructor() {
+    super('Your Hermes Cloud account manages this list of agents.')
+    this.name = 'ManagedConnectionsError'
+  }
+}
+
+/** A host that runs no agent listed no agent for this window to open on. */
+export class NoHostedAgentError extends Error {
+  constructor() {
+    super('No Hermes agent is available to this account here.')
+    this.name = 'NoHostedAgentError'
+  }
+}
+
+/** The gateway a window on a host with no agent of its own opens on: the primary, else the first. */
+export function hostedWindowConnection(registry: DesktopConnectionsRegistry | null): string | undefined {
+  const rows = registry?.connections.filter(row => row.kind !== 'local') ?? []
+
+  return (rows.find(row => row.id === registry?.primary) ?? rows[0])?.id
 }
 
 /**
@@ -118,15 +152,28 @@ export interface BrowserSavedConnections {
  */
 export const RELAYED_ROSTER_TIMEOUT_MS = 8_000
 
+// The profile `/api/profiles/active` says a gateway runs as. One run from its own HERMES_HOME
+// answers `custom`, describing that home: it names no profile, as its own page names none
+// (`serving_profile_name`).
+const profileName = (current?: string) => {
+  const name = String(current ?? '').trim()
+
+  return name && name !== 'custom' ? name : undefined
+}
+
 /** The connection kinds the serving gateway reaches for this page (SSH needs a tunnel it does not hold yet). */
 const REACHED_KINDS = new Set(['remote', 'cloud'])
 
 export function createBrowserSavedConnections({
   api,
-  bootstrap
+  bootstrap,
+  hostless = false
 }: {
   api: Api
   bootstrap: BrowserBootstrap
+  /** The host runs no agent: it manages the list for the account, and a connection test asks the
+   *  gateway itself, through the relay. */
+  hostless?: boolean
 }): BrowserSavedConnections {
   let snapshot: DesktopConnectionsRegistry | null = null
   const listeners = new Set<ChangeListener>()
@@ -135,6 +182,10 @@ export function createBrowserSavedConnections({
     connectionId && connectionId !== LOCAL_CONNECTION_ID
       ? snapshot?.connections.find(row => row.id === connectionId && row.kind !== 'local')
       : undefined
+
+  // Bumped by every write this page makes. A read that went out before a write answers for the
+  // list before it, so it neither publishes nor serves anyone that older list.
+  let generation = 0
 
   // Every read publishes what changed since the last one, so this tab follows an edit made in
   // native Desktop or another tab the way a native window follows `connections:changed`.
@@ -146,24 +197,73 @@ export function createBrowserSavedConnections({
     return next
   }
 
-  const list = async () => {
+  const readList = async () => {
+    const started = generation
     const read = await api<DesktopConnectionsRegistry | null>({ path: ROUTE })
 
     if (!Array.isArray(read?.connections)) {
       throw new Error('Hermes did not return the saved connections')
     }
 
-    return publish(read)
+    // A write landed while this read was out: the list the write answered with is newer, so every
+    // caller of this read gets that one, not the older list (a consumer that publishes what it reads
+    // would otherwise undo the write on screen).
+    return started === generation ? publish(read) : (snapshot ?? read)
+  }
+
+  // Readers that start while a read is in flight share it: a roster, a dial and Settings often ask
+  // in the same moment, and on a hosted dashboard each read is a call to the account service. A
+  // settled read is never reused, and a write starts the next caller on a read of its own.
+  let reading: null | Promise<DesktopConnectionsRegistry> = null
+
+  const list = () => {
+    const started = generation
+
+    if (!reading) {
+      const read = readList().finally(() => {
+        if (reading === read) {
+          reading = null
+        }
+      })
+
+      reading = read
+    }
+
+    // Checked again as the caller gets its answer: a write that landed after the read answered but
+    // before this caller saw it is newer, and its own caller hears of it after this one does.
+    return reading.then(read => (started === generation ? read : (snapshot ?? read)))
   }
 
   const mutated = async <T extends { registry: DesktopConnectionsRegistry }>(request: HermesApiRequest) => {
     const result = await api<T>(request)
+    generation += 1
+    reading = null
     publish(result.registry)
 
     return result
   }
 
+  // A list the host manages is refused here, before any body (a token, secret headers) leaves the page.
+  const managed = <T>(write: () => Promise<T>) => (hostless ? Promise.reject(new ManagedConnectionsError()) : write())
+
   const gateways = async () => (await list()).connections.filter(row => row.kind !== 'local')
+
+  // The list as last read; every caller before the first answer shares one read (`list`).
+  const windowConnection = async () => {
+    const known = hostedWindowConnection(snapshot)
+
+    if (known) {
+      return known
+    }
+
+    const id = hostedWindowConnection(await list())
+
+    if (!id) {
+      throw new NoHostedAgentError()
+    }
+
+    return id
+  }
 
   const bootstrapFor = (connectionId: null | string | undefined) => {
     if (!connectionId || connectionId === LOCAL_CONNECTION_ID) {
@@ -245,8 +345,10 @@ export function createBrowserSavedConnections({
       set = createServedProfiles(
         relayed,
         async () =>
-          (await relayed<{ current?: string }>({ path: '/api/profiles/active', timeoutMs: SERVED_SET_READ_TIMEOUT_MS }))
-            ?.current
+          profileName(
+            (await relayed<{ current?: string }>({ path: '/api/profiles/active', timeoutMs: SERVED_SET_READ_TIMEOUT_MS }))
+              ?.current
+          )
       )
       served.set(key, set)
     }
@@ -312,23 +414,81 @@ export function createBrowserSavedConnections({
 
   const id = (connectionId: string) => encodeURIComponent(connectionId)
 
+  const launchProfiles = new Map<string, Promise<string | undefined>>()
+
+  const readLaunchProfile = async (connectionId: string) =>
+    profileName(
+      (
+        await browserApi<null | { current?: string }>(bootstrapFor(connectionId), {
+          path: '/api/profiles/active',
+          timeoutMs: SERVED_SET_READ_TIMEOUT_MS
+        })
+      )?.current
+    )
+
+  // A failed read is not an agent that names no profile: read once more, then fail, so the open
+  // that asked never records `default` for a socket that opens on another profile.
+  const launchProfile = (connectionId: string) => {
+    let read = launchProfiles.get(connectionId)
+
+    if (!read) {
+      read = readLaunchProfile(connectionId)
+        .catch(() => readLaunchProfile(connectionId))
+        .catch(error => {
+          // Not kept: the next open reads again.
+          launchProfiles.delete(connectionId)
+
+          throw error
+        })
+      launchProfiles.set(connectionId, read)
+    }
+
+    return read
+  }
+
+  // A host with no agent has no test route of its own, so the test takes the leg every request of
+  // that connection takes: the relay, with the credential the host exchanged for this agent. The
+  // health route is public on the agent and answers either way, so the agent's sign-in route must
+  // accept that credential too.
+  const testThroughRelay = async (connectionId: string) => {
+    const baseUrl = gateway(connectionId)?.url
+
+    try {
+      const relayed = bootstrapFor(connectionId)
+
+      const [health] = await Promise.all([
+        browserApi<null | { version?: string }>(relayed, { path: '/api/health', timeoutMs: 20_000 }),
+        browserApi(relayed, { path: '/api/auth/me', timeoutMs: 20_000 })
+      ])
+
+      return { baseUrl, ok: true, reachable: true, version: health?.version ?? null }
+    } catch (error) {
+      return { baseUrl, error: error instanceof Error ? error.message : String(error), ok: false, reachable: false }
+    }
+  }
+
   const connections: Bridge = {
+    // A switch to an agent that names no profile lands on the one it runs as, not on `default`.
+    ...(hostless ? { launchProfile, managedByHost: true } : {}),
     list,
     onChanged: callback => {
       listeners.add(callback)
 
       return () => void listeners.delete(callback)
     },
-    remove: connectionId => mutated({ method: 'DELETE', path: `${ROUTE}/${id(connectionId)}` }),
-    save: payload => mutated({ body: payload, method: 'POST', path: ROUTE }),
+    remove: connectionId => managed(() => mutated({ method: 'DELETE', path: `${ROUTE}/${id(connectionId)}` })),
+    save: payload => managed(() => mutated({ body: payload, method: 'POST', path: ROUTE })),
     setLastUsed: connectionId => mutated({ body: { id: connectionId }, method: 'POST', path: `${ROUTE}/last-used` }),
     setLaunchMode: mode => mutated({ body: { mode }, method: 'POST', path: `${ROUTE}/launch-mode` }),
     setPrimary: connectionId => mutated({ method: 'POST', path: `${ROUTE}/${id(connectionId)}/primary` }),
-    test: connectionId => api({
-      method: 'POST',
-      path: `${ROUTE}/${id(connectionId)}/test`,
-      timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
-    })
+    test: connectionId =>
+      hostless
+        ? testThroughRelay(connectionId)
+        : api({
+            method: 'POST',
+            path: `${ROUTE}/${id(connectionId)}/test`,
+            timeoutMs: gateway(connectionId)?.kind === 'ssh' ? BACKEND_BOOT_WAIT_TIMEOUT_MS : 20_000
+          })
   }
 
   // Another window or native Desktop may have edited the list while this tab was in the background.
@@ -340,6 +500,9 @@ export function createBrowserSavedConnections({
     connections,
     gateway,
     gateways,
+    knownWindowConnection: () => hostedWindowConnection(snapshot),
+    launchProfile,
+    windowConnection,
     localLabel: () => snapshot?.connections.find(row => row.id === LOCAL_CONNECTION_ID)?.label,
     refreshServed,
     rosterAgents,

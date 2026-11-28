@@ -151,6 +151,14 @@ class DashboardAuthProvider(ABC):
         """Logout's revoke by the access token, for a provider whose access token can outlive the
         refresh token (and its cookie). Best-effort, must not raise; the default does nothing."""
 
+    def is_exchanged_token(self, *, token: str) -> bool:
+        """Whether *token* is this provider's own token, minted for this agent by token exchange
+        (RFC 8693), so it may be used on its own as a bearer on the gateway's Webapp. Verify it fully
+        (signature, issuer, audience, expiry) before saying yes. Return ``False`` for any other token;
+        raise ``ProviderError`` only when the provider cannot tell (its keys cannot be fetched). The
+        default says no: a provider that does not issue exchanged tokens vouches for none."""
+        return False
+
     def complete_password_login(self, *, username: str, password: str) -> Session:
         """Verify a username/password pair and mint a :class:`Session` (only called when
         ``supports_password``). Raise ``InvalidCredentialsError`` on rejection (SHOULD be constant

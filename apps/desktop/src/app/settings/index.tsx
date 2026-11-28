@@ -8,7 +8,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { servedByHermesCloud } from '@/lib/hermes-cloud-host'
+import { transferAvailable } from '@/lib/hermes-cloud-host'
 import {
   Archive,
   BarChart3,
@@ -425,12 +425,12 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             label: t.settings.nav.sessions,
             onSelect: () => setActiveView('sessions')
           },
-          // On a Webapp Hermes Cloud serves, the page is backup only: that tab IS a cloud agent.
+          // Where Transfer cannot run (a tab Hermes Cloud serves, a host with no agent) it is backup only.
           {
             active: activeView === 'backup',
-            icon: servedByHermesCloud() ? Archive : CloudUpload,
+            icon: transferAvailable() ? CloudUpload : Archive,
             id: 'backup',
-            label: servedByHermesCloud() ? t.settings.nav.backupOnly : t.settings.nav.backup,
+            label: transferAvailable() ? t.settings.nav.backup : t.settings.nav.backupOnly,
             onSelect: () => setActiveView('backup')
           },
           {

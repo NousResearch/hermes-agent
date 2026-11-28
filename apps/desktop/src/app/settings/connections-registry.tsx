@@ -1,18 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { RemoteSetupFields } from '@/components/remote-setup/fields'
-import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Loader } from '@/components/ui/loader'
-import type {
-  DesktopConnectionKind,
-  DesktopConnectionsRegistry,
-  DesktopRegistryConnection,
-  DesktopRegistryConnectionInput
-} from '@/global'
+import type { DesktopConnectionKind, DesktopConnectionsRegistry, DesktopRegistryConnection } from '@/global'
 import { useI18n } from '@/i18n'
 import {
   CONNECTION_SEARCH_THRESHOLD,
@@ -25,6 +18,7 @@ import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
 
+import { type ConnectionDraft, connectionDraft, ConnectionEditor, type KindMeta } from './connection-editor'
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsBreadcrumbContext, ToggleRow } from './primitives'
 
 const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
@@ -32,137 +26,6 @@ const KIND_ICONS: Record<DesktopConnectionKind, typeof Globe> = {
   local: Monitor,
   remote: Globe,
   ssh: Terminal
-}
-
-interface EditorState {
-  // null id → creating a new connection.
-  id: null | string
-  kind: DesktopConnectionKind
-  label: string
-  host: string
-  keyPath: string
-  remoteHermesPath: string
-  // ssh remote profile, hydrated on edit so the duplicate key matches the
-  // main-process one (user@host:port + profile); the editor doesn't expose it.
-  remoteProfile: string
-  // Extra gateway headers (access proxies such as Cloudflare Access).
-  // `value: ''` on a row that came from storage means "keep the saved
-  // secret" (sent as null); a typed value replaces it; a removed row clears
-  // it. `stored` marks rows hydrated from headerNames so the placeholder can
-  // say "saved" instead of demanding a value.
-  headers: { name: string; stored: boolean; value: string }[]
-}
-
-function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
-  return {
-    id: conn.id,
-    kind: conn.kind,
-    label: conn.label,
-    // Reconstruct the composite the single ssh host field displays. The save
-    // payload sends ONLY this string (never separate user/port), because
-    // normalizeSshConfig gives explicit user/port fields precedence over the
-    // parsed host string — sending stored user/port alongside a retyped host
-    // would silently resurrect the old values.
-    host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
-    keyPath: conn.keyPath || '',
-    remoteHermesPath: conn.remoteHermesPath || '',
-    remoteProfile: conn.remoteProfile || '',
-    headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
-  }
-}
-
-function emptyEditor(kind: DesktopConnectionKind): EditorState {
-  return {
-    id: null,
-    kind,
-    label: '',
-    host: '',
-    keyPath: '',
-    remoteHermesPath: '',
-    remoteProfile: '',
-    headers: []
-  }
-}
-
-/** Dedupe key for a remote/cloud gateway URL: trim, drop trailing slashes, lowercase. */
-export function normalizeGatewayUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '').toLowerCase()
-}
-
-/**
- * Dedupe key for the composite ssh host string the editor shows
- * (`user@host:port`, user/port optional): normalized to `user@host:port` with
- * the default port made explicit so `box` and `box:22` collide.
- */
-export function sshCompositeKey(composite: string): string {
-  const raw = composite.trim().toLowerCase()
-
-  if (!raw) {
-    return ''
-  }
-
-  const at = raw.lastIndexOf('@')
-  const user = at > 0 ? raw.slice(0, at) : ''
-  const rest = at >= 0 ? raw.slice(at + 1) : raw
-  const portMatch = rest.match(/^(.*?):(\d+)$/)
-  const host = portMatch ? portMatch[1] : rest
-  const port = portMatch ? portMatch[2] : '22'
-
-  if (!host) {
-    return ''
-  }
-
-  return `${user}@${host}:${port}`
-}
-
-/**
- * The renderer-side duplicate rule, mirrored by the main process
- * (normalizeConnectionInput enforces the same keys in the save path):
- *  - at most ONE local entry, ever;
- *  - remote/cloud entries are duplicates when their normalized URLs match;
- *  - ssh entries are duplicates on user@host:port + remote profile.
- * Returns the existing entry the candidate collides with, or null.
- */
-export function findDuplicateConnection(
-  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile'> & { url: string },
-  connections: DesktopRegistryConnection[]
-): DesktopRegistryConnection | null {
-  if (editor.kind === 'local') {
-    return connections.find(c => c.kind === 'local' && c.id !== editor.id) ?? null
-  }
-
-  if (editor.kind === 'remote' || editor.kind === 'cloud') {
-    const key = normalizeGatewayUrl(editor.url)
-
-    if (!key) {
-      return null
-    }
-
-    return (
-      connections.find(
-        c =>
-          (c.kind === 'remote' || c.kind === 'cloud') && c.id !== editor.id && normalizeGatewayUrl(c.url || '') === key
-      ) ?? null
-    )
-  }
-
-  const key = sshCompositeKey(editor.host)
-
-  if (!key) {
-    return null
-  }
-
-  const profile = editor.remoteProfile.trim()
-
-  return (
-    connections.find(
-      c =>
-        c.kind === 'ssh' &&
-        c.id !== editor.id &&
-        sshCompositeKey(`${c.user ? `${c.user}@` : ''}${c.host ?? ''}${c.port ? `:${c.port}` : ''}`) === key &&
-        (c.remoteProfile || '').trim() === profile
-    ) ?? null
-  )
 }
 
 /**
@@ -210,6 +73,93 @@ function scrollableAncestor(element: HTMLElement): HTMLElement | null {
   return null
 }
 
+/** The host lets this page add, edit and remove connections (the hosted dashboard's list is the account's). */
+const registryEditable = (bridge: Window['hermesDesktop']['connections']) => !bridge?.managedByHost
+
+/** Update all fans out over more than one connection, where the bridge can run it. */
+const canUpdateAll = (bridge: Window['hermesDesktop']['connections'], registry: DesktopConnectionsRegistry | null) =>
+  Boolean(bridge?.updateAll) && (registry?.connections.length ?? 0) > 1
+
+/** A row offers edit and remove: any but this device's own, unless the host manages the list. */
+const rowEditable = (conn: DesktopRegistryConnection, editable: boolean) => editable && conn.kind !== 'local'
+
+/** Below the list: Add connection (absent where the host manages the list) and Update all. */
+function RegistryFooterActions({
+  canAdd,
+  canUpdateAll,
+  copy,
+  onAdd,
+  onUpdateAll,
+  updatingAll
+}: {
+  canAdd: boolean
+  canUpdateAll: boolean
+  copy: { addConnection: string; updateAll: string; updateAllRunning: string }
+  onAdd: () => void
+  onUpdateAll: () => void
+  updatingAll: boolean
+}) {
+  return (
+    <div className="mt-4 flex items-center gap-2">
+      {canAdd && (
+        <Button
+          onClick={() => {
+            triggerHaptic('selection')
+            onAdd()
+          }}
+          size="sm"
+          variant="outline"
+        >
+          <Plus className="size-3.5" /> {copy.addConnection}
+        </Button>
+      )}
+      {canUpdateAll && (
+        <Button
+          disabled={updatingAll}
+          onClick={() => {
+            triggerHaptic('selection')
+            onUpdateAll()
+          }}
+          size="sm"
+          variant="outline"
+        >
+          {updatingAll ? <Loader2 className="animate-spin" /> : <RefreshCw />}{' '}
+          {updatingAll ? copy.updateAllRunning : copy.updateAll}
+        </Button>
+      )}
+    </div>
+  )
+}
+
+/**
+ * One save at a time across drafts. The editor remounts for each draft, so a lock kept in it is
+ * reset by opening another; each save answers with the whole list, so a second one started while
+ * the first runs could answer first and then lose its list to the older answer.
+ */
+function useSaveLock(): { runSave: (work: () => Promise<void>) => Promise<void>; saving: boolean } {
+  const [saving, setSaving] = useState(false)
+  // Read in the click's own tick: state alone lets two clicks before a render both start.
+  const held = useRef(false)
+
+  const runSave = useCallback(async (work: () => Promise<void>) => {
+    if (held.current) {
+      return
+    }
+
+    held.current = true
+    setSaving(true)
+
+    try {
+      await work()
+    } finally {
+      held.current = false
+      setSaving(false)
+    }
+  }, [])
+
+  return { runSave, saving }
+}
+
 /**
  * Another window, the other host (native Desktop or a Webapp tab: they share one list) or a
  * registry repair changed the list: show it without a spinner or closing an open editor.
@@ -243,52 +193,18 @@ export function ConnectionsRegistrySection() {
   const activeConnectionId = useStore($activeConnectionId)
   const [registry, setRegistry] = useState<DesktopConnectionsRegistry | null>(null)
   const [loading, setLoading] = useState(true)
-  const [editor, setEditor] = useState<EditorState | null>(null)
-  const [saving, setSaving] = useState(false)
   const [busyId, setBusyId] = useState<null | string>(null)
   const [testingId, setTestingId] = useState<null | string>(null)
   const [removeTarget, setRemoveTarget] = useState<DesktopRegistryConnection | null>(null)
-  const [plainTextConfirm, setPlainTextConfirm] = useState(false)
   const [launchModeBusy, setLaunchModeBusy] = useState(false)
   const [updatingAll, setUpdatingAll] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const searchInputRef = useRef<HTMLInputElement>(null)
   const pendingSearchTopRef = useRef<null | number>(null)
-  // Inline duplicate rejection from the save path (dedupe is also enforced in
-  // the main process, so a crafted payload can't slip past the UI check).
-  const [dupeError, setDupeError] = useState<null | string>(null)
-
-  // The draft's auth mode lives inside the remote-setup state below; the
-  // sign-in identity callback runs at login time (after that state exists),
-  // so it reads the mode through this ref rather than the render-time closure.
-  const remoteAuthModeRef = useRef<'oauth' | 'token'>('token')
-
-  const remote = useRemoteSetup({
-    host: 'registry',
-    enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
-    onNotice: notify,
-    // The registry draft can sign in BEFORE it is saved: the login carries
-    // the draft's identity so the main process settles the id the save will
-    // reuse and writes the session into the jar the saved connection reads.
-    // The kind/authMode gate in oauth-partition.ts decides WHICH jar that is:
-    // a cookie-auth remote draft gets its own; cloud and token drafts share
-    // the legacy jar, exactly what they resolve to after the save. Pin the
-    // settled id into the draft so Save reuses it.
-    oauthLoginIdentity: () => ({
-      connectionId: editor?.id ?? null,
-      label: editor?.label ?? '',
-      kind: editor?.kind,
-      authMode: editor?.kind === 'cloud' ? 'oauth' : remoteAuthModeRef.current
-    }),
-    onOAuthLoginSettled: settledId => {
-      setEditor(prev => (prev && !prev.id ? { ...prev, id: settledId } : prev))
-    }
-  })
-
-  remoteAuthModeRef.current = remote.credentials.authMode
 
   const bridge = window.hermesDesktop?.connections
-  const hasLocal = Boolean(registry?.connections.some(c => c.kind === 'local'))
+  // The hosted dashboard keeps this list for the account: rows are tested and ordered, not edited.
+  const editable = registryEditable(bridge)
 
   const publishRegistry = useCallback((next: DesktopConnectionsRegistry) => {
     setRegistry(next)
@@ -318,121 +234,15 @@ export function ConnectionsRegistrySection() {
   }, [load])
   useRegistryChanges(bridge, publishRegistry)
 
-  const openEditor = (next: EditorState | null, saved?: DesktopRegistryConnection): void => {
-    setDupeError(null)
-    remote.reset({
-      url: saved?.url || '',
-      authMode: next?.kind === 'cloud' ? 'oauth' : saved?.authMode || 'token',
-      tokenSet: saved?.tokenSet ?? false,
-      tokenPreview: saved?.tokenPreview ?? null
-    })
-    setEditor(next)
+  // The open add/edit form; `key` remounts it, so every open starts on its own draft.
+  const [draft, setDraft] = useState<(ConnectionDraft & { key: number }) | null>(null)
+  const draftKey = useRef(0)
+  const { runSave, saving } = useSaveLock()
+
+  const openEditor = (conn?: DesktopRegistryConnection): void => {
+    draftKey.current += 1
+    setDraft({ ...connectionDraft(conn), key: draftKey.current })
   }
-
-  const save = useCallback(
-    async (allowPlainTextToken: boolean = false): Promise<void> => {
-      if (!bridge || !editor) {
-        return
-      }
-
-      // Duplicate prevention lives in the save path (not just a disabled
-      // button): reject a candidate that collides with an existing entry with
-      // an inline error before anything crosses the IPC boundary.
-      const dupe = findDuplicateConnection({ ...editor, url: remote.credentials.url }, registry?.connections ?? [])
-
-      if (dupe) {
-        setDupeError(
-          editor.kind === 'local'
-            ? s.duplicateLocal
-            : editor.kind === 'ssh'
-              ? s.duplicateSsh(dupe.label)
-              : s.duplicateUrl(dupe.label)
-        )
-
-        return
-      }
-
-      setDupeError(null)
-      setSaving(true)
-
-      try {
-        const payload: DesktopRegistryConnectionInput = {
-          kind: editor.kind,
-          label: editor.label
-        }
-
-        if (editor.id) {
-          payload.id = editor.id
-        }
-
-        if (editor.kind === 'remote' || editor.kind === 'cloud') {
-          payload.url = remote.payload.remoteUrl
-          payload.authMode = editor.kind === 'cloud' ? 'oauth' : remote.credentials.authMode
-
-          if (editor.kind === 'remote' && remote.payload.remoteToken) {
-            payload.token = remote.payload.remoteToken
-          }
-
-          if (allowPlainTextToken) {
-            payload.allowPlainTextToken = true
-          }
-
-          // Authoritative header map: typed value → new secret; empty value on
-          // a stored row → null (keep saved secret); a removed row is simply
-          // absent, which clears it server-side.
-          const headerEntries = editor.headers
-            .map(row => ({ name: row.name.trim(), stored: row.stored, value: row.value.trim() }))
-            .filter(row => row.name)
-
-          if (headerEntries.length > 0 || editor.headers.length === 0) {
-            payload.headers = Object.fromEntries(
-              headerEntries.map(row => [row.name, row.value ? row.value : row.stored ? null : ''])
-            )
-          }
-        } else if (editor.kind === 'ssh') {
-          // The composite host string (user@host:port) is the single source
-          // of truth — never send separate user/port (see editorFromConnection).
-          payload.host = editor.host
-          payload.keyPath = editor.keyPath || undefined
-          payload.remoteHermesPath = editor.remoteHermesPath.trim()
-        }
-
-        const result = await bridge.save(payload)
-        publishRegistry(result.registry)
-        setEditor(null)
-        setPlainTextConfirm(false)
-      } catch (err) {
-        // Keyring-less machine and the user hasn't consented to plain-text
-        // storage yet: raise the same opt-in dialog the connection-mode form
-        // uses instead of dead-ending the save.
-        if (
-          !allowPlainTextToken &&
-          registry?.secureTokenStorage === false &&
-          editor.kind === 'remote' &&
-          remote.credentials.authMode === 'token' &&
-          remote.credentials.token.trim()
-        ) {
-          setPlainTextConfirm(true)
-
-          return
-        }
-
-        notifyError(err, s.saveFailed)
-      } finally {
-        setSaving(false)
-      }
-    },
-    [
-      bridge,
-      editor,
-      remote.credentials,
-      remote.payload,
-      publishRegistry,
-      registry?.connections,
-      registry?.secureTokenStorage,
-      s
-    ]
-  )
 
   const remove = useCallback(async () => {
     if (!bridge || !removeTarget) {
@@ -553,7 +363,7 @@ export function ConnectionsRegistrySection() {
     }
   }, [bridge, s.updateAllDone, s.updateAllFailed, s.updateSkippedCloud])
 
-  const kindMeta: Record<DesktopConnectionKind, { label: string; desc: string }> = {
+  const kindMeta: KindMeta = {
     cloud: { desc: s.kindCloudDesc, label: s.kindCloud },
     local: { desc: s.kindLocalDesc, label: s.kindLocal },
     remote: { desc: s.kindRemoteDesc, label: s.kindRemote },
@@ -607,7 +417,12 @@ export function ConnectionsRegistrySection() {
   return (
     <div className={hasBreadcrumb ? undefined : 'mt-8 border-t border-border/60 pt-6'}>
       <SectionHeading icon={Globe} page title={s.title} />
-      <p className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{s.intro}</p>
+      <p
+        className="mb-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)"
+        hidden={!editable}
+      >
+        {s.intro}
+      </p>
       {/* Source selection lives in Sessions. Primary is the registry fallback,
           not an immediate workspace switch. */}
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
@@ -671,11 +486,11 @@ export function ConnectionsRegistrySection() {
                       {s.makePrimary}
                     </Button>
                   )}
-                  {conn.kind !== 'local' && (
+                  {rowEditable(conn, editable) && (
                     <>
                       <Button
                         aria-label={s.editConnection}
-                        onClick={() => openEditor(editorFromConnection(conn), conn)}
+                        onClick={() => openEditor(conn)}
                         size="icon-sm"
                         variant="ghost"
                       >
@@ -712,219 +527,32 @@ export function ConnectionsRegistrySection() {
         })
       )}
 
-      {editor ? (
-        <div className="mt-4 space-y-3 rounded-lg border border-border/60 p-4">
-          <div className="grid grid-cols-2 gap-2 @2xl:grid-cols-4">
-            {/* Kind is fixed once created (buttons disable on edit). On create
-                every kind is offered; Local is disabled while the managed
-                local entry exists (the registry holds at most one). */}
-            {(editor.id ? ([editor.kind] as const) : (['local', 'cloud', 'remote', 'ssh'] as const)).map(kind => (
-              <Button
-                disabled={Boolean(editor.id) || (kind === 'local' && hasLocal)}
-                key={kind}
-                onClick={() => {
-                  setDupeError(null)
-
-                  // Cloud uses browser sign-in even after a token-auth remote edit.
-                  if (kind === 'cloud') {
-                    remote.setAuthMode('oauth')
-                  }
-
-                  setEditor({ ...editor, kind })
-                }}
-                size="sm"
-                variant={editor.kind === kind ? 'default' : 'outline'}
-              >
-                {kindMeta[kind].label}
-              </Button>
-            ))}
-          </div>
-          <p className="text-xs text-muted-foreground">{kindMeta[editor.kind].desc}</p>
-          {!editor.id && hasLocal ? <p className="text-xs text-muted-foreground">{s.localAddHint}</p> : null}
-          {!editor.id && editor.kind === 'cloud' ? (
-            <p className="text-xs text-muted-foreground">{s.cloudAddHint}</p>
-          ) : null}
-
-          <ListRow
-            action={
-              <Input
-                onChange={e => setEditor({ ...editor, label: e.target.value })}
-                placeholder={s.labelPlaceholder}
-                value={editor.label}
-              />
-            }
-            description={s.labelDesc}
-            title={s.labelTitle}
-          />
-
-          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <RemoteSetupFields
-              disabled={saving}
-              onUrlChange={() => setDupeError(null)}
-              setup={remote}
-              urlOnly={editor.kind === 'cloud'}
-            />
-          )}
-
-          {editor.kind === 'cloud' && (
-            <ListRow
-              action={
-                remote.credentials.oauthConnected ? (
-                  <Pill tone="primary">{t.settings.gateway.signedIn}</Pill>
-                ) : (
-                  <Button
-                    disabled={saving || remote.signingIn || !remote.payload.remoteUrl}
-                    onClick={() => void remote.signIn()}
-                    size="sm"
-                  >
-                    {remote.signingIn ? <Loader2 className="animate-spin" /> : null}
-                    {remote.isPassword
-                      ? t.settings.gateway.signIn
-                      : t.settings.gateway.signInWith(remote.providerLabel)}
-                  </Button>
-                )
-              }
-              description={
-                remote.credentials.oauthConnected
-                  ? remote.isPassword
-                    ? t.settings.gateway.authSignedInPassword
-                    : t.settings.gateway.authSignedInOauth
-                  : remote.isPassword
-                    ? t.settings.gateway.authNeedsPassword
-                    : t.settings.gateway.authNeedsOauth(remote.providerLabel)
-              }
-              title={t.settings.gateway.authTitle}
-            />
-          )}
-
-          {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <div className="grid gap-2">
-              <div>
-                <div className="text-sm font-medium">{s.headersTitle}</div>
-                <p className="mt-1 text-xs text-muted-foreground">{s.headersDesc}</p>
-              </div>
-              {editor.headers.map((row, index) => (
-                <div className="flex items-center gap-2" key={index}>
-                  <Input
-                    className="flex-1"
-                    onChange={e =>
-                      setEditor({
-                        ...editor,
-                        headers: editor.headers.map((h, i) => (i === index ? { ...h, name: e.target.value } : h))
-                      })
-                    }
-                    placeholder="CF-Access-Client-Id"
-                    value={row.name}
-                  />
-                  <Input
-                    className="flex-1"
-                    onChange={e =>
-                      setEditor({
-                        ...editor,
-                        headers: editor.headers.map((h, i) => (i === index ? { ...h, value: e.target.value } : h))
-                      })
-                    }
-                    placeholder={row.stored ? s.headerValueSaved : s.headerValuePlaceholder}
-                    type="password"
-                    value={row.value}
-                  />
-                  <Button
-                    onClick={() => setEditor({ ...editor, headers: editor.headers.filter((_, i) => i !== index) })}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    {s.headerRemove}
-                  </Button>
-                </div>
-              ))}
-              <div>
-                <Button
-                  onClick={() =>
-                    setEditor({ ...editor, headers: [...editor.headers, { name: '', stored: false, value: '' }] })
-                  }
-                  size="sm"
-                  variant="outline"
-                >
-                  {s.headerAdd}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {editor.kind === 'ssh' && (
-            <>
-              <ListRow
-                action={
-                  <Input
-                    onChange={e => {
-                      setDupeError(null)
-                      setEditor({ ...editor, host: e.target.value })
-                    }}
-                    placeholder="user@host:22"
-                    value={editor.host}
-                  />
-                }
-                title={s.sshHostTitle}
-              />
-              <ListRow
-                action={
-                  <Input
-                    onChange={e => setEditor({ ...editor, remoteHermesPath: e.target.value })}
-                    placeholder={t.settings.gateway.sshHermesPathPlaceholder}
-                    value={editor.remoteHermesPath}
-                  />
-                }
-                description={t.settings.gateway.sshHermesPathDesc}
-                title={t.settings.gateway.sshHermesPathTitle}
-              />
-            </>
-          )}
-
-          {dupeError ? <p className="text-xs text-destructive">{dupeError}</p> : null}
-
-          <div className="flex justify-end gap-2">
-            <Button disabled={saving} onClick={() => openEditor(null)} size="sm" variant="ghost">
-              {s.cancel}
-            </Button>
-            <Button disabled={saving || !editor.label.trim()} onClick={() => void save()} size="sm">
-              {saving ? s.saving : s.save}
-            </Button>
-          </div>
-        </div>
+      {draft && editable ? (
+        <ConnectionEditor
+          bridge={bridge}
+          draft={draft}
+          key={draft.key}
+          kindMeta={kindMeta}
+          onClose={() => setDraft(null)}
+          onSaved={next => {
+            publishRegistry(next)
+            // Only the draft that started the save: another row's Edit may have opened one since.
+            const saved = draft.key
+            setDraft(current => (current?.key === saved ? null : current))
+          }}
+          registry={registry}
+          runSave={runSave}
+          saving={saving}
+        />
       ) : (
-        <div className="mt-4 flex items-center gap-2">
-          <Button
-            onClick={() => {
-              triggerHaptic('selection')
-              openEditor(emptyEditor('remote'))
-            }}
-            size="sm"
-            variant="outline"
-          >
-            <Plus className="size-3.5" /> {s.addConnection}
-          </Button>
-          {bridge?.updateAll && (registry?.connections.length ?? 0) > 1 && (
-            <Button
-              disabled={updatingAll}
-              onClick={() => {
-                triggerHaptic('selection')
-                void updateAll()
-              }}
-              size="sm"
-              variant="outline"
-            >
-              {updatingAll ? (
-                <>
-                  <Loader2 className="animate-spin" /> {s.updateAllRunning}
-                </>
-              ) : (
-                <>
-                  <RefreshCw /> {s.updateAll}
-                </>
-              )}
-            </Button>
-          )}
-        </div>
+        <RegistryFooterActions
+          canAdd={editable}
+          canUpdateAll={canUpdateAll(bridge, registry)}
+          copy={s}
+          onAdd={() => openEditor()}
+          onUpdateAll={() => void updateAll()}
+          updatingAll={updatingAll}
+        />
       )}
 
       {/* Not gated on connections.length > 1: a registry that drifted down to
@@ -951,17 +579,6 @@ export function ConnectionsRegistrySection() {
         onConfirm={() => remove()}
         open={Boolean(removeTarget)}
         title={s.removeConfirmTitle}
-      />
-
-      {/* Keyring-less opt-in: same consent flow as the connection-mode form. */}
-      <ConfirmDialog
-        confirmLabel={t.settings.gateway.plainTextConfirmAction}
-        description={t.settings.gateway.plainTextConfirmDesc}
-        destructive
-        onClose={() => setPlainTextConfirm(false)}
-        onConfirm={() => save(true)}
-        open={plainTextConfirm}
-        title={t.settings.gateway.plainTextConfirmTitle}
       />
     </div>
   )

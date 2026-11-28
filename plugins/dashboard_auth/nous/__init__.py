@@ -14,6 +14,7 @@ Webapp instead of the configured one (``hermes_cli.dashboard_auth.listener_clien
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Callable, Optional
 
 from hermes_cli.dashboard_auth import (
@@ -39,6 +40,10 @@ _TAG = "dashboard-auth-nous"
 _DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 _SCOPE = "agent_dashboard:access"  # contract C3
 _EXPECTED_CONTRACT_VERSION = 1  # contract C11
+#: After Portal's keys could not be fetched for an exchanged token, how long that check uses only
+#: keys already cached. Anyone can send a token shaped for this agent, and each fetch blocks the
+#: listener for up to the key client's timeout, so an outage costs one such wait per window.
+_EXCHANGE_KEY_BACKOFF_SECONDS = 300.0
 
 LAST_SKIP_REASON: str = ""  # cleared on every register() so restarts don't leak stale reasons
 
@@ -64,6 +69,8 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         self._authorize_url = f"{self._portal_url}/oauth/authorize"
         self._token_url = f"{self._portal_url}/api/oauth/token"
         self._jwks_client: Any = None  # lazily built (crypto import cost)
+        self._exchange_keys_down_until = 0.0  # monotonic; see _EXCHANGE_KEY_BACKOFF_SECONDS
+        self._verified_kids: set[str] = set()  # key ids a token verified with here (see _key_cached)
 
     def start_login(self, *, redirect_uri: str) -> LoginStart:
         validate_redirect_uri(redirect_uri)
@@ -107,6 +114,49 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             raise InvalidCodeError(f"token does not grant {_SCOPE}")
         return claims
 
+    def is_exchanged_token(self, *, token: str) -> bool:
+        """Whether *token* is a dashboard token Portal minted for this agent by RFC 8693 token
+        exchange: verified like any session token, and its claims name the client it was exchanged
+        for (``act.sub``). The authorization-code grant a browser login uses never sets ``act``.
+        A token whose unverified issuer, audience or agent instance is not this agent's is turned
+        away before any signing key is looked up. A ``ProviderError`` (JWKS unreachable) propagates."""
+        if not self._addressed_here(_unverified_claims(token)):
+            return False
+        if time.monotonic() < self._exchange_keys_down_until and not self._key_cached(token):
+            # Its key may be one Portal rotated in during the outage: not a refusal, but not worth
+            # another fetch that would block the listener either.
+            raise ProviderError("Portal signing keys unreachable; not fetching again yet")
+        try:
+            claims = self._claims_for(token)
+        except InvalidCodeError:
+            return False
+        except _UnsupportedContract:
+            raise  # verified, and Portal is reachable: no reason to stop fetching keys
+        except ProviderError:
+            self._exchange_keys_down_until = time.monotonic() + _EXCHANGE_KEY_BACKOFF_SECONDS
+            raise
+        actor = claims.get("act")
+        return isinstance(actor, dict) and isinstance(actor.get("sub"), str) and bool(actor["sub"])
+
+    def _key_cached(self, token: str) -> bool:
+        """Whether verifying *token* fetches nothing: its key verified a token here before, of any
+        kind (the key client keeps every key it handed out past its key set's expiry, and caches no
+        miss), or it is in the key client's unexpired key set."""
+        kid = _kid(token)
+        cache = getattr(self._get_jwks_client(), "jwk_set_cache", None)
+        keys = cache.get() if cache is not None else None
+        in_set = keys is not None and any(key.key_id == kid for key in keys.keys)
+        return bool(kid) and (kid in self._verified_kids or in_set)
+
+    def _addressed_here(self, claims: dict[str, Any]) -> bool:
+        """Whether unverified *claims* name this agent: Portal's issuer, this client as audience,
+        and (when present) this instance. Only a pre-filter; verification decides."""
+        audience = claims.get("aud")
+        audiences = audience if isinstance(audience, list) else [audience]
+        instance = claims.get("agent_instance_id")
+        return (claims.get("iss") == self._portal_url and self._client_id in audiences
+                and instance in (None, self._agent_instance_id))
+
     def verify_peer_pass(self, *, token: str) -> Optional[TokenPrincipal]:
         try:
             claims = self._agent_claims(token)
@@ -123,6 +173,8 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
             access_token, self._get_jwks_client(), algorithms=["RS256"],
             audience=self._client_id,  # contract C2: bare client_id
             issuer=self._portal_url, label="access token", leeway=self._token_leeway)
+        if kid := _kid(access_token):
+            self._verified_kids.add(kid)
         # Contract C9: agent_instance_id is "should" not "must" — tolerated when absent
         # (the aud check already binds the token to this instance). A token for another
         # instance is not ours, like a foreign aud: a rejection, never a 503.
@@ -138,7 +190,7 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
                 "Nous Portal token missing oauth_contract_version claim (contract says it should be %d); proceeding anyway.",
                 _EXPECTED_CONTRACT_VERSION)
         elif contract_version != _EXPECTED_CONTRACT_VERSION:
-            raise ProviderError(
+            raise _UnsupportedContract(
                 f"unsupported oauth_contract_version={contract_version!r}, expected {_EXPECTED_CONTRACT_VERSION}")
         return claims
 
@@ -147,6 +199,33 @@ class NousDashboardAuthProvider(JwtOAuthProvider):
         # Contract C4: no email / display_name in tokens.
         return session_from_claims(
             self.name, claims, access_token=access_token, refresh_token=refresh_token, org_id=str(claims.get("org_id") or ""))
+
+
+class _UnsupportedContract(ProviderError):
+    """A verified token whose contract version this agent does not support: still a 503 (every token
+    Portal mints would fail it), but no sign that Portal's keys are unreachable."""
+
+
+def _kid(token: str) -> str:
+    """The ``kid`` in *token*'s header, unverified; ``""`` when it names none."""
+    import jwt  # lazy, as verify_jwt
+
+    try:
+        kid = jwt.get_unverified_header(token).get("kid")
+    except jwt.PyJWTError:
+        return ""
+    return kid if isinstance(kid, str) else ""
+
+
+def _unverified_claims(token: str) -> dict[str, Any]:
+    """*token*'s claims, decoded WITHOUT verification; ``{}`` when it is not a JWT. Only a pre-filter."""
+    import jwt  # lazy, as verify_jwt
+
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except (jwt.PyJWTError, RecursionError):
+        return {}
+    return claims if isinstance(claims, dict) else {}
 
 
 def _scopes(claims: dict[str, Any]) -> set[str]:

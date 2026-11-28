@@ -511,10 +511,11 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
         current_message = self._message_contexts.get(chat_id)
-        # ``reply_to`` is only set by base.py:_send_with_retry for the FINAL reply to an inbound message;
-        # tool-progress, commentary and stream first-sends leave it None. It decides (1) finalize-on-create
-        # (intermediate cards stay open so edits don't flicker) and (2) whether to fire the Done reaction.
-        is_final_reply = reply_to is not None
+        # A FINAL reply to an inbound message carries ``reply_to``; tool-progress and commentary leave it
+        # None. Stream first-sends carry it too (threaded to the user's message) but set ``expect_edits``.
+        # It decides (1) finalize-on-create (intermediate cards stay open so edits don't flicker) and
+        # (2) whether to fire the Done reaction.
+        is_final_reply = reply_to is not None and not metadata.get("expect_edits")
         if self._card_template_id and current_message and self._card_sdk:
             await self._close_streaming_siblings(chat_id)  # close lingering tool-progress cards before creating a new one
             result = await self._create_and_stream_card(chat_id, current_message, content, finalize=is_final_reply)

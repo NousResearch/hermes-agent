@@ -574,8 +574,7 @@ class TestCardLifecycle:
     @pytest.mark.asyncio
     async def test_intermediate_send_stays_streaming(self, adapter_with_card):
         """send() without reply_to creates an OPEN card (tool progress /
-        commentary / streaming first chunk).  No flicker closed→streaming
-        when edit_message follows."""
+        commentary).  No flicker closed→streaming when edit_message follows."""
         a = adapter_with_card
         result = await a.send("chat-1", "💻 terminal: ls")
         assert result.success
@@ -583,6 +582,64 @@ class TestCardLifecycle:
         assert call[0][0].is_finalize is False
         # Tracked for sibling cleanup.
         assert result.message_id in a._streaming_cards.get("chat-1", {})
+
+    @pytest.mark.asyncio
+    async def test_threaded_stream_preview_stays_streaming(self, adapter_with_card):
+        """A streamed first send is threaded to the user's message (reply_to)
+        but marked expect_edits: the card stays open and Done does not fire."""
+        a = adapter_with_card
+        fired: list[str] = []
+        a._fire_done_reaction = lambda cid: fired.append(cid)
+        result = await a.send(
+            "chat-1", "Partial", reply_to="user-msg-1",
+            metadata={"expect_edits": True},
+        )
+        assert result.success
+        call = a._card_sdk.streaming_update_with_options_async.call_args
+        assert call[0][0].is_finalize is False
+        assert result.message_id in a._streaming_cards.get("chat-1", {})
+        assert fired == []
+
+    @pytest.mark.asyncio
+    async def test_stream_consumer_card_stays_open_until_final_edit(self, adapter_with_card):
+        """End to end through the stream consumer: its first send carries
+        reply_to, yet only the final edit may close the card and fire Done."""
+        from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+        from tests.waiting import async_wait_until
+
+        a = adapter_with_card
+        fired: list[str] = []
+        a._fire_done_reaction = lambda cid: fired.append(cid)
+        updates = a._card_sdk.streaming_update_with_options_async
+        consumer = GatewayStreamConsumer(
+            a, "chat-1",
+            config=StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""),
+            initial_reply_to_id="user-msg-1",
+        )
+
+        task = asyncio.create_task(consumer.run())
+        try:
+            consumer.on_delta("First part. ")
+            await async_wait_until(lambda: updates.await_count >= 1, timeout=3)
+            assert updates.call_args_list[0][0][0].is_finalize is False
+            assert fired == []
+
+            consumer.on_delta("Second part.")
+            consumer.finish(final_text="First part. Second part.")
+            await asyncio.wait_for(task, timeout=3)
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        requests = [c[0][0] for c in updates.call_args_list]
+        assert requests[-1].is_finalize is True
+        # The card is only ever closed with the complete answer.
+        closes = [r for r in requests if r.is_finalize]
+        assert all(r.content == "First part. Second part." for r in closes)
+        assert consumer.final_response_sent
+        assert set(fired) == {"chat-1"}
+        assert "chat-1" not in a._streaming_cards
 
     @pytest.mark.asyncio
     async def test_edit_message_finalize_fires_done(self, adapter_with_card):

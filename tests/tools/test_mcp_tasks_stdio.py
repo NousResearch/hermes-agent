@@ -35,6 +35,16 @@ def test_task_handle_is_polled_to_its_result_and_failures_surface_as_errors(tmp_
         assert "io.modelcontextprotocol/tasks" in caps["extensions"]
         gets = [m for m in sent if m.get("method") == "tasks/get"]
         assert len(gets) == 6 and all(len(m["params"]["taskId"]) > 128 for m in gets)
+
+        asked = json.loads(registry.dispatch("mcp__tasks_peer__ask_job", {}))
+        assert "asked for input mid-task" in asked["error"]
+        lost = json.loads(registry.dispatch("mcp__tasks_peer__lost_job", {}))
+        assert "do not start it again" in lost["error"]
+        sent = messages()
+        cancels = [m["params"]["taskId"] for m in sent if m.get("method") == "tasks/cancel"]
+        assert len(cancels) == 1 and cancels[0].startswith("ask-")
+        calls = [m["params"]["name"] for m in sent if m.get("method") == "tools/call"]
+        assert calls == ["slow_job", "broken_job", "ask_job", "lost_job"]  # a started task is never replayed
     finally:
         shutdown_mcp_servers()
 

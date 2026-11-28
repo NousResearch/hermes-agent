@@ -27,6 +27,7 @@ EXTENSION = "io.modelcontextprotocol/tasks"
 _DEFAULT_POLL_SECONDS = 1.0
 _POLL_BOUNDS_SECONDS = (0.2, 10.0)
 _TERMINAL = frozenset({"completed", "failed", "cancelled"})
+_MAX_POLL_MISSES = 3
 
 
 def tasks_enabled(config: dict | None) -> bool:
@@ -101,10 +102,23 @@ async def poll(session, handle):
     """Poll ``tasks/get`` until the task is terminal; return what the tool call would have returned."""
     from mcp import types
     task_id, interval = handle.task_id, _poll_seconds(handle.poll_interval_ms)
+    misses = 0
     try:
         while True:
             await asyncio.sleep(interval)
-            task = await _send(session, "tasks/get", {"taskId": task_id})
+            try:
+                task = await _send(session, "tasks/get", {"taskId": task_id})
+            except Exception as exc:  # health: allow BLE001 -- a started task must never reach the call-replay recoverers
+                # Auth expiry, a dropped session, a server error: escaping here would let the reconnect and
+                # re-auth recoverers replay the whole tools/call and start the job a second time.
+                misses += 1
+                logger.warning("MCP tasks/get for %s failed (%d/%d): %s", task_id, misses, _MAX_POLL_MISSES, exc)
+                if misses >= _MAX_POLL_MISSES:
+                    return _error_result(f"MCP task {task_id} could not be polled ({type(exc).__name__}: {exc}); "
+                                         "it may still be running on the server, so do not start it again "
+                                         "without checking")
+                continue
+            misses = 0
             status = task.get("status")
             interval = _poll_seconds(task.get("pollIntervalMs", handle.poll_interval_ms))
             if status == "completed":

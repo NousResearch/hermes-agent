@@ -3,7 +3,7 @@
 Usage: mcp_tasks_server.py <wire log path>. ``slow_job`` answers with a task handle when the
 request declares the Tasks extension, else synchronously; ``tasks/get`` reports ``working`` twice,
 then the result. ``broken_job`` fails as a task;
-``ask_job`` stops at ``input_required``. Every inbound message is appended to the log.
+``ask_job`` stops at ``input_required``; ``lost_job``'s status reads fail as unauthorized. Every inbound message is appended to the log.
 """
 
 import json
@@ -14,7 +14,8 @@ EXT = "io.modelcontextprotocol/tasks"
 TOOLS = [{"name": name, "description": desc, "inputSchema": {"type": "object", "properties": {}}}
          for name, desc in (("slow_job", "Run the nightly report job and return its summary."),
                             ("broken_job", "Run a job that always fails."),
-                            ("ask_job", "Run a job that stops to ask a question."))]
+                            ("ask_job", "Run a job that stops to ask a question."),
+                            ("lost_job", "Run a job whose status can no longer be read."))]
 polls: dict[str, int] = {}
 
 
@@ -53,6 +54,8 @@ def response(method: str, params: dict) -> dict:
             task_id = f"{name.split('_')[0]}-" + "x" * 300
             return {"resultType": "task", "taskId": task_id, "status": "working", "ttlMs": 60000, "pollIntervalMs": 200}
         return {**base, "content": [{"type": "text", "text": "sync fallback: job not started"}], "isError": True}
+    if method == "tasks/get" and params["taskId"].startswith("lost"):
+        raise PermissionError("token expired")
     if method == "tasks/get":
         return {**base, **_task_state(params["taskId"])}
     if method == "tasks/cancel":
@@ -73,6 +76,8 @@ def main(log: Path) -> None:
             payload = {"result": response(message["method"], message.get("params", {}))}
         except KeyError:
             payload = {"error": {"code": -32601, "message": "Method not found"}}
+        except PermissionError as exc:
+            payload = {"error": {"code": -32001, "message": f"Unauthorized: {exc}"}}
         print(json.dumps({"jsonrpc": "2.0", "id": message["id"], **payload}), flush=True)
 
 

@@ -420,7 +420,7 @@ def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
     return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
 
 
-_CONTEXT_LENGTH_KEYS = ("context_length", "context_window", "context_size", "max_context_length", "max_position_embeddings",
+_CONTEXT_LENGTH_KEYS = ("context_length", "context_window", "contextwindow", "contextlength", "context_size", "max_context_length", "max_position_embeddings",
     "max_model_len", "max_input_tokens", "max_sequence_length", "max_seq_len", "n_ctx_train", "n_ctx", "ctx_size")
 # Hosts whose plain /models omits every window but publishes it on request (NanoGPT: ?detailed=true).
 _MODELS_QUERY_BY_HOST = {"nano-gpt.com": {"detailed": "true"}}
@@ -818,7 +818,8 @@ def _extract_first_int(payload: dict[str, Any], keys: tuple[str, ...]) -> Option
 def _extract_flat_context_length(payload: dict[str, Any]) -> Optional[int]:
     """Top-level-only context WINDOW read (no nested walk, so an unrelated nested section can't leak
     a same-named key). ``max_tokens`` is NOT a window key: on OpenAI-compatible passthroughs it is the max OUTPUT."""
-    return next((c for c in map(_coerce_reasonable_int, (payload.get(k) for k in _CONTEXT_LENGTH_KEYS)) if c is not None), None)
+    lowered = {str(k).lower(): v for k, v in payload.items()}  # camelCase providers: contextWindow, contextLength
+    return next((c for c in map(_coerce_reasonable_int, (lowered.get(k) for k in _CONTEXT_LENGTH_KEYS)) if c is not None), None)
 
 
 def _context_length_from_model_payload(payload: dict[str, Any]) -> Optional[int]:

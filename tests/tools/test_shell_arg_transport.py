@@ -39,7 +39,7 @@ def test_non_path_bytes_survive_real_shell_transport(tmp_path, monkeypatch, seri
     try:
         for value in ('', 'two words', "quote'and\"quote", '$() ` : ;',
                       'line\nbreak', *('a' + '\\' * length + '.b' for length in (1, 2, 3, 4, 8)),
-                      "a\\'b"):
+                      "a\\'b", 'x\\"y', 'x\\\\"y', 'a\\\\b\\"c'):
             quoted = ops._escape_shell_arg(value, translate_path=False)
             result = ops._exec(f"printf '%s' {quoted} | od -An -v -tx1")
             assert result.exit_code == 0, (value, result.stdout)

@@ -1107,8 +1107,18 @@ def _resolved_or_nothing(candidate: str, cwd: Optional[str]) -> Iterator[Path]:
 
 
 def _resolve_script_path(script_path: str) -> Optional[Path]:
-    """Resolve a cron ``script`` value the way ``cron.scheduler`` does (relative paths live under
-    ``<HERMES_HOME>/scripts/``) so the guard scans the file that will actually run."""
+    """Resolve a cron ``script`` value the way ``cron.scheduler_script`` does — relative paths
+    live under the owning cron store's home first, then the process ``HERMES_HOME`` — so the
+    guard scans the file that will actually run (a profile job fired from a process
+    whose ambient home differs must still resolve its own profile's scripts, or the scanner
+    would scan nothing).
+
+    Candidates are searched in order and the first one that is an existing file wins, matching
+    ``cron.scheduler_script._script_search_dirs``: a script that exists only in the process home
+    must still be scanned, or the guard silently reads nothing while the scheduler runs it. When
+    no candidate exists the store-first candidate is returned so the caller reports the same
+    missing path the runtime resolver names.
+    """
     from hermes_constants import get_hermes_home
 
     raw = _expand_candidate_path(script_path)
@@ -1117,11 +1127,40 @@ def _resolve_script_path(script_path: str) -> Optional[Path]:
     if raw.is_absolute():
         return raw
     try:
-        return get_hermes_home() / "scripts" / raw
+        home = get_hermes_home()
     except (RuntimeError, OSError):
         # get_hermes_home() falls back to Path.home(), which raises when neither HERMES_HOME nor
         # HOME is resolvable (launchd/systemd) — same ingestion contract: nothing to scan.
         return None
+    candidates: list[Path] = []
+    try:
+        from cron.jobs import _current_cron_store
+
+        candidates.append(_current_cron_store().cron_dir.parent / "scripts")
+    except (ImportError, AttributeError, OSError, RuntimeError):
+        # No active store pinned (bare probe, root-owned job): the process home is the only
+        # candidate. Logged, never silent — a guard that cannot see the store scans less.
+        logger.debug("guard: owning cron store unavailable; falling back to the process home", exc_info=True)
+    candidates.append(home / "scripts")
+    seen: set[Path] = set()
+    first: Optional[Path] = None
+    for base in candidates:
+        try:
+            resolved = base.resolve()
+        except (RuntimeError, OSError):
+            continue
+        if resolved in seen:  # owning store == process home: one candidate, not two
+            continue
+        seen.add(resolved)
+        candidate = base / raw
+        if first is None:
+            first = candidate
+        try:
+            if candidate.is_file():  # the file the scheduler will actually run
+                return candidate
+        except OSError:
+            continue
+    return first
 
 
 def _resolve_script_directory(script_path: str) -> Optional[str]:

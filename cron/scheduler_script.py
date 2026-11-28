@@ -334,13 +334,45 @@ def _windows_cron_bootstrap_argv(
     return [python_exe, "-c", bootstrap, script_path]
 
 
+def _script_search_dirs() -> list[Path]:
+    """Candidate scripts dirs, owning-store first, process home second.
+
+    A job's scripts live beside the cron store that holds the job (per-profile stores, #4707):
+    ``use_cron_store()`` pins the owning home in every legitimate execution context (multiplex
+    tick scope, external worker, profile-routed turns), so the store's scripts dir is the
+    authoritative first candidate. The executing process's own home stays a fallback so a
+    launch-home job behaves exactly as before — the two coincide except in mismatched contexts
+    (a profile job fired by a process whose ambient home differs), which is precisely where the
+    single-home lookup went blind — a monitor job's source script was never found.
+    """
+    from cron.jobs import _current_cron_store
+
+    candidates: list[Path] = []
+    try:
+        candidates.append(_current_cron_store().cron_dir.parent / "scripts")
+    except Exception:
+        logger.debug("script search: active cron store unavailable", exc_info=True)
+    candidates.append(_sched._get_hermes_home() / "scripts")
+    dirs: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except (RuntimeError, OSError):
+            continue
+        if resolved not in dirs:  # store == process home in the common scoped case
+            dirs.append(resolved)
+    return dirs
+
+
 def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str]]:
     """Validate a job script path; ``(path, None)`` or ``(None, error)``. Scripts MUST resolve
-    inside HERMES_HOME/scripts/ (relative, absolute and ``~`` paths are all validated — path
-    traversal / absolute-path injection); contract of lifecycle_guard._expand_candidate_path."""
-    scripts_dir = _sched._get_hermes_home() / "scripts"
-    _ensure_cron_dir(scripts_dir)
-    scripts_dir_resolved = scripts_dir.resolve()
+    inside one of the candidate scripts dirs — the owning cron store's home first, then the
+    executing process's HERMES_HOME (see ``_script_search_dirs``). Relative, absolute and ``~``
+    paths are all validated — path traversal / absolute-path injection; contract of
+    lifecycle_guard._expand_candidate_path."""
+    candidate_dirs = _script_search_dirs()
+    for scripts_dir in candidate_dirs:
+        _ensure_cron_dir(scripts_dir)
 
     # Reject NUL eagerly: on Windows Path ops raise ValueError *after* expanduser so the try below
     # would not catch it. str() first so the guard itself cannot raise on a non-str script_path.
@@ -357,27 +389,56 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
     except (ValueError, RuntimeError, OSError):
         # RuntimeError: unexpandable ``~`` (no resolvable HOME).
         return None, f"Blocked: script path is not a valid filesystem path: {script_path!r}"
-    path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
 
-    # Traversal / absolute-path / symlink escape guard — MUST stay inside HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
+    def _not_found_error(looked_in: list[str]) -> tuple[None, str]:
         return None, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
+            f"Script not found: looked in {', '.join(looked_in)}. Cron scripts are looked up in "
+            "the job's owning profile folder first, then this process's folder; if the job was "
+            "copied from another profile, copy the script there too, or edit the job with "
+            "`hermes cron edit`."
         )
-    if not path.exists():
-        # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
-        # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
+
+    if raw.is_absolute():
+        # One real target — it must live inside ONE candidate scripts dir (symlink escape guard).
+        path = raw.resolve()
+        for scripts_dir in candidate_dirs:
+            try:
+                path.relative_to(scripts_dir)
+            except ValueError:
+                continue
+            if not path.exists():
+                return _not_found_error([str(d) for d in candidate_dirs])
+            if not path.is_file():
+                return None, f"Script path is not a file: {path}"
+            return path, None
         return None, (
-            f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
-            f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
-            f"there too, or edit the job with `hermes cron edit`."
+            f"Blocked: script path resolves outside the scripts directories "
+            f"({', '.join(str(d) for d in candidate_dirs)}): {script_path!r}"
         )
-    if not path.is_file():
-        return None, f"Script path is not a file: {path}"
-    return path, None
+
+    # Relative: joined against each candidate in order (owning store first). A candidate whose
+    # join escapes (symlink) is a miss for that candidate, not a verdict — another candidate may
+    # hold the real file; the returned path always passes containment for ITS candidate.
+    looked_in: list[str] = []
+    for scripts_dir in candidate_dirs:
+        path = (scripts_dir / raw).resolve()
+        try:
+            path.relative_to(scripts_dir)
+        except ValueError:
+            continue
+        if path.exists():
+            if not path.is_file():
+                return None, f"Script path is not a file: {path}"
+            return path, None
+        looked_in.append(str(path))
+    if not looked_in:
+        # Every candidate's join escaped the scripts tree (traversal or symlink): a rejection,
+        # not a lookup miss — keep the Blocked wording so callers can tell the two apart.
+        return None, (
+            f"Blocked: script path resolves outside the scripts directories "
+            f"({', '.join(str(d) for d in candidate_dirs)}): {script_path!r}"
+        )
+    return _not_found_error(looked_in)
 
 
 def _resolve_cron_interpreter(interpreter: str) -> tuple[Optional[str], Optional[str]]:

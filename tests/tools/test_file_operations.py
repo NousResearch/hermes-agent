@@ -399,6 +399,46 @@ class TestSearchFilesIncludesDirectories:
         assert str(ignored_dir) not in result.files
 
     @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
+    @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+    def test_rg_target_files_excludes_gitignored_non_ascii_directory(self, tmp_path):
+        """``git check-ignore`` C-quotes non-ASCII (and Windows backslash) paths unless ``-z`` is used."""
+        root = tmp_path / "repo"
+        ignored_dir = root / "привет_ignored_dir"
+        visible_dir = root / "visible_dir"
+        ignored_dir.mkdir(parents=True)
+        visible_dir.mkdir()
+        (root / ".gitignore").write_text("привет_ignored_dir/\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+
+        ops = ShellFileOperations(LocalEnvironment("/"))
+        result = ops.search("*_dir", path=str(root), target="files")
+
+        assert result.error is None
+        assert str(visible_dir) in result.files
+        assert str(ignored_dir) not in result.files
+
+    def test_filter_gitignored_paths_uses_nul_delimited_check_ignore(self):
+        """NUL-delimited ``check-ignore -z --stdin`` handles backslashes and non-ASCII unquoted."""
+        env = MagicMock()
+        env.cwd = "/repo"
+        env.is_local = False
+        calls = []
+
+        def side_effect(command, **kwargs):
+            calls.append((command, kwargs.get("stdin_data")))
+            if "rev-parse" in command:
+                return {"output": "", "returncode": 0}
+            return {"output": "a\\b\0привет_ignored\0", "returncode": 0}
+
+        env.execute.side_effect = side_effect
+        ops = ShellFileOperations(env)
+        kept = ops._filter_gitignored_paths(["a\\b", "kept_dir", "привет_ignored"], "/repo")
+
+        assert kept == ["kept_dir"]
+        assert "check-ignore -z --stdin" in calls[1][0]
+        assert calls[1][1] == "a\\b\0kept_dir\0привет_ignored"
+
+    @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")
     def test_rg_sorts_files_and_directories_before_pagination(self, tmp_path):
         """A newer directory must page ahead of older files and dirs (globally
         merged mtime order before offset/limit, not dirs appended after)."""

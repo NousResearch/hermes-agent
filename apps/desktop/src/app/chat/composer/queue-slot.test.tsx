@@ -95,19 +95,28 @@ it('a server-queued card from an owner without the queued-row verbs keeps only D
   expect(labels(rowButtons('later please'))).toEqual([en.composer.queueDelete])
 })
 
-it('Steer on a server-queued card asks the authority to steer that admission', async () => {
+it('Steer on the collapsed queue asks the authority to steer the visible admission once', async () => {
   reconcilePendingSubmissions('stored', [
-    { admission_id: 'adm-1', status: 'queued', user: 'later please', controls: ['steer', 'replace'] }
+    { admission_id: 'adm-1', status: 'queued', user: 'later please', controls: ['steer', 'replace'] },
+    { admission_id: 'adm-2', status: 'queued', user: 'another follow-up', controls: ['steer', 'replace'] }
   ])
   const request = vi.fn(async () => ({ admission_id: 'adm-1', status: 'terminal', outcome: 'steered' }))
   const inputs = renderSlot(request)
-  await expand()
 
-  fireEvent.click(rowButtons('later please').getByRole('button', { name: en.composer.queueSteer }))
+  const disclosure = screen.getByRole('button', { name: /queued/i })
+  expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+  await screen.findByText('later please')
+  expect(screen.queryByText('another follow-up')).toBeNull()
+  const steer = screen.getByRole('button', { name: en.composer.queueSteer })
+  fireEvent.click(steer)
 
   await vi.waitFor(() =>
-    expect(request).toHaveBeenCalledWith('prompt.steer_queued', { session_id: 'runtime-1', admission_id: 'adm-1' })
+    expect(request).toHaveBeenCalledExactlyOnceWith('prompt.steer_queued', {
+      session_id: 'runtime-1',
+      admission_id: 'adm-1'
+    })
   )
+  expect(disclosure.getAttribute('aria-expanded')).toBe('false')
   expect(inputs.steerQueuedNow).not.toHaveBeenCalled()
 })
 

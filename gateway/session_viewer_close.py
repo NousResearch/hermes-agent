@@ -70,20 +70,27 @@ class _PendingClose:
 
 async def close_viewer_session(authority, session_id, reason):
     """``session.detach {end_reason}`` left *session_id* without viewers: close it now, or once idle.
-    Its own async delegations end now, mid-turn too, as main's CLI exit and TUI close ended them
+    Its own async delegations end, mid-turn too, as main's CLI exit and TUI close ended them
     (#134889 LC-7); each returns as an interrupted completion, and ones its still-running turn starts
-    later are refused until a viewer attaches again. Other sessions' work is untouched."""
-    live = authority.sessions[session_id]
+    later are refused until a viewer attaches again. A TUI teardown (``tui_close``/``tui_shutdown``)
+    may be a viewer that only lost its transport, so it ends them after a grace that a returning
+    viewer cancels (gateway/session_viewer_close_delegations.py). Other sessions' work is untouched."""
+    from gateway.session_viewer_close_delegations import (
+        VIEWER_TEARDOWN_REASONS, defer_delegation_end, delegation_end_grace, end_delegations)
+    grace = await asyncio.to_thread(delegation_end_grace, authority, reason) if reason in VIEWER_TEARDOWN_REASONS else 0
+    live = authority.sessions.get(session_id)
+    if live is None:
+        return  # deleted or retired while the grace was read
     if live.subscribers:
         return  # a viewer attached while the detach was off the loop: nothing closes or ends
     if is_history_mount(live):
         return  # stored history: no route, agent or delegation of its own
-    from tools.async_delegation import interrupt_for_session, refuse_for_session
     route = live.route
     parents = tuple(dict.fromkeys((session_id, _physical_target(authority, session_id))))
-    refuse_for_session((authority.profile_id, session_id), session_key=route, parent_session_ids=parents)
-    for parent in parents:
-        interrupt_for_session(session_key=route, parent_session_id=parent, reason=f'viewer_close:{reason}')
+    if grace:  # a TUI teardown may be a viewer that only lost its transport: a viewer back keeps the work
+        defer_delegation_end(authority, session_id, route, parents, reason, grace)
+    else:
+        end_delegations(authority, session_id, route, parents, reason)
     authority.pending_closes[session_id] = close = _PendingClose(reason)
     await _store_and_settle(authority, session_id, live, close)
 

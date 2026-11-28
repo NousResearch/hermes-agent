@@ -44,3 +44,15 @@ def test_resolve_channel_accepts_a_pasted_link_for_explicit_targets():
 
     assert resolved is channel
     adapter._client.get_channel.assert_called_once_with(456)
+
+
+@pytest.mark.parametrize("invalid", ["302523857364451329/202523857364451329", "²"])
+def test_resolve_channel_names_a_target_that_is_not_a_channel_id(invalid):
+    """A bare ``<server>/<channel>`` stays unaccepted, but the send error names the setting to fix
+    instead of ``invalid literal for int()``."""
+    adapter = object.__new__(DiscordAdapter)
+    adapter._client = SimpleNamespace(get_channel=Mock(), fetch_channel=AsyncMock())
+
+    with pytest.raises(ValueError, match="not a channel ID.*DISCORD_HOME_CHANNEL"):
+        asyncio.run(adapter._resolve_channel(invalid))
+    adapter._client.get_channel.assert_not_called()

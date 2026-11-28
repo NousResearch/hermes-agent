@@ -5105,7 +5105,10 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         thread metadata), so a pasted channel link is accepted at this one boundary instead of
         dying in ``int()`` as a generic send failure."""
         if isinstance(channel_id, str):
-            channel_id = discord_channel_id_from_link(channel_id.strip()) or channel_id
+            channel_id = discord_channel_id_from_link(channel_id.strip()) or channel_id.strip()
+            if not (channel_id.isascii() and channel_id.isdigit()):
+                raise ValueError(f"Discord target {channel_id!r} is not a channel ID (digits only); check "
+                                 "DISCORD_HOME_CHANNEL or the deliver target")
         channel = self._client.get_channel(int(channel_id))
         if not channel:
             channel = await self._client.fetch_channel(int(channel_id))

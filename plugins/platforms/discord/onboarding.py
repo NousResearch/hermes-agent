@@ -132,6 +132,27 @@ def _prompt_discord_bot_token(prompt) -> str:
     return token
 
 
+def _prompt_home_channel_id(prompt) -> Optional[str]:
+    """Prompt for the home channel ID, re-prompting once on an answer that is not one.
+
+    A pasted channel link becomes its channel ID. Anything else must be digits: a
+    ``<server>/<channel>`` path copied from the address bar would otherwise be saved and fail every
+    home-channel delivery with ``invalid literal for int()``. Returns ``""`` for a blank answer
+    (clear the home channel) and ``None`` after two unusable answers (keep the saved value).
+    """
+    from gateway.config import discord_channel_id_from_link
+    from hermes_cli.cli_output import print_error
+    for _attempt in range(2):
+        answer = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
+        channel_id = discord_channel_id_from_link(answer) or answer
+        if not channel_id or (channel_id.isascii() and channel_id.isdigit()):
+            return channel_id
+        last = channel_id.rstrip("/").rsplit("/", 1)[-1]
+        hint = f" The channel ID is the last number of a copied path: {last}" if last.isascii() and last.isdigit() else ""
+        print_error(f"{answer!r} is not a channel ID: use the digits from Copy Channel ID.{hint}")
+    return None
+
+
 def _prompt_checked_token(prompt) -> tuple[str, Optional[DiscordBotCheck]]:
     """A token Discord accepted (with its check), an unverifiable one (offline: ``None`` check),
     or ``("", None)`` when the user gave up."""
@@ -287,8 +308,10 @@ def interactive_setup() -> None:
         "   Or paste a channel ID (Developer Mode → right-click a channel → Copy Channel ID).",
     ):
         print_info(line)
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)").strip()
-    if home_channel:
+    home_channel = _prompt_home_channel_id(prompt)
+    if home_channel is None:
+        print_info("Home channel left unchanged.")
+    elif home_channel:
         save_env_value("DISCORD_HOME_CHANNEL", home_channel)
     elif remove_env_value("DISCORD_HOME_CHANNEL"):
         print_info("Home channel cleared.")

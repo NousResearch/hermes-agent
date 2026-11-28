@@ -32,7 +32,8 @@ def test_key_command_and_search_cache_expire_after_suspend(tmp_path, monkeypatch
         "import json\nfrom pathlib import Path\n"
         f"p=Path({str(counter)!r})\n"
         "n=int(p.read_text())+1 if p.exists() else 1\np.write_text(str(n))\n"
-        "print(json.dumps({'access_token':str(n), 'expires_in':3600}))\n"
+        "print(json.dumps({'access_token':str(n), 'expires_in':3600}))\n",
+        encoding="utf-8",
     )
     source = CommandTokenSource(f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}")
     memo = SearchMemo()
@@ -42,7 +43,7 @@ def test_key_command_and_search_cache_expire_after_suspend(tmp_path, monkeypatch
     assert memo.lookup("fixture", "query", 5) == response
     offset[0] += 8 * 3600
     assert source() == "2"
-    assert counter.read_text() == "2"
+    assert counter.read_text(encoding="utf-8-sig") == "2"
     assert memo.lookup("fixture", "query", 5) is None
 
 

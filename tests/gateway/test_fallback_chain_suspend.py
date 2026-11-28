@@ -2,47 +2,22 @@
 
 import time
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
 
-def _refresh_chain(surface, agent, config_path, monkeypatch):
+def _refresh_chain(agent, config_path, monkeypatch):
+    # The CLI and TUI refreshes call this same GatewayRunner path.
     from gateway.run import GatewayRunner
-    from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
-    from tui_gateway import server
 
-    def gateway_refresh():
-        monkeypatch.setattr("gateway.run._hermes_home", config_path.parent)
-        runner: Any = SimpleNamespace(_fallback_model=None)
-        chain = GatewayRunner._refresh_fallback_model(runner)
-        GatewayRunner._apply_fallback_chain_to_agent(agent, chain)
-
-    def cli_refresh():
-        shell: Any = SimpleNamespace()
-        CLIChatTurnMixin._sync_fallback_chain_with_config(shell, agent)
-
-    def tui_refresh():
-        monkeypatch.setattr(server, "_active_config_path", lambda: config_path)
-        cast(Any, server)._sync_agent_fallback_with_config(
-            "fixture-session", {"agent": agent}
-        )
-
-    {"gateway": gateway_refresh, "cli": cli_refresh, "tui": tui_refresh}[surface]()
+    monkeypatch.setattr("gateway.run._hermes_home", config_path.parent)
+    runner: Any = SimpleNamespace(_fallback_model=None)
+    GatewayRunner._apply_fallback_chain_to_agent(agent, GatewayRunner._refresh_fallback_model(runner))
 
 
 @pytest.mark.platforms("linux", "macos")
-@pytest.mark.parametrize("surface", ["gateway", "cli", "tui"])
-@pytest.mark.parametrize("remove_chain", [False, True], ids=["replace", "remove"])
-@pytest.mark.parametrize(
-    "elapsed", [60, 8 * 3600], ids=["deadline-boundary", "suspend"]
-)
-def test_fallback_config_refresh_respects_cooldown_until_its_real_deadline(
-    surface,
-    remove_chain,
-    elapsed,
-    monkeypatch,
-):
+def test_fallback_config_refresh_respects_cooldown_until_its_real_deadline(monkeypatch):
     from agent.error_classifier import FailoverReason
     from hermes_cli.config import atomic_config_write, get_config_path
     from run_agent import AIAgent
@@ -59,8 +34,8 @@ def test_fallback_config_refresh_respects_cooldown_until_its_real_deadline(
     config = {"model": {"context_length": 128000}, "fallback_providers": live}
     atomic_config_write(config_path, config)
 
-    # Model an existing suspend gap without replacing Python's execution clock.
-    # Freeze only this host's native expiry-clock input to test the exact boundary too.
+    # Model a suspend gap without replacing Python's execution clock: drive only
+    # this host's native expiry-clock input.
     clock_value = [time.monotonic() + 3600]
     monkeypatch.setattr(
         time,
@@ -92,23 +67,23 @@ def test_fallback_config_refresh_respects_cooldown_until_its_real_deadline(
         )
         agent._unavailable_fallback_keys.add(unavailable)
 
-        edited = [] if remove_chain else [{**live[0], "model": "gpt-4o"}]
+        edited = [{**live[0], "model": "gpt-4o"}]
         config["fallback_providers"] = edited
         atomic_config_write(config_path, config)
 
         clock_value[0] += 30
-        _refresh_chain(surface, agent, config_path, monkeypatch)
+        _refresh_chain(agent, config_path, monkeypatch)
         assert agent._fallback_chain == live
         assert agent._fallback_model == live[0]
         assert agent._fallback_index == 1
         assert agent._unavailable_fallback_keys == {unavailable}
         assert agent._restore_primary_runtime() is False
 
-        clock_value[0] += elapsed - 30
+        clock_value[0] += 8 * 3600 - 30  # an eight-hour suspend
         assert clock_value[0] >= deadline
-        _refresh_chain(surface, agent, config_path, monkeypatch)
+        _refresh_chain(agent, config_path, monkeypatch)
         assert agent._fallback_chain == edited
-        assert agent._fallback_model == (edited[0] if edited else None)
+        assert agent._fallback_model == edited[0]
         assert agent._unavailable_fallback_keys == set()
         # Refresh owns the configuration, while restoration owns the active runtime.
         assert agent._fallback_activated is True

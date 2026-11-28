@@ -58,7 +58,7 @@ def test_real_selected_provider_resolves_with_unconfigured_default(tmp_path, mon
         "model": {"provider": "anthropic", "default": "default-model"},
         "providers": {"selected": {
             "base_url": "http://127.0.0.1:18991/v1", "api_key": "selected-only",
-            "model": "selected-model"}}}
+            "model": "selected-model", "capabilities": {"openai_native_compaction": True}}}}
     (home / "config.yaml").write_text(json.dumps(config), encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -86,6 +86,8 @@ def test_real_selected_provider_resolves_with_unconfigured_default(tmp_path, mon
     assert captured["model"] == "selected-model"
     assert captured["api_key"] == selected["api_key"] == "selected-only"
     assert captured["base_url"] == selected["base_url"]
+    # The selected provider's own runtime flags reach the agent, not only its credentials.
+    assert captured["capabilities"] == {"openai_native_compaction": True}
 
 
 @pytest.mark.parametrize("selection", ["request", "lock", "route", "override"])

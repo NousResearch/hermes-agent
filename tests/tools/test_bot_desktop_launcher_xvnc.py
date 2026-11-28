@@ -19,12 +19,18 @@ def test_xvnc_never_sends_the_holders_clipboard_to_watchers(tmp_path):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     argv_log = tmp_path / "xvnc-argv"
-    (bindir / "Xvnc").write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}"\nexec sleep 3\n', encoding="utf-8")
-    for stub in ("xdpyinfo", "setxkbmap", "xsetroot", "xset", "dbus-run-session", "xauth"):
+    # The fake server records its argv atomically, and the fake xdpyinfo answers only once it has: like a
+    # real Xvnc it is "ready" after it started, so the launcher's readiness poll (not a test sleep) orders the
+    # read after the write. An always-ready xdpyinfo let the launcher finish and kill the fake before it ran.
+    (bindir / "Xvnc").write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{argv_log}.tmp" && mv -f "{argv_log}.tmp" "{argv_log}"\nexec sleep 3\n',
+        encoding="utf-8")
+    (bindir / "xdpyinfo").write_text(f'#!/bin/sh\n[ -e "{argv_log}" ]\n', encoding="utf-8")
+    for stub in ("setxkbmap", "xsetroot", "xset", "dbus-run-session", "xauth"):
         (bindir / stub).write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     for exe in bindir.iterdir():
         exe.chmod(0o755)
-    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "touch", "chmod", "xauth", "od", "tr", "awk", "grep", "seq", "sleep", "kill"):
+    for tool in ("mkdir", "sed", "cat", "printf", "dirname", "bash", "sh", "rm", "ln", "mv", "touch", "chmod", "xauth", "od", "tr", "awk", "grep", "seq", "sleep", "kill"):
         real = shutil.which(tool)
         if real and not (bindir / tool).exists():
             (bindir / tool).symlink_to(real)

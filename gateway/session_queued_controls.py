@@ -60,17 +60,24 @@ def queued_controls(authority, row):
     return ['steer', 'replace']
 
 
-def pending_rows(authority, ref):
+def pending_rows(authority, ref, *, stored=None, transfers=None):
     """The pending rows a viewer is shown, plus each queued admission in transfer to the running
     claim: listed ``started`` and ``steering``, because it may still go back to its queue place, and a
-    client must not retire an admission it no longer sees. The caller holds the stream lock."""
+    client must not retire an admission it no longer sees. The caller holds the stream lock.
+    With worker-read ``stored``/``transfers``, only the latest settling overlay is read here."""
     from gateway.session_authority import admission_row
-    rows = {row['admission_id']: row for row in authority._pending_rows(ref)}
-    entry = authority.steer_transfers.get(ref.session_id)
-    for admission_id in entry[1] if entry is not None else ():
-        row = authority_persistence(authority).admissions.get(admission_id=admission_id)
-        if row is not None and row.status == 'terminal' and row.outcome == STEERING:
-            rows[admission_id] = admission_row(row)
+    rows = {row['admission_id']: row for row in authority._pending_rows(ref, stored=stored)}
+    if transfers is None:
+        entry = authority.steer_transfers.get(ref.session_id)
+        store = authority_persistence(authority)
+        transfers = []
+        for admission_id in (entry[1] if entry is not None else ()):
+            rec = store.admissions.get(admission_id=admission_id)
+            if rec is not None:
+                transfers.append(admission_row(rec))
+    for row in transfers:
+        if row is not None and row['status'] == 'terminal' and row['outcome'] == STEERING:
+            rows[row['admission_id']] = row
     return sorted(rows.values(), key=lambda row: row['seq'])
 
 

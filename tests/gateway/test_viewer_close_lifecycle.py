@@ -181,6 +181,44 @@ def _gate_busy_check(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('lookup', [1, 2], ids=['detach', 'settlement'])
+async def test_a_reattach_can_cancel_a_close_during_target_lookup(tmp_path, monkeypatch, lookup):
+    from gateway import session_viewer_close
+    from tools.async_delegation import refused_for_session
+
+    db, authority, calls = await _owner(tmp_path, monkeypatch)
+    viewer, subscription = await _open(db, authority, tmp_path)
+    loop = asyncio.get_running_loop()
+    entered, release = asyncio.Event(), threading.Event()
+    resolve = session_viewer_close._physical_target
+    remaining = lookup
+
+    def slow_lookup(*args):
+        nonlocal remaining
+        remaining -= 1
+        if remaining == 0:
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(timeout=10), 'the owner could not serve the returning viewer during target lookup'
+        return resolve(*args)
+
+    monkeypatch.setattr(session_viewer_close, '_physical_target', slow_lookup)
+    closing = asyncio.create_task(_call(viewer, 'session.detach', session_id='chat',
+                                        subscription_id=subscription, end_reason='cli_close'))
+    try:
+        await asyncio.wait_for(entered.wait(), 30)
+        other = _viewer(authority, tmp_path)
+        resumed = await _call(other, 'session.resume', session_id='chat')
+        # It left again without closing: the old close must stay cancelled even with no viewer left.
+        await _call(other, 'session.detach', session_id='chat', subscription_id=resumed['subscription_id'])
+    finally:
+        release.set()
+        await closing
+
+    assert session_row(db, 'chat')['ended_at'] is None and calls == []
+    assert not refused_for_session((authority.profile_id, 'chat'))
+
+
+@pytest.mark.asyncio
 async def test_a_viewer_reattaching_during_the_idle_check_cancels_the_close(tmp_path, monkeypatch):
     db, authority, calls = await _owner(tmp_path, monkeypatch)
     viewer, subscription = await _open(db, authority, tmp_path)

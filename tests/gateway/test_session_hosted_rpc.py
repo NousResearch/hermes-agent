@@ -361,8 +361,8 @@ def test_history_read_during_a_room_session_delete_is_not_found(hosted_owner, mo
             assert release.wait(10), 'the delete was never released'
         return result
 
-    async def prepare_then_delete(authority_, ref_):
-        prepared = await prepare(authority_, ref_)
+    async def prepare_then_delete(authority_, ref_, **kwargs):
+        prepared = await prepare(authority_, ref_, **kwargs)
         handle = authority._handle(ref)
         deletes.append(asyncio.ensure_future(mutate_session(authority, principal, ref, {
             'session_id': sid, 'request_id': 'delete', 'operation': 'delete', 'payload': {},

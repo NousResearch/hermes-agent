@@ -42,6 +42,7 @@ from agent.gemini_urls import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.process_transport import waits_like_local
 from session_rules.turns import flatten_message_text
+from agent.route_capabilities import literal_think_tags_capability
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, append_message, data_use_requirement, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_messages_surrogates, _sanitize_surrogates, _repair_tool_call_arguments,
@@ -1534,11 +1535,10 @@ def _dump_if_model(value):
 def _assistant_reasoning_text(agent, assistant_message) -> Optional[str]:
     """Structured reasoning, else inline ``<think>`` blocks embedded in content."""
     reasoning_text = agent._extract_reasoning(assistant_message)
-    if not reasoning_text:
+    if not reasoning_text and not literal_think_tags_capability(agent):  # its think tags are answer text
         content = flatten_message_text(getattr(assistant_message, "content", None))
         think_blocks = re.findall(r'<think>(.*?)</think>', content, flags=re.DOTALL)
-        if think_blocks:
-            reasoning_text = "\n\n".join(b.strip() for b in think_blocks if b.strip()) or None
+        reasoning_text = "\n\n".join(b.strip() for b in think_blocks if b.strip()) or None
     if reasoning_text and agent.verbose_logging:
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
     # When streaming is active the reasoning was already displayed during the
@@ -2240,7 +2240,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             text = attempt(retry_count)
             if not text:
                 continue
-            if "<think>" in text:
+            if "<think>" in text and not literal_think_tags_capability(agent):
                 text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
             if text:
                 summary_call_outcome = "success"

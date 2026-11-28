@@ -283,6 +283,40 @@ gateway alike, so it survives a `/model` switch to another model on the same
 provider. A fallback or any other provider does not inherit it, and OpenRouter
 routes are never trusted, even with the flag set.
 
+Hermes also removes `<think>`/`</think>`-style tags (`<thinking>`,
+`<reasoning>` and the other reasoning tag names) from every reply, because some
+models write their reasoning inline in `content`. That also deletes legitimate
+text: a reply that quotes the tag, explains it, or shows it in a code example.
+If your server returns reasoning separately (`reasoning_content` or
+`reasoning`) and ends thinking by token id, so that tag text in `content` is
+always part of the answer, opt that model in with `literal_think_tags`:
+
+```yaml
+providers:
+  local-llm:
+    api: http://127.0.0.1:8080/v1
+    models:
+      deepseek-v4.1-flash:
+        literal_think_tags: true
+```
+
+On that route Hermes keeps reasoning-tag text in the stored message, in the
+final response every platform receives, and in streamed gateway previews, and
+it no longer copies tagged answer text into the message's reasoning. Tool-call
+XML is still scrubbed, and reasoning that arrives in its own field stays hidden
+as before. The interactive CLI's own display filter is not covered: its live
+stream can still hide a reasoning block that starts a line, although the stored
+reply keeps it.
+
+Like `answer_in_reasoning`, the flag can sit in a provider-level `capabilities:`
+block, and it is re-read on the active route every turn. Only the provider you
+selected decides: another provider entry on the same endpoint does not lend it
+its flag, and an explicit `false` wins. A fallback provider keeps the default
+stripping. Unlike `answer_in_reasoning`, no route is refused (OpenRouter
+included): the flag is your statement about what that server returns, so set it
+only where it holds. Leave it off for servers that put reasoning inline in
+`content`: their reasoning would show up as the reply.
+
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).
 :::

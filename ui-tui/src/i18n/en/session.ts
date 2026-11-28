@@ -47,6 +47,13 @@ export const sessionEn = {
       switchSessions: 'switch sessions',
       interruptBeforeSwitch: (what: string) => `interrupt the current turn before trying to ${what}`
     },
+    sidebar: {
+      title: 'Sessions',
+      liveCount: (count: number) => `${count} live`,
+      newSession: '+ new session',
+      noLiveSessions: 'no live sessions',
+      untitled: 'untitled'
+    },
     main: {
       failedToStartLiveSession: 'failed to start new live session',
       invalidModelSwitchResponse: 'invalid response: model switch',

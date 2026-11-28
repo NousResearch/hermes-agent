@@ -32,10 +32,11 @@ it('never rolls event progress back when an older live snapshot arrives', () => 
   }
 })
 
-it('lets the agents shortcut leave the composer without stealing redo', () => {
+it('keeps Ctrl+Y redo intact while routing Ctrl+Shift+Y to the sidebar', () => {
   const key = { ctrl: true, shift: false, meta: false } as Parameters<typeof shouldPassThroughToGlobalHandler>[1]
   expect(shouldPassThroughToGlobalHandler('t', key)).toBe(true)
   expect(shouldPassThroughToGlobalHandler('y', key)).toBe(false)
+  expect(shouldPassThroughToGlobalHandler('Y', { ...key, shift: true })).toBe(true)
 })
 
 it('merges one row per actual child and does not notify unchanged snapshots', () => {

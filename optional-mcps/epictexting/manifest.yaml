@@ -1,0 +1,36 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: epictexting
+description: 'EpicTexting: send SMS and bulk texts from your own Twilio number.'
+source: https://www.epictexting.app/blog/send-sms-from-claude
+
+# Official vendor-hosted remote MCP (URL-only, so Hermes never spawns a local
+# process for this entry). Native OAuth 2.1 + Dynamic Client Registration
+# (verified live: RFC 9728 protected-resource metadata -> AS metadata with
+# registration_endpoint). Hermes's MCP client + mcp_oauth_manager handle
+# discovery, PKCE, token exchange, and refresh.
+
+transport:
+  type: http
+  url: https://www.epictexting.app/api/mcp/mcp
+
+auth:
+  type: oauth
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - epictexting
+    - sms
+    - text message
+    - twilio
+  hosts:
+    - epictexting.app
+
+post_install: |
+  On first connection Hermes opens a browser to sign in to
+  EpicTexting (or run `hermes mcp login epictexting`) and connect
+  your Twilio account. Approve access, then restart the session so
+  tools load. Every send is shown to you for a yes first.

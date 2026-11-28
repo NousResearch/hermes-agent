@@ -48,7 +48,10 @@ def refusal_text(error: BaseException | str) -> str:
         return launch_credentials_copy(error)
     data = getattr(error, "data", None)
     data = data if isinstance(data, dict) else {}
-    field, detail = str(data.get("field") or "").strip(), str(data.get("detail") or "").strip()
+    field = str(data.get("field") or "").strip()
+    if not field and isinstance(data.get("fields"), list):
+        field = ", ".join(str(item).strip() for item in data["fields"] if str(item).strip())
+    detail = str(data.get("detail") or "").strip()
     if not field and not detail:
         return str(error)
     return f"{error} ({field or 'unnamed field'}{': ' + detail if detail else ''})"

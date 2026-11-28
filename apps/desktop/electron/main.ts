@@ -661,7 +661,7 @@ import { createChannelAppInstallerStrategy } from './updater/app-installer'
 import { ChannelResolver, type ChannelTarget } from './updater/channel'
 import { inspectRunningChannelApp } from './updater/channel-native'
 import { ChannelStrategy } from './updater/channel-strategy'
-import { verifyPreparedChannelInstaller } from './updater/channel-windows-host'
+import { verifyPreparedChannelDownload } from './updater/channel-windows-host'
 import { type CheckoutStrategy, createCheckoutStrategy } from './updater/checkout'
 import { readSourceUpdate, sourceChannelName, type SourceUpdate } from './updater/checkout-source'
 import { createElectronUpdaterStrategy, type ElectronUpdaterClientDeps } from './updater/electron-updater-client'
@@ -3545,7 +3545,7 @@ function createNativePackagedStrategy(
     }
 
     return target
-      ? createChannelAppInstallerStrategy(deps, target, verifyPreparedChannelInstaller)
+      ? createChannelAppInstallerStrategy(deps, target, verifyPreparedChannelDownload)
       : new AppInstallerStrategy(deps)
   }
 

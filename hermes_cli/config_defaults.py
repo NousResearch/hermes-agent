@@ -313,6 +313,10 @@ DEFAULT_CONFIG = {
         # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
         "env_passthrough": [],
         "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
+        # Names a CLI/TUI client may send with EACH prompt (``prompt.submit``'s ``turn_env``): values that
+        # change per turn, e.g. the identity of the job that spawned the run. Exact names only; bound to
+        # that one turn's tools, never stored with the session.
+        "client_env_turn_passthrough": [],
         # Remote-backend sync-back refuses to extract a downloaded state archive larger than this
         # (bytes); raise it for a ~/.hermes tree that legitimately exceeds 2 GiB.
         "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,

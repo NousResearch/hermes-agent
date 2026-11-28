@@ -596,7 +596,7 @@ class AuthorityConnection:
                 'authority_epoch': self.authority.epoch,
                 'capabilities': ['durable-admission-v1', 'event-replay-v1', 'local-cli-create-v1', 'acp-editor-policy-v1',
                                  'acp-session-mcp-v1', 'clarify-batch-v1', 'plugin-rpc-v1', 'session-client-v1', 'session-transcript-v1', 'session-list-picker-v1',
-                                 'session-list-cursor-v1', 'client-identity-v1', 'client-activity-v1'],
+                                  'session-list-cursor-v1', 'client-identity-v1', 'client-activity-v1', 'turn-env-v1'],
                 'session_create': {'sources': sorted(SURFACES),
                                    'parameters': sorted(CREATE_FIELDS | {'title'})},
                 # Main's ``gateway.ready.skin``: the canonical client's own ready carries it.
@@ -900,7 +900,7 @@ class AuthorityConnection:
             raise AuthorityRefusal('permission_denied')
         forbidden = set(params) - {'session_id', 'text', 'submission_id', 'input_id', 'queued', 'attachments', 'finite', 'unattended',
                                    'surface', 'voice_context', 'interrupted', 'voice_turn', 'display_kind', 'title_preview',
-                                   'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                                   'turn_author', 'api_text', 'model_override', 'clarify_batch', 'turn_env'}
         if forbidden:
             raise AuthorityRefusal('invalid_params')
         request_id = params.get('submission_id') or params.get('input_id')
@@ -917,6 +917,8 @@ class AuthorityConnection:
         if self.client is not None:
             # The owner stamps the turn with the connection's announced label; the wire cannot.
             payload['client'] = self.client
+        if 'turn_env' in params:
+            payload['turn_env'] = params['turn_env']
         return Submission(request_id, ref, payload, 'queue')
 
     async def mutate(self, ref, params):

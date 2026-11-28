@@ -11,6 +11,7 @@ from pm import install_hint
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone, UTC
 from typing import Any, Dict, List, Optional, Tuple
@@ -81,6 +82,94 @@ def _content_to_blocks(content: Any, redact: bool) -> list[dict[str, Any]]:
     return [] if content is None else [_text_block(content if isinstance(content, str) else json.dumps(content), redact)]
 
 
+_BRIDGE_TOOL_NAMES = frozenset({"tool_search", "tool_describe", "tool_call"})
+_UNTRUSTED_WRAPPER_RE = re.compile(
+    r"^<untrusted_tool_result\b[^>]*>.*?\n\n(?P<payload>.*)\n</untrusted_tool_result>\s*$",
+    re.DOTALL,
+)
+
+
+def _unwrap_deferred_tool_call(name: str, parsed: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Unwrap single-target ``tool_call`` bridge invocations to their underlying tool name and
+    arguments, matching ``agent/tool_executor.py`` and ``agent/tool_dispatch_helpers.py`` without
+    importing ``snowballstemmer``-backed catalog modules."""
+    if name != "tool_call" or not isinstance(parsed, dict):
+        return name, parsed
+    raw_calls = parsed.get("calls")
+    if raw_calls is None:
+        legacy_name = str(parsed.get("name") or "").strip()
+        if not legacy_name:
+            return name, parsed
+        raw_calls = [{"name": legacy_name, "arguments": parsed.get("arguments")}]
+    elif isinstance(raw_calls, str):
+        try:
+            raw_calls = json.loads(raw_calls)
+        except json.JSONDecodeError:
+            return name, parsed
+    if isinstance(raw_calls, dict):
+        raw_calls = [raw_calls]
+    if not isinstance(raw_calls, list) or len(raw_calls) != 1 or not isinstance(raw_calls[0], dict):
+        return name, parsed
+    target_name = str(raw_calls[0].get("name") or "").strip()
+    from tools.connectors.gateway.names import is_connector_name
+    if not target_name or target_name in _BRIDGE_TOOL_NAMES or is_connector_name(target_name):
+        return name, parsed
+    inner_args = raw_calls[0].get("arguments")
+    if inner_args is None or (isinstance(inner_args, str) and not inner_args.strip()):
+        inner_args = {}
+    elif isinstance(inner_args, str):
+        try:
+            inner_args = json.loads(inner_args)
+        except json.JSONDecodeError:
+            return name, parsed
+    if not isinstance(inner_args, dict):
+        return name, parsed
+    return target_name, inner_args
+
+
+def _payload_indicates_error(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if any(payload.get(k) is True for k in ("is_error", "isError", "timed_out")):
+        return True
+    err = payload.get("error")
+    if err is True or (isinstance(err, str) and bool(err.strip())):
+        return True
+    if payload.get("status") in ("error", "failed", "timed_out"):
+        return True
+    return False
+
+
+def _tool_result_is_error(msg: dict[str, Any]) -> bool:
+    """Detect whether an OpenAI-format ``role='tool'`` message represents a failed tool call so
+    the exported Anthropic ``tool_result`` block carries ``is_error: True``."""
+    if msg.get("is_error") is True or msg.get("error") is True:
+        return True
+    content = msg.get("content")
+    if isinstance(content, dict):
+        return _payload_indicates_error(content)
+    if not isinstance(content, str):
+        return False
+    candidates = [content.strip()]
+    match = _UNTRUSTED_WRAPPER_RE.match(content)
+    if match:
+        wrapped = match.group("payload").strip()
+        candidates.insert(0, wrapped)
+        first_line = next((ln.strip() for ln in wrapped.splitlines() if ln.strip()), "")
+        if first_line:
+            candidates.insert(0, first_line)
+    for candidate in candidates:
+        if not candidate.startswith("{"):
+            continue
+        try:
+            decoded = json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if _payload_indicates_error(decoded):
+            return True
+    return False
+
+
 def _parse_tool_args(raw_args: Any) -> dict[str, Any]:
     if not isinstance(raw_args, str):
         return raw_args if isinstance(raw_args, dict) else {}
@@ -97,7 +186,9 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> list[dict[str, Any]]
         if not isinstance(tc, dict):
             continue
         fn = tc.get("function") or {}
+        raw_name = fn.get("name") or tc.get("name") or "tool"
         parsed = _parse_tool_args(fn.get("arguments"))
+        resolved_name, parsed = _unwrap_deferred_tool_call(raw_name, parsed)
         if redact:
             try:
                 from agent.redact_structured import redact_structured
@@ -106,7 +197,7 @@ def _tool_calls_to_blocks(tool_calls: Any, redact: bool) -> list[dict[str, Any]]
                 logger.warning("Trace upload structured redaction failed; refusing upload", exc_info=True)
                 raise TraceRedactionError(_REDACTION_BLOCKED_MESSAGE) from exc
         blocks.append({"type": "tool_use", "id": tc.get("id") or f"toolu_{uuid.uuid4().hex[:16]}",
-                       "name": fn.get("name") or tc.get("name") or "tool", "input": parsed})
+                       "name": resolved_name, "input": parsed})
     return blocks
 
 
@@ -130,10 +221,14 @@ def _assistant_message(msg: dict[str, Any], model: str, redact: bool) -> dict[st
 
 def _tool_result_message(msg: dict[str, Any], model: str, redact: bool) -> dict[str, Any]:
     content = msg.get("content")
-    return {"role": "user", "content": [{
-        "type": "tool_result", "tool_use_id": msg.get("tool_call_id") or msg.get("tool_name") or "tool",
+    block: dict[str, Any] = {
+        "type": "tool_result",
+        "tool_use_id": msg.get("tool_call_id") or msg.get("tool_name") or "tool",
         "content": _redact(content if isinstance(content, str) else json.dumps(content), redact),
-    }]}
+    }
+    if _tool_result_is_error(msg):
+        block["is_error"] = True
+    return {"role": "user", "content": [block]}
 
 
 def _user_message(msg: dict[str, Any], model: str, redact: bool) -> dict[str, Any]:

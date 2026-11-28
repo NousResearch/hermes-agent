@@ -15,6 +15,15 @@ from tests.waiting import async_wait_until
 
 pytest.importorskip('websockets')
 
+
+@pytest.fixture(autouse=True)
+def _fresh_consumed(monkeypatch):
+    """The consumed-delivery record is process-wide: each test starts with an empty one."""
+    from collections import OrderedDict
+
+    from gateway import session_ingress_live_turn
+    monkeypatch.setattr(session_ingress_live_turn, '_consumed', OrderedDict())
+
 FIRST, ROOT = '1700000000.000500', 'D5'
 
 
@@ -87,3 +96,105 @@ async def test_a_resent_answer_is_not_run_again_as_a_new_turn(tmp_path, monkeypa
         await send('1700000000.000503', ROOT, 'next', thread_id=FIRST)
         await async_wait_until(lambda: 'next' in executed, timeout=20, what='the next message ran')
         assert executed == ['first', 'next']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel', [False, True], ids=['overlapping', 'after-cancel'])
+async def test_a_re_sent_yes_never_approves_the_next_command(tmp_path, monkeypatch, cancel):
+    """An approval resolves, then awaits its confirmation send; the connector re-sends the unACKed
+    "yes" while that send is in flight, or after a shutdown cancelled it. Either way the re-send must
+    not approve the command the turn asks about next."""
+    from tools import approval
+    from tools.approval_gateway_wait import _ApprovalEntry
+
+    async with _gateway(tmp_path, 'relay-approval-resend') as (runner, _authority, send, outgoing, adapter):
+        pending, answers = {}, []
+        sending = asyncio.Event()
+        release = asyncio.Event()
+        original_send = runner._send_busy_reply
+
+        async def held_confirmation(*args, **kwargs):
+            sending.set()
+            await release.wait()
+            return await original_send(*args, **kwargs)
+
+        monkeypatch.setattr(runner, '_send_busy_reply', held_confirmation)
+
+        async def ask_twice(event):
+            key = runner._session_key_for_source(event.source)
+            pending['key'] = key
+            for number in (1, 2):
+                entry = _ApprovalEntry({'command': f'rm -rf build{number}', 'description': 'recursive delete'})
+                with approval._lock:
+                    approval._gateway_queues.setdefault(key, []).append(entry)
+                pending['number'], pending['entry'] = number, entry
+                await asyncio.to_thread(entry.event.wait, 20)
+                answers.append(entry.result)
+            execution_result.get()['result'] = {'final_response': 'finished', 'messages': []}
+            return 'finished'
+
+        _stub_model(runner, monkeypatch, {'clean': ask_twice})
+        thread = '1700000000.000001'
+        message_id = '1700000000.000110'
+        try:
+            await send('1700000000.000100', 'D1', 'clean', thread_id=thread)
+            await async_wait_until(lambda: pending.get('number') == 1, timeout=20, what='first approval')
+            await send(message_id, 'D1', 'yes', thread_id=thread)
+            await asyncio.wait_for(sending.wait(), 10)
+            await async_wait_until(lambda: pending.get('number') == 2, timeout=10, what='second approval')
+            task = adapter._admission_lanes[('slack', 'D1')]
+            if cancel:
+                await adapter.cancel_background_tasks()
+                assert task.cancelled()
+                assert adapter._admission_lanes == {}
+            assert not any(f.get('type') == 'inbound_ack' and f.get('bufferId') == 'buf-' + message_id for f in outgoing)
+            await send(message_id, 'D1', 'yes', thread_id=thread)
+            if not cancel:
+                await async_wait_until(lambda: adapter._admission_lanes.get(('slack', 'D1')) is not task,
+                                       timeout=10, what='overlapping resend queued in lane')
+            release.set()
+            expected_acks = 1 if cancel else 2
+            await async_wait_until(lambda: sum(f.get('type') == 'inbound_ack' and f.get('bufferId') == 'buf-' + message_id for f in outgoing) == expected_acks, timeout=10, what='retry ACK')
+            assert not pending['entry'].event.is_set(), 'replayed first yes approved the second dangerous command'
+        finally:
+            release.set()
+            if 'key' in pending:
+                approval.resolve_gateway_approval(pending['key'], 'deny', resolve_all=True)
+
+
+@pytest.mark.asyncio
+async def test_the_replay_lookup_uses_the_request_id_admission_stores(tmp_path):
+    """An edit is admitted under ``<message id>:edit:<revision>``; the producer's replay lookup and
+    delivery lock must use that id, or a re-sent edit misses its row and answers a new prompt."""
+    from dataclasses import replace
+
+    from gateway.platforms import webhook_ingress
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+
+    async with _gateway(tmp_path, 'relay-edit-replay') as (_runner, authority, _send, _outgoing, adapter):
+        source = SessionSource(platform=adapter.platform, chat_type='dm', chat_id='D8', user_id='U-D8')
+        original = MessageEvent(text='helo', source=source, message_id='1700000000.000800')
+        edit = replace(original, text='hello', edit_revision='1800000010')
+        for event in (original, edit):
+            receipt = await authority.admit_native(event)
+            payload, principal = await webhook_ingress._prepared(authority, event)
+            await webhook_ingress._release_preparation(authority, payload)
+            rows = webhook_ingress._committed(authority, principal, webhook_ingress._request_id(event))
+            assert [row['admission_id'] for row in rows] == [receipt.admission_id]
+
+
+def test_an_edit_that_answered_is_not_the_original_message():
+    """An edit is its own input: consuming it never marks the original send (or another edit) as
+    already consumed."""
+    from dataclasses import replace
+
+    from gateway.config import Platform
+    from gateway.platforms.event import MessageEvent
+    from gateway.session import SessionSource
+    from gateway import session_ingress_live_turn as live_turn
+
+    source = SessionSource(platform=Platform.SLACK, chat_type='dm', chat_id='D9', user_id='U-D9')
+    original = MessageEvent(text='helo', source=source, message_id='1700000000.000900')
+    edit = replace(original, text='hello', edit_revision='1800000010')
+    assert live_turn._replay_key(original) != live_turn._replay_key(edit)

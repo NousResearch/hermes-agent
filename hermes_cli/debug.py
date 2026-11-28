@@ -28,7 +28,7 @@ _REDACTION_BANNER = (
 _PASTE_RS_URL = "https://paste.rs/"  # primary; dpaste.com is the fallback
 _DPASTE_COM_URL = "https://dpaste.com/api/"
 _USER_AGENT = "hermes-agent/debug-share"
-_MAX_LOG_BYTES = 512_000  # per log file for upload (paste.rs caps at ~1 MB)
+_MAX_LOG_BYTES = 512_000  # per log file read into a report; no log text is pasted
 _AUTO_DELETE_SECONDS = 21600  # 6 hours
 
 # Pending-deletion tracking: the gateway cron ticker calls ``_sweep_expired_pastes`` hourly and

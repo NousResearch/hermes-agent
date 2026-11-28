@@ -1009,6 +1009,17 @@ platform:
       ended: "このコードのリクエストは終了しました。何も入力されていません。"
       not_author: "このリクエストを開始した人だけがコードを入力できます。"
       submitted_footer: "✓ コードを送信しました"
+    # skill secret card (Slack): button / modal title ≤ 24 chars.
+    secret_entry:
+      title: "🔑 このセッションには {name} が必要です"
+      body: "スキルが `{name}` を必要としています。ボタンを押して、開いたフォームに値を貼り付けてください。値はこのプロファイルの .env に保存され、ここに投稿されることもモデルに表示されることもありません。"
+      skill: "{skill} スキルからの要求です。"
+      button: "値を入力"
+      input_label: "シークレット値"
+      ended: "このリクエストは終了しました。何も保存されていません。"
+      not_author: "このリクエストを開始した人だけが値を入力できます。"
+      submitted_footer: "✓ .env に保存しました"
+      not_saved: "⚠️ 保存されませんでした。キーはまだありません。.env に手動で追加するか、もう一度依頼してください。"
     response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"

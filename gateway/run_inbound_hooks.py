@@ -45,6 +45,39 @@ async def _stop_exec_tree(proc) -> None:
         await asyncio.wait_for(proc.wait(), timeout=5)
 
 
+def _required_gate_registered() -> bool:
+    """Whether a loaded plugin registered ``pre_gateway_dispatch`` with ``fail_closed=True``. An
+    unreadable registry answers False, so a gateway without a required gate behaves as before."""
+    try:
+        from hermes_cli.plugins import has_fail_closed_hook
+        return has_fail_closed_hook("pre_gateway_dispatch")
+    except Exception:  # health: allow BLE001 -- a registry read must never stop dispatch for plugins that did not opt in
+        logger.warning("pre_gateway_dispatch required-gate lookup failed", exc_info=True)
+        return False
+
+
+def _bind_required_decisions(results: list) -> list:
+    """When a required gate decided on this event (#79152), its decision binds: any ``skip`` drops
+    the event; else the first ``rewrite`` of a required gate applies and every other ``rewrite`` is
+    ignored. Each callback judges the event as it arrived, so no required gate ever saw the text of
+    another plugin's rewrite. Without a required decision the results keep their order rule.
+    Each result's action is read once, and only fresh plain dicts are handed on: a plugin's own
+    object (falsy, or answering differently on a second read) never reaches the dispatch loop."""
+    from hermes_cli.plugins_dispatch import RequiredDecision
+    if not any(isinstance(r, RequiredDecision) for r in results):
+        return results
+    skip = rewrite = None
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        action = result.get("action")
+        if action == "skip" and skip is None:
+            skip = {"action": "skip", "reason": result.get("reason")}
+        elif action == "rewrite" and rewrite is None and isinstance(result, RequiredDecision):
+            rewrite = {"action": "rewrite", "text": result.get("text")}
+    return [skip if skip is not None else rewrite if rewrite is not None else {"action": "allow"}]
+
+
 def _carry_replied_voice_answer(event, rewritten, new_text: str) -> None:
     """``dataclasses.replace`` drops the adapter's private typed-answer attribute, and without it a
     clarify reads the replied-to voice note's speech as the answer. Carry it: the plugin's rewritten
@@ -93,9 +126,15 @@ class GatewayInboundHooksMixin:
                 # getattr: bare-runner tests build GatewayRunner via object.__new__ without __init__.
                 session_store=getattr(self, "session_store", None),
             )
+            # A required gate's failure or invalid result is already its skip (plugins_dispatch); its
+            # decision binds over ordinary callbacks' results. Inside the guard: a fault here is a
+            # failed invocation, refused only while a required gate is registered.
+            _hook_results = _bind_required_decisions(_hook_results)
         except Exception as _hook_exc:  # health: allow BLE001 -- moved unchanged from run_inbound.py (main has the same handler): a plugin hook must never stop dispatch
             logger.warning("pre_gateway_dispatch invocation failed: %s", _hook_exc)
             _hook_results = []
+            if _required_gate_registered():  # a required (fail_closed) gate made no decision: refuse
+                _hook_results = [{"action": "skip", "reason": "required pre_gateway_dispatch gate did not run"}]
 
         for _result in _hook_results:
             if not isinstance(_result, dict):

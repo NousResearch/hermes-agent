@@ -1758,6 +1758,17 @@ def register(ctx):
 
 Every session in the profile that loads the plugin then stops streaming its replies: the user sees the typing or thinking indicator, and then only your rewritten final, on the surfaces listed in the reference. Commentary between tool calls is dropped for those turns, and if your hook raises or times out the user gets a short "reply withheld" notice instead of the original. Leave the flag off for cosmetic transforms (footers, styling) so replies keep streaming. Details per surface: [Holding the reply until it is rewritten](../../user-guide/features/hooks.md#hold-stream).
 
+### Make a gateway gate required
+
+A `pre_gateway_dispatch` callback fails open: if it raises, the message is dispatched as if the plugin had no opinion. When your callback enforces an access rule, register it as required:
+
+```python
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", admit, fail_closed=True)
+```
+
+The callback must then return a decision for every message (`skip`, `rewrite` with a non-empty text, or `allow`). If it raises or returns anything else, the message is not processed. Its decision binds: any plugin's `skip` drops the message, and another plugin's `rewrite` is not applied, so only text your gate saw is processed. Set `requires_hermes` in `plugin.yaml` to the first release with the flag, so an older Hermes refuses the plugin instead of failing in `register()`. What this covers and what it does not: [Required gates](../../user-guide/features/hooks.md#required-gate).
+
 ### Hook reference
 
 Each hook is documented in full on the **[Event Hooks reference](../../user-guide/features/hooks.md#plugin-hooks)** — callback signatures, parameter tables, exactly when each fires, and examples. Here's the summary:

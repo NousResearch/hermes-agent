@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import functools
 import inspect
 import logging
 import queue
@@ -58,6 +59,11 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
+# Hooks a callback can be registered on as required (``register_hook(..., fail_closed=True)``,
+# #79152): a required callback that raises or returns no valid decision refuses. Every other
+# registration keeps its hook's own failure behaviour (``pre_tool_call`` always fails closed).
+_REGISTRATION_FAIL_CLOSED_HOOKS = frozenset({"pre_gateway_dispatch"})
+_PRE_GATEWAY_DISPATCH_ACTIONS = frozenset({"skip", "rewrite", "allow"})
 # Documented parent-thread serialization contract — never run on a timeout worker (hooks.md).
 _HOOK_CALLER_THREAD_HOOKS: set[str] = {"subagent_stop"}
 # After a timeout, suppress the same callback this long so a hung hook cannot pile up threads.
@@ -93,6 +99,85 @@ def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseExcepti
     callback_name = getattr(cb, "__name__", repr(cb))
     return {"action": "block",
             "message": f"{hook_name} plugin callback {callback_name} raised {type(exc).__name__}: {str(exc)[:200]}"}
+
+
+class RequiredDecision(dict):
+    """The decision of a required (``fail_closed=True``) callback, built by the dispatcher from what
+    it read once: the callback's own valid result, or the refusal that stands in for it. The
+    gateway tells it apart from ordinary results by its type; a dispatcher loop downgrades one that
+    an unmarked entry returned (:func:`_ordinary_result`)."""
+
+
+def _callback_target(cb: Callable) -> Any:
+    """The function (or a callable object's type) behind *cb*, through wrappers and partials."""
+    target = inspect.unwrap(cb)
+    while isinstance(target, functools.partial):
+        target = target.func
+    if not (inspect.isfunction(target) or inspect.ismethod(target) or inspect.isbuiltin(target)):
+        target = type(target)
+    return target
+
+
+def _required_gate(callback: Callable) -> Callable:
+    """The hook-list entry of one ``fail_closed=True`` registration: a marked wrapper, so the mark
+    belongs to this registration, not to the function (registered again without the flag, or by
+    another plugin, it stays an ordinary entry). ``__wrapped__`` keeps payload narrowing as is, and
+    the wrapper carries the target's names, so failure reports never say ``gate``."""
+    @functools.wraps(callback)
+    def gate(*args: Any, **kwargs: Any) -> Any:
+        return callback(*args, **kwargs)
+    target = _callback_target(callback)
+    for attr in ("__module__", "__name__", "__qualname__"):
+        setattr(gate, attr, getattr(target, attr, getattr(gate, attr)))
+    gate.__hermes_required_gate__ = True  # type: ignore[attr-defined]
+    return gate
+
+
+def _is_required_gate(cb: Callable) -> bool:
+    return getattr(cb, "__hermes_required_gate__", False) is True
+
+
+def _ordinary_result(ret: Any) -> Any:
+    """An unmarked entry's result: a ``RequiredDecision`` it built itself counts as a plain dict."""
+    return dict(ret) if isinstance(ret, RequiredDecision) else ret
+
+
+def _callback_name(cb: Callable) -> str:
+    """``module.qualname`` of the function (or of a callable object's type) behind *cb*: never a
+    ``repr``, which for a ``functools.partial`` would print its bound arguments."""
+    target = _callback_target(cb)
+    return f"{getattr(target, '__module__', None) or 'unknown'}.{getattr(target, '__qualname__', '?')}"
+
+
+def _required_decision(hook_name: str, cb: Callable, ret: Any, exc: Optional[BaseException] = None,
+                       reported: Optional[set] = None) -> Any:
+    """What a required callback's call counts as: its result when that is a valid
+    ``pre_gateway_dispatch`` decision (``skip``, ``allow``, ``rewrite`` with a non-empty text), else a
+    ``skip`` naming the callback, the hook and why. Never the event, the error text or arguments.
+    The decision is rebuilt from the values read once, never the callback's own object.
+    The refusal is a WARNING the first time and DEBUG while it repeats for the same callback and
+    cause (*reported*, the manager's warn-once set, #111922); every refused event keeps its skip."""
+    action = ret.get("action") if exc is None and isinstance(ret, dict) else None
+    text = ret.get("text") if action == "rewrite" else None
+    if isinstance(action, str) and action in _PRE_GATEWAY_DISPATCH_ACTIONS and (
+            action != "rewrite" or (isinstance(text, str) and text)):
+        decision = RequiredDecision(action=action)
+        if action == "rewrite":
+            decision["text"] = text
+        elif action == "skip" and (reason := ret.get("reason")) is not None:
+            decision["reason"] = reason
+        return decision
+    why = f"raised {type(exc).__name__}" if exc is not None else "returned no valid decision"
+    name = _callback_name(cb)
+    key = ("required", hook_name, name, why)
+    if reported is not None and key in reported:
+        logger.debug("Required '%s' callback %s %s again: the event is refused", hook_name, name, why)
+    else:
+        if reported is not None:
+            reported.add(key)
+        logger.warning("Required '%s' callback %s %s: the event is refused (identical refusals are logged "
+                       "at DEBUG from now on)", hook_name, name, why)
+    return RequiredDecision(action="skip", reason=f"required {hook_name} callback {name} {why}")
 
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
 SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
@@ -301,27 +386,40 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in callbacks:
+        reported = self._hook_failures_reported
+        for cb in tuple(callbacks):  # a snapshot: an unload during the loop must not skip a callback
             try:
                 if use_timeout:
                     ret = self._run_hook_callback_bounded(hook_name, cb, kwargs, timeout)
                     if ret is _HOOK_SKIPPED:
                         if failed is not None:
                             failed.append(cb)
-                        if fail_closed:  # policy hook: fail closed with a block directive
+                        # pre_gateway_dispatch is unbounded today; should it become bounded, a required
+                        # gate that timed out or is suppressed still refuses, in its own result type.
+                        if _is_required_gate(cb):
+                            results.append(_required_decision(hook_name, cb, None, TimeoutError(), reported))
+                        elif fail_closed:  # policy hook: fail closed with a block directive
                             results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
                         continue
                 else:
                     ret = self._invoke_hook_callback(cb, kwargs)
+                ret = (_required_decision(hook_name, cb, ret, None, reported) if _is_required_gate(cb)
+                       else _ordinary_result(ret))
                 if ret is not None:
                     results.append(ret)
             except (Exception, SystemExit) as exc:  # health: allow BLE001 -- moved from invoke_hook: plugin callbacks are untrusted; each failure is reported and isolated
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
                 if failed is not None:
                     failed.append(cb)
-                if fail_closed:  # a guard that raised made no decision: same veto as a timeout
+                if _is_required_gate(cb):  # a required gate that raised refuses
+                    results.append(_required_decision(hook_name, cb, None, exc, reported))
+                elif fail_closed:  # a guard that raised made no decision: same veto as a timeout
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
+
+    def has_fail_closed_hook(self, hook_name: str) -> bool:
+        """True while a loaded plugin's callback on *hook_name* is registered as required."""
+        return any(_is_required_gate(cb) for cb in tuple(self._hooks.get(hook_name, ())))
 
     def _report_hook_failure(
         self, hook_name: str, cb: Callable, kwargs: dict[str, Any], exc: BaseException, *, surface: str = "Hook"
@@ -564,13 +662,22 @@ class PluginDispatchMixin:
             return False
         return bool(self._hooks.get(hook_name))
 
-    def track_hook(self, context: Any, hook_name: str, callback: Callable, *, hold_stream: bool = False):
+    def track_hook(self, context: Any, hook_name: str, callback: Callable, *, hold_stream: bool = False,
+                   fail_closed: bool = False):
         """Register ``callback`` for ``hook_name`` on behalf of ``context`` (unknown names warn but are
         still stored). ``hold_stream=True`` on ``transform_llm_output`` declares the rewrite must reach
-        the user first, so this profile's replies are not streamed (:meth:`holds_stream`)."""
+        the user first, so this profile's replies are not streamed (:meth:`holds_stream`).
+        ``fail_closed=True`` on ``pre_gateway_dispatch`` makes this registration a required gate (a
+        marked entry, ``_required_gate``): when it raises or returns no valid decision the event is
+        refused (``_required_decision``). The mark lives and dies with the registration's entry."""
         from hermes_cli.plugins import VALID_HOOKS
 
-        handle = context._track_callback("hook", hook_name, callback, self._hooks, VALID_HOOKS)
+        required = fail_closed and hook_name in _REGISTRATION_FAIL_CLOSED_HOOKS
+        if fail_closed and not required and hook_name not in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS:
+            logger.warning("Plugin '%s' set fail_closed on '%s'; only %s can be registered as required, ignored",
+                           context.manifest.name, hook_name, ", ".join(sorted(_REGISTRATION_FAIL_CLOSED_HOOKS)))
+        entry = _required_gate(callback) if required else callback
+        handle = context._track_callback("hook", hook_name, entry, self._hooks, VALID_HOOKS)
         if hold_stream and hook_name != STREAM_HOLDING_HOOK:
             logger.warning("Plugin '%s' set hold_stream on '%s'; only %s rewrites the reply, ignored",
                            context.manifest.name, hook_name, STREAM_HOLDING_HOOK)
@@ -628,23 +735,33 @@ class PluginDispatchMixin:
         timeout = _resolve_hook_callback_timeout()
         use_timeout = _hook_uses_callback_timeout(hook_name, timeout)
         fail_closed = hook_name in _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS
-        for cb in self._hooks.get(hook_name, []):
+        reported = self._hook_failures_reported
+        # A snapshot: a plugin unloaded while an earlier callback awaits must not make the loop skip
+        # the next one (a required gate among them); one registered meanwhile runs from the next event.
+        for cb in tuple(self._hooks.get(hook_name, ())):
             callback_name = getattr(cb, "__name__", repr(cb))
             try:
                 ret = cb(**self._hook_callback_kwargs(cb, kwargs))
                 if inspect.isawaitable(ret):
                     ret = await (asyncio.wait_for(ret, timeout) if use_timeout else ret)
+                ret = (_required_decision(hook_name, cb, ret, None, reported) if _is_required_gate(cb)
+                       else _ordinary_result(ret))
                 if ret is not None:
                     results.append(ret)
-            except TimeoutError:
-                logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
-                if fail_closed:  # policy hook: fail closed with a block directive
+            except TimeoutError as exc:
+                if use_timeout or not _is_required_gate(cb):  # a required gate's own TimeoutError is no deadline
+                    logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
+                if _is_required_gate(cb):  # before the hook-wide veto: the gateway reads this result type
+                    results.append(_required_decision(hook_name, cb, None, exc, reported))
+                elif fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
             except (Exception, SystemExit) as exc:
                 # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
                 # a raising policy guard fails closed).
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
-                if fail_closed:
+                if _is_required_gate(cb):
+                    results.append(_required_decision(hook_name, cb, None, exc, reported))
+                elif fail_closed:
                     results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 

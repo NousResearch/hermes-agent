@@ -189,6 +189,33 @@ def run_tool_round(
         _turn_exit_reason = "guardrail_halt"
         final_response = agent._toolguard_controlled_halt_response(decision)
         agent._emit_diagnostic_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
+        # A halt is not a handoff. The copy above asks a human to send `continue`; a
+        # dispatcher-owned worker has none, and breaking here exits rc=0 with the card still
+        # `running` — the dispatcher books that as protocol_violation, and the guardrail
+        # itself looks like a crash-loop with a different label. Reuse the shipped stop
+        # guard (the same nudge turn_stop_gates delivers for a narrated stop) so the worker
+        # is told to hand the card off instead of being silenced.
+        from agent.turn_stop_gates import guardrail_halt_stop_gate, unhanded_kanban_task
+
+        if guardrail_halt_stop_gate(
+            agent, decision=decision, halt_copy=final_response, messages=messages,
+            conversation_history=conversation_history,
+        ):
+            # The gate owns this stop: keep the explanation as the interim row it just
+            # persisted, clear final_response exactly as apply_stop_gates' arms do.
+            final_response = None
+            return _verdict("continue")
+        _unhanded = unhanded_kanban_task(messages)
+        if _unhanded:
+            # No nudge left for a worker that still owns the card. Say so with a reason the
+            # dispatcher books as a worker failure (rc=1, retried under the task's own
+            # failure budget) rather than a clean exit reading as a protocol violation.
+            _turn_exit_reason = "guardrail_halt_unhanded"
+            final_response = (
+                f"{final_response} This run owns board task `{_unhanded}` and ends with no "
+                "terminal board call, so it is booked as a worker failure, not a completed "
+                "turn."
+            )
         append_message(messages, {"role": "assistant", "content": final_response})
         # Emit the halt so it isn't mistaken for a crash; the stream callback is still
         # alive, so SSE/TUI clients see the explanation. A held turn shows it as the final only.

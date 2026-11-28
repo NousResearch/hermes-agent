@@ -46,6 +46,31 @@ def test_lazy_session_info_uses_the_policy_route_provider(tmp_path):
     assert _session_provider(None, None, auto_policy) == ''
 
 
+
+@pytest.mark.asyncio
+async def test_an_unresolved_route_provider_is_left_out_not_sent_empty(tmp_path, monkeypatch):
+    """An ``auto`` route's provider is unknown until its agent builds. Desktop stores any string it
+    gets, so an empty one cleared the session's provider on every idle frame of a lazy session."""
+    from gateway.session_contract import SessionRef
+    from gateway.session_local import local_session_info
+    from tests.gateway.test_session_create_tier_cwd import _owner
+
+    monkeypatch.chdir(tmp_path)
+    store, _runner, authority, owner = _owner(
+        tmp_path / 'owner', monkeypatch, {'model': {'default': 'base-model', 'provider': 'auto'}},
+    )
+    try:
+        created = await owner.dispatch({'id': 'c1', 'method': 'session.create', 'params': {
+            'request_id': 'c1', 'source': 'gui', 'cwd': str(tmp_path), 'toolsets': [],
+        }})
+        ref = SessionRef(authority.profile_id, created['result']['session_id'])
+        info = local_session_info(authority, ref)
+        assert info['model'] == 'base-model' and info['lazy'] is True
+        assert 'provider' not in info
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
 @pytest.mark.asyncio
 async def test_local_viewer_title_republishes_session_info(monkeypatch):
     import asyncio

@@ -3,9 +3,9 @@
 For every declared id the pack must ship ``locales/<id>.yaml`` that parses and is text-only (a number,
 list or null leaf is an error: ``t()`` would silently drop it). Keys the English catalogs do not have
 are a WARNING naming them — a pack written against a newer or older Hermes still installs, it just
-carries dead keys. Core keys come from the bundled ``locales/en.yaml``; TUI/Desktop keys from
-``locales/_keys.tui.json`` / ``locales/_keys.desktop.json`` (exported by the TS packages' build
-scripts). When an export is absent the key check for that surface is skipped, never failed.
+carries dead keys. Core keys come from the bundled ``locales/en.yaml``; TUI/Desktop/web keys from
+``locales/_keys.tui.json`` / ``locales/_keys.desktop.json`` / ``locales/_keys.web.json`` (exported by
+the TS packages' key scripts). When an export is absent the key check for that surface is skipped, never failed.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from agent.i18n_layers import CORE_SURFACE, flatten, non_text_leaves, scan_local
 
 logger = logging.getLogger(__name__)
 
-_KEY_EXPORTS = {"tui": "_keys.tui.json", "desktop": "_keys.desktop.json"}
+_KEY_EXPORTS = {"tui": "_keys.tui.json", "desktop": "_keys.desktop.json", "web": "_keys.web.json"}
 
 
 def _bundled_locales_dir() -> Path:

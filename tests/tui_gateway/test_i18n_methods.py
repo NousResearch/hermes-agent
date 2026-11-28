@@ -57,7 +57,8 @@ def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypat
     assert de["messages"] == {"approval.denied": "Overlay-DE"}
     # Unknown ids resolve to en with an empty layer; a bad surface is a client error.
     assert _call(server, "i18n.catalog", {"lang": "xx-nope"})["result"] == {"lang": "en", "surface": "core", "messages": {}}
-    assert _call(server, "i18n.catalog", {"lang": "pl", "surface": "web"})["error"]["code"] in (4000, 4002)
+    assert _call(server, "i18n.catalog", {"lang": "pl", "surface": "webz"})["error"]["code"] in (4000, 4002)
+    assert _call(server, "i18n.catalog", {"lang": "pl", "surface": "web"})["result"]["surface"] == "web"
 
 
 def test_catalog_answers_for_the_requested_profile_home(tmp_path, monkeypatch, clean_layers):

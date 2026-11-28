@@ -409,7 +409,7 @@ class PluginManifest:
     # ``<key>:``; ``listens`` fully-qualified ``<plugin>:<event>`` names.
     emits: list[str] = field(default_factory=list)
     listens: list[str] = field(default_factory=list)
-    # Language pack declaration: ids whose ``locales/<id>[.tui|.desktop].yaml`` the loader registers
+    # Language pack declaration: ids whose ``locales/<id>[.tui|.desktop|.web].yaml`` the loader registers
     # automatically (no Python needed). ``locale_metadata`` carries the optional per-id
     # ``{endonym, rtl}`` from the mapping form of a ``provides_locales`` entry.
     provides_locales: list[str] = field(default_factory=list)

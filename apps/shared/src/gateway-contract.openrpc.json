@@ -23452,7 +23452,8 @@
         "enum": [
           "core",
           "tui",
-          "desktop"
+          "desktop",
+          "web"
         ],
         "title": "LocaleSurface",
         "type": "string"

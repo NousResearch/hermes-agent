@@ -16,6 +16,7 @@ class LocaleSurface(WireEnum):
     core = "core"
     tui = "tui"
     desktop = "desktop"
+    web = "web"
 
 
 class LanguageOption(Result):

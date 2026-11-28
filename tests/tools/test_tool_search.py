@@ -921,3 +921,16 @@ class TestDeferredCallSchemaProbe:
         }, calls)
 
         assert validate_deferred_call_args(name, {"payload": {"anything": True}}) is None
+
+    def test_external_dynamic_ref_fails_open_without_fetch(self, schema_server):
+        from tools.tool_search import validate_deferred_call_args
+
+        url, requests = schema_server
+        name = "mcp_probe_external_dynamic_ref_validation"
+        self._register_schema(name, "mcp-probe-external-dynamic-ref", {
+            "type": "object",
+            "properties": {"payload": {"$dynamicRef": f"{url}/schema.json"}},
+        }, [])
+
+        assert validate_deferred_call_args(name, {"payload": 42}) is None
+        assert requests == []

@@ -76,6 +76,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     from hermes_cli.local_runtime.estimator import as_loaded, profile_from_gguf
     from hermes_cli.local_runtime.gguf import model_id_from_stem, read_gguf_header
     from hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_cli.local_runtime.model_settings import settings_for_model
     from hermes_cli.local_runtime.presets import (
         preset_for_model, read_preset_decisions, resident_footprint)
 
@@ -92,6 +93,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     except (ValueError, OSError) as exc:
         logger.debug("growth skip %s: unreadable gguf (%s)", model_id, exc)
         return None
+    profile = settings_for_model(gguf).apply(profile)
 
     try:
         server_idle = sup.is_idle(model_id)
@@ -120,9 +122,7 @@ def maybe_grow_window(model_id: str, *, base_url: str, session_tokens: int,
     # The grown instance loads after this one exits, so the model's own memory counts as free,
     # draft included when its running preset has one. Other loaded models still count as held,
     # which errs toward a smaller window.
-    running = read_preset_decisions().get(model_id)
-    drafting = running is not None and (running.keys or {}).get("spec-type") == "draft-dflash"
-    own_bytes = resident_footprint(gguf, budget, current_window, drafting=drafting) or 0
+    own_bytes = resident_footprint(gguf, budget, current_window, preset_path=sup.preset_path) or 0
     live = _launch_budget(budget, own_bytes=own_bytes)
     plan = preset_for_model(gguf, budget, set(), requested_window=decision.next_window, live=live)
     if plan is None or plan.refusal or plan.window < decision.next_window:

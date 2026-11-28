@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ Kaldırıldı: {names}"
     tools_available: "🔧 {servers} sunucudan {tools} araç kullanılabilir"
     agent_updated: "✅ Ajan güncellendi — {count} araç kullanılabilir"
+    registry_updated: "✅ MCP kayıt defteri güncellendi — {count} MCP aracı kullanılabilir; sonraki ajan başlatması için sıraya alındı"
   reload_skills:
     reloading: "🔄 Skill'ler yeniden yükleniyor..."
     total: "📚 {count} skill kullanılabilir"

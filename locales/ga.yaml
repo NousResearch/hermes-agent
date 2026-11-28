@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ Bainte: {names}"
     tools_available: "🔧 {tools} uirlis(í) ar fáil ó {servers} freastalaí(thí)"
     agent_updated: "✅ Gníomhaire nuashonraithe — {count} uirlis(í) ar fáil"
+    registry_updated: "✅ Clárlann MCP nuashonraithe — {count} uirlis(í) MCP ar fáil; sa chiú don chéad túsú gníomhaire eile"
   reload_skills:
     reloading: "🔄 Ag athlódáil scileanna..."
     total: "📚 {count} scil(eanna) ar fáil"

@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ 已移除：{names}"
     tools_available: "🔧 来自 {servers} 个服务器的 {tools} 个工具可用"
     agent_updated: "✅ 代理已更新 — {count} 个工具可用"
+    registry_updated: "✅ MCP 注册表已更新 — {count} 个 MCP 工具可用；已排队等待下次代理初始化"
   reload_skills:
     reloading: "🔄 正在重新加载技能..."
     total: "📚 {count} 个技能可用"

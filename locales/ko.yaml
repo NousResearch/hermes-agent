@@ -3337,6 +3337,7 @@ cli:
     removed: "➖ 제거됨: {names}"
     tools_available: "🔧 서버 {servers}개에서 도구 {tools}개 사용 가능"
     agent_updated: "✅ 에이전트 업데이트됨 — 도구 {count}개 사용 가능"
+    registry_updated: "✅ MCP 레지스트리 업데이트됨 — MCP 도구 {count}개 사용 가능; 다음 에이전트 초기화 대기 중"
   reload_skills:
     reloading: "🔄 스킬을 다시 불러오는 중..."
     total: "📚 스킬 {count}개 사용 가능"

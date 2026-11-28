@@ -45,6 +45,7 @@ import { useI18n } from '@/i18n'
 import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
+import { hasLossyJsonNumber } from '@/lib/json-precision'
 import { toolResultRecord } from '@/lib/tool-result-metadata'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -171,7 +172,9 @@ function prettyTechnicalValue(value: unknown): string {
     try {
       const parsed = JSON.parse(value)
 
-      return parsed && typeof parsed === 'object' ? JSON.stringify(parsed, null, 2) : value
+      return parsed && typeof parsed === 'object' && !hasLossyJsonNumber(trimmed)
+        ? JSON.stringify(parsed, null, 2)
+        : value
     } catch {
       return value
     }

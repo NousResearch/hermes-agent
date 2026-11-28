@@ -42,6 +42,7 @@ import {
   createReconnectScheduler,
   createVersionResolver,
   installConsoleStamps,
+  pairCloseFailure,
   buildLocationPayload,
   buildTextSendPayload,
   createBoundedMessageStore,
@@ -505,6 +506,11 @@ async function startSocket() {
         if (!PAIR_JSON) {
           console.log('❌ Logged out. Delete session and restart to re-authenticate.');
         }
+        process.exit(1);
+      } else if (PAIR_ONLY && pairCloseFailure(reason)) {
+        const error = pairCloseFailure(reason, lastDisconnect?.error?.message);
+        emitPairEvent({ event: 'error', error, reason });
+        if (!PAIR_JSON) console.log(`❌ ${error}`);
         process.exit(1);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.

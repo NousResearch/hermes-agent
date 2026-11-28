@@ -92,3 +92,85 @@ test('constrains prose while tables and code scroll inside their own cards', asy
   expect(metrics.codeOverflowX).toBe('auto')
   expect(metrics.codeScrollWidth).toBeGreaterThan(metrics.codeClientWidth)
 })
+
+// #145797: the message body's `wrap-anywhere` used to reach table cells. Auto
+// layout then counted every letter as a break opportunity and shrank the short
+// columns until labels broke mid-word. Cells wrap between words now, so each
+// column is at least as wide as its longest word and an over-wide table scrolls
+// inside its card instead.
+test('keeps table words whole and scrolls an over-wide table inside its card', async () => {
+  const page = fixture!.page
+  const cell = 'min-w-12 px-2.5 py-1.5 align-top leading-snug wrap-break-word'
+
+  const row = [
+    'Revisión independiente inicial del plan',
+    '<code>a070870466f38f8f</code>',
+    'TASK-3943 77e0f97e',
+    '<code>idle</code>',
+    'Revisión de planificación del cambio de método de merge',
+    'No; aceptación y revisión humana pendientes en el padre'
+  ]
+
+  await page.setContent(`
+    <style>${rendererCss()}</style>
+    <main class="wrap-anywhere min-w-0 max-w-full overflow-hidden" data-testid="message" style="width: 384px">
+      <div class="aui-md prose w-full min-w-0 max-w-none overflow-hidden">
+        <div class="aui-md-table my-2 max-w-full overflow-x-auto">
+          <table class="m-0 w-full min-w-[18rem] border-collapse">
+            <thead>
+              <tr>${row.map((_, index) => `<th>C${index}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              <tr>${row.map(value => `<td class="${cell}">${value}</td>`).join('')}</tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </main>
+  `)
+
+  const metrics = await page.getByTestId('message').evaluate(async element => {
+    const root = element as HTMLElement
+
+    await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
+
+    const tableWrapper = root.querySelector('.aui-md-table') as HTMLElement
+    const [label, id] = Array.from(root.querySelectorAll('td'))
+
+    // The widest unbreakable run each cell holds, rendered in the cell's font.
+    const textWidth = (cellElement: Element, text: string) => {
+      const probe = document.createElement('span')
+      probe.style.whiteSpace = 'nowrap'
+      probe.textContent = text
+      cellElement.appendChild(probe)
+      const width = probe.getBoundingClientRect().width
+      probe.remove()
+
+      return width
+    }
+
+    const contentWidth = (cellElement: Element) => {
+      const style = getComputedStyle(cellElement)
+
+      return cellElement.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+    }
+
+    const idCode = id.querySelector('code') as HTMLElement
+
+    return {
+      // An inline box yields one client rect per line it spans.
+      idCodeLines: idCode.getClientRects().length,
+      labelContentWidth: contentWidth(label),
+      longestLabelWord: textWidth(label, 'independiente'),
+      rootClientWidth: root.clientWidth,
+      rootScrollWidth: root.scrollWidth,
+      tableClientWidth: tableWrapper.clientWidth,
+      tableScrollWidth: tableWrapper.scrollWidth
+    }
+  })
+
+  expect(metrics.labelContentWidth).toBeGreaterThanOrEqual(Math.floor(metrics.longestLabelWord))
+  expect(metrics.idCodeLines).toBe(1)
+  expect(metrics.tableScrollWidth).toBeGreaterThan(metrics.tableClientWidth)
+  expect(metrics.rootScrollWidth).toBe(metrics.rootClientWidth)
+})

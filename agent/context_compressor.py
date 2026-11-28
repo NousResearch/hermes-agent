@@ -32,7 +32,7 @@ from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_durable import DurableStateMixin
 from agent.context_compressor_prellm import PreLlmSkipMixin
 from agent.context_compressor_window import CompactionWindowMixin, summary_view
-from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, stub_arguments, terminal_stub
+from agent.context_compressor_prune import ProactivePruneMixin, delegate_stub, execute_code_stub, stub_arguments, terminal_stub
 from agent.context_compressor_summary import SummaryDispatchMixin
 from agent.context_compressor_sampling import SummaryInputSamplingMixin
 from agent.context_compressor_prompt_rules import EPISTEMIC_STANCE_RULE, UNVERIFIED_HYPOTHESES_SECTION, _today_for_prompt
@@ -1608,9 +1608,7 @@ def _sum_delegate_task(name, args, content, content_len, line_count):
 
 
 def _sum_execute_code(name, args, content, content_len, line_count):
-    code_str = _str_arg(args, "code")
-    code_preview = code_str[:60].replace("\n", " ") + ("..." if len(code_str) > 60 else "")
-    return f"[execute_code] `{code_preview}` ({line_count} lines output)"
+    return execute_code_stub(args, content, line_count)
 
 
 def _sum_skill_view(name, args, content, content_len, line_count):

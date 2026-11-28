@@ -51,12 +51,18 @@ KANBAN_SHOW_SCHEMA = _schema(
         "It also carries the title and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
+        "verbatim in your reasoning; for your own task it is left out when the "
+        "dispatcher already put that card in your first message "
+        "(``include_worker_context=true`` brings it back). Outside a dispatcher-spawned worker "
         "there is no default task: a bare call returns a pointer to "
         "``kanban_list`` instead of task state."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "include_worker_context": _prop(
+            "boolean",
+            "Return ``worker_context`` even when the card is already in your first message "
+            "(for example after it was compacted away)."),
     },
     [],
 )

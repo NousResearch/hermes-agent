@@ -85,6 +85,9 @@ def seed_offline_models_dev(home):
 @contextmanager
 def daemon(root, home, env, *, barrier, fixture='local_recovery_daemon.py'):
     seed_offline_models_dev(env.get('HERMES_HOME', home))
+    # A built env drops conftest's lazy-install opt-out, so the daemon would install the default
+    # plugins from the network into the temporary home, staging a PM store mid-test.
+    env = {**env, 'HERMES_DISABLE_LAZY_INSTALLS': '1'}
     command = [sys.executable, str(root / 'tests/gateway/fixtures' / fixture)] if barrier else [sys.executable, '-m', 'gateway.run']
     with (home / ('first.log' if barrier else 'restart.log')).open('w+') as log:
         proc = subprocess.Popen(command, cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)

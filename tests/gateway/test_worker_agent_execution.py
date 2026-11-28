@@ -83,7 +83,7 @@ def test_real_agent_worker_persists_context_usage_and_releases_lease(tmp_path, p
                 assert proof['refusals']['cron'] == 'worker_cron_registration_required', proof['refusals']
                 assert proof['refusals']['ledger'] == 'worker_delegation_ledger_unavailable', proof['refusals']
                 success, doc, final_response, error = proof['refusals']['script_result']
-                assert success and error is None and 'SCRIPT_ONLY_RESULT' in doc
+                assert success and error is None and 'SCRIPT_ONLY_RESULT' in doc, proof['refusals']['script_result']
                 assert final_response.strip() == 'SCRIPT_ONLY_RESULT'
             assert proof['opens'] == [] and proof['fds'] == [], json.dumps(proof['opens'], indent=2)
             assert proof['context']['system_prompt'], proof

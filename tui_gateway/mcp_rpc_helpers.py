@@ -57,7 +57,7 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[st
 def record_mcp_add(entry: Any, server_config: Mapping[str, Any], saved: bool) -> None:
     """Count an ``mcp.servers.add`` as an MCP extension install. A save fails only on a suspicious
     command/args configuration (``_save_mcp_server`` returns False)."""
-    from hermes_cli.mcp_catalog import record_mcp_install
+    from hermes_cli.mcp_config import record_mcp_install
 
     source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
     record_mcp_install(source, entry.name if entry is not None else None, "success" if saved else "failed",

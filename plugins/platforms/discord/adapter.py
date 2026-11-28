@@ -34,6 +34,7 @@ from agent.async_utils import (consume_detached_task_result as _consume_backgrou
 from agent.display import ToolPreview
 from agent.i18n import get_language, t
 from agent.retry_utils import parse_retry_after_seconds
+from plugins.platforms.discord.reply_policy import discord_reply_expected
 
 logger = logging.getLogger(__name__)
 
@@ -5862,16 +5863,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
-        # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
-        #
-        # Config (discord.* in config.yaml or DISCORD_* env vars):
-        #   discord.require_mention: Require @mention in server channels (default: true)
-        #   discord.free_response_channels: Channel IDs where bot responds without mention
-        #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
-        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
-        #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
-        #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
-        #   discord.free_response_auto_thread: Free-response channels also auto-thread (default: false)
+        # Admission and reply obligation are separate: free-response chatter may opt out.
         thread_id = None
         parent_channel_id = None
         is_thread = isinstance(message.channel, discord.Thread)
@@ -6069,6 +6061,12 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordCommandSyncMixin, DiscordAuth
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            reply_expected=discord_reply_expected(
+                bot_user_id=getattr(getattr(self._client, "user", None), "id", None),
+                is_dm=_is_dm, addressed=(mention_prefix or msg_type == MessageType.COMMAND
+                                        or self._is_bot_tag_debounce_continuation(message)),
+                free_response=not _is_dm and (is_free_channel or not require_mention),
+                message=message),
         )
         if is_automated_message(message) and self._is_bot_tag_debounce_continuation(message):
             event._bot_tag_debounce = True  # type: ignore[attr-defined]

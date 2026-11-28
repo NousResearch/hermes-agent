@@ -1,4 +1,6 @@
 // Shared clicks only. Each route owns its receipt/process/relaunch observer.
+const { inspectCaseCollisionDirty } = require('./case-collision.cjs')
+
 async function pickAppWindow(app, log) {
   await app.firstWindow({ timeout: 120_000 })
   const deadline = Date.now() + 120_000
@@ -78,7 +80,7 @@ async function openAbout(page, { prepare, log, shot, confirmSettings = false, hi
   }
 }
 
-async function assertStagedBranch(page, expectedSha, log) {
+async function assertStagedBranch(page, expectedSha, log, { repoDir, gitExe } = {}) {
   let status
   for (let attempt = 0; attempt < 3; attempt++) {
     status = await page.evaluate(() => window.hermesDesktop.updates.check({ force: true }))
@@ -97,7 +99,19 @@ async function assertStagedBranch(page, expectedSha, log) {
   const offered = status.updateAvailable === undefined
     ? Number.isInteger(status.behind) && status.behind > 0
     : status.updateAvailable === true
-  if (status.supported !== true || status.error || status.dirty === true ||
+  let dirtyRefused = status.dirty === true
+  if (dirtyRefused && repoDir) {
+    try {
+      const check = inspectCaseCollisionDirty(repoDir, gitExe)
+      if (check.collisions.length > 0 && check.other.length === 0) {
+        log(`[source-branch-check] tolerating dirty=true from HEAD case-collision only: ${check.collisions.join(', ')}`)
+        dirtyRefused = false
+      }
+    } catch (error) {
+      log(`[source-branch-check] case-collision check failed: ${error.message}`)
+    }
+  }
+  if (status.supported !== true || status.error || dirtyRefused ||
       status.branch !== 'main' || status.targetSha !== expectedSha ||
       status.currentSha === expectedSha || !offered) {
     throw new Error('Desktop source check did not offer staged Git main; refusing to click an unrelated update')

@@ -189,7 +189,7 @@ async function main() {
   if (!values.result && !(values['expect-sha'] && values['repo-dir'])) {
     throw new Error('need --result and/or --expect-sha + --repo-dir unless --no-update');
   }
-  await assertStagedBranch(window, values['expect-sha'], log);
+  await assertStagedBranch(window, values['expect-sha'], log, { repoDir: values['repo-dir'] });
   const deadline = Date.now() + Number(values['timeout-ms']);
 
 

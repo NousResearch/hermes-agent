@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Source-only helpers: never search PATH for a different installation.
+SOURCE_DRIVER_ASSETS_DIR="$(CDPATH='' cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 source_hermes() {
   local root="$1" command="$1/.hermes/bin/hermes"
   if [ -e "$command" ] || [ -L "$command" ]; then
@@ -26,13 +28,24 @@ source_hermes() {
 # the installer's own marker is not a source edit; keep the marker for
 # install-method detection and refuse any other dirty state.
 accept_installer_marker() {
-  local root="$1" status
+  local root="$1" status node_bin
   status="$(git -C "$root" status --porcelain --untracked-files=all)" || return 1
-  if [ "$status" = '?? .install_method' ] && [ "$(cat "$root/.install_method")" = git ]; then
+  if [ -z "$status" ]; then
+    return 0
+  fi
+  if printf '%s\n' "$status" | grep -qxF '?? .install_method' && [ -f "$root/.install_method" ] && [ "$(cat "$root/.install_method")" = git ]; then
     printf '\n/.install_method\n' >> "$(git -C "$root" rev-parse --absolute-git-dir)/info/exclude"
     status="$(git -C "$root" status --porcelain --untracked-files=all)" || return 1
+    if [ -z "$status" ]; then
+      return 0
+    fi
   fi
-  [ -z "$status" ] || { printf 'installed source has changes other than the installer marker:\n%s\n' "$status" >&2; return 1; }
+  node_bin="${HERMES_E2E_NODE:-$(command -v node 2>/dev/null || true)}"
+  if [ -n "$node_bin" ] && "$node_bin" "$SOURCE_DRIVER_ASSETS_DIR/case-collision.cjs" --only-collisions "$root"; then
+    return 0
+  fi
+  printf 'installed source has changes other than the installer marker:\n%s\n' "$status" >&2
+  return 1
 }
 
 # Hand out a command to DRIVE the next ordinary startup, even when the

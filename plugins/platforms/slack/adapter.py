@@ -2972,9 +2972,8 @@ class SlackAdapter(SlackSocketLifecycleMixin, SlackVaultCodeMixin, BasePlatformA
                 file_uploads, initial_comment_parts, refused = await collect_image_uploads(
                     chunk, _unquote, _is_safe_url, create_ssrf_safe_async_client, safe_url_for_log)
                 for image_url, alt_text in refused:  # already left the reply text: keep the link
-                    sent = await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
-                                           metadata=metadata)
-                    delivered = delivered or sent.success
+                    await self.send(chat_id, f"{alt_text}\n{image_url}" if alt_text else image_url,
+                                    metadata=metadata)
                     retry.remove((image_url, alt_text))
                 if not file_uploads:
                     continue

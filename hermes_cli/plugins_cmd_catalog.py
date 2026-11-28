@@ -20,7 +20,8 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 from hermes_cli.plugin_catalog import (
     CATALOG_TIERS, PluginCatalogEntry, RemovedEntry, cached_removed_entries, entry_capability_summary, filter_entries,
-    find_removed, get_live_catalog_entry, load_catalog_live, match_removed, resolved_removed_entries,
+    find_removed, get_live_catalog_entry, known_issue_warnings, load_catalog_live, match_removed,
+    resolved_removed_entries,
     _NAME_RE, _normalize_repo,
 )
 from pm.filesystem import is_junction
@@ -844,6 +845,8 @@ def cmd_search(term: str = "", *, json_output: bool = False) -> None:
 
 def cmd_info(name: str) -> None:
     """Full catalog entry for *name*; falls back to installed-plugin details for non-catalog names."""
+    from rich.markup import escape
+
     from hermes_cli.plugins_cmd import _console, cmd_show
     entry = get_live_catalog_entry(name)
     if entry is None:
@@ -868,6 +871,11 @@ def cmd_info(name: str) -> None:
                          ("Middleware", caps.provides_middleware), ("Env vars", caps.requires_env)):
         console.print(f"[dim]{label + ':':<12}[/dim] {', '.join(items) or '(none)'}")
     console.print()
+    issues = known_issue_warnings(entry)
+    for line in issues:
+        console.print(f"[yellow]⚠ {escape(line)}[/yellow]")
+    if issues:
+        console.print()
     removed = find_removed(entry.name) or find_removed(entry.repo)
     if removed is not None:
         console.print(f"[red bold]✗ REMOVED from catalog: {removed.reason or 'no reason recorded'}"

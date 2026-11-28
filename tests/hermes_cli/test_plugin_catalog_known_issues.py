@@ -89,3 +89,19 @@ def test_install_summary_shows_known_issues(monkeypatch):
     summary = entry_capability_summary(entry)
     assert "Known issues:" in summary
     assert "Local embedded mode is not supported on PM-managed Hermes." in summary
+
+
+def test_plugins_info_shows_known_issues(monkeypatch, capsys):
+    """`hermes plugins info` is where a user checks an entry before installing: every known issue prints,
+    in the install result's wording, with catalog text kept literal (no Rich markup eaten)."""
+    from hermes_cli.plugins_cmd_catalog import cmd_info
+
+    entry = _entry(known_issues=["Local embedded mode is unsupported.", "Run [hermes auth add x] first."])
+    monkeypatch.setattr("hermes_cli.plugins_cmd_catalog.get_live_catalog_entry", lambda _n: entry)
+    monkeypatch.setattr("hermes_cli.plugins_cmd_catalog.find_removed", lambda _c: None)
+
+    cmd_info("hindsight")
+
+    out = capsys.readouterr().out
+    assert "Known issue: Local embedded mode is unsupported." in out
+    assert "Known issue: Run [hermes auth add x] first." in out

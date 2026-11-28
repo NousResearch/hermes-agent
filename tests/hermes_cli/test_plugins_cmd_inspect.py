@@ -162,7 +162,7 @@ def test_catalog_entry_is_inspected_at_its_reviewed_pin(tmp_path, sentinel, monk
     repo = _repo(tmp_path, _agent_files(sentinel))
     pin = _git(repo, "rev-parse", "HEAD")
     _commit(repo, {"desktop/plugin.js": "export default {}\n"})  # newer than the pin
-    entry = SimpleNamespace(name="demo", install_identifier=repo.as_uri(), sha=pin)
+    entry = SimpleNamespace(name="demo", install_identifier=repo.as_uri(), sha=pin, known_issues=[])
     monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda name: entry if name == "demo" else None)
 
     pinned = inspect_plugin_source("ignored/identifier", catalog_name="demo")
@@ -172,6 +172,20 @@ def test_catalog_entry_is_inspected_at_its_reviewed_pin(tmp_path, sentinel, monk
     assert pinned["sha"] == pin
     assert unknown == {"ok": False, "agent": False, "desktop": False, "warnings": [], "insecure": False,
                        "error": "'missing' is not in the Hermes plugin catalog."}
+
+
+def test_catalog_inspection_warns_with_the_entry_known_issues(tmp_path, sentinel, monkeypatch):
+    # The install dialog shows the inspection's warnings before the user clicks Install; a catalog entry's
+    # known issues must be among them, in the install result's own wording, without refusing the source.
+    repo = _repo(tmp_path, _agent_files(sentinel))
+    entry = SimpleNamespace(name="demo", install_identifier=repo.as_uri(), sha=_git(repo, "rev-parse", "HEAD"),
+                            known_issues=["Sign in once after installing."])
+    monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda name: entry)
+
+    result = inspect_plugin_source("", catalog_name="demo")
+
+    assert result["ok"] is True
+    assert "Known issue: Sign in once after installing." in result["warnings"]
 
 
 def test_the_reported_sha_is_the_commit_read_even_after_the_source_moves(tmp_path, sentinel, monkeypatch):

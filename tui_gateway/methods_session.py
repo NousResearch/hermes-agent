@@ -451,7 +451,7 @@ def _(rid, params: dict, persistence) -> dict:
         # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
         include_subagents = show_subagent_sessions(persistence.scope.profile_dir)
         rows = _listing_rows(persistence, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
-                             include_subagents=include_subagents)[:limit]
+                             include_subagents=include_subagents, wait_for_usage=False)[:limit]
         # No live_message_count here on purpose: the bulk listing serves rows whose open
         # paths never demand history (expectHistory defaults false); the count is a
         # per-session scan and would turn one listing call into hundreds of them.

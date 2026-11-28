@@ -18,7 +18,6 @@ import os
 import time
 from agent.i18n import DEFAULT_LANGUAGE, t
 from agent.session_activity import format_iteration_progress
-from gateway.chat_mute import is_source_muted
 from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
@@ -125,6 +124,7 @@ class GatewayBusySessionMixin:
         else:
             pending_slot[session_key] = queued_event
         queued_event._gateway_accepted = True
+        queued_event._mute_exempt = True  # accepted: a later /mute never drops it on replay
 
     def _promote_queued_event(
         self, session_key: str, adapter: Any, pending_event: Optional[MessageEvent]
@@ -977,8 +977,9 @@ class GatewayBusySessionMixin:
         if not (self._admit_bot_message_for_source(event.source) and self._admit_bot_chain(event)):
             return True
         event._bot_loop_admitted = True
-        if not event.internal and not event.get_command() and is_source_muted(event.source):
-            return True  # /mute: never steers, interrupts or queues behind the running turn
+        if self._mute_drops(event):  # never steers, interrupts or queues; a bare yes/no still answers
+            await self._route_plaintext_approval_while_busy(event, session_key)
+            return True
 
         effective_mode = self._effective_busy_input_mode(event.source)
         if self._draining:  # gateway restarting/stopping
@@ -1353,6 +1354,7 @@ class GatewayBusySessionMixin:
         text follow-up (``dispatch_shared_busy``), and ``ack`` is sent once the row commits, never
         on the transport's earlier release or a refusal. False: the in-process slot (no authority),
         and the caller answers with ``ack`` itself."""
+        event._mute_exempt = True  # a slash command's own turn: commands pierce /mute
         if not self._command_turn_admitted(event, session_key):
             self._enqueue_fifo(session_key, event, adapter)
             return False

@@ -304,9 +304,11 @@ def sender_may_see_activity(adapter: Any, event: Any) -> bool:
     # The handler's own gate runs under the scope its wrapper binds (``_standalone_scoped``: the launch
     # profile's once multi-profile hosting is active); ambient ``os.environ`` can differ from it then.
     launch_scope = getattr(runner, "_standalone_launch_scope", None)
+    muted = getattr(runner, "_mute_drops", None)
     try:
         with launch_scope() if callable(launch_scope) else contextlib.nullcontext():
-            verdict = bool(check(source))
+            # A /mute'd chat sees no typing or 👀 either: its message will be dropped too.
+            verdict = bool(check(source)) and not (callable(muted) and muted(event) is True)
     except Exception:
         logger.debug("Activity authorization probe failed; keeping typing/reactions", exc_info=True)
         verdict = True

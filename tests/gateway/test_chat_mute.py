@@ -6,7 +6,7 @@ conversational messages deterministically (idle and mid-run), and slash commands
 """
 from __future__ import annotations
 
-import json
+import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway import chat_mute
-from gateway.chat_mute import clear_chat_mute, is_chat_muted, parse_mute_duration, set_chat_mute
+from gateway.chat_mute import clear_chat_mute, is_muted, parse_mute_duration, set_chat_mute
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
@@ -22,29 +22,27 @@ from gateway.session import SessionEntry, SessionSource, build_session_key
 
 @pytest.fixture(autouse=True)
 def _isolated_store(tmp_path, monkeypatch):
-    monkeypatch.setattr(chat_mute, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(chat_mute, "get_process_hermes_home", lambda: tmp_path)
     yield tmp_path
 
 
-def test_mute_is_chat_scoped_expires_and_fails_open(tmp_path, monkeypatch):
-    set_chat_mute("telegram", "c1", duration_seconds=600)
-    assert is_chat_muted("telegram", "c1")
-    assert not is_chat_muted("telegram", "c2")
-    assert not is_chat_muted("discord", "c1")
-    expires = json.loads((tmp_path / ".chat_mutes.json").read_text(encoding="utf-8"))["telegram:c1"]["expires_at"]
-    real_time = chat_mute.time.time
-    monkeypatch.setattr(chat_mute.time, "time", lambda: expires + 1)
-    assert not is_chat_muted("telegram", "c1")
-    monkeypatch.setattr(chat_mute.time, "time", real_time)
-    # A zero duration is an instant expiry, never an indefinite mute.
-    set_chat_mute("telegram", "c1", duration_seconds=0)
-    assert not is_chat_muted("telegram", "c1")
-    set_chat_mute("telegram", "c1")
-    assert clear_chat_mute("telegram", "c1") is True
-    assert not is_chat_muted("telegram", "c1")
-    # A corrupt store reads as "nothing muted": a broken file never silences every chat.
-    (tmp_path / ".chat_mutes.json").write_text("{not json", encoding="utf-8")
-    assert not is_chat_muted("telegram", "c1")
+def test_mute_interval_judges_arrival_expires_and_fails_open(tmp_path):
+    set_chat_mute("telegram:c1", duration_seconds=600, at=1000.0)
+    assert is_muted("telegram:c1", at=1000.0) and is_muted("telegram:c1", at=1599.0)
+    assert not is_muted("telegram:c1", at=999.0)  # sent before /mute arrived
+    assert not is_muted("telegram:c1", at=1600.0)  # the timed mute ran out
+    assert not is_muted("telegram:c2", at=1200.0) and not is_muted("work:telegram:c1", at=1200.0)
+    # An unmute closes the interval at its arrival: a message sent while muted stays muted even
+    # when a text batch hands it over later; a zero duration is an instant expiry, never indefinite.
+    assert clear_chat_mute("telegram:c1", at=1100.0) is True
+    assert is_muted("telegram:c1", at=1050.0) and not is_muted("telegram:c1", at=1100.0)
+    assert clear_chat_mute("telegram:c1", at=1200.0) is False
+    set_chat_mute("telegram:c1", duration_seconds=0, at=2000.0)
+    assert not is_muted("telegram:c1", at=2000.0)
+    # An unreadable store (bad JSON, bad UTF-8) reads as "nothing muted", never an exception.
+    for junk in (b"{not json", b"\xff\xfe\x00garbage"):
+        (tmp_path / ".chat_mutes.json").write_bytes(junk)
+        assert not is_muted("telegram:c1")
 
 
 @pytest.mark.parametrize(
@@ -62,13 +60,16 @@ def test_parse_mute_duration(arg, expected):
     assert parse_mute_duration(arg) == expected
 
 
-def _source() -> SessionSource:
+def _source(bot=None) -> SessionSource:
     return SessionSource(platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
-                         user_name="tester", chat_type="dm")
+                         user_name="tester", chat_type="dm", profile=bot)
 
 
-def _event(text: str) -> MessageEvent:
-    return MessageEvent(text=text, source=_source(), message_id="m1")
+def _event(text: str, bot=None, received_at=None) -> MessageEvent:
+    event = MessageEvent(text=text, source=_source(bot), message_id="m1")
+    if received_at is not None:
+        event._received_at = received_at
+    return event
 
 
 def _runner():
@@ -81,6 +82,8 @@ def _runner():
     adapter._pending_messages = {}
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
+    # The receiving bot's profile (its own resolver is tested with voice mode): None = default bot.
+    runner._adapter_profile_for_source = lambda source: source.profile
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = SessionEntry(
@@ -102,34 +105,46 @@ def _runner():
 
 
 @pytest.mark.asyncio
-async def test_muted_chat_drops_text_while_commands_pierce():
-    """/mute through the real handler silences plain text (no agent run); /status still
-    dispatches, and a second /mute toggles the chat live again."""
+async def test_muted_chat_drops_text_by_arrival_while_commands_and_queued_turns_pierce():
+    """/mute through the real handler silences a person's text by when it ARRIVED: text sent just
+    before /mute still runs, text sent while muted stays dropped after the second /mute. /status
+    still dispatches, a turn the gateway already accepted (a /queue) is never re-judged, and a
+    second bot in the same chat keeps its own state."""
     runner = _runner()
     runner._handle_status_command = AsyncMock(return_value="status ok")
+    early = _event("sent before the mute", received_at=time.time() - 5)  # still in a text batch
 
     assert "/mute" in await runner._handle_message(_event("/mute"))
-    assert await runner._handle_message(_event("hello there")) is None
+    late = _event("hello there")
+    assert await runner._handle_message(late) is None
     runner._handle_message_with_agent.assert_not_awaited()
-
     assert await runner._handle_message(_event("/status")) == "status ok"
-    await runner._handle_message(_event("/mute"))
-    assert not is_chat_muted("telegram", "c1")
+    queued = runner._queued_turn_event(_event("/queue later"), "later", False)
+    runner._enqueue_fifo(build_session_key(_source()), queued, runner.adapters[Platform.TELEGRAM])
+    assert await runner._handle_message(queued) == "agent reply"
+    assert await runner._handle_message(_event("hi other bot", bot="work")) == "agent reply"
+    assert await runner._handle_message(early) == "agent reply"
+
+    assert "listening" in await runner._handle_message(_event("/mute"))
+    runner._handle_message_with_agent.reset_mock()
+    assert await runner._handle_message(late) is None  # flushed after the unmute: still dropped
     assert await runner._handle_message(_event("hello again")) == "agent reply"
 
 
 @pytest.mark.asyncio
-async def test_muted_chat_text_never_reaches_a_running_turn():
-    """Mid-run, a muted chat's text neither steers, interrupts nor queues behind the turn."""
+async def test_muted_chat_text_never_reaches_a_running_turn_but_answers_its_approval():
+    """Mid-run, a muted chat's text neither steers, interrupts nor queues behind the turn; a bare
+    "yes" to the approval the running turn is blocked on still answers it."""
     runner = _runner()
     runner._is_user_authorized_for_source = lambda _s: True
     runner._admit_bot_message_for_source = lambda _s: True
     runner._admit_bot_chain = lambda _e: True
     runner._effective_busy_input_mode = MagicMock(side_effect=AssertionError("reached busy routing"))
     runner._queue_or_replace_pending_event = MagicMock()
-    set_chat_mute("telegram", "c1")
+    runner._route_plaintext_approval_while_busy = AsyncMock(return_value=False)
+    set_chat_mute("telegram:c1")
+    key = build_session_key(_source())
 
-    handled = await runner._handle_active_session_busy_message(_event("stop talking"), build_session_key(_source()))
-
-    assert handled is True
+    assert await runner._handle_active_session_busy_message(_event("stop talking"), key) is True
     runner._queue_or_replace_pending_event.assert_not_called()
+    runner._route_plaintext_approval_while_busy.assert_awaited_once()

@@ -20,7 +20,6 @@ from contextlib import suppress
 from pathlib import Path
 
 from agent.i18n import t
-from gateway.chat_mute import is_source_muted
 from gateway.config import Platform
 from gateway.inbound_reply_context import reply_pointer
 from gateway.platforms.base import EphemeralReply
@@ -297,6 +296,8 @@ class GatewayInboundMixin(
         _paused_notice = _estop_paused_reply()
         if _paused_notice is None or self._hm_estop_turn_allowed(event, source):
             return None
+        if self._mute_drops(event):
+            return ""  # blocked, and a muted chat gets no pause notice either
         if getattr(event, "_heartbeat_session_id", None):
             logger.debug("Heartbeat turn dropped by global emergency stop")
             return ""
@@ -1237,14 +1238,19 @@ class GatewayInboundMixin(
     ) -> tuple[bool, Optional[str]]:
         """``(True, reply)`` when a person's message ends here, before every turn path (authority
         FIFO, busy steer/interrupt, idle): a pending-reply intercept answered it, or ``/mute``
-        drops it (``reply`` None). Commands pierce the mute so a second ``/mute`` always unmutes; internal
-        events skip both, so background completions are never lost."""
+        drops it (``reply`` None). Answers to a prompt Hermes is waiting on (clarify, confirm, a
+        bare yes/no to a blocking approval) pierce the mute, so the running turn never hangs on
+        them; commands pierce it too. Internal events skip both, so completions are never lost."""
         if is_internal:
             return False, None
         _reply = await self._hm_pending_reply_intercepts(event, source, _quick_key)
         if _reply is not None:
             return True, _reply
-        return (not event.get_command() and is_source_muted(source)), None
+        if not self._mute_drops(event):
+            return False, None
+        if self._is_session_running(_quick_key):
+            await self._route_plaintext_approval_while_busy(event, _quick_key)
+        return True, None
 
     async def _hm_dispatch_idle_commands(
         self, event: MessageEvent, source: SessionSource, _quick_key: str

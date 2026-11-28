@@ -5,6 +5,7 @@ gateway.platforms.*.
 """
 
 import re
+import time
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -155,6 +156,12 @@ class MessageEvent:
     # The producer of this turn's input when Hermes produced it itself (``TURN_ORIGINS``), set by that
     # producer (``set_turn_origin``) and carried by its committed admission; never ingress metadata.
     _turn_origin: Optional[str] = field(default=None, init=False, repr=False, compare=False)
+    # When this process received the event (``timestamp`` may be the platform's clock). ``/mute``
+    # judges a message by when it arrived, not when a text batch flushed it (``gateway.chat_mute``).
+    _received_at: float = field(default_factory=time.time, init=False, repr=False, compare=False)
+    # A turn the gateway already accepted (queued, or produced by a slash command): ``/mute`` never
+    # re-judges it on replay, so a ``/queue`` sent while muted still runs.
+    _mute_exempt: bool = field(default=False, init=False, repr=False, compare=False)
 
     def set_turn_origin(self, origin: Any) -> None:
         """Name the Hermes producer of this event's input; any value outside ``TURN_ORIGINS`` is none."""

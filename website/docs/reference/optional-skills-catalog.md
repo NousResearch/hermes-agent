@@ -210,6 +210,7 @@ hermes skills uninstall <skill-name>
 | [**property-listings**](../user-guide/skills/optional/productivity/productivity-property-listings.md) | Present property and rental listings as desktop cards. |
 | [**shop**](../user-guide/skills/optional/productivity/productivity-shop.md) | Shop catalog search, checkout, order tracking, returns. |
 | [**siyuan**](../user-guide/skills/optional/productivity/productivity-siyuan.md) | Query and edit a SiYuan knowledge base via its API. |
+| [**socratic-tutor**](../user-guide/skills/optional/productivity/productivity-socratic-tutor.md) | Teach a topic to mastery by Socratic questioning. |
 | [**telephony**](../user-guide/skills/optional/productivity/productivity-telephony.md) | Provision Twilio numbers, SMS/MMS, and AI outbound calls. |
 
 ## research

@@ -540,6 +540,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-property-listings',
                     'user-guide/skills/optional/productivity/productivity-shop',
                     'user-guide/skills/optional/productivity/productivity-siyuan',
+                    'user-guide/skills/optional/productivity/productivity-socratic-tutor',
                     'user-guide/skills/optional/productivity/productivity-telephony',
                   ],
                 },

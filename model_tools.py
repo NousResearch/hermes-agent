@@ -288,12 +288,13 @@ def _tool_defs_cache_key(
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
     from tools.environments.sandbox_scope import hosted_scope
+    from agent.delegation_context import owned_kanban_task
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, check_fn_cache_epoch(),
-        hosted_scope() is not None,
+        hosted_scope() is not None, bool(owned_kanban_task()),
     )
 
 

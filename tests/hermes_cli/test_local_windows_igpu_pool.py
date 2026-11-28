@@ -28,11 +28,11 @@ SOFTWARE = Adapter("Microsoft Basic Render Driver", 0x1414, 0, 16 * GIB, softwar
 ENGINE_B390 = {"description": B390.description, "type": GGML_DEVICE_IGPU, "total": 34 * GIB, "free": 30 * GIB}
 
 
-def _machine(monkeypatch, adapters, device, *, installed="vulkan", planned="vulkan"):
+def _machine(monkeypatch, adapters, device, *, installed="vulkan", planned="vulkan", ram=RAM):
     """``installed`` is the engine on disk (None before setup); ``planned`` is what setup installs."""
     monkeypatch.setattr(hw, "_nvidia_vram", lambda: None)
     monkeypatch.setattr(hw, "_device_pool_view", lambda: None)
-    monkeypatch.setattr(hw, "_ram_bytes", lambda: (RAM, 20 * GIB))
+    monkeypatch.setattr(hw, "_ram_bytes", lambda: (ram, 20 * GIB))
     monkeypatch.setattr(hw, "_accelerator_device", lambda **_: device)
     monkeypatch.setattr(gpu_adapters, "windows_gpu_adapters", lambda: tuple(adapters))
     engine = None if installed is None else Engine(installed, "b11370", Path("llama-server"))
@@ -81,3 +81,27 @@ def test_a_cpu_engine_keeps_the_ram_budget(monkeypatch, adapter, installed, plan
 def test_the_pool_never_grows_past_ram(monkeypatch, adapters):
     _machine(monkeypatch, adapters, None)
     assert hw.probe_budget(planning=True).total_device_bytes == RAM
+
+
+# A full unified-memory APU reports its whole pool as GPU memory because the firmware carve-out is
+# invisible to Windows: a 128 GB Strix Halo adapter is 102 GiB of 127.1 installed, and the machine
+# is built to keep a model resident across essentially all of it.
+STRIX_RAM = int(127.1 * GIB)
+STRIX = Adapter("AMD Radeon(TM) 8060S Graphics", 0x1002, 0, 102 * GIB, software=False)
+
+
+def test_an_adapter_covering_most_of_ram_is_not_charged_the_uma_headroom(monkeypatch):
+    """Issue #140507: 20% off a pool that already IS the machine refused a 94 GB quant this
+    hardware serves resident; WDDM's commit charge, read live by launch_budget, is that guard."""
+    _machine(monkeypatch, [STRIX, SOFTWARE], None, ram=STRIX_RAM)
+
+    capacity = hw.probe_budget(planning=True)
+
+    assert capacity.uma and capacity.total_device_bytes == STRIX.memory_bytes
+    assert capacity.usable_vram_bytes == int(102 * GIB * (1 - hw._WDDM_HEADROOM_FRACTION))
+
+
+def test_a_slice_of_a_smaller_machine_still_pays_the_uma_headroom(monkeypatch):
+    _machine(monkeypatch, [B390, SOFTWARE], ENGINE_B390)
+    assert hw.probe_budget(planning=True).usable_vram_bytes == int(
+        18 * GIB * (1 - hw._UMA_HEADROOM_FRACTION))

@@ -1226,9 +1226,16 @@ export function LocalFilePreview({
     }
 
     const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    // A delivery card (MEDIA: target) asks for the file's content view first:
+    // a delivered file in a git-tracked dir almost always carries uncommitted
+    // changes, so the diff-first auto default would swallow the content. It
+    // outranks the auto default but never an explicit switcher pick.
+    const requested = target.initialViewMode && modes.includes(target.initialViewMode) ? target.initialViewMode : null
     // The pane hands an HTML file over only once Source was picked; that pick
     // outranks the diff-first default.
-    const mode = userMode && modes.includes(userMode) ? userMode : onSelectRendered ? 'source' : autoMode
+
+    const mode =
+      userMode && modes.includes(userMode) ? userMode : (requested ?? (onSelectRendered ? 'source' : autoMode))
 
     const selectMode = (next: PreviewViewMode) => {
       if (next === 'rendered' && onSelectRendered) {

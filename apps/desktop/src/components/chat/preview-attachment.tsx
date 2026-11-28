@@ -6,7 +6,7 @@ import { useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { Download, FolderOpen, MonitorPlay } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
-import { downloadGatewayMediaFile } from '@/lib/media'
+import { downloadGatewayMediaFile, isMarkdownDocumentPath } from '@/lib/media'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
@@ -176,7 +176,13 @@ export function PreviewAttachment({ target }: { target: string }) {
         throw new Error(`Could not open preview target: ${requestTarget}`)
       }
 
-      openPreview(preview)
+      // A delivered file is content the user asked to see: land on its
+      // rendered/source view instead of the diff-first auto default, since
+      // these scratch dirs are git repos and delivered files almost always
+      // carry uncommitted changes. The switcher still offers Diff.
+      const initialViewMode = isMarkdownDocumentPath(preview.path || preview.source) ? 'rendered' : 'source'
+
+      openPreview({ ...preview, initialViewMode })
     } catch (error) {
       if (
         !mountedRef.current ||

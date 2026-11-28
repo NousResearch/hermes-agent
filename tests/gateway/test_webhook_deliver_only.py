@@ -128,6 +128,91 @@ class TestDeliverOnlyBypassesAgent:
 class TestDeliverOnlyStatusCodes:
 
     @pytest.mark.asyncio
+    async def test_retry_after_target_unavailable_then_dedupe(self):
+        """An unconnected target cannot have received anything; recovery permits one send."""
+        route = {"secret": _INSECURE_NO_AUTH, "deliver_only": True, "deliver": "telegram",
+                 "deliver_extra": {"chat_id": "test-chat"}, "prompt": "example"}
+        adapter = _make_adapter({"r": route})
+        args = {"json": {}, "headers": {"X-GitHub-Delivery": "fixture-offline"}}
+        async with TestClient(TestServer(_create_app(adapter))) as client:
+            first = await client.post("/webhooks/r", **args)
+            assert first.status == 502
+            target = _wire_mock_target(adapter)
+            retry = await client.post("/webhooks/r", **args)
+            assert (await retry.json())["status"] == "delivered"
+            again = await client.post("/webhooks/r", **args)
+            assert (await again.json())["status"] == "duplicate"
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_declarative_source_match_precedes_direct_delivery(self):
+        route = {"secret": _INSECURE_NO_AUTH, "deliver_only": True, "deliver": "telegram",
+                 "deliver_extra": {"chat_id": "test-chat"}, "prompt": "example",
+                 "filters": {"field": "source", "equals": "example-feed"}}
+        adapter = _make_adapter({"r": route})
+        target = _wire_mock_target(adapter)
+        async with TestClient(TestServer(_create_app(adapter))) as client:
+            for payload in [{}, {"source": "another-feed"}]:
+                response = await client.post("/webhooks/r", json=payload)
+                assert (await response.json())["status"] == "ignored"
+            target.send.assert_not_awaited()
+            matched = await client.post("/webhooks/r", json={"source": "example-feed"})
+            assert (await matched.json())["status"] == "delivered"
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_direct_rejection_releases_claim_only_when_send_finishes(self):
+        route = {"secret": _INSECURE_NO_AUTH, "deliver_only": True, "deliver": "telegram",
+                 "deliver_extra": {"chat_id": "test-chat"}, "prompt": "example"}
+        adapter = _make_adapter({"r": route})
+        target = _wire_mock_target(adapter)
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def reject_first(*args, **kwargs):
+            if not entered.is_set():
+                entered.set()
+                await release.wait()
+                return SendResult(success=False, confirmed_not_delivered=True)
+            return SendResult(success=True)
+
+        target.send.side_effect = reject_first
+        kwargs = {"json": {}, "headers": {"X-GitHub-Delivery": "fixture-refused"}}
+        async with TestClient(TestServer(_create_app(adapter))) as client:
+            first = asyncio.create_task(client.post("/webhooks/r", **kwargs))
+            try:
+                await asyncio.wait_for(entered.wait(), 5)
+                second = await client.post("/webhooks/r", **kwargs)
+                assert second.status == 503 and second.headers.get("Retry-After")
+                assert (await second.json())["status"] == "in_progress"
+                # Expire the ordinary replay window while the target is still busy.
+                adapter._seen_deliveries.clear()
+                later = await client.post("/webhooks/r", **kwargs)
+                assert later.status == 503 and target.send.await_count == 1
+            finally:
+                release.set()
+            assert (await first).status == 502
+            retry = await client.post("/webhooks/r", **kwargs)
+            assert (await retry.json())["status"] == "delivered"
+            done = await client.post("/webhooks/r", **kwargs)
+            assert (await done.json())["status"] == "duplicate"
+        assert target.send.await_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("uncertain", [TimeoutError(), SendResult(success=False, error="uncertain")])
+    async def test_uncertain_outcome_keeps_direct_delivery_claim(self, uncertain):
+        route = {"secret": _INSECURE_NO_AUTH, "deliver_only": True, "deliver": "telegram",
+                 "deliver_extra": {"chat_id": "test-chat"}, "prompt": "example"}
+        adapter = _make_adapter({"r": route})
+        target = _wire_mock_target(adapter)
+        target.send.side_effect = [uncertain, SendResult(success=True)]
+        args = {"json": {}, "headers": {"X-GitHub-Delivery": "fixture-uncertain"}}
+        async with TestClient(TestServer(_create_app(adapter))) as client:
+            assert (await client.post("/webhooks/r", **args)).status == 502
+            second = await client.post("/webhooks/r", **args)
+            assert (await second.json())["status"] == "duplicate"
+        target.send.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_delivery_failure_returns_502(self):
         """If the target adapter returns SendResult(success=False), 502."""
         routes = {

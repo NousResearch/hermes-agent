@@ -3297,7 +3297,11 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                         logger.warning(
                             "[%s] Telegram flood control on send (retry_after=%.1fs > %.0fs); failing closed instead of sleeping: %s",
                             self.name, wait, _FLOOD_INLINE_WAIT_CAP_SECS, safe_send_error)
-                        return self._record_send_flood_cooldown(chat_id, wait)
+                        result = self._record_send_flood_cooldown(chat_id, wait)
+                        # Only an explicit first-attempt refusal of the first chunk proves
+                        # the entire message is absent; earlier transport retries can be ambiguous.
+                        result.confirmed_not_delivered = index == 0 and _send_attempt == 0 and retry_after is not None
+                        return result
                     if _send_attempt < 2:
                         logger.warning(
                             "[%s] Telegram flood control on send (attempt %d/3), retrying in %.1fs: %s", self.name,
@@ -3390,7 +3394,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.warning(
                 "[%s] Telegram flood control still active for chat %s (%.0fs left); refusing locally without an API call",
                 self.name, chat_id, cooldown)
-            return _flood_cap_result(cooldown)
+            result = _flood_cap_result(cooldown)
+            result.confirmed_not_delivered = True  # no API call for this message
+            return result
         # Shared per-chat budget (#116312): a send WAITS for its slot (a send that waits
         # is delivered; one that is skipped would drop a message).
         slot_remaining = self._chat_outbound_slot_remaining(chat_id)

@@ -97,6 +97,20 @@ async def test_over_cap_flood_returns_partial_overflow_and_arms_cooldown(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("accepted_chunks", [0, 1])
+async def test_flood_refusal_reports_whether_whole_message_can_retry(accepted_chunks, monkeypatch):
+    """Only a refusal of the very first part certifies that a full retry cannot duplicate text."""
+    sent = AsyncMock(side_effect=[*(MagicMock(message_id=i + 1) for i in range(accepted_chunks)), _FloodError(120)])
+    adapter = _adapter(sent)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
+    result = await adapter.send("4242", _three_chunk_text())
+    assert not result.success and result.confirmed_not_delivered is (accepted_chunks == 0)
+    during_cooldown = await adapter.send("4242", "another message")
+    assert not during_cooldown.success and during_cooldown.confirmed_not_delivered is True
+    assert sent.await_count == accepted_chunks + 1
+
+
+@pytest.mark.asyncio
 async def test_concurrent_split_sends_to_one_chat_do_not_interleave():
     """Two 3-chunk sends racing on one chat arrive as A A A B B B, not A B A B A B."""
     order: list = []

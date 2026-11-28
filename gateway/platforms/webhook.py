@@ -1066,10 +1066,68 @@ class WebhookAdapter(BasePlatformAdapter):
             # satellite rides the primary's bot only to chats routed to it (#147602).
             if not self.gateway_runner._shared_bot_target_allowed(target_platform, profile, chat_id, thread_id):
                 return SendResult(success=False, error=f"{platform_name}:{chat_id} is not routed to profile {profile}")
-            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            # Mirror the cron delivery path: unwrap MEDIA: tags into native media sends and post
+            # only the cleaned text (cron/scheduler_delivery.py). Webhook routes render prompts
+            # from signed event payloads, so the shared media-path policy (allow dirs / strict /
+            # denylist) must gate attachment delivery exactly like cron — a MEDIA: tag here is no
+            # more trusted than one a cron job's LLM emits.
+            from gateway.media_policy import apply_media_policy_env
+            apply_media_policy_env()
+            media_files, cleaned_content = BasePlatformAdapter.extract_media(content)
+            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            if media_files:
+                result = await self._deliver_media(adapter, target_platform, chat_id, cleaned_content,
+                                                   media_files, thread_id)
+            else:
+                result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
             if result.success:
                 self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
             return result
+
+    async def _deliver_media(self, adapter, target_platform, chat_id, cleaned_content,
+                             media_files, thread_id) -> SendResult:
+        """Send cleaned text plus each validated media file through the adapter's media lanes.
+
+        Same dispatch as cron's live-adapter lane (``cron/scheduler_delivery_media``): audio via
+        ``send_voice`` with ``is_voice``, then video / image / document. ``filter_media_delivery_paths``
+        has already dropped denied paths — this helper only routes what survived the shared policy.
+
+        A media send that raises or fails is a failed delivery, not a silent success: the route's HTTP
+        response carries it through ``SendResult`` (cron instead records per-file errors and moves on,
+        but a webhook has a synchronous caller waiting on the answer).
+        """
+        metadata = {"thread_id": thread_id} if thread_id else None
+        if cleaned_content and cleaned_content.strip():
+            text_result = await adapter.send(chat_id, cleaned_content, metadata=metadata)
+            if not text_result.success:
+                return text_result
+        from gateway.platforms.base import should_send_media_as_audio
+        from gateway.run_notifications import _IMAGE_EXTS, _VIDEO_EXTS
+        for media_path, is_voice in media_files:
+            ext = os.path.splitext(media_path)[1].lower()
+            try:
+                if should_send_media_as_audio(target_platform, ext, is_voice=is_voice):
+                    media_result = await adapter.send_voice(chat_id=chat_id, audio_path=media_path,
+                                                            metadata=metadata, is_voice=is_voice)
+                elif ext in _VIDEO_EXTS:
+                    media_result = await adapter.send_video(chat_id=chat_id, video_path=media_path,
+                                                            metadata=metadata)
+                elif ext in _IMAGE_EXTS:
+                    media_result = await adapter.send_image_file(chat_id=chat_id, image_path=media_path,
+                                                                 metadata=metadata)
+                else:
+                    media_result = await adapter.send_document(chat_id=chat_id, file_path=media_path,
+                                                               metadata=metadata)
+            except Exception as e:
+                # Catch-all boundary: adapters raise whatever their transport raises, and a webhook
+                # route's HTTP caller needs a result, not a traceback. Log the full traceback so
+                # the drop is diagnosable.
+                logger.exception("Webhook media delivery failed for %s", media_path)
+                return SendResult(success=False, error=f"Media delivery failed: {media_path}: {e}")
+            if not getattr(media_result, "success", True):
+                detail = getattr(media_result, "error", None) or "unknown error"
+                return SendResult(success=False, error=f"Media delivery failed: {media_path}: {detail}")
+        return SendResult(success=True)
 
     def _delivery_config(self, profile: Optional[str]):
         """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""

@@ -18,7 +18,7 @@ from gateway.platforms._shared import (
     apply_yaml_bridge as _apply_yaml_bridge, extra_or_secret as _extra_or_secret, get_scoped_secret, send_error
 )
 from gateway.platforms.send_targets import StandaloneSendPolicy, regex_stripped_parser
-from hermes_cli._subprocess_compat import windows_detach_flags
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_detach_flags_without_breakaway
 from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_constants import (ensure_private_store, find_node_executable, get_hermes_dir, with_hermes_node_path)
 
@@ -253,8 +253,15 @@ def _spawn_bridge_process(argv: list, log_fh, env: dict, umask: int = -1) -> sub
     or OOM-killed gateway no longer leaves its bridge serving the port and the WhatsApp session.
     ``umask`` is the session store's (``ensure_private_store``): Baileys writes creds.json and the
     signal keys at the process umask."""
-    return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
-                       stderr=log_fh, env=env, creationflags=windows_detach_flags(), umask=umask)
+    try:
+        return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                           stderr=log_fh, env=env, creationflags=windows_detach_flags(), umask=umask)
+    except PermissionError:
+        # Job objects that forbid breakaway (Hermes Desktop/Electron) reject CREATE_BREAKAWAY_FROM_JOB
+        # with WinError 5; retry without that flag so the bridge still starts.
+        return spawn_owned(argv, purpose="whatsapp-bridge", stdin=subprocess.DEVNULL, stdout=log_fh,
+                           stderr=log_fh, env=env, creationflags=windows_detach_flags_without_breakaway(),
+                           umask=umask)
 
 
 def _owner_only_opener(path, flags):

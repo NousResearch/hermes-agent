@@ -1,4 +1,4 @@
-"""SDK-built OAuth discovery/registration requests: default User-Agent, and discovery context on failure.
+"""SDK-built OAuth discovery/registration requests: default User-Agent and Accept, and discovery context on failure.
 
 The MCP SDK constructs ``/.well-known/...`` discovery and dynamic client
 registration requests as bare ``httpx.Request`` objects inside
@@ -9,9 +9,12 @@ call, which Hermes then misreports as "only allows pre-approved OAuth
 clients". (``oauth.user_agent`` does not help — it is stamped only on
 token-endpoint requests.)
 
-``HermesMCPOAuthProvider`` now gives such requests a default User-Agent.
-These tests drive the bridge through the 401 branch so the SDK yields a
-real discovery request, then assert on its headers.
+``HermesMCPOAuthProvider`` now gives such requests a default User-Agent,
+and a default ``Accept: application/json``: Cloudflare in front of
+api.voicenotes.com still answers 403 to a request carrying only Host,
+MCP-Protocol-Version and User-Agent (#157126). These tests drive the
+bridge through the 401 branch so the SDK yields a real discovery request,
+then assert on its headers.
 """
 from __future__ import annotations
 
@@ -89,8 +92,25 @@ async def test_discovery_request_gets_default_user_agent(tmp_path, monkeypatch):
     assert discovery is not req, "SDK must have yielded its own discovery request"
     assert ".well-known" in str(discovery.url)
     assert discovery.headers.get("user-agent") == DEFAULT_AUTH_REQUEST_USER_AGENT
+    assert discovery.headers.get("accept") == "application/json"
 
     await flow.aclose()
+
+
+def test_prefetch_discovery_request_gets_default_accept_and_keeps_an_explicit_one():
+    """The manager's pre-flight discovery stamps the SDK's own metadata request the same way (#157126);
+    a header the request already carries is never replaced."""
+    from mcp.client.auth.utils import create_oauth_metadata_request
+    from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT, stamp_default_user_agent
+
+    request = stamp_default_user_agent(
+        create_oauth_metadata_request("https://example.com/.well-known/oauth-protected-resource/mcp"))
+    assert request.headers.get("accept") == "application/json"
+    assert request.headers.get("user-agent") == DEFAULT_AUTH_REQUEST_USER_AGENT
+
+    explicit = create_oauth_metadata_request("https://example.com/.well-known/oauth-authorization-server")
+    explicit.headers["Accept"] = "application/vnd.example+json"
+    assert stamp_default_user_agent(explicit).headers.get("accept") == "application/vnd.example+json"
 
 
 @pytest.mark.asyncio
@@ -102,6 +122,7 @@ async def test_callers_mcp_request_is_left_untouched(tmp_path, monkeypatch):
 
     assert outbound is req
     assert "user-agent" not in outbound.headers
+    assert "accept" not in outbound.headers
 
     await flow.aclose()
 

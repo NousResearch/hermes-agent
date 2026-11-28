@@ -68,6 +68,19 @@ def test_kling_v3_standard_and_pro_payload_shape():
         assert p["generate_audio"] is False, fid
 
 
+def test_kling_v4_payload_keys_match_published_schema():
+    """Kling 4.0 (kling/v4/*): every key we send is declared by the endpoint's
+    OpenAPI — int duration 3-30, no seed/negative/audio, aspect t2v-only."""
+    from plugins.video_gen.fal import FAL_FAMILIES, _build_payload
+
+    meta = FAL_FAMILIES["kling-v4"]
+    kwargs: dict = {"resolution": "1080p", "negative_prompt": "blurry", "audio": True, "seed": 7}
+    t2v = _build_payload(meta, prompt="a heist", image_url=None, duration=40, aspect_ratio="21:9", **kwargs)
+    assert t2v == {"prompt": "a heist", "aspect_ratio": "21:9", "resolution": "1080p", "duration": 30}
+    i2v = _build_payload(meta, prompt="go", image_url="https://e.x/i.png", duration=2, aspect_ratio="16:9", **kwargs)
+    assert i2v == {"prompt": "go", "start_image_url": "https://e.x/i.png", "resolution": "1080p", "duration": 3}
+
+
 def test_minimax_h3_int_duration_and_resolution_alias():
     """MiniMax H3 requires duration as a JSON integer and uses the
     768P/2K/4K resolution enum — the tool's 720p/1080p values must map."""

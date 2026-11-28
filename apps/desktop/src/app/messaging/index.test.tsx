@@ -484,7 +484,11 @@ describe('MessagingView restart banner', () => {
     // them did. The page must not keep asking for a restart the gateway no longer needs.
     getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ env_vars: [tokenField] })] })
     updateMessagingPlatform
-      .mockResolvedValueOnce({ live: { applied: false, detail: 'no adapter', state: 'unavailable' }, ok: true, platform: 'teams' })
+      .mockResolvedValueOnce({
+        live: { applied: false, detail: 'no adapter', state: 'unavailable' },
+        ok: true,
+        platform: 'teams'
+      })
       .mockResolvedValueOnce({ live: { applied: true, state: 'connected' }, ok: true, platform: 'teams' })
 
     await renderMessaging()

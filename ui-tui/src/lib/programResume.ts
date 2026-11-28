@@ -78,7 +78,11 @@ export function consumeProgramResumeEnv(env: NodeJS.ProcessEnv = process.env): v
     try {
       const parsed: unknown = JSON.parse(rawArgv)
 
-      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every(item => typeof item === 'string' && item.length > 0)) {
+      if (
+        Array.isArray(parsed) &&
+        parsed.length > 0 &&
+        parsed.every(item => typeof item === 'string' && item.length > 0)
+      ) {
         cachedResumePrefix = parsed
       }
     } catch {
@@ -239,8 +243,7 @@ export function clearProgramResume(
 }
 
 // process 'exit': only after a user quit is the record removed; /update (exit 42) and a crash before any quit keep it.
-export const clearProgramResumeOnExit = (write: (seq: string) => void): boolean =>
-  userQuit && clearProgramResume(write)
+export const clearProgramResumeOnExit = (write: (seq: string) => void): boolean => userQuit && clearProgramResume(write)
 
 export function resetProgramResumeStateForTests(): void {
   $persistedSessions.set(new Set())

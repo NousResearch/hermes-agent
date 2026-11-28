@@ -94,14 +94,14 @@ export const SystemMessage: FC = () => {
   const processResult = useAuiState(s => s.message.metadata.custom?.asyncResultKind === 'process')
   const pluginCard = useClaimedPluginCard()
 
-  const contentRefused = useAuiState(
-    s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string }
-  )
+  const contentRefused = useAuiState(s => s.message.metadata.custom?.contentRefused as undefined | { notice?: string })
 
   // A safety-refused turn, kept for display only: the user's own message, greyed
   // and non-interactive, with a short notice. Not a user bubble, not a reply.
   if (contentRefused) {
-    return <ContentRefusedNote notice={contentRefused.notice ?? t.assistant.thread.contentRefusedNotice} userText={text} />
+    return (
+      <ContentRefusedNote notice={contentRefused.notice ?? t.assistant.thread.contentRefusedNotice} userText={text} />
+    )
   }
 
   if (!text) {

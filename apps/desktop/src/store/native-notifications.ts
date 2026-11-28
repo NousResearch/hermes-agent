@@ -226,7 +226,11 @@ export interface NativeNotificationInput {
 
 /** Every guard dispatch applies before its throttle: the preference and kind, the post-connect quiet
  *  interval and the focus/active-session condition. Reads only, so it can be asked ahead of time. */
-function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotificationInput, 'global' | 'kind' | 'sessionId'>) {
+function nativeNotificationPasses({
+  global,
+  kind,
+  sessionId
+}: Pick<NativeNotificationInput, 'global' | 'kind' | 'sessionId'>) {
   const prefs = $nativeNotifyPrefs.get()
 
   return prefs.enabled && prefs.kinds[kind] && !withinNativeNotifyBaseline() && shouldFire(kind, sessionId, global)
@@ -234,7 +238,10 @@ function nativeNotificationPasses({ global, kind, sessionId }: Pick<NativeNotifi
 
 // Main's answer to whether it can show an OS notification, asked once per window (bridge); false
 // until it arrives.
-const hostNotifySupport = new WeakMap<NonNullable<Window['hermesDesktop']>, { known: Promise<void>; supported: boolean }>()
+const hostNotifySupport = new WeakMap<
+  NonNullable<Window['hermesDesktop']>,
+  { known: Promise<void>; supported: boolean }
+>()
 
 /** Ask main, once per window, whether it can show OS notifications. Resolves when the answer is in
  *  (never rejects); undefined where there is nothing to ask (no bridge, or a browser, which checks

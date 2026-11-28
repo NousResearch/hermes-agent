@@ -24,14 +24,16 @@ const initialScope = $apiRequestScope.get()
 function installGatewayMock(initial: SharedMetricsConsent) {
   let stored = initial
 
-  requestGateway.mockImplementation(async (_connection: unknown, _profile: unknown, method: string, params?: Record<string, unknown>) => {
-    if (method === 'shared_metrics.set') {
-      const enabled = params?.enabled === true
-      stored = { enabled, send: enabled && params?.send === true, decided: true }
-    }
+  requestGateway.mockImplementation(
+    async (_connection: unknown, _profile: unknown, method: string, params?: Record<string, unknown>) => {
+      if (method === 'shared_metrics.set') {
+        const enabled = params?.enabled === true
+        stored = { enabled, send: enabled && params?.send === true, decided: true }
+      }
 
-    return stored
-  })
+      return stored
+    }
+  )
 }
 
 beforeEach(() => {
@@ -79,17 +81,19 @@ describe('SharedMetricsConsentStrip', () => {
       ['target', { ...unanswered }]
     ])
 
-    requestGateway.mockImplementation(async (connection: string, _profile: string, method: string, params: Record<string, unknown>) => {
-      if (method === 'shared_metrics.set') {
-        consentByConnection.set(connection, {
-          enabled: params.enabled === true,
-          send: params.send === true,
-          decided: true
-        })
-      }
+    requestGateway.mockImplementation(
+      async (connection: string, _profile: string, method: string, params: Record<string, unknown>) => {
+        if (method === 'shared_metrics.set') {
+          consentByConnection.set(connection, {
+            enabled: params.enabled === true,
+            send: params.send === true,
+            decided: true
+          })
+        }
 
-      return consentByConnection.get(connection)
-    })
+        return consentByConnection.get(connection)
+      }
+    )
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()
     vi.stubGlobal('navigator', {

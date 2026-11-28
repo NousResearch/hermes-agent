@@ -134,7 +134,9 @@ function deferExitForClose(gw: GatewayClient, state: ExitClose, again: () => voi
   }
 
   state.flight = true
-  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(again)
+  void Promise.race([state.close().catch(() => undefined), new Promise(resolve => setTimeout(resolve, 1500))]).then(
+    again
+  )
 
   return true
 }
@@ -717,7 +719,9 @@ export function useMainApp(gw: GatewayClient) {
 
     // Offline (sid kept across a socket close): each poll would re-dial through
     // ensureAttachedWebSocket and collapse GatewayClient's backoff (B2-20).
-    if (ui.gatewayConnected === false) { return }
+    if (ui.gatewayConnected === false) {
+      return
+    }
 
     let stopped = false
     applyAgentSnapshot(ui.sid)
@@ -1258,7 +1262,14 @@ export function useMainApp(gw: GatewayClient) {
     done()
   }, [])
 
-  const approvalAnswers = useApprovalAnswers(overlay.approval, gw.isCanonical, composerActions.enqueue, respondWith, rpc, sys)
+  const approvalAnswers = useApprovalAnswers(
+    overlay.approval,
+    gw.isCanonical,
+    composerActions.enqueue,
+    respondWith,
+    rpc,
+    sys
+  )
 
   const answerSudo = useCallback(
     (pw: string) => {

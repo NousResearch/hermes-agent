@@ -32,7 +32,12 @@ const decodeArgv = (seq: string): string[] => {
   const body = seq.slice('\x1b]7577;'.length, -'\x1b\\'.length)
   const argvPart = body.split(':').find(part => part.startsWith('argv='))
 
-  return argvPart ? argvPart.slice('argv='.length).split(',').map(b64 => Buffer.from(b64, 'base64').toString('utf8')) : []
+  return argvPart
+    ? argvPart
+        .slice('argv='.length)
+        .split(',')
+        .map(b64 => Buffer.from(b64, 'base64').toString('utf8'))
+    : []
 }
 
 const PREFIX = ['/usr/local/bin/hermes', '-p', 'default', '--tui']
@@ -127,17 +132,35 @@ describe('OSC 7577 program resume encoder', () => {
   it('validates tokens, argv elements, cwd, and the 2048-byte ceiling', () => {
     expect(isValidOsc7577Token(SPEC_TOKEN)).toBe(true)
 
-    for (const badToken of ['', 'short', 'a'.repeat(65), `${SPEC_TOKEN}\n`, ` ${SPEC_TOKEN}`, 'bad$token_123456789012']) {
+    for (const badToken of [
+      '',
+      'short',
+      'a'.repeat(65),
+      `${SPEC_TOKEN}\n`,
+      ` ${SPEC_TOKEN}`,
+      'bad$token_123456789012'
+    ]) {
       expect(isValidOsc7577Token(badToken)).toBe(false)
       expect(encodeProgramResume(['hermes'], { now: 1, pid: 1, token: badToken })).toBeNull()
     }
 
-    for (const badArgv of [[], ['./hermes'], ['bin/hermes'], ['-hermes'], [''], ['hermes', 'x\n'], ['hermes', 'x\u0085'], Array(65).fill('a')]) {
+    for (const badArgv of [
+      [],
+      ['./hermes'],
+      ['bin/hermes'],
+      ['-hermes'],
+      [''],
+      ['hermes', 'x\n'],
+      ['hermes', 'x\u0085'],
+      Array(65).fill('a')
+    ]) {
       expect(encodeProgramResume(badArgv, { now: 1, pid: 1, token: SPEC_TOKEN })).toBeNull()
     }
 
     expect(encodeProgramResume(['hermes'], { cwd: 'relative', now: 1, pid: 1, token: SPEC_TOKEN })).toBeNull()
-    expect(encodeProgramResume(['hermes', '--resume', 's'.repeat(2000)], { now: 1, pid: 1, token: SPEC_TOKEN })).toBeNull()
+    expect(
+      encodeProgramResume(['hermes', '--resume', 's'.repeat(2000)], { now: 1, pid: 1, token: SPEC_TOKEN })
+    ).toBeNull()
   })
 
   it('caches env metadata and strips OSC7577_TOKEN from process.env before spawning children', () => {
@@ -155,7 +178,14 @@ describe('OSC 7577 program resume encoder', () => {
     expect(fakeEnv.HERMES_TUI_RESUME_ARGV).toBeUndefined()
     expect(fakeEnv.OTHER_VAR).toBe('keep')
 
-    expect(buildTuiResumeArgv('sess-42')).toEqual(['/usr/local/bin/hermes', '-p', 'work', '--tui', '--resume', 'sess-42'])
+    expect(buildTuiResumeArgv('sess-42')).toEqual([
+      '/usr/local/bin/hermes',
+      '-p',
+      'work',
+      '--tui',
+      '--resume',
+      'sess-42'
+    ])
 
     const seq = encodeProgramResume(buildTuiResumeArgv(null)!, { now: SPEC_TIME })
     expect(seq).toContain(`pid=${SPEC_PID}:time=${SPEC_TIME}:`)
@@ -171,7 +201,15 @@ describe('OSC 7577 program resume encoder', () => {
     consumeProgramResumeEnv(env)
     expect(env.HERMES_TUI_RESUME_SESSION_ONLY).toBeUndefined()
     expect(buildTuiResumeArgv(null)).toBeNull()
-    expect(buildTuiResumeArgv('s1')).toEqual(['/usr/local/bin/hermes', '-p', 'default', '--tui', '--safe-mode', '--resume', 's1'])
+    expect(buildTuiResumeArgv('s1')).toEqual([
+      '/usr/local/bin/hermes',
+      '-p',
+      'default',
+      '--tui',
+      '--safe-mode',
+      '--resume',
+      's1'
+    ])
   })
 
   it('clears on user quit, stays silent on SIGHUP/SIGTERM/EIO, and never throws on dead tty', () => {
@@ -245,7 +283,12 @@ describe('OSC 7577 program resume encoder', () => {
 
     $programResumeEnabled.set(true)
     // A built agent, a pending submit and token usage are no proof of a state.db row.
-    patchUiState({ busy: true, info: { model: 'test', skills: {}, tools: {} }, storedSid: 'fresh-1', usage: { ...ZERO, input: 10 } })
+    patchUiState({
+      busy: true,
+      info: { model: 'test', skills: {}, tools: {} },
+      storedSid: 'fresh-1',
+      usage: { ...ZERO, input: 10 }
+    })
     probe.settle()
     expect(probe.writes.map(decodeArgv)).toEqual([PREFIX])
 
@@ -326,9 +369,8 @@ describe('OSC 7577 program resume encoder', () => {
 
     const { useProgramResume: useDashboardResume } = await import('../app/useProgramResume.js')
 
-    const { $programResumeEnabled: dashboardEnabled, consumeProgramResumeEnv: consumeDash } = await import(
-      '../lib/programResume.js'
-    )
+    const { $programResumeEnabled: dashboardEnabled, consumeProgramResumeEnv: consumeDash } =
+      await import('../lib/programResume.js')
 
     consumeDash({ OSC7577_TOKEN: SPEC_TOKEN })
     dashboardEnabled.set(true)
@@ -349,7 +391,11 @@ describe('OSC 7577 program resume encoder', () => {
 
     const app = renderSync(React.createElement(DashProbe), {
       patchConsole: false,
-      stderr: Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 24 }) as unknown as NodeJS.WriteStream,
+      stderr: Object.assign(new PassThrough(), {
+        columns: 80,
+        isTTY: false,
+        rows: 24
+      }) as unknown as NodeJS.WriteStream,
       stdin: Object.assign(new PassThrough(), { isTTY: false }) as unknown as NodeJS.ReadStream,
       stdout: ttyOut as unknown as NodeJS.WriteStream
     })

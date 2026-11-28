@@ -385,9 +385,7 @@ export async function runDefaultPluginsPreflight(
           }
 
           const message =
-            reason === 'timeout'
-              ? `timed out after ${invocation.timeoutSeconds}s (killed)`
-              : 'aborted while starting'
+            reason === 'timeout' ? `timed out after ${invocation.timeoutSeconds}s (killed)` : 'aborted while starting'
 
           finish({
             exitCode: null,
@@ -486,8 +484,7 @@ export async function runDefaultPluginsPreflight(
         return
       }
 
-      const exitLabel =
-        typeof code === 'number' ? String(code) : signalCode ? `signal:${signalCode}` : 'error'
+      const exitLabel = typeof code === 'number' ? String(code) : signalCode ? `signal:${signalCode}` : 'error'
 
       if (parsed) {
         finish({

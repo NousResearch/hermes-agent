@@ -79,6 +79,39 @@ class TestSessionCreation:
         assert captured["body"]["transport"] == {"type": "webrtc", "sdp": "v=0 offer"}
         assert "sk-test" not in json.dumps(result)
 
+    @pytest.mark.parametrize("configured, expected", [("  Hi, I'm here.  ", "Hi, I'm here."), ("   ", ""), (None, "")])
+    def test_greeting_returned_to_client_never_sent_to_vendor(self, monkeypatch, configured, expected):
+        """``voice.gpt_live.greeting`` rides back to the renderer (trimmed; empty = none) and is
+        absent from the vendor request."""
+        captured = {}
+
+        class _Resp:
+            def read(self):
+                return b'{"session": {"id": "live_x"}, "transport": {"type": "webrtc", "sdp": "answer"}}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(req, timeout=0):
+            captured["body"] = req.data.decode()
+            return _Resp()
+
+        live = {"greeting": configured}
+        monkeypatch.setattr(voice_live.urllib.request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(voice_live, "_live_section", lambda voice=None: live)
+        monkeypatch.setattr(voice_live, "_resolve_credentials", lambda live: ("sk-test", "https://api.example/v1"))
+
+        result = voice_live.create_webrtc_session("v=0 offer")
+
+        assert result["greeting"] == expected
+        assert result["session"]["id"] == "live_x"
+        assert "greeting" not in captured["body"]
+        if expected:
+            assert expected not in captured["body"]
+
     def test_missing_key_refuses_before_any_network(self, monkeypatch):
         monkeypatch.setattr(voice_live, "_resolve_credentials", lambda live: ("", voice_live.DEFAULT_LIVE_BASE_URL))
         monkeypatch.setattr(voice_live.urllib.request, "urlopen", lambda *a, **k: pytest.fail("must not call the vendor"))

@@ -233,6 +233,7 @@ voice:
   gpt_live:
     voice: marin                # marin, cedar, quartz, ripple, vesper, willow, stone, gleam, meridian, …
     instructions: ""            # optional extra persona sentences (tone, pace, language)
+    greeting: ""                # optional line the voice says when the call connects (empty = silent start)
 ```
 
 Requirements: an OpenAI API key (`OPENAI_API_KEY`, `VOICE_TOOLS_OPENAI_KEY`, or `voice.gpt_live.api_key`). The voice layer is billed by OpenAI at **$0.05 per minute of session time** (idle time counts); the Hermes turn is billed on its own provider as always. The mode is also in Settings → Voice → *Voice Chat Mode*.

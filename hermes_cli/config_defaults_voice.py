@@ -12,6 +12,8 @@ VOICE_DEFAULTS = {
         "voice": "marin",  # marin | quartz | ripple | vesper | willow | stone | gleam | meridian | ...
         # Extra sentences appended to the live model's conversation persona (tone, pacing, language).
         "instructions": "",
+        # Said by the live voice as soon as a call connects (so the user hears when it is safe to talk). Empty = silent start.
+        "greeting": "",
         # optional "api_key" / "base_url" keys override the OpenAI audio credentials for this mode only
     },
     "record_key": "ctrl+b",

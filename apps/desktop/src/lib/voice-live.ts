@@ -224,6 +224,8 @@ export class VoiceLiveSession {
   private closeTimer: null | number = null
   private finalized = false
   private started = false
+  /** `voice.gpt_live.greeting` from the session response; said once on the first `session.started`. */
+  private greeting = ''
   private eventCounter = 0
   private transcript: LiveTranscriptFragment[] = []
   private speakingProbe: null | number = null
@@ -331,6 +333,7 @@ export class VoiceLiveSession {
     }
 
     const response = await hermesApi<{
+      greeting?: string
       ok: boolean
       session?: { id: string }
       transport?: { sdp: string; type: string }
@@ -347,7 +350,18 @@ export class VoiceLiveSession {
     }
 
     this.sessionId = response.session?.id ?? null
+    this.greeting = response.greeting?.trim() ?? ''
     await connection.setRemoteDescription({ sdp: response.transport.sdp, type: 'answer' })
+  }
+
+  /** The call is connected: say the configured greeting once, then record the session. */
+  private handleStarted(sessionId: string | undefined): void {
+    if (!this.started && this.greeting) {
+      this.speak(null, this.greeting)
+    }
+
+    this.started = true
+    this.sessionId = sessionId ?? this.sessionId
   }
 
   private armSpeakingProbe(stream: MediaStream): void {
@@ -395,8 +409,7 @@ export class VoiceLiveSession {
 
     switch (event.type) {
       case 'session.started':
-        this.started = true
-        this.sessionId = event.session?.id ?? this.sessionId
+        this.handleStarted(event.session?.id)
 
         return
 

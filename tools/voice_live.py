@@ -163,7 +163,8 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
     """Exchange the renderer's SDP offer for the Live session answer.
 
     Returns the vendor response ``{"session": {"id": ...}, "transport": {"type": "webrtc",
-    "sdp": ...}}``. Raises ``ValueError`` for a missing key and ``RuntimeError`` (with the vendor
+    "sdp": ...}}`` plus ``greeting`` (``voice.gpt_live.greeting``, trimmed; the renderer says it
+    when the call connects, it is never sent to the vendor). Raises ``ValueError`` for a missing key and ``RuntimeError`` (with the vendor
     status/detail) for a rejected request.
     """
     live = _live_section()
@@ -179,8 +180,9 @@ def create_webrtc_session(sdp_offer: str, history: Optional[list] = None) -> dic
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            answer = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:600]
         logger.warning("GPT-Live session creation failed: %s %s", exc.code, detail)
         raise RuntimeError(f"GPT-Live session creation failed ({exc.code}): {detail}") from exc
+    return {**answer, "greeting": str(live.get("greeting") or "").strip()}

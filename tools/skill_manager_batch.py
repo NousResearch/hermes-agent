@@ -147,7 +147,7 @@ def _snapshot_skills(names, snap_root, find_skill, create_targets):
         snap = snap_root / nm if pre_dir is not None and pre_dir.is_dir() else None
         if snap is not None:
             try:
-                shutil.copytree(pre_dir, snap)
+                shutil.copytree(pre_dir, snap, symlinks=True)  # keep links as links, never copy their targets
             except Exception as exc:
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
         target = create_targets.get(nm) if pre is None else None
@@ -179,7 +179,7 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
             post_dir.rmdir()
         return
     if not post_exists:
-        shutil.copytree(snap, pre_dir)
+        shutil.copytree(snap, pre_dir, symlinks=True)
         return
     # Move the broken state aside and delete it only after the snapshot is
     # back, so a failed copytree (disk full, locked file) can't mean total loss.
@@ -187,7 +187,7 @@ def _restore_snapshot(pre_dir, snap, post_dir, dir_pre_existed=False, written=()
     shutil.rmtree(aside, ignore_errors=True)
     post_dir.rename(aside)
     try:
-        shutil.copytree(snap, pre_dir)
+        shutil.copytree(snap, pre_dir, symlinks=True)
     except Exception:
         # Restore failed: put the half-applied state back rather than nothing.
         shutil.rmtree(pre_dir, ignore_errors=True)

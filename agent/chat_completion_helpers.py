@@ -3031,6 +3031,11 @@ class _StreamingCall(StreamingWaitMonitor):
             if not self._stream_attempt_is_active(stream_attempt_id):
                 self._discard_stale_stream_chunk(stream_attempt_id, chunk)
                 continue
+            if chunk is None:
+                # Some upstream gateways emit bare `data: null` SSE
+                # keep-alive events mid-stream; skip them instead of
+                # crashing on None.choices below.
+                continue
             if is_progress:
                 continue
             model_name, response_id, upstream_provider = self._chunk_identity(

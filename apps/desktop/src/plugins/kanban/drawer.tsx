@@ -150,7 +150,7 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
       return { label: k.evtCompleted }
 
     case 'blocked':
-      return { label: k.evtBlocked, detail: str('reason') ?? undefined }
+      return { label: k.evtBlocked(str('kind')), detail: str('reason') ?? undefined }
 
     case 'unblocked':
       return { label: k.evtUnblocked(col('status') ?? '') }

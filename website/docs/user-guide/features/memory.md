@@ -280,6 +280,60 @@ Beyond viewing, the journey is also where you **prune and correct** what Hermes 
 
 The same `list` / `delete <id>` / `edit <id>` subcommands work from the in-chat `/journey` command on the CLI, and the desktop panel offers edit/delete on nodes directly.
 
+## Dream: consolidating across conversations
+
+A turn's `memory` tool saves what one conversation taught the agent. `hermes memory dream` reads several recent conversations **together** and keeps only what none of them could have told it alone: a standing preference the person restated twice, a project that keeps coming back, a thing they keep correcting.
+
+```bash
+hermes memory dream                    # read the last week, keep what passes, journal the run
+hermes memory dream --dry-run          # show the verdict for every proposal; write nothing
+hermes memory dream --since-hours 72   # narrow the window
+hermes memory dream --max-sessions 8   # read fewer conversations
+hermes memory dream --json             # the full report, for scripts
+hermes memory dream --revert ~/.hermes/dreams/20261121-031500.json   # undo one run
+```
+
+It writes through the same `MemoryStore` as the tool, so the same content scan, locks and character budget apply, and it reads transcripts through a read-only handle — a dream never touches a prompt or a cached prefix. Nothing changes in the system prompt until the next session starts, exactly like a mid-session `memory` call.
+
+### Evidence is the design
+
+Every entry must prove itself, and an entry that cannot is dropped rather than softened:
+
+| Check | What it rejects |
+|-------|-----------------|
+| **One quote per cited conversation** | A pattern from a single conversation — that is the `memory` tool's job, not a dream's |
+| **The quote must be in the transcript** | Anything the model paraphrased, inferred, or invented |
+| **Numbers, paths and URLs come from the quotes** | A plausible-looking but unsourced detail |
+| **The secret and threat scanner** | Credentials and prompt-injection shapes, same detector as `memory` |
+| **The store's character budget** | An entry that would push MEMORY.md or USER.md over their limit |
+
+A `replace` corrects an entry that is no longer true; it must name the full existing entry in `old_text` and the conversation that states the change as its evidence.
+
+### Undo and audit
+
+Every run that writes leaves a journal under `dreams/` in the Hermes home: the conversations read, each proposal with its verdict and the reason, and the operations applied with the entry text from before. `hermes memory dream --revert <journal>` applies the inverse — added entries are removed, replaced entries get their earlier text back — and reports any entry that changed since, instead of overwriting it.
+
+### Running it at night
+
+Dream is a normal command, so schedule it however you run shell commands. A script-only cron job spends no tokens of its own:
+
+```bash
+printf '#!/bin/sh\nhermes memory dream\n' > ~/.hermes/dream.sh && chmod +x ~/.hermes/dream.sh
+hermes cron create "0 4 * * *" --script ~/.hermes/dream.sh --no-agent
+```
+
+### Choosing the model
+
+A dream is one auxiliary call, routed by `auxiliary.dream`. The default inherits the main model; a fast, cheap model keeps a nightly run close to free, and the timeout is longer than the classifiers' because the prompt carries a week of conversations:
+
+```yaml
+auxiliary:
+  dream:
+    provider: auto
+    model: ""        # e.g. a small fast model
+    timeout: 180
+```
+
 ## Configuration
 
 ```yaml

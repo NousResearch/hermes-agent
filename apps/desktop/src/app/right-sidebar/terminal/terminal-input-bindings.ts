@@ -40,6 +40,38 @@ export function bindTerminalActivity(term: Terminal, host: HTMLElement, markActi
   }
 }
 
+// DOM events xterm turns into typed data on its textarea. Pastes are left out on
+// purpose: until restored output re-enables bracketed paste, a multi-line paste
+// would run line by line in the shell.
+const USER_INPUT_EVENT_TYPES = ['keydown', 'keypress', 'input'] as const
+
+/** `onData` carries both what the user types and the replies xterm generates while
+ *  parsing a write (DSR/CPR/DA). Replies only come out of parsing, never while a
+ *  user input event is dispatching on the terminal, so `isUserInput()` tells the
+ *  two apart: true exactly while such an event is still being dispatched. */
+export function trackTerminalUserInput(host: HTMLElement): { dispose: () => void; isUserInput: () => boolean } {
+  let latest: Event | null = null
+
+  const record = (event: Event) => {
+    latest = event
+  }
+
+  for (const type of USER_INPUT_EVENT_TYPES) {
+    host.addEventListener(type, record, true)
+  }
+
+  return {
+    dispose: () => {
+      for (const type of USER_INPUT_EVENT_TYPES) {
+        host.removeEventListener(type, record, true)
+      }
+
+      latest = null
+    },
+    isUserInput: () => (latest?.eventPhase ?? Event.NONE) !== Event.NONE
+  }
+}
+
 // Right-click menu, the focus-routed Ctrl/Cmd+R, and copy/paste chords. Paste
 // and ^R count as session activity. Returns the context-menu registration teardown.
 export function bindTerminalClipboard(

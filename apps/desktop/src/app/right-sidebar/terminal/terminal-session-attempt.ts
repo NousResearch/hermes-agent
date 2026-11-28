@@ -66,8 +66,8 @@ interface SessionAttemptOptions {
 }
 
 export interface SessionAttemptController {
-  /** Keystrokes and xterm replies from `term.onData`. */
-  input: (data: string) => void
+  /** Keystrokes and xterm replies from `term.onData`; `fromUser` marks typed input. */
+  input: (data: string, fromUser?: boolean) => void
   /** Whether the current shell is server-owned (replayed and resumed by the server). */
   isPersistent: () => boolean
   /** Release the current attempt: unsubscribe, then detach or dispose its shell. */
@@ -310,8 +310,10 @@ export function createSessionAttemptController(
       })
   }
 
-  const input = (data: string) => {
-    if (replayWrites || isReplayingHistory()) {
+  const input = (data: string, fromUser = false) => {
+    // Restored output is still parsing: its query replies are not input, but
+    // what the user types meanwhile is and must reach the shell.
+    if (!fromUser && (replayWrites || isReplayingHistory())) {
       return
     }
 

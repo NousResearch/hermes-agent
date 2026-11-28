@@ -38,6 +38,16 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
 from gateway.run_status_filter import EMPTY_LADDER_STATUS_PATTERN, _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
+
+# Delivery-text sanitization lives in its topical sibling; re-exported here for gateway.run callers.
+from gateway.run_sanitization import (
+    _GATEWAY_AUTH_ERROR_RE, _GATEWAY_CONNECTION_ERROR_RE, _GATEWAY_CONNECTION_INTERRUPTED_RE,
+    _GATEWAY_ENDPOINT_UNREACHABLE_RE, _GATEWAY_PROVIDER_ERROR_SHAPE_RE, _GATEWAY_PROVIDER_POLICY_RE,
+    _GATEWAY_RATE_LIMIT_RE, _GATEWAY_RAW_TEXT_PLATFORMS, _PROVIDER_ERROR_REPLIES,
+    _context_overflow_reply, _gateway_platform_value, _gateway_provider_error_reply,
+    _gateway_surface_passes_raw_text, _is_long_runtime_failure_text,
+    _looks_like_gateway_provider_error, _rate_limit_reply, _redact_gateway_user_facing_secrets,
+    _sanitize_gateway_final_response, _turn_result_failed)
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -345,67 +355,6 @@ def _gateway_compression_progress_notices_enabled() -> bool:
         pass
     return False
 
-# Surfaces consuming gateway text programmatically must keep RAW status/error text; unknown/empty -> chat.
-_GATEWAY_RAW_TEXT_PLATFORMS = frozenset({"local", "api_server", "webhook", "msgraph_webhook"})
-
-
-def _gateway_surface_passes_raw_text(platform: Any) -> bool:
-    """True only for programmatic/local surfaces that must keep raw text."""
-    return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
-
-
-_GATEWAY_PROVIDER_POLICY_RE = re.compile(
-    r"("  # raw provider policy/safety bodies are noisy and may be sensitive
-    r"cybersecurity\s+risk"
-    r"|security\s+policy"
-    r"|safety\s+policy"
-    r"|policy\s+violation"
-    r"|violat(?:e|es|ed|ion)"
-    r"|blocked\s+(?:because|by|under)"
-    r"|request\s+(?:was\s+)?(?:blocked|rejected)"
-    r"|disallowed"
-    r"|moderation"
-    r")",
-    re.IGNORECASE)
-
-# ``401`` as a status token: not glued to a digit or a timestamp/identifier separator on the left
-# (``05:14:15,401``), but trailing punctuation is a real envelope (``HTTP 401: Unauthorized``,
-# ``returned 401.``) and must keep matching (#89401).
-_GATEWAY_AUTH_ERROR_RE = re.compile(
-    r"(provider\s+authentication\s+failed|incorrect\s+api\s+key|invalid\s+api\s+key"
-    r"|(?<![\d:,.])401(?!\d))",
-    re.IGNORECASE)
-
-_GATEWAY_RATE_LIMIT_RE = re.compile(
-    r"(rate\s+limit|rate-limited|\b429\b|quota|usage\s+limit)", re.IGNORECASE)
-
-# Connection-failure markers: the first 8 also anchor the provider-failure envelope shape below.
-_CONNECTION_ERROR_MARKERS = (
-    r"(?:\w+\.)?(?:api\s*)?connection\s*(?:error|timeout)", r"(?:\w+\.)?connect\s*(?:error|timeout)",
-    r"connection\s+refused", r"connection\s+reset", r"connection\s+aborted", r"actively\s+refused",
-    r"winerror\s+10061\b", r"errno\s+111\b", r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable",
-    r"cannot\s+connect", r"failed\s+to\s+establish", r"could\s+not\s+connect")
-_GATEWAY_CONNECTION_ERROR_RE = re.compile("(" + "|".join(_CONNECTION_ERROR_MARKERS) + ")", re.IGNORECASE)
-
-# An ESTABLISHED connection died mid-request. Says nothing about whether the endpoint is up:
-# an earlier call in the same turn may already have been answered by it (#26339, #116323).
-_CONNECTION_INTERRUPTED_MARKERS = (
-    r"connection\s+reset", r"connection\s+aborted", r"errno\s+104\b", r"errno\s+103\b",
-    r"broken\s+pipe", r"server\s+disconnected", r"peer\s+closed\s+connection",
-    r"connection\s+was\s+closed", r"network\s+connection\s+lost", r"unexpected\s+eof",
-    r"incomplete\s+chunked\s+read", r"response\s+ended\s+prematurely", r"socket\s+hang\s+up",
-    r"(?:\w+\.)?remoteprotocolerror", r"(?:\w+\.)?readerror")
-_GATEWAY_CONNECTION_INTERRUPTED_RE = re.compile(
-    "(" + "|".join(_CONNECTION_INTERRUPTED_MARKERS) + ")", re.IGNORECASE)
-
-# Nothing accepted the connection / no path to the host: "the endpoint is not up" IS the diagnosis.
-_ENDPOINT_UNREACHABLE_MARKERS = (
-    r"connection\s+refused", r"actively\s+refused", r"winerror\s+10061\b", r"errno\s+111\b",
-    r"no\s+route\s+to\s+host", r"network\s+is\s+unreachable", r"cannot\s+connect",
-    r"failed\s+to\s+establish", r"could\s+not\s+connect", r"(?:\w+\.)?connect\s*(?:error|timeout)")
-_GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
-    "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
-
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -454,10 +403,6 @@ def _ensure_windows_gateway_venv_imports() -> None:
         os.environ["VIRTUAL_ENV"] = str(resolved_venv)
         return
 
-
-def _gateway_platform_value(platform: Any) -> str:
-    """Return a normalized gateway platform value for enums or raw strings."""
-    return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
 def _non_conversational_metadata(
@@ -553,13 +498,6 @@ def _gateway_loop_exception_handler(
     loop.default_exception_handler(context)
 
 
-def _redact_gateway_user_facing_secrets(text: str) -> str:
-    """Secret redaction before text can leave the gateway for a chat platform: the shared egress scrub
-    (``force=True`` holds even when ``security.redact_secrets`` is off; fails closed; #23810, #68911)."""
-    from agent.redact_phone_policy import redact_for_chat_egress
-
-    return redact_for_chat_egress(text)
-
 
 def _redact_approval_command(cmd: str | None) -> str:
     """Redact credentials and surface hidden characters in a command before it goes into an approval prompt.
@@ -598,113 +536,6 @@ def _format_exec_approval_fallback(
         + t("gateway.exec_approval.text_choice_joiner").join(choices[:-1])
         + t("gateway.exec_approval.text_choice_last", choice=choices[-1])
         + format_approval_deadline_line(approval_timeout_seconds()))
-
-# Ordered: rate-limit beats auth beats policy beats connection; first match wins. Rate-limit goes
-# first because a quota/429 envelope often also carries an auth-shaped preamble ("Provider
-# authentication failed: ... quota exhausted (429) ... Credentials are still valid") and re-auth can
-# never fix a quota, so text with both signals must fail safe toward the quota reply (#89401). Copy
-# names the slash command the chat user can run; raw provider text stays in the gateway log.
-#
-# The three connection rows are not interchangeable (#116323): a RESET/EOF on an established
-# connection says nothing about whether the endpoint is up (an earlier call in the same turn may have
-# been answered by it), a REFUSED/unroutable connect is the endpoint-down case #86570 wrote the
-# wording for, and a cause-free SDK ``APIConnectionError: Connection error.`` supports neither
-# diagnosis, so the catch-all names the failure without asserting a cause.
-# ``(pattern, catalog key)`` — the reply text is resolved with ``t()`` at reply time so the active
-# ``display.language`` applies; ``gateway.errors.*`` in ``locales/en.yaml`` holds the wording.
-_PROVIDER_ERROR_REPLIES = (
-    (_GATEWAY_RATE_LIMIT_RE, "gateway.errors.rate_limited"),
-    (_GATEWAY_AUTH_ERROR_RE, "gateway.errors.auth_failed"),
-    (_GATEWAY_PROVIDER_POLICY_RE, "gateway.errors.bad_request"),
-    (_GATEWAY_CONNECTION_INTERRUPTED_RE, "gateway.errors.connection_interrupted"),
-    (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "gateway.errors.unreachable"),
-    (_GATEWAY_CONNECTION_ERROR_RE, "gateway.errors.connection_unknown"))
-
-
-def _context_overflow_reply() -> str:
-    """Shared by the failed-turn normalizer and ``run_turn._hmwa_agent_error_reply``; canonical
-    commands (/compress, /new) — the /compact and /reset aliases are absent from /help."""
-    return t("gateway.errors.context_overflow")
-
-
-def _rate_limit_reply(text: str) -> str:
-    """Name the reset window a quota 429 carries (``resets_in_seconds`` body field, the credential
-    pool's ``retry after Ns``, ``resets in 4hr``) so a weekly cap is not sold as "wait a moment"
-    (#89401). One grammar table with the retry loop: ``agent.retry_utils.RETRY_DELAY_PATTERNS``."""
-    from agent.retry_utils import format_reset_window, reset_delay_from_message
-    seconds = reset_delay_from_message(text) or 0
-    if seconds < 120:
-        return t("gateway.errors.rate_limited")
-    return t("gateway.errors.usage_limit_resets", window=format_reset_window(seconds))
-
-
-def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
-    for pattern, reply_key in _PROVIDER_ERROR_REPLIES:
-        if pattern.search(text):
-            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(reply_key)
-    return t("gateway.errors.provider_kept_failing")
-
-
-# Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
-_PROVIDER_ERROR_MARKERS = (
-    r"api\s+(?:call\s+)?failed", r"provider\s+authentication\s+failed", r"non-retryable\s+error",
-    r"rate\s+limited\s+after\s+\d+\s+(?:retries|attempts?)\b", r"error\s+code\s*:", r"http\s*\d{3}\b",
-    r"incorrect\s+api\s+key", r"invalid\s+api\s+key", r"unexpected\s+status\s+\d{3}\s+(?:[A-Za-z][\w' -]{0,40}|<unknown status code>):")
-_GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
-    r"^\s*(\W*\s*)?("
-    + "|".join(_PROVIDER_ERROR_MARKERS + _CONNECTION_ERROR_MARKERS[:8] + (r"all\s+connection\s+attempts\s+failed",))
-    + ")",
-    re.IGNORECASE)
-
-
-def _looks_like_gateway_provider_error(text: str) -> bool:
-    """True when text is a provider failure envelope, not normal content.
-
-    Must be short (envelopes are 1-3 lines) AND start with the marker, so prose citing a status code misses."""
-    if not text:
-        return False
-    body = str(text).strip()
-    if len(body) > 400 or body.count("\n") > 4:
-        return False
-    return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
-
-
-def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
-    """Sanitize final gateway replies for chat surfaces: concise, secret-redacted provider failure
-    categories instead of raw HTTP bodies, request IDs, leaked credentials, or policy text."""
-    if not text or _gateway_surface_passes_raw_text(platform):
-        return text
-
-    # Lone UTF-16 surrogates make Telegram/Signal ``.encode()`` raise; last defense for legacy/plugin paths.
-    # Lone UTF-16 surrogates (U+D800–U+DFFF) in model output crash chat surfaces downstream: Telegram's
-    # ``utf16_len`` length check and Signal formatting both ``.encode()`` the reply and raise
-    # UnicodeEncodeError before any send (#55143, #55309). The stored-history copy is already sanitized by
-    # ``build_assistant_message`` and ``finalize_turn`` scrubs the returned ``final_response``, but this
-    # boundary is the last line of defense for every legacy/plugin delivery path that hands us raw text.
-    # Raw-text/programmatic surfaces above keep passthrough — their JSON consumers escape surrogates safely.
-    from agent.message_sanitization import _sanitize_surrogates
-
-    text = _sanitize_surrogates(str(text))
-
-    # Some OpenAI-compatible providers leak their exact end-of-sequence control token into
-    # ``final_response`` even though finish_reason is already ``stop``.  It is transport metadata,
-    # not an assistant message; without filtering, chat adapters send a literal ``<|eos|>`` bubble.
-    # Reuse the MEDIA boundary's exact, terminal-only recognizer (#111046 / #111348): examples
-    # mentioning the token mid-response and non-exact variants remain byte-identical.
-    _eos_start = _terminal_sentinel_start(text)
-    if _eos_start >= 0:
-        text = text[:_eos_start].rstrip()
-
-    # Cancellation metadata, not prose; ACP/TUI already suppress this sentinel, chat surfaces should too.
-    # See #7921.
-    if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
-        return ""
-
-    redacted = _redact_gateway_user_facing_secrets(str(text))
-    if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
-    return redacted
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str, chat_type: Any = "dm") -> Optional[str]:
@@ -3046,7 +2877,14 @@ def _normalize_empty_agent_response(
     generic provider-failed reply and the user never sees /compact. Curated agent text survives.
     """
     is_overflow = is_context_overflow_failure_result(agent_result, history_len)
-    if response and not (is_overflow and _looks_like_gateway_provider_error(response)):
+    # A failed turn's text is runtime copy, not an answer: a raw provider envelope must not be
+    # delivered however long it is. The short-envelope cap protects prose; this is the leak.
+    raw_failure_text = (
+        bool(response) and _turn_result_failed(agent_result)
+        and _is_long_runtime_failure_text(response)
+        and _looks_like_gateway_provider_error(response, terminal_failure=True))
+    if response and not raw_failure_text and not (
+            is_overflow and _looks_like_gateway_provider_error(response)):
         return response
     if agent_result.get("failed"):
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
@@ -3060,6 +2898,10 @@ def _normalize_empty_agent_response(
             return t("gateway.errors.session_storage_unavailable")
         if is_overflow:
             return _context_overflow_reply()
+        if raw_failure_text:
+            # Name the failure category instead of reposting the provider's body; the log keeps it.
+            logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(response)[:500])
+            return _gateway_provider_error_reply(response)
         # Raw exception text (class names, JSON bodies, URLs) stays in the gateway log.
         logger.warning("Agent turn failed; reply sanitized for chat. Detail: %s", str(error_detail)[:500])
         return t("gateway.errors.generic_failed")

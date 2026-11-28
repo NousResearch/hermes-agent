@@ -1070,6 +1070,19 @@ use their turn policy; independent notifications and deferred deliveries evaluat
 policy at their own delivery boundary. Already delivered messages are not removed.
 Suppression does not fix an underlying failure or add another logging destination.
 
+### Provider error detail (opt-out)
+
+When the provider rejects a request and the turn ends, the chat reply says what happened and what to try, then quotes the provider: `Provider said: HTTP 400: ...`. That quote helps whoever runs the bot. For a bot that answers other people it is noise, often in another language, and it can carry request ids. Set `provider_error_detail: false` to send the short category reply instead, the same text a bare provider error gets, in `display.language`:
+
+```yaml
+display:
+  platforms:
+    whatsapp:
+      provider_error_detail: false
+```
+
+The gateway log keeps the full text. Only an explicit `false` withholds it; raw-text surfaces (`api_server`, `webhook`) are not affected.
+
 ### Progress bubble cleanup (opt-in)
 
 Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:

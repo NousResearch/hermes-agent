@@ -8,6 +8,7 @@ import { lockImporters } from '../../../scripts/build/pnpm-lock.mjs'
 import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
+import './patch-electron-get-downloads.mjs'
 import { prepareDmgbuild } from './prepare-dmgbuild.mjs'
 import { prepareElectronRuntime } from '../../../scripts/build/electron-runtime.mjs'
 

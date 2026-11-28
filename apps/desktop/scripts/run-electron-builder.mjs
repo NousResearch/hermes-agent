@@ -151,7 +151,9 @@ export function runElectronBuilder(args, { spawn = spawnSync } = {}) {
   const require = createRequire(path.join(builder, 'package.json'))
   const bin = require(path.join(builder, 'package.json')).bin['electron-builder']
   // --import reads a bare Windows path's drive letter as a URL scheme.
-  const preloads = ['--import', pathToFileURL(path.join(import.meta.dirname, 'patch-electron-builder-copy.mjs')).href]
+  const preloads = ['--import', pathToFileURL(path.join(import.meta.dirname, 'patch-electron-builder-copy.mjs')).href,
+    // All platforms: retry/resume/stall-abort every builder binary download (#122478).
+    '--import', path.join(import.meta.dirname, 'patch-electron-get-downloads.mjs')]
   if (process.platform === 'darwin') {
     preloads.push('--import', path.join(import.meta.dirname, 'patch-electron-builder-mac-binary.mjs'))
     preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))

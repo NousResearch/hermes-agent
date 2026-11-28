@@ -204,17 +204,28 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     HEALTH_WINDOW = 6  # ticks (default 30s at interval=5)
     health_state = {"bad_ticks": 0, "last_warn_at": 0}
 
-    def _ready_queue_nonempty() -> bool:
+    def _ready_queue_nonempty(res) -> bool:
         """Is there a ready+assigned+unclaimed task the dispatcher would spawn for?
-        Control-plane lanes pulled via ``claim_task`` are correctly idle, not stuck."""
+
+        Two categories are correctly idle, not stuck: control-plane lanes pulled
+        via ``claim_task`` (excluded by ``has_spawnable_ready`` itself), and
+        work this very tick deliberately held back — the per-profile cap
+        (``res.skipped_per_profile_capped``), the respawn guard, rate-limit
+        releases (subtracted via ``kbd.held_ready_task_ids``), or a whole-tick
+        hold like another dispatcher's board lock / the memory-pressure guard
+        (``kbd.whole_tick_hold``).
+        """
+        if kbd.whole_tick_hold(res):
+            return False
+        held = kbd.held_ready_task_ids(res)
         try:
             with kbc.connect_closing() as conn:
-                return kbd.has_spawnable_ready(conn)
+                return kbd.has_spawnable_ready(conn, exclude_task_ids=held)
         except Exception:
             return False
 
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty(res)
         if ready_pending and not res.spawned:
             health_state["bad_ticks"] += 1
         else:

@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 from agent.provider_projection import splice_provider_projection
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import has_incomplete_scratchpad
+from agent.turn_response_intake_text_calls import recover_text_tool_calls
 from agent.turn_truncation import (
     CODEX_FALLBACK_ACTIVATED, continue_codex_incomplete, normalize_response_for_agent, partial_result,
 )
@@ -188,6 +189,9 @@ def normalize_model_response(
 
     if assistant_message.content is not None and not isinstance(assistant_message.content, str):
         assistant_message.content = _coerce_content_text(assistant_message.content)
+    # A strict server returns a call to an undeclared (deferred) tool as answer text (#151373).
+    if recover_text_tool_calls(agent, assistant_message, messages):
+        finish_reason = assistant_message.finish_reason
 
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.

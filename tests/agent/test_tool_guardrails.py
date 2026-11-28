@@ -333,6 +333,34 @@ def test_intervening_mutation_resets_the_replay_streak_only_once():
     assert c.before_call("terminal", _PYTEST).action == "block"
 
 
+def test_read_only_success_between_failures_does_not_reset_exact_failure_streak():
+    # #160736: a successful read-only call (`terminal ls`, `todo`, `memory`) between
+    # identical failing calls used to mark progress for every failing signature, so
+    # the alternating loop never reached the block threshold. Only a mutation
+    # restarts the streak now, so the fifth identical failure still blocks.
+    c = _HARD()
+    args = {"query": "same"}
+    for _ in range(5):
+        assert c.before_call("web_search", args).allows_execution
+        c.after_call("web_search", args, '{"error": "boom"}', failed=True)
+        c.after_call("terminal", {"command": "ls"}, '{"output": "x.py\\n", "exit_code": 0}', failed=False)
+    blocked = c.before_call("web_search", args)
+    assert blocked.action == "block" and blocked.code == "repeated_exact_failure_block"
+
+
+def test_unrelated_success_between_failures_does_not_clear_same_tool_streak():
+    # #160736: the same over-broad reset cleared every tool's same-tool failure
+    # count, so a dead endpoint kept being hammered as long as some other tool
+    # succeeded in between. Only the tool that just succeeded drops its own
+    # count, so eight distinct failures of one tool still halt.
+    c = _HARD()
+    last = None
+    for i in range(8):
+        last = c.after_call("send_message", {"to": f"u{i}"}, '{"error": "no route"}', failed=True)
+        c.after_call("todo", {"action": "list"}, '{"todos": []}', failed=False)
+    assert last.should_halt and last.code == "same_tool_failure_halt"
+
+
 def test_distinct_failing_terminal_commands_warn_but_never_halt():
     # A diagnostic sweep: grep with no matches, missing binaries, red builds.
     c = _HARD()

@@ -320,6 +320,7 @@ class HeldMessage:
     tool_call_ids: tuple[JsonValue, ...] = ()
     own_row: bool = False
     retired_row: bool = False
+    held_durable_content: Optional[JsonValue] = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.role, str) or not self.role:

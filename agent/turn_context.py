@@ -746,6 +746,10 @@ def _stage_turn_user_message(
         user_msg = pending_cli_message
         # CLI-staged value is the clean text; restore the API-facing variant (e.g. voice
         # prefix) on the same dict, keeping any close-path durable marker.
+        if user_msg.get("content") != user_message:
+            # The API-facing variant is this turn's own transformation, not a concurrent
+            # rewrite. Preserve the stored identity for the lease-less held-row CAS check.
+            user_msg["_held_durable_content"] = user_msg.get("content")
         user_msg["content"] = user_message
     else:
         user_msg = {"role": "user", "content": user_message}

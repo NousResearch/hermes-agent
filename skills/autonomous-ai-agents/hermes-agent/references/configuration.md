@@ -32,7 +32,8 @@ Full enumeration: `TOOLSETS` dict in `toolsets.py` (`_HERMES_CORE_TOOLS` is the 
 | Toolset | What it provides |
 |---------|-----------------|
 | `web` / `search` | Web search + extraction / search-only subset |
-| `browser` | `browser_exec` (Python CDP helpers), `browser_cdp`, `browser_dialog`, `browser_vault` — local Chromium, a cloud provider, or `/browser connect`. Disable this toolset to turn browsing off |
+| `browser` | `browser_exec` (Python CDP helpers), `browser_cdp`, `browser_dialog` — local Chromium, a cloud provider, or `/browser connect`. Disable this toolset to turn browsing off |
+| `browser-vault` | `browser_vault` — list, save and fill logins on the active browser page (plugin page backends included). Its own toolset: a `browser` disable (the Camofox left-core migration applies one) does not remove it; disable `browser-vault` to turn it off separately |
 | `terminal` | Shell commands and process management |
 | `file` | File read/write/search/patch |
 | `code_execution` | Sandboxed Python execution |

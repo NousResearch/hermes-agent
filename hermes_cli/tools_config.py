@@ -69,6 +69,7 @@ PLATFORMS = {k: {"label": info.label, "default_toolset": info.default_toolset} f
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
+    ("browser-vault",   "🔐 Browser Vault",            "browser_vault: list, save and fill logins"),
     ("terminal",        "💻 Terminal & Processes",      "terminal, process"),
     ("file",            "📁 File Operations",           "read, write, patch, search"),
     ("code_execution",  "⚡ Code Execution",            "execute_code"),

@@ -105,10 +105,19 @@ TOOLSETS = {
     # `disabled_toolsets: [browser]` (headless/Docker deployments) strip
     # web_search from every session, because disabled toolsets are a strict
     # end-of-pipeline subtraction (#17309, #64503).
+    # browser_vault moved to its own `browser-vault` toolset for the same reason: the
+    # Camofox left-core migration disables `browser` on migrated profiles, and vault
+    # fills saved logins through plugin page backends (#152409) rather than through
+    # browser_exec's CDP.
     "browser": _ts(
         "Browser automation: drive a real browser with Python over CDP (navigate, "
-        "click, type, extract, screenshots), raw CDP, dialogs and vault logins",
-        [t for t in _HERMES_CORE_TOOLS if t.startswith("browser_")],
+        "click, type, extract, screenshots), raw CDP and dialogs",
+        ["browser_exec", "browser_cdp", "browser_dialog"],
+    ),
+    "browser-vault": _ts(
+        "Credential vault for browser sessions: list, inspect and fill saved logins "
+        "on the active browser page (works with plugin page backends such as Camofox)",
+        ["browser_vault"],
     ),
     "cronjob": _ts(
         "Cronjob management tool - create, list, update, pause, resume, remove, and "

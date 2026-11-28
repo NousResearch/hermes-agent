@@ -1010,11 +1010,15 @@ def _welcome_outage_copy(agent: Any, base_url: Any, classified: Any) -> str:
 _NONRETRYABLE_LABELS = {
     FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
     FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
+    FailoverReason.region_blocked: "The provider does not serve requests from your region",
     FailoverReason.guardrail_blocked: "The provider's prompt-injection guardrail rejected this request",
     FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
     # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
     FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
 }
+_REASON_EXTRA_LINES = {FailoverReason.region_blocked: (  # Extra guidance without branching the ladder below.
+    "   💡 The provider doesn't serve this region for this model — the key itself was accepted.",
+    "      Switch providers (or egress from a supported region) with /model.")}
 
 
 def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model: Any) -> Optional[str]:
@@ -1101,6 +1105,7 @@ def nonretryable_client_error_result(
             "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
             "      or check the proxy/WAF rules and your network.",
         )
+    _vlines(agent, *_REASON_EXTRA_LINES.get(classified.reason, ()))  # #148727: key accepted, pick another provider
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.
     if classified.reason == FailoverReason.content_policy_blocked:

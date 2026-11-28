@@ -31,6 +31,7 @@ from tests.fixtures.storage_seed import seed_admission, seed_session
 NOW = int(time.time())
 HOST = kb._claimer_id().split(":", 1)[0]
 FINGERPRINT = "6a232414-2dbf-40ab-a534-d9b71db05658:116|4162240"
+_LOCAL_PIDNS = kbd._kbp._pid_namespace_id()
 CLAIM_LAPSED = -1800  # claim_expires_in for a claim that expired half an hour ago
 
 
@@ -82,9 +83,10 @@ class _Board:
         ).lastrowid)
         self.conn.execute(
             "INSERT INTO tasks (id, title, assignee, status, created_at, claim_lock, claim_expires, "
-            "worker_pid, worker_started_at, last_heartbeat_at, current_run_id, started_at, priority) "
-            "VALUES (?, ?, 'fan', 'running', ?, ?, ?, ?, ?, ?, ?, ?, 5)",
+            "claim_pidns, worker_pid, worker_started_at, last_heartbeat_at, current_run_id, started_at, priority) "
+            "VALUES (?, ?, 'fan', 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, 5)",
             (tid, tid, NOW - 86400, lock, NOW + claim_expires_in,
+             _LOCAL_PIDNS,
              worker_pid if record_worker_pid else None,
              FINGERPRINT if record_worker_pid else None,
              (NOW - heartbeat_age) if heartbeat_age is not None else None, run_id, started),
@@ -245,6 +247,7 @@ def test_a_refused_signal_reads_the_pid_not_the_error(board, live):
         raise OSError(87, "The parameter is incorrect")
 
     info = kbd._terminate_reclaimed_worker(pid, f"{HOST}:{_absent_pid(base=3_980_000)}",
+                                           claim_pidns=kbd._kbp._pid_namespace_id(),
                                            started_at=kbd._process_fingerprint(pid) if live else None,
                                            signal_fn=refusing_kill)
     assert info["terminated"] is (not live)

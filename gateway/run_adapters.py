@@ -966,6 +966,12 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
             self._schedule_resume_pending_sessions(platform=platform)
         except Exception:
             logger.debug("resume-pending reschedule after %s reconnect failed", platform.value, exc_info=True)
+        # Local patch: an intent released at boot because this adapter was down retries here instead
+        # of rotting until TTL.
+        try:
+            self._schedule_boot_intents(platform=platform)
+        except Exception:
+            logger.debug("boot-intent reschedule after %s reconnect failed", platform.value, exc_info=True)
 
     async def _cancel_secondary_profile_reconnect_tasks(self) -> None:
         """Cancel profile-scoped reconnects before tearing down their registry, so a reconnect

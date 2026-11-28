@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger("gateway.run")
 # What adapters' ``get_chat_info`` reports for a chat every member reads (a handoff home that is no DM).
 _HANDOFF_SHARED_CHAT_TYPES = frozenset({"group", "channel", "forum", "room", "supergroup", "thread"})
+# Local patch: at most this many boot intents run per gateway boot. One planned restart normally
+# registers one continuation; a higher number would multiply the blast radius of a bad intent.
+_MAX_BOOT_INTENTS_PER_BOOT = 1
 
 
 def recover_left_core_in(home: Path, *, hydrate_secrets: bool = True) -> list[str]:
@@ -677,6 +680,148 @@ class GatewayStartupMixin:
             scheduled += 1
         if scheduled:
             logger.info("Scheduled auto-resume for %d restart-interrupted session(s)", scheduled)
+        return scheduled
+
+    # --- Local patch: boot intents (continue a registered next step after a planned restart) ---
+
+    def _session_entry_for_key(self, session_key: str):
+        try:
+            with self.session_store._lock:
+                self.session_store._ensure_loaded_locked()
+                return self.session_store._entries.get(session_key)
+        except Exception as exc:  # health: allow BLE001
+            logger.debug("session entry lookup failed for %s: %s", session_key, exc)
+            return None
+
+    def _restart_loop_is_tripped(self) -> bool:
+        """READ-ONLY view of the breaker: never record a boot here.
+
+        ``check_and_record`` both records and judges; calling it from a second scheduler in the
+        same boot would double-count and trip the breaker early for the resume path.
+        """
+        try:
+            from gateway import restart_loop_guard as guard
+
+            max_restarts, window, max_gap = self._restart_loop_guard_config()
+            if max_restarts <= 0:
+                return False
+            chain = guard._chain_ending_at(
+                guard._load_boots(), time.time(), guard._chain_gap(window, max_gap))
+            return len(chain) >= max_restarts
+        except Exception as exc:  # health: allow BLE001 -- fail open, never block boot
+            logger.debug("restart-loop read check failed: %s", exc)
+            return False
+
+    def _track_startup_restore_task(self, task) -> None:
+        """Keep a startup turn reachable for the restore drain, when one is in progress."""
+        if getattr(self, "_startup_restore_in_progress", False):
+            tasks = getattr(self, "_startup_restore_tasks", None)
+            if tasks is None:
+                tasks = self._startup_restore_tasks = []
+            tasks.append(task)
+
+    async def _run_boot_intent_event(self, adapter, event, session_key: str, intent_id: str) -> None:
+        """Dispatch one boot intent and settle its ledger row.
+
+        The row records *dispatch*, not completion: ``_run_startup_resume_event`` releases the
+        pending-agent sentinel in its ``finally`` before returning, so there is no "turn is still
+        running" signal left to poll (an earlier settle loop here was dead code — it always saw the
+        slot free). A dispatch that raises is recorded as an error; a turn that fails later reports
+        through its own channel.
+        """
+        from gateway import boot_intents as store
+        try:
+            await self._run_startup_resume_event(adapter, event, session_key)
+            store.complete_intent(intent_id, "dispatched")
+        except asyncio.CancelledError:
+            # Shutdown before the turn was handed off: hand the claim back so the next boot retries it.
+            store.release_intent(intent_id)
+            raise
+        except Exception as exc:  # health: allow BLE001 -- one intent must not break boot
+            store.complete_intent(intent_id, f"error: {type(exc).__name__}: {exc}"[:300])
+            logger.warning("Boot intent %s failed: %s", intent_id, exc, exc_info=True)
+
+    def _schedule_boot_intents(self, *, platform=None) -> int:
+        """Revive a pre-registered next step after a planned restart.
+
+        Runs BEFORE ``_schedule_resume_pending_sessions``: for a session that has both an intent and a
+        resume marker, the explicit continuation is what the user asked for, so the resume marker is
+        cleared and the intent's turn is the only one that runs. The adapter must be live (else the
+        intent is released for the reconnect rescan), and at most ``_MAX_BOOT_INTENTS_PER_BOOT`` turns
+        are started per boot.
+        """
+        from gateway import boot_intents as store
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        if self._startup_should_abort():
+            return 0
+        if self._restart_loop_is_tripped():
+            logger.warning("Boot intents skipped: restart-loop breaker is tripped")
+            return 0
+
+        claimed = store.claim_intents()
+        if not claimed:
+            return 0
+
+        scheduled = 0
+        for intent in claimed:
+            intent_id = str(intent.get("id") or "")
+            key = str(intent.get("session_key") or "")
+            if scheduled >= _MAX_BOOT_INTENTS_PER_BOOT:
+                store.release_intent(intent_id)
+                continue
+            if not key:
+                store.complete_intent(intent_id, "skipped: no session_key")
+                continue
+            entry = self._session_entry_for_key(key)
+            if entry is None or getattr(entry, "origin", None) is None:
+                store.complete_intent(intent_id, "skipped: no session entry")
+                continue
+            source = self._restored_source(entry)
+            if source is None:
+                store.complete_intent(intent_id, "skipped: no source")
+                continue
+            if platform is not None and source.platform != platform:
+                store.release_intent(intent_id)
+                continue
+            adapter = self._delivery_adapter_for(source)
+            if adapter is None:
+                logger.info(
+                    "Boot intent %s pending: adapter not ready for %s",
+                    intent_id, getattr(source.platform, "value", source.platform))
+                store.release_intent(intent_id)   # reconnect rescan retries it
+                continue
+            if not self._resume_owner_authorized(key, source):
+                store.complete_intent(intent_id, "skipped: unauthorized")
+                continue
+            if self._is_session_running(key):
+                store.release_intent(intent_id)   # the user is talking now: let them have the slot
+                continue
+
+            # The intent supersedes the generic resume note for this session: clear the marker so
+            # _schedule_resume_pending_sessions (running right after us) does not also revive it.
+            try:
+                self.session_store.clear_resume_pending(key)
+            except Exception as exc:  # health: allow BLE001 -- never block the intent on this
+                logger.debug("clearing resume_pending before boot intent %s failed: %s", intent_id, exc)
+
+            # Claim the slot BEFORE spawning so an inbound message arriving immediately queues behind
+            # the intent instead of building a duplicate agent (same contract as auto-resume).
+            state = self._session_state(key)
+            state.turn.agent = _AGENT_PENDING_SENTINEL
+            state.turn.started_ts = time.time()
+            note_running_chat_owner(self, key, source)
+            self._persist_active_agents()
+
+            event = MessageEvent(
+                text=str(intent.get("prompt") or ""), message_type=MessageType.TEXT,
+                source=source, internal=True)
+            task = self._retain_background_task(
+                asyncio.create_task(self._run_boot_intent_event(adapter, event, key, intent_id))
+            )
+            self._track_startup_restore_task(task)
+            scheduled += 1
+            logger.info("Scheduled boot intent %s for %s", intent_id, key)
         return scheduled
 
     def _startup_should_abort(self) -> bool:
@@ -1563,6 +1708,9 @@ class GatewayStartupMixin:
             recover_gateway_pending(self)
         # Auto-resume restart-interrupted sessions (ledger-answered ones were cleared above); a failed
         # auto-resume stays visible on the next user message.
+        # Local patch: boot intents run FIRST and clear the session's resume_pending marker, so an
+        # explicit continuation wins over the generic "restored, what next?" resume note.
+        self._schedule_boot_intents()
         self._schedule_resume_pending_sessions()
         await self._finish_startup_restore()
         from gateway.run_runtime import recover_gateway_native_sessions

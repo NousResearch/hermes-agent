@@ -1988,6 +1988,12 @@ DEFAULT_CONFIG = {
         # CLI refetches on the next /model or `hermes model` once the cache is older. Network
         # failures silently use the stale cache. Legacy `ttl_hours` is honoured if set.
         "ttl_minutes": 20,
+        # TTL (minutes) for per-provider / custom-endpoint catalogs in provider_models_cache.json.
+        # Lower it when a local relay (magpie, LiteLLM, an in-house gateway) owns the exposed model
+        # set: that list changes when its owner edits it, not on a vendor release cadence, and the
+        # picker should not keep offering models the relay no longer serves. Unset keeps the
+        # historical 1 hour; the value is clamped to 1 minute – 7 days.
+        "provider_models_ttl_minutes": 60,
         # Per-provider override URLs for self-hosted curation lists using the same schema, e.g.
         # providers: {openrouter: {url: https://example.com/my-curation.json}}.
         "providers": {},

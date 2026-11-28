@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import errno
 import html
 import importlib
 import json
@@ -148,6 +149,11 @@ _RATE_LIMIT_WARN_THRESHOLD = 5
 _RETRY_MAX_ATTEMPTS, _RETRY_BASE_DELAY, _RETRY_MAX_DELAY, _RETRY_JITTER = 3, 1.0, 8.0, 0.3
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 _TRANSPORT_ERROR_PHRASES = ("timeout", "timed out", "broken pipe", "remote disconnected")
+# Socket errnos from a pooled connection that went stale (sleep/wake, Wi-Fi or VPN change):
+# EADDRNOTAVAIL surfaces on macOS as "[Errno 49] Can't assign requested address".
+_RETRYABLE_ERRNOS = frozenset(
+    getattr(errno, n) for n in ("EADDRNOTAVAIL", "ENETDOWN", "ENETUNREACH", "EHOSTUNREACH",
+                                "ECONNRESET", "ECONNABORTED", "EPIPE") if hasattr(errno, n))
 # Left in ``_typing_messages`` after ``send()`` patched the typing card: stops
 # ``_keep_typing`` from creating a fresh card and ``stop_typing`` from deleting
 # (tombstoning) the response we just patched.
@@ -180,6 +186,8 @@ def _is_retryable_error(exc: BaseException) -> bool:
     status = _http_status(exc)
     if isinstance(status, int):
         return status in _RETRYABLE_HTTP_STATUSES
+    if isinstance(exc, OSError) and exc.errno in _RETRYABLE_ERRNOS:
+        return True
     # SSL/socket errors carry no HTTP status: match common transport wording.
     text = str(exc).lower()
     return any(p in text for p in _TRANSPORT_ERROR_PHRASES) or (
@@ -1032,6 +1040,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if resource_name:
             def _fetch_media() -> bytes:
                 req = self._chat_api.media().download_media(resourceName=resource_name)
+                # Fresh connection per attempt, like every other Chat call: the discovery
+                # client's shared httplib2 connection goes stale after sleep or a network change.
+                req.http = self._new_authed_http()
                 from googleapiclient.http import MediaIoBaseDownload
                 import io
 
@@ -1041,8 +1052,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     _status, done = downloader.next_chunk()
                 return buf.getvalue()
             try:
-                data = await asyncio.to_thread(_fetch_media)
-            except HttpError as exc:
+                data = await self._call_with_retry(_fetch_media, op_name="media.download_media")
+            except (HttpError, OSError) as exc:
                 logger.warning("[GoogleChat] media.download_media failed: %s", _exc_text(exc))
         if data is None and download_uri:
             if not _is_google_owned_host(download_uri):

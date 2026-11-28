@@ -1362,6 +1362,56 @@ class TestAttachmentSSRFGuard:
         assert path == str(tmp_path / "out.pdf")
         assert mime == "application/pdf"
 
+    @pytest.mark.asyncio
+    async def test_media_download_uses_fresh_http_and_retries_stale_socket(self, adapter, tmp_path, monkeypatch):
+        """A pooled connection that went stale (sleep/wake, network change) raised
+        OSError(EADDRNOTAVAIL) and the image was silently dropped. The download must run
+        on a fresh AuthorizedHttp per attempt and retry transient socket errors."""
+        import errno as _errno
+        from plugins.platforms.google_chat import adapter as gc_mod
+
+        attachment = {
+            "contentType": "image/png",
+            "name": "spaces/S/messages/M/attachments/A",
+            "attachmentDataRef": {"resourceName": "spaces/S/messages/M/attachments/A"},
+        }
+        fresh_https = [MagicMock(name="http1"), MagicMock(name="http2")]
+        adapter._new_authed_http = MagicMock(side_effect=fresh_https)
+        seen_http, attempts = [], []
+
+        class _FakeDownload:
+            def __init__(self, buf, request):
+                self.buf, self.request = buf, request
+
+            def next_chunk(self):
+                seen_http.append(self.request.http)
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise OSError(_errno.EADDRNOTAVAIL, "Can't assign requested address")
+                self.buf.write(b"\x89PNG-fake")
+                return None, True
+
+        import sys as _sys
+        import types as _types
+        monkeypatch.setitem(_sys.modules, "googleapiclient.http",
+                            _types.SimpleNamespace(MediaIoBaseDownload=_FakeDownload))
+        monkeypatch.setattr(gc_mod.asyncio, "sleep", AsyncMock())
+        cache = AsyncMock(return_value=str(tmp_path / "out.png"))
+        monkeypatch.setattr(gc_mod, "_MEDIA_CACHERS", (("image/", cache, ".jpg"),))
+
+        path, mime = await adapter._download_attachment(attachment)
+        assert path == str(tmp_path / "out.png")
+        assert mime == "image/png"
+        assert len(attempts) == 2
+        assert seen_http == fresh_https
+
+    def test_stale_socket_errnos_are_retryable(self):
+        import errno as _errno
+        from plugins.platforms.google_chat.adapter import _is_retryable_error
+        assert _is_retryable_error(OSError(_errno.EADDRNOTAVAIL, "Can't assign requested address"))
+        assert _is_retryable_error(OSError(_errno.ECONNRESET, "reset"))
+        assert not _is_retryable_error(OSError(_errno.EACCES, "permission denied"))
+
 
 # ===========================================================================
 # Outbound thread routing (anti-top-level fallback in DMs)

@@ -81,3 +81,9 @@ def test_baked_banner_uses_live_identity(monkeypatch):
 
     monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
     assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}
+
+
+def test_format_context_length_rolls_rounded_thousands_into_millions():
+    assert banner._format_context_length(999_949) == "999.9K"
+    assert banner._format_context_length(999_950) == "1M"
+    assert banner._format_context_length(999_999) == "1M"

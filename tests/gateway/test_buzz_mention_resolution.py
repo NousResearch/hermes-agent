@@ -325,3 +325,189 @@ class TestSendRecovery:
         assert len(sends) == 2
         assert "--mention" not in sends[1][0]
         assert sends[1][1] == "just @\u200b-mention me"
+
+    @pytest.mark.asyncio
+    async def test_unresolved_token_before_a_period_recovers_via_self_mention(self):
+        # The CLI-rejected-token escape keeps its own token boundary: a period
+        # after the rejected name is token-continuation there, so the escape
+        # rung stays out and the self-mention rung delivers the prose.
+        adapter = _make_adapter()
+        cli = _wire(adapter, _ScriptedCli())
+        cli.script("channels", "members", _members())  # nobody to resolve
+        unresolved = json.dumps({
+            "error": "user_error",
+            "message": "mention '@stranger' does not match a current channel member",
+        })
+        cli.script("messages", "send", "", code=1, stderr=unresolved)
+        cli.script("messages", "send", {"accepted": True, "event_id": "e5"})
+
+        result = await adapter.send(CHANNEL, "ask @stranger. to check")
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 2
+        assert "\u200b" not in (sends[1][1] or "")
+        assert ["--mention", SELF_PUBKEY] == sends[1][0][-2:]
+        assert sends[1][1] == "ask @stranger. to check"
+
+
+# ── interim / non-conversational sends are not summons ──────────────────────────
+
+
+class TestInterimSendsAreNotSummons:
+    """Mid-turn and status output must never wake a member: their @tokens are
+    incidental prose, not a deliberate agent-to-agent summon. The CLI p-tags any
+    bare member-shaped ``@Name`` at publish, so the adapter has to downgrade them
+    to presentation-only text on interim sends the same way it does for tokens the
+    CLI rejects outright."""
+
+    def _sending_adapter(self):
+        adapter = _make_adapter()
+        cli = _wire(adapter, _ScriptedCli())
+        cli.script("channels", "members", _members(FIZZ_PUBKEY))
+        cli.script("users", "get", _profile(FIZZ_PUBKEY, "Fizz"))
+        return adapter, cli
+
+    def _send_calls(self, cli):
+        return [c for c in cli.calls if (c[0][0], c[0][1]) == ("messages", "send")]
+
+    @pytest.mark.asyncio
+    async def test_interim_send_does_not_mention_a_member(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i1"})
+
+        result = await adapter.send(
+            CHANNEL, "⏳ Working — asked @Fizz to recheck the gate",
+            metadata={"_interim_send": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert ["--mention", FIZZ_PUBKEY] not in [sends[0][0][-2:]]
+        assert "@\u200bFizz" in (sends[0][1] or ""), "incidental @name must be presentation-only"
+
+    @pytest.mark.asyncio
+    async def test_non_conversational_send_does_not_mention_a_member(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i2"})
+
+        result = await adapter.send(
+            CHANNEL, "📬 notice: @Fizz should set a home channel",
+            metadata={"non_conversational": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert ["--mention", FIZZ_PUBKEY] not in [sends[0][0][-2:]]
+        assert "@\u200bFizz" in (sends[0][1] or "")
+
+    @pytest.mark.asyncio
+    async def test_final_send_still_summons_deliberately(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i3"})
+
+        result = await adapter.send(CHANNEL, "@Fizz please pick up the review")
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert ["--mention", FIZZ_PUBKEY] == sends[0][0][-2:]
+        assert "@\u200bFizz" not in (sends[0][1] or "")
+
+    @pytest.mark.asyncio
+    async def test_interim_send_escapes_sentence_ending_name(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i4"})
+
+        result = await adapter.send(
+            CHANNEL, "⏳ done — asked @Fizz.",
+            metadata={"_interim_send": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert "--mention" not in sends[0][0]
+        assert sends[0][1] == "⏳ done — asked @\u200bFizz."
+
+    @pytest.mark.asyncio
+    async def test_interim_send_escapes_dotted_suffix_name(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i5"})
+
+        result = await adapter.send(
+            CHANNEL, "📬 see @Fizz.rest for the log",
+            metadata={"_interim_send": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert "--mention" not in sends[0][0]
+        assert sends[0][1] == "📬 see @\u200bFizz.rest for the log"
+
+    @pytest.mark.asyncio
+    async def test_non_conversational_escapes_sentence_ending_name(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i6"})
+
+        result = await adapter.send(
+            CHANNEL, "📬 ping @Fizz.",
+            metadata={"non_conversational": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert "--mention" not in sends[0][0]
+        assert sends[0][1] == "📬 ping @\u200bFizz."
+
+    @pytest.mark.asyncio
+    async def test_non_conversational_escapes_dotted_suffix_name(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i7"})
+
+        result = await adapter.send(
+            CHANNEL, "📬 see @Fizz.rest notes",
+            metadata={"non_conversational": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert "--mention" not in sends[0][0]
+        assert sends[0][1] == "📬 see @\u200bFizz.rest notes"
+
+    @pytest.mark.asyncio
+    async def test_longer_known_member_name_is_escaped_before_its_prefix(self):
+        adapter = _make_adapter()
+        cli = _wire(adapter, _ScriptedCli())
+        cli.script("channels", "members", _members(FIZZ_PUBKEY, BUZZ_PUBKEY))
+        cli.script("users", "get", _profile(FIZZ_PUBKEY, "Fizz"))
+        cli.script("users", "get", _profile(BUZZ_PUBKEY, "Fizz.rest"))
+        cli.script("messages", "send", {"accepted": True, "event_id": "i8"})
+
+        result = await adapter.send(
+            CHANNEL, "see @Fizz.rest and @Fizz. later",
+            metadata={"_interim_send": True},
+        )
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert len(sends) == 1
+        assert "--mention" not in sends[0][0]
+        # The dotted member name escapes as one token and the shorter prefix
+        # must not re-escape the already-escaped span — nor stay unescaped itself.
+        assert sends[0][1] == "see @\u200bFizz.rest and @\u200bFizz. later"
+
+    @pytest.mark.asyncio
+    async def test_final_reply_with_period_still_summons_deliberately(self):
+        adapter, cli = self._sending_adapter()
+        cli.script("messages", "send", {"accepted": True, "event_id": "i9"})
+
+        result = await adapter.send(CHANNEL, "@Fizz. please review")
+
+        assert result.success
+        sends = self._send_calls(cli)
+        assert ["--mention", FIZZ_PUBKEY] == sends[0][0][-2:]
+        assert sends[0][1] == "@Fizz. please review"

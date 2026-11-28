@@ -22,7 +22,8 @@ def _estimate_tokens(history: list, agent: Any, system_prompt: str | None = None
         system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
     if tools is None:
         tools = getattr(agent, "tools", None) or None
-    return estimate_request_tokens_rough(history, system_prompt=system_prompt, tools=tools)
+    from agent.turn_context import _agent_stale_thinking_on_wire
+    return estimate_request_tokens_rough(history, system_prompt=system_prompt, tools=tools, charge_stale_thinking=_agent_stale_thinking_on_wire(agent))
 
 
 def _queue_prompt(state: SessionState, text: str) -> int:

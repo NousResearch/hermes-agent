@@ -1957,9 +1957,9 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
 
     def _tokens(msgs) -> int:
         # Re-reads prompt + tools each call: _compress_context may have rebuilt the system prompt.
-        sys_prompt = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt
-        tools = getattr(_agent, "tools", None) or _tools
-        return estimate_request_tokens_rough(msgs, system_prompt=sys_prompt, tools=tools) if msgs else 0
+        sys_prompt, tools = getattr(_agent, "_cached_system_prompt", "") or _sys_prompt, getattr(_agent, "tools", None) or _tools
+        from agent.turn_context import _agent_stale_thinking_on_wire
+        return estimate_request_tokens_rough(msgs, system_prompt=sys_prompt, tools=tools, charge_stale_thinking=_agent_stale_thinking_on_wire(_agent)) if msgs else 0
     before_tokens = _tokens(before_messages)
     if before_count >= 4:
         focus_suffix = f', focus: "{focus_topic}"' if focus_topic else ""

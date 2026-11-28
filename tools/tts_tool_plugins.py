@@ -90,7 +90,8 @@ def _dispatch_to_plugin_provider(text: str, output_path: str, provider: str, tts
     1. The caller is responsible for the elif chain that handles ``edge``/``openai``/etc.; this function
     explicitly rejects those names defensively. 2. 3. Plugin dispatch fires only when ``provider`` matches a
     registered :class:`TTSProvider` whose ``name`` equals the configured value. Unknown names return None
-    (caller falls through to Edge default). See #17843.
+    (caller falls through to Edge default and must report that fallback as ``edge``, not as the
+    unknown configured name). See #17843.
     """
     key = _plugin_route_key(provider, tts_config)
     if key is None:

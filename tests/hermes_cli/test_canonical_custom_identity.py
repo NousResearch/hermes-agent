@@ -15,6 +15,10 @@ asserting any particular spelling is rejected.
 
 from __future__ import annotations
 
+import json
+import os
+
+import psutil
 import pytest
 
 from hermes_cli import runtime_provider as rp
@@ -63,6 +67,35 @@ def test_config_key_spelling_still_resolves(keyed_provider_config):
     assert rp.canonical_custom_identity(config_provider=PROVIDER_KEY) == CANONICAL
 
 
+def test_requested_identity_keeps_the_live_endpoint_contract(keyed_provider_config):
+    """A requested route still beats a model or configured provider from another endpoint."""
+    keyed_provider_config["providers"]["other"] = {
+        "api": "https://other.invalid/v1", "models": ["other-model"],
+    }
+    assert rp.canonical_custom_identity(
+        base_url=BASE_URL, requested=CANONICAL, config_provider="custom:other", model="other-model",
+    ) == CANONICAL
+    # A stale request whose entry moved cannot send its new credential to the old endpoint.
+    assert rp.canonical_custom_identity(
+        base_url=BASE_URL, requested="custom:other", config_provider="custom:other", model="other-model",
+    ) == CANONICAL
+
+
+def test_delegation_keeps_an_existing_named_runtime():
+    """An explicit current identity inherits its live bundle without catalog re-resolution."""
+    from types import SimpleNamespace
+    from tools.delegate_tool_config import _resolve_delegation_credentials
+
+    parent = SimpleNamespace(
+        provider="custom", requested_provider=CANONICAL, model=MODEL,
+        base_url=BASE_URL, request_overrides={"extra_body": {"route": "live"}},
+    )
+    assert _resolve_delegation_credentials({}, parent) == {
+        "model": None, "provider": None, "base_url": None, "api_key": None, "api_mode": None,
+        "request_overrides": {"extra_body": {"route": "live"}},
+    }
+
+
 def test_all_recovery_sources_agree_on_one_identity(keyed_provider_config):
     """Endpoint, model and configured-provider recovery must not disagree.
 
@@ -98,6 +131,33 @@ def test_legacy_unkeyed_entry_keeps_its_name_identity(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", dict)
 
     assert rp.canonical_custom_identity(config_provider="Legacy Endpoint") == "custom:legacy-endpoint"
+
+
+@pytest.mark.parametrize("owned,expected", [(True, "llamacpp"), (False, CANONICAL)])
+def test_managed_endpoint_identity_respects_ownership(
+    keyed_provider_config, tmp_path, monkeypatch, owned, expected
+):
+    """Only a live owned endpoint outranks an unrelated configured model."""
+    managed_url = "http://127.0.0.1:18434/v1"
+    process = psutil.Process(os.getpid())
+    owner = process.parent()
+    assert owner is not None
+    state_file = tmp_path / "server.json"
+    state_file.write_text(
+        json.dumps({
+            "base_url": managed_url, "pid": process.pid if owned else 0,
+            "create_time": process.create_time(), "executable": process.exe(),
+            "owner_pid": owner.pid, "owner_create_time": owner.create_time(),
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.local_runtime.supervisor.state_path", lambda: state_file
+    )
+
+    assert rp.canonical_custom_identity(
+        base_url=managed_url + "/", config_provider=PROVIDER_KEY, model=MODEL
+    ) == expected
 
 
 class TestIsRoutableProvider:
@@ -146,3 +206,73 @@ class TestIsRoutableProvider:
         assert rp.is_routable_provider("legacy-endpoint") is True
         assert rp.is_routable_provider("custom:legacy-endpoint") is True
         assert rp.is_routable_provider("Legacy Endpoint") is True
+
+
+def test_model_beats_ambiguous_shared_base_url(monkeypatch):
+    """Disjoint model catalogs disambiguate providers sharing one gateway."""
+    shared = "https://shared.invalid/v1"
+    config = {
+        "custom_providers": [
+            {
+                "name": "ark",
+                "base_url": shared,
+                "api_key": "sk-ark",
+                "model": "model-a-default",
+                "models": {"model-a-default": {}},
+            },
+            {
+                "name": "newapi",
+                "base_url": shared,
+                "api_key": "sk-newapi",
+                "model": "model-b-default",
+                "models": {"model-b-current": {}, "model-b-default": {}},
+            },
+        ]
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    assert rp.find_custom_provider_identity(shared) == "custom:ark"
+    assert (
+        rp.canonical_custom_identity(
+            base_url=shared,
+            config_provider="custom:ark",
+            model="model-b-current",
+        )
+        == "custom:newapi"
+    )
+
+
+def test_keyed_model_beats_shared_base_url_and_keeps_provider_key(monkeypatch):
+    """Keyed providers retain their config key when model and URL disagree."""
+    shared = "https://shared.invalid/v1"
+    config = {
+        "providers": {
+            "provider-a": {
+                "name": "Provider A",
+                "api": shared,
+                "api_key": "sk-a",
+                "default_model": "model-a",
+                "models": ["model-a"],
+            },
+            "provider-b": {
+                "name": "Provider B",
+                "api": shared,
+                "api_key": "sk-b",
+                "default_model": "model-b",
+                "models": ["model-b"],
+            },
+        }
+    }
+    monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+
+    assert rp.find_custom_provider_identity(shared) == "custom:provider-a"
+    assert (
+        rp.canonical_custom_identity(
+            base_url=shared,
+            config_provider="custom:provider-a",
+            model="model-b",
+        )
+        == "custom:provider-b"
+    )

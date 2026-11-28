@@ -209,6 +209,16 @@ bootstrap commands, and setup notes — with the `source:` rendered as a
 clickable link, so you can inspect exactly what an entry connects to or runs
 before clicking Install.
 
+### Catalog write approvals
+
+A native MCP catalog manifest can declare `trust: untrusted` at its top level.
+The installer and connection cards copy this into the saved server configuration,
+so Hermes asks before calls that are not annotated `readOnlyHint: true`, and
+refuses those calls in unattended runs when approval cannot be obtained. The
+optional `trust` field accepts only `full` or `untrusted`; omitting it preserves
+the existing server default. Keep the policy when configuring a same-name native
+connection alongside a portable plugin, since the native entry takes precedence.
+
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a

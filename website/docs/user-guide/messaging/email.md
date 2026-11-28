@@ -167,6 +167,18 @@ platforms:
 
 When enabled, attachment and inline parts are skipped before payload decoding. The email body text is still processed normally.
 
+### Leaving Mail Unread
+
+By default the adapter marks every message it handles (or ignores) as read. If a person also reads this inbox, keep the messages unread instead:
+
+```yaml
+platforms:
+  email:
+    mark_seen: false
+```
+
+or set `EMAIL_MARK_SEEN=false`. Messages are then fetched with `BODY.PEEK[]`, which does not set the `\Seen` flag, and Hermes remembers what it has already handled by UID. Each message is still processed once.
+
 ---
 
 ## Access Control

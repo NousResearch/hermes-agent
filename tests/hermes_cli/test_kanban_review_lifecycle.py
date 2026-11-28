@@ -42,7 +42,25 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
+    _seed_review_skill(home)
     return home
+
+
+def _seed_review_skill(home: Path) -> None:
+    """Install the ``sdlc-review`` skill the review lane force-loads.
+
+    The dispatcher refuses a review claim whose forced skill does not resolve (the worker would raise
+    ``kanban_skills_unavailable`` before its first model call), so a fixture home that dispatches
+    review rows has to carry the skill a real install ships under ``skills/devops/sdlc-review`` —
+    otherwise every review assertion here would test the refusal instead of the lane.
+    """
+    skill = home / "skills" / "devops" / "sdlc-review"
+    skill.mkdir(parents=True, exist_ok=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: sdlc-review\ndescription: Review Kanban handoffs (test stand-in).\n---\n\n"
+        "# sdlc-review\n\nApprove or request changes.\n",
+        encoding="utf-8",
+    )
 
 
 def _row(conn, tid):

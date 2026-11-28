@@ -128,6 +128,11 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skills_unavailable: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, missing_skills)`` refused after the claim because the review lane's
+    forced skill does not resolve in the ASSIGNEE's profile. Blocked, not deferred: the
+    worker would raise ``kanban_skills_unavailable`` before its first model call, so a
+    retry cannot differ from the attempt that just failed."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -172,6 +177,8 @@ def describe_suppression(results: Iterable[Optional[DispatchResult]]) -> str:
             counts[reason] = counts.get(reason, 0) + 1
         if res.rate_limited:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
+        if res.skills_unavailable:
+            counts["skills_unavailable"] = counts.get("skills_unavailable", 0) + len(res.skills_unavailable)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
         if res.memory_pressure:
@@ -1830,6 +1837,71 @@ def review_dispatch_enabled() -> bool:
         return True
 
 
+# The one skill the review lane forces onto its worker (``_dispatch_lane_task`` appends it to every
+# review claim, and ``gateway.session_kanban`` force-loads the same name for the reviewer's turn).
+# Named once so the preflight and the force-load cannot drift apart.
+FORCED_REVIEW_SKILL = "sdlc-review"
+
+
+def _unresolved_forced_skills(hermes_home: Optional[str], identifiers: list[str]) -> Optional[list[str]]:
+    """Identifiers the skill resolver cannot load under *hermes_home*, or None when unresolvable.
+
+    Uses the SAME resolver the worker uses (``build_preloaded_skills_prompt``), under the SAME profile
+    home the worker will run in, so the dispatcher cannot form an opinion the worker contradicts:
+
+    * ``hermes -p <assignee>`` resolves skills from the assignee's profile home, not the dispatcher's.
+      Reading the dispatcher's own home would pass a reviewer profile that has no skills dir (the
+      reported failure) and refuse one that has the skill;
+    * an operator-disabled skill counts as missing, exactly as it does for the worker, which raises
+      ``kanban_skills_unavailable`` for it (``agent.skill_commands`` treats disabled-as-missing on the
+      preload path by design).
+
+    None means "could not establish the answer" (no profile dir, resolver error): the caller fails OPEN
+    and dispatches, because a preflight bug must never be able to stall the review lane.
+    """
+    try:
+        from agent.skill_commands import build_preloaded_skills_prompt
+        if hermes_home:
+            with _worker_profile_scope(hermes_home):
+                return list(build_preloaded_skills_prompt(list(identifiers))[2])
+        return list(build_preloaded_skills_prompt(list(identifiers))[2])
+    except Exception as exc:
+        _kb._log.warning(
+            "kanban dispatcher: review skill preflight could not run for %s (%s); dispatching anyway",
+            identifiers, exc,
+        )
+        return None
+
+
+def _assignee_hermes_home(assignee: str) -> Optional[str]:
+    """The assignee profile's ``HERMES_HOME`` — what ``hermes -p <assignee>`` will resolve for the
+    worker. None when the name maps to no profile dir (a control-plane lane or an uninstalled profile:
+    :func:`_dispatch_lane_task`'s profile gate owns that case, not the skill preflight)."""
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        return resolve_profile_env(normalize_profile_name(assignee))
+    except Exception:
+        return None
+
+
+def _missing_forced_review_skills(assignee: str) -> list[str]:
+    """Forced review skills that do not resolve in *assignee*'s profile; empty when fine or unknown."""
+    return _unresolved_forced_skills(_assignee_hermes_home(assignee), [FORCED_REVIEW_SKILL]) or []
+
+
+def _record_skill_refusal(result: DispatchResult, task_id: str, assignee: str) -> bool:
+    """Bucket a forced-skill refusal on *result*; True when the row must not spawn.
+
+    Shared by the real and the ``dry_run`` path so `hermes kanban dispatch --dry-run` reports the
+    refusal instead of a spawn that could never happen.
+    """
+    missing = _missing_forced_review_skills(assignee)
+    if not missing:
+        return False
+    result.skills_unavailable.append((task_id, ", ".join(missing)))
+    return True
+
+
 # Memory-aware dispatch guard: an uncapped board once OOM'd a 1 GiB host. Two
 # safeguards — a memory-DERIVED default cap when none is configured
 # (``resolve_max_in_progress``) and a live memory-PRESSURE guard inside the
@@ -2120,6 +2192,8 @@ def _dispatch_lane_task(
             per_profile_running[name] = per_profile_running.get(name, 0) + 1
 
     if dry_run:
+        if lane == "review" and _record_skill_refusal(result, task_id, assignee):
+            return False
         result.spawned.append((task_id, assignee, ""))
         _count_spawn(assignee)
         return True
@@ -2145,9 +2219,32 @@ def _dispatch_lane_task(
         _kbw.set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
     _kbw._maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
     if lane == "review":
+        # Ask the resolver as the LAST gate before a worker exists — after the claim, because the claim
+        # is the only authority on the row (a gate before it decides on a snapshot an operator may have
+        # reassigned away, #147534).
+        #
+        # The reviewer worker force-loads ``FORCED_REVIEW_SKILL`` and raises
+        # ``kanban_skills_unavailable`` when it cannot, before its first model call — so a card whose
+        # skill is missing cannot be helped by running it: it spends two spawn deaths of the card's
+        # retry budget and reaches a human as "managed worker lost". One block naming the skill is
+        # strictly better, and it is what the operator can act on.
+        missing_skills = _missing_forced_review_skills(claimed.assignee or assignee)
+        if missing_skills:
+            reason = f"kanban_skills_unavailable: {', '.join(missing_skills)}"
+            _record_skill_refusal(result, claimed.id, claimed.assignee or assignee)
+            # ``force_trip``: block ONCE, sticky, instead of burning the failure budget over spawn
+            # deaths. Deliberately NOT ``infrastructure``/``spawn_failed``: the host is fine and no
+            # worker was ever refused by it, so this must not arm the cooldown ``check_respawn_guard``
+            # reads — one profile's skill set is not a dispatch outage.
+            if _record_task_failure(
+                conn, claimed.id, reason, outcome="skills_unavailable",
+                failure_limit=failure_limit, force_trip=True, release_claim=True, end_run=True,
+            ):
+                result.auto_blocked.append(claimed.id)
+            return False
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
-        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
+        claimed.skills = list(dict.fromkeys([*(claimed.skills or []), FORCED_REVIEW_SKILL]))
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
@@ -2287,6 +2384,8 @@ def _any_spawnable_review(
     assignee already at the per-profile cap, or respawn-guarded — cannot
     consume the reservation, so it must not withhold capacity from an
     otherwise ready task (one such row would pin ``ready_budget`` to 0).
+    The forced-skill preflight is mirrored here for the same reason: its
+    refusal blocks the row, so it can never spend the reservation it asked for.
     """
     if not review_rows:
         return False
@@ -2299,6 +2398,8 @@ def _any_spawnable_review(
         if profile_exists is not None and not profile_exists(assignee):
             continue
         if per_profile_cap is not None and running.get(assignee, 0) >= per_profile_cap:
+            continue
+        if _missing_forced_review_skills(assignee):
             continue
         if check_respawn_guard(conn, row["id"], lane="review") is None:
             return True

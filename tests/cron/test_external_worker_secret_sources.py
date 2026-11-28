@@ -82,3 +82,28 @@ def test_worker_hydrates_owning_profile_plugin_secret_source(homes, tmp_path, mo
 
     assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-1.ready") is True
     assert scopes and scopes[0].get("TESTVAULT_API_KEY") == "stub-vault-key"
+
+
+def test_worker_reuses_parent_secret_source_hydration(tmp_path, monkeypatch):
+    import cron.scheduler as scheduler
+
+    payload = tmp_path / "payload.json"
+    payload.write_text(
+        json.dumps({"job": {"id": "job-2", "execution_id": "exec-2"},
+                    "profile_home": str(tmp_path), "multiplex_active": False}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("_HERMES_CRON_SECRET_SOURCES_APPLIED", "1")
+    hydrate_calls = []
+    monkeypatch.setattr(
+        "hermes_cli.env_loader.hydrate_profile_secret_sources",
+        lambda home: hydrate_calls.append(home),
+    )
+    monkeypatch.setattr(
+        "cron.executions.adopt_claimed_execution",
+        lambda execution_id: {"id": execution_id, "status": "running"},
+    )
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *args, **kwargs: True)
+
+    assert scheduler._run_external_worker_payload(payload, tmp_path / "exec-2.ready") is True
+    assert hydrate_calls == []

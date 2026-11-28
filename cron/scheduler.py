@@ -3582,6 +3582,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ]
 
     from agent.secret_scope import is_multiplex_active
+    from hermes_cli.env_loader import get_secret_source_values
     from cron.scheduler_provider import routed_profile_fire
     from tools.environments.local import build_subprocess_env, strip_launch_profile_env
     from tools.process_registry import (
@@ -3647,6 +3648,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
             inherit_profile_home=True,
             extra={"HERMES_HOME": str(profile_home)},
         ))
+    # The parent has already resolved external sources for this profile.
+    secret_sources_hydrated = bool(get_secret_source_values(profile_home))
     worker_env = systemd_user_bus_env(worker_env)
     # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
     # the other two), and an inherited presence var makes every env-fallback consumer in the
@@ -3666,6 +3669,8 @@ def _launch_external_cron_worker(job: dict) -> bool:
     repo_root = Path(project_root_str())
     worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
     worker_env[WORKER_MARKER] = "1"
+    if secret_sources_hydrated:
+        worker_env["_HERMES_CRON_SECRET_SOURCES_APPLIED"] = "1"
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -3839,7 +3844,8 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         from hermes_cli.plugins import discover_plugins
 
         discover_plugins()
-        hydrate_profile_secret_sources(profile_home)
+        if os.environ.pop("_HERMES_CRON_SECRET_SOURCES_APPLIED", None) is None:
+            hydrate_profile_secret_sources(profile_home)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
         # This process never ran gateway startup, so the OWNING profile's ``hooks:`` block (shell
         # hooks + ``hooks.outbound``) was never registered and cron sessions silently lost it

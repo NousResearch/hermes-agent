@@ -569,6 +569,7 @@ async def _dashboard_health_middleware(request: Request, call_next):
     from hermes_cli.dashboard_auth.peer_pass import is_peer_path
     if response.status_code >= 500 and not is_peer_path(request.url.path):
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
+        _log.warning("dashboard answered %s on %s", response.status_code, request.url.path)
     return response
 
 

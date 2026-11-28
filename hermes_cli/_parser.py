@@ -524,3 +524,21 @@ def gateway_run_no_supervise(argv) -> bool:
         return False
     return (parsed.command == "gateway" and getattr(parsed, "gateway_command", None) == "run"
             and bool(getattr(parsed, "no_supervise", False)))
+
+
+def apply_json_output_default(args) -> None:
+    """Honour ``display.json_output`` for subcommands that declare ``--json``.
+
+    Each verb opts in by declaring the flag, so this only flips the ones that have it and
+    were not given it on the command line: an explicit ``--json`` wins, and verbs without the
+    flag are untouched. Config is read lazily here (after profile resolution, before dispatch)
+    so the setting follows the profile being invoked.
+    """
+    if not hasattr(args, "json") or getattr(args, "json", False):
+        return
+
+    from hermes_cli.config import load_config
+
+    display = load_config().get("display")
+    if isinstance(display, dict) and display.get("json_output"):
+        args.json = True

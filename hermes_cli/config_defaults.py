@@ -853,9 +853,9 @@ DEFAULT_CONFIG = {
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"
         "final_response_markdown": "strip",  # render | strip | raw
-        # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable if an
-        # emulator misbehaves with replayed scrollback.
+        # Preserve recent classic-CLI output across Ctrl+L, /redraw and resize clears; disable on emulator bugs.
         "persistent_output": True,
+        "json_output": False,  # --json default for CLI verbs that declare the flag
         "persistent_output_max_lines": 200,
         # Also clear terminal scrollback on classic-CLI full redraw/resize recovery; enable when a
         # terminal/tmux stack stamps stale prompt chrome into scrollback.

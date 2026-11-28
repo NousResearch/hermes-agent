@@ -118,10 +118,12 @@ def test_review_signals_track_the_review_decision_across_turns(monkeypatch):
             assert spawn["review_memory"] == row["memory_review_due"]
         assert row["skill_review_due"] == (
             row["tool_iterations_since_skill_review"] >= row["skill_nudge_interval"])
+        assert row["memory_review_due"] == (
+            row["user_turns_since_memory_review"] >= row["memory_nudge_interval"])
 
-    # Memory: every second user turn; the counter was reset when it fired.
+    # Memory: every second user turn; the counter resets only after the review spawns.
     assert [r["memory_review_due"] for r in rows] == [False, True, False, True]
-    assert [r["user_turns_since_memory_review"] for r in rows] == [1, 0, 1, 0]
+    assert [r["user_turns_since_memory_review"] for r in rows] == [1, 2, 1, 2]
     # Skills: every loop iteration counts (the tool turn makes three); the counter restarts once
     # the review fired.
     assert [r["tool_iterations_since_skill_review"] for r in rows] == [1, 4, 1, 2]

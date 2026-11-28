@@ -5,9 +5,9 @@ memory review (``memory.nudge_interval``) and tool-calling iterations since the 
 (``skills.creation_nudge_interval``). A plugin that does its own after-turn work (a review-style
 :meth:`PluginContext.fork_session`, say) can follow the same cadence instead of counting tool calls
 itself. ``post_llm_call`` fires before the review decision, so the due flags here are the exact
-values that decision uses: :func:`skill_review_due` is evaluated once per turn by the finalizer
-and passed both to the hook and to the spawn; ``memory_review_due`` was decided when the turn
-started (and that counter was already reset to 0 when it fired).
+values that decision uses: :func:`skill_review_due` and :func:`memory_review_due` are both
+evaluated once per turn by the finalizer and passed to the hook and to the spawn, and each
+counter is reset only after the background review actually spawns.
 """
 
 from __future__ import annotations
@@ -28,6 +28,19 @@ class ReviewSignals(dict):
 
     def __reduce__(self):
         return (ReviewSignals, (dict(self),))
+
+
+def memory_review_due(agent: Any) -> bool:
+    """The memory-review trigger: enough user turns since the last memory review (or
+    ``memory`` call) and the built-in memory store is available."""
+    interval = getattr(agent, "_memory_nudge_interval", 0)
+    turns = getattr(agent, "_turns_since_memory", 0)
+    return bool(
+        isinstance(interval, int) and not isinstance(interval, bool) and interval > 0
+        and isinstance(turns, int) and not isinstance(turns, bool) and turns >= interval
+        and "memory" in (getattr(agent, "valid_tool_names", None) or ())
+        and getattr(agent, "_memory_store", None)
+    )
 
 
 def skill_review_due(agent: Any) -> bool:
@@ -52,7 +65,7 @@ def background_review_enabled(agent: Any) -> bool:
 
 def build_review_signals(agent: Any, *, memory_review_due: bool, skill_review_due: bool) -> ReviewSignals:
     """``post_llm_call``'s ``review_signals`` for the turn ``agent`` is finalizing; counters are the
-    values at hook time (a due skill review resets its counter only after the hook)."""
+    pre-reset values the triggers compared (reset only after the review spawns)."""
     return ReviewSignals(
         tool_iterations_since_skill_review=int(agent._iters_since_skill),
         user_turns_since_memory_review=int(agent._turns_since_memory),

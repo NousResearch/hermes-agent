@@ -1448,7 +1448,6 @@ class _LoopState:
     conversation_history: Any
     effective_task_id: Any
     turn_id: Any
-    _should_review_memory: Any
     _plugin_user_context: Any
     _ext_prefetch_cache: Any
     # Turn-scoped state (rebound by the phases).
@@ -1516,7 +1515,7 @@ class _LoopState:
 # _LoopState fields seeded from TurnContext (same name minus the leading underscore).
 _CTX_FIELDS = frozenset({
     "user_message", "original_user_message", "conversation_history", "effective_task_id", "turn_id",
-    "_should_review_memory", "_plugin_user_context", "_ext_prefetch_cache", "messages",
+    "_plugin_user_context", "_ext_prefetch_cache", "messages",
     "active_system_prompt", "current_turn_user_idx", "_preflight_compression_blocked",
 })
 # Keyword names each phase helper takes (minus ``agent``), cached per function object.
@@ -1583,7 +1582,8 @@ def _finalize_from_state(agent: Any, s: _LoopState) -> dict[str, Any]:
     """Post-loop finalization (agent/turn_finalizer.finalize_turn) fed from the loop state."""
     return finalize_turn(agent, **{
         name: getattr(s, name)
-        for name in inspect.signature(finalize_turn).parameters if name != "agent"
+        for name in inspect.signature(finalize_turn).parameters
+        if name != "agent" and hasattr(s, name)
     })
 
 
@@ -1604,7 +1604,7 @@ def _codex_app_server_turn(agent: Any, s: Any) -> Optional[dict[str, Any]]:
     codex_result = agent._run_codex_app_server_turn(
         user_message=s.user_message, original_user_message=s.original_user_message,
         messages=s.messages, effective_task_id=s.effective_task_id,
-        should_review_memory=s._should_review_memory, turn_id=s.turn_id,
+        turn_id=s.turn_id,
     )
     from agent.turn_recovery import activate_codex_app_server_fallback
     if not activate_codex_app_server_fallback(agent, codex_result):

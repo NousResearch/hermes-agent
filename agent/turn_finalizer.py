@@ -20,7 +20,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from session_rules.turns import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
-from agent.review_signals import build_review_signals, skill_review_due
+from agent.review_signals import build_review_signals, memory_review_due, skill_review_due
 from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
@@ -633,6 +633,8 @@ def _mirror_turn_to_memory(
     # user's task. Suppressed by skip_background_review (e.g. cron): the fork costs
     # ~30K tokens / event with no human-in-the-loop benefit. Best-effort; the review
     # clones the snapshot structurally so its sanitizers can't reach the live transcript.
+    # Reset counters only after _spawn_background_review succeeds so interrupted, empty,
+    # skipped, or failed spawns preserve counter progress.
     if (
         final_response
         and not interrupted
@@ -644,11 +646,15 @@ def _mirror_turn_to_memory(
                 messages_snapshot=list(messages), review_memory=review_memory,
                 review_skills=review_skills,
             )
+            if review_memory:
+                agent._turns_since_memory = 0
+            if review_skills:
+                agent._iters_since_skill = 0
 
 
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
-    effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
+    effective_task_id, turn_id, user_message, original_user_message, _should_review_memory=None,
     _turn_exit_reason, _pending_verification_response=None,
     _pending_verification_response_previewed=False,
 ):
@@ -781,9 +787,15 @@ def finalize_turn(
             agent, final_response, _turn_exit_reason, preserved_verification_fallback, logger,
         )
 
-    # Skill trigger: decided ONCE, from the tool iterations THIS turn used, before post_llm_call so
-    # the hook's review_signals and the review spawn below agree.
+    # Review triggers: decided ONCE at turn end, before post_llm_call so the hook's
+    # review_signals and the review spawn below agree (and mid-turn ``memory`` /
+    # ``skill_manage`` tool calls suppress duplicate background reviews).
     _should_review_skills = skill_review_due(agent)
+    _should_review_memory = (
+        memory_review_due(agent)
+        if _should_review_memory is None
+        else bool(_should_review_memory)
+    )
     _platform = getattr(agent, "platform", None) or ""
     _response_transformed = False
     _pre_transform_response = None
@@ -893,9 +905,6 @@ def finalize_turn(
     # below (and the next turn) run on the session's main model.
     from agent.voice_turn_route import end_voice_turn_route
     end_voice_turn_route(agent)
-
-    if _should_review_skills:
-        agent._iters_since_skill = 0
 
     _mirror_turn_to_memory(
         agent, original_user_message=original_user_message, final_response=final_response,

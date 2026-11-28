@@ -36,6 +36,12 @@ def wait_for_title_upgrades(timeout: float = 10.0) -> None:
     for thread in list(_UPGRADE_THREADS):
         thread.join(max(0.0, deadline - time.monotonic()))
 
+
+# Sessions whose stage-2 title call is already running; concurrent turn hooks must not
+# start a second LLM upgrade for the same session.
+_title_in_flight: set[tuple[str | None, str]] = set()
+_title_in_flight_lock = threading.Lock()
+
 # (task_name, exception) -> None; surfaces auxiliary failures so silent drops don't pile up as NULL titles.
 FailureCallback = Callable[[str, BaseException], None]
 # (title, source) -> None; source is the persisted provenance (``derived`` / ``llm``). Consumers paying a
@@ -265,8 +271,8 @@ def start_title_upgrade(upgrade: Optional[threading.Thread]) -> None:
     """Start a (deferred) title upgrade thread; joinable via ``wait_for_title_upgrades`` only once started."""
     if upgrade is None or upgrade.ident is not None:
         return
-    _UPGRADE_THREADS.add(upgrade)
     upgrade.start()
+    _UPGRADE_THREADS.add(upgrade)
 
 
 def strip_control_wrappers(text: str) -> str:
@@ -959,16 +965,38 @@ def maybe_auto_title(
     if isinstance(title_preview, str) and title_preview.strip():
         upgrade_kwargs["title_preview"] = title_preview
     target, args = auto_title_session, (session_db, session_id, user_message)
+    hold = None
     if persistence is not None:
-        # The caller may close its handle while the model is still answering: the thread writes through its own
-        # reference, which keeps the profile's store open until the title is written (released when the thread ends,
-        # or when a thread that never started is collected).
+        # Keep the owning profile's store alive through deferred and running upgrades.
         from persistence_assembly import open_persistence
         hold = open_persistence(persistence.scope)
         upgrade_kwargs["persistence"] = hold
         target, args = _upgrade_holding_store, (hold, *args)
-    upgrade = spawn_context_thread(target, name="auto-title", args=args, kwargs=upgrade_kwargs)
-    if persistence is not None:
+    claim = (persistence.scope.hermes_home_key if persistence is not None else None, session_id)
+
+    def _run(*worker_args, **worker_kwargs) -> None:
+        # A deferred or failed-to-start thread must never claim the session.
+        with _title_in_flight_lock:
+            claimed = claim not in _title_in_flight
+            if claimed:
+                _title_in_flight.add(claim)
+        if not claimed:
+            if hold is not None:
+                hold.close()
+            return
+        try:
+            target(*worker_args, **worker_kwargs)
+        finally:
+            with _title_in_flight_lock:
+                _title_in_flight.discard(claim)
+
+    try:
+        upgrade = spawn_context_thread(_run, name="auto-title", args=args, kwargs=upgrade_kwargs)
+    except RuntimeError:
+        if hold is not None:
+            hold.close()
+        raise
+    if hold is not None:
         weakref.finalize(upgrade, hold.close)
     if title_upgrade_must_wait_for_turn(main_runtime):
         logger.debug("Auto-title upgrade deferred past the turn: shares the self-hosted endpoint with the main request")

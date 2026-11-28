@@ -10,6 +10,7 @@ whole connect past the desktop GUI's RPC timeout
 
 from __future__ import annotations
 
+import errno
 import socket
 import threading
 
@@ -107,3 +108,24 @@ class TestFindFreeDebugPort:
             pytest.skip("successor port unavailable to bind in this environment")
         finally:
             blocker.close()
+
+    def test_host_without_ipv6_loopback_still_skips_occupied_successor(self, monkeypatch):
+        """No ``::1`` (IPv6 disabled, common in containers) must not make every candidate look taken."""
+        real_socket = socket.socket
+
+        class _NoIPv6Loopback(real_socket):
+            def bind(self, address):
+                if self.family == socket.AF_INET6:
+                    raise OSError(errno.EADDRNOTAVAIL, "Cannot assign requested address")
+                return super().bind(address)
+
+        monkeypatch.setattr(socket, "socket", _NoIPv6Loopback)
+        preferred = _free_port()
+        with real_socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+            try:
+                blocker.bind(("127.0.0.1", preferred + 1))
+            except OSError:
+                pytest.skip("successor port unavailable to bind in this environment")
+            blocker.listen(1)
+            port = find_free_debug_port(preferred)
+        assert preferred + 1 < port <= preferred + 10

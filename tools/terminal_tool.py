@@ -1192,6 +1192,31 @@ class _ApprovalVerdict:
     approved_run: bool = False
 
 
+def approval_rejection(approval: dict[str, Any], command: str) -> str | None:
+    """The terminal tool's result for a gate answer that does not let the command run (denied, or pending gateway
+    approval), or ``None`` when it may run. Shared with ``authorize_tool_call``, which runs the same gate for a
+    call that runs elsewhere."""
+    if approval["approved"]:
+        return None
+    if approval.get("status") == "pending_approval":  # gateway ask mode
+        return _error_json(
+            "", status="pending_approval",
+            approval_pending=True,
+            command=approval.get("command", command),
+            description=approval.get("description", "command flagged"),
+            pattern_key=approval.get("pattern_key", ""),
+            smart_denied=approval.get("smart_denied", False),
+            allow_permanent=approval.get("allow_permanent", True),
+        )
+    desc = approval.get("description", "command flagged")
+    fallback_msg = (
+        f"Command denied: {desc}. "
+        "Use the approval prompt to allow it, or rephrase the command."
+    )
+    return _error_json(approval.get("message", fallback_msg), status="blocked",
+                       **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {}))
+
+
 def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *, force: bool) -> _ApprovalVerdict:
     """Run the command guards; ``force`` skips them entirely.
     Raises :class:`_Rejected` when the command may not run (denied, or pending
@@ -1199,24 +1224,9 @@ def _run_approval_guards(command: str, env_type: str, config: dict[str, Any], *,
     if force:
         return _ApprovalVerdict(approved_run=True)
     approval = _check_all_guards(command, env_type, has_host_access=_docker_has_host_access(config))
-    if not approval["approved"]:
-        if approval.get("status") == "pending_approval":  # gateway ask mode
-            raise _Rejected(_error_json(
-                "", status="pending_approval",
-                approval_pending=True,
-                command=approval.get("command", command),
-                description=approval.get("description", "command flagged"),
-                pattern_key=approval.get("pattern_key", ""),
-                smart_denied=approval.get("smart_denied", False),
-                allow_permanent=approval.get("allow_permanent", True),
-            ))
-        desc = approval.get("description", "command flagged")
-        fallback_msg = (
-            f"Command denied: {desc}. "
-            "Use the approval prompt to allow it, or rephrase the command."
-        )
-        raise _Rejected(_error_json(approval.get("message", fallback_msg), status="blocked",
-                                    **({"user_summary": approval["user_summary"]} if approval.get("user_summary") else {})))
+    rejected = approval_rejection(approval, command)
+    if rejected is not None:
+        raise _Rejected(rejected)
     desc = approval.get("description", "flagged as dangerous")
     if approval.get("user_approved"):
         return _ApprovalVerdict(

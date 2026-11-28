@@ -217,6 +217,12 @@ def register_prepared_approval(session_key, entry):
 
 
 def consume_prepared_guard(command, env_type, has_host_access):
+    from tools.approval_context import _approval_tool_call_id
+    from agent.tool_authorization import consume_authorized_terminal
+    # authorize_tool_call already ran this call's gate (a middleware asked first, then dispatched it here).
+    authorized = consume_authorized_terminal(command, env_type, has_host_access, _approval_tool_call_id.get())
+    if authorized is not None:
+        return authorized
     slot = _slot.get()
     if slot is None or slot.preparing:
         return None

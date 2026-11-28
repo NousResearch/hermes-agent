@@ -827,6 +827,9 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
 
     # ACP/Zed edit approval before any file mutation. The requester is bound
     # via ContextVar only for ACP sessions, so CLI/gateway paths are unaffected.
+    from agent.tool_authorization import consume_authorized_edit
+    if consume_authorized_edit(function_name, function_args, ids.tool_call_id):
+        return function_args, None          # authorize_tool_call already got this exact edit approved
     try:
         from acp_adapter.edit_approval import maybe_require_edit_approval
         edit_block_message = maybe_require_edit_approval(function_name, function_args)

@@ -31,7 +31,6 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
-from agent.compression_marker import _COMPRESSION_MARKER_PREFIX
 from agent.interrupt_control import _REASON_USER_INTERRUPT, interrupt_skip_wording
 from session_rules.turns import coalesce_tool_call_id
 from agent.onboarding import observe_tool_result as observe_onboarding_result
@@ -48,10 +47,11 @@ from agent.inline_tool_executors import (
     tool_hook_ids,
 )
 from agent.message_metadata import stamp_data_use
+from agent.tool_authorization import BODY_DECISION, CallAuthorizer, authorize_call
 from agent.session_persistence import sync_rewritten_tool_rows
 from agent.tool_dispatch_helpers import (
     _NEVER_PARALLEL_TOOLS, _is_destructive_command, _append_subdir_hint_to_multimodal,
-    _context_pruned_argument_paths, _plan_tool_batch_segments, make_tool_result_message,
+    _plan_tool_batch_segments, make_tool_result_message,
 )
 from session_rules.turns import _is_multimodal_tool_result, _multimodal_text_summary
 from tools.terminal_tool_lifecycle import get_active_env
@@ -473,6 +473,7 @@ class _ManagedToolResult:
     blocked: bool
     dispatched: bool
     data_use: frozenset[str] = frozenset()
+    authorized: bool = False   # Hermes's authorization already ran (a middleware called authorize_tool_call)
 
 
 class _ToolTimeoutResult(str):
@@ -644,44 +645,27 @@ def _run_with_activity_heartbeat(agent, function_name: str, fn):
         thread.join(timeout=2.0)
 
 
-_PRUNED_TOOL_ARGUMENTS_ERROR = "suspected_pruned_tool_arguments"
-_PRUNED_TOOL_ARGUMENTS_MESSAGE = (
-    "Tool was not executed because effect-capable arguments contain a Hermes context-compression artifact. "
-    "Recover the exact content from its durable source or re-read it, then issue a complete new call; "
-    "do not retry these arguments. To remove a marker that already landed in a file, match it by its "
-    f"{_COMPRESSION_MARKER_PREFIX.strip('⟪:')} prefix (e.g. a terminal sed on that line) instead of quoting the full marker."
-)
+def _advance_start_order(begin_execution, callback=None) -> None:
+    """Advance the concurrent start-order gate exactly once per call (blocked calls without a callback)."""
+    if begin_execution is not None:
+        begin_execution(callback)
+    elif callback is not None:
+        callback()
 
 
-def _blocked_tool_result(agent, ref: _ToolCallRef, *, block_body: dict[str, Any] | None, block_error_type: str, guardrail_decision) -> str:
-    """Synthesize the result for a call blocked by scope/plugin/pruned-args (``block_body``, the
-    JSON the model sees) or by guardrail policy (``guardrail_decision``) and emit its terminal post_tool_call."""
-    if block_body is not None:
-        result = json.dumps(block_body, ensure_ascii=False)
-        error_type, error_message = block_error_type, block_body.get("message") or block_body["error"]
-    else:
-        result = agent._guardrail_block_result(guardrail_decision)
-        error_type = "guardrail_block"
-        error_message = getattr(guardrail_decision, "message", None) or "Tool blocked by guardrail policy"
-    ref.emit_post(agent, result, status="blocked", error_type=error_type, error_message=error_message)
-    return result
+def _start_authorized(agent, ref: _ToolCallRef, *, display_index: int | None, begin_execution,
+                      local_checkpoint: bool = True) -> None:
+    """Turn bookkeeping and the start-order gate for a call Hermes just authorized (once per call)."""
+    if ref.name == "memory":
+        agent._turns_since_memory = 0
+    elif ref.name == "skill_manage":
+        agent._iters_since_skill = 0
 
-
-def _pre_tool_block(agent, ref: _ToolCallRef):
-    """Run ``pre_tool_call`` plugin hooks; returns ``(block_message, final_args)`` with any
-    hook-modified args applied. Hook failures never block."""
-    try:
-        from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
-
-        block_msg, modified_args = _dispatch_pre_tool_call_hooks(
-            ref.name,
-            ref.args,
-            **tool_hook_ids(agent, ref.task_id, ref.call_id),
-            middleware_trace=list(ref.trace),
-        )
-        return block_msg, (ref.args if modified_args is None else modified_args)
-    except Exception:
-        return None, ref.args
+    from agent.terminal_approval_batch import prepare_current_terminal
+    prepare_current_terminal(ref)
+    _advance_start_order(
+        begin_execution,
+        lambda: _begin_tool_execution(agent, ref, display_index, local_checkpoint=local_checkpoint))
 
 
 def _dispatch_authorized_once(
@@ -695,67 +679,19 @@ def _dispatch_authorized_once(
     begin_execution,
     authorization_gate: _ConcurrentToolAuthorizationGate | None,
 ) -> Any:
-    """Hermes policy (scope → plugin pre-hooks → pruned-arg check → guardrails) then the one real dispatch.
+    """Hermes policy (``agent.tool_authorization.authorize_call``) then the one real dispatch.
 
-    Plugin ``modify`` hooks may rewrite ``ref.args`` (mirrored into ``state.args``).
-    ``begin_execution`` (concurrent start-order gate) is advanced exactly once on every
-    path so later-ordered workers keep moving; blocked calls advance it without a callback.
+    When a middleware already authorized the call (``state.authorized``), policy is not run again: the call was
+    started then, and only the local checkpoint it skipped is taken here before the dispatch.
     """
-    def _advance_start_order(callback=None) -> None:
-        if begin_execution is not None:
-            begin_execution(callback)
-        elif callback is not None:
-            callback()
-
-    # Deny-by-default for a hosted scope, before plugin hooks, guardrails or any executor: every
-    # sequential, concurrent and batched call reaches its executor (inline, memory provider, context
-    # engine, registry) only through here.
-    from tools.hosted_tool_policy import hosted_tool_refusal
-    block_message, block_error_type = hosted_tool_refusal(ref.name), "hosted_tool_refused"
-    if block_message is None:
-        block_message, block_error_type = scope_block, "tool_scope_block"
-    if block_message is None:
-        block_error_type = "plugin_block"
-        resolve = lambda: _pre_tool_block(agent, ref)
-        block_message, ref.args = resolve() if authorization_gate is None else authorization_gate.run(resolve)
-        state.args = ref.args
-    block_body = None if block_message is None else {"error": block_message}
-
-    # Checked once, after plugin modify hooks (which may replace arguments) and
-    # before guardrails or real dispatch: a copied compression marker in an
-    # effect-capable argument must never reach the tool.
-    if block_body is None:
-        pruned_paths = _context_pruned_argument_paths(ref.name, ref.args)
-        if pruned_paths:
-            block_body = {
-                "error": _PRUNED_TOOL_ARGUMENTS_ERROR,
-                "message": _PRUNED_TOOL_ARGUMENTS_MESSAGE,
-                "argument_paths": pruned_paths,
-            }
-            block_error_type = _PRUNED_TOOL_ARGUMENTS_ERROR
-
-    guardrail_decision = None
-    if block_body is None:
-        guardrail_decision = agent._tool_guardrails.before_call(ref.name, ref.args)
-        if guardrail_decision.allows_execution:
-            guardrail_decision = None
-
-    if block_body is not None or guardrail_decision is not None:
-        _advance_start_order()
-        state.blocked = True
-        return _blocked_tool_result(
-            agent, ref,
-            block_body=block_body, block_error_type=block_error_type, guardrail_decision=guardrail_decision,
-        )
-
-    if ref.name == "memory":
-        agent._turns_since_memory = 0
-    elif ref.name == "skill_manage":
-        agent._iters_since_skill = 0
-
-    from agent.terminal_approval_batch import prepare_current_terminal
-    prepare_current_terminal(ref)
-    _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
+    if state.authorized:
+        _checkpoint_before_execution(agent, ref)
+    else:
+        blocked = authorize_call(agent, state, ref, scope_block=scope_block, authorization_gate=authorization_gate)
+        if blocked is not None:
+            _advance_start_order(begin_execution)
+            return blocked
+        _start_authorized(agent, ref, display_index=display_index, begin_execution=begin_execution)
     from agent.tool_progress_relay import bound_tool_progress
     from tools.connectors.data_use import collect_data_use
     from tools.mcp_elicitation_form import bound_form_asker  # MCP elicitation asks on this turn's clarify surface
@@ -802,10 +738,28 @@ def _run_agent_tool_execution_middleware(
         return state
     dispatch_lock = threading.Lock()
 
+    authorizer = CallAuthorizer(
+        agent, state, lock=dispatch_lock,
+        make_ref=lambda args: _ToolCallRef(function_name, dict(args), effective_task_id, tool_call_id, trace),
+        start=lambda ref: _start_authorized(agent, ref, display_index=display_index,
+                                            begin_execution=begin_execution, local_checkpoint=False),
+        advance=lambda: _advance_start_order(begin_execution),
+        scope_block=scope_block, authorization_gate=authorization_gate)
+    _authorize, decided = authorizer, authorizer.decided
+
     def _authorized_dispatch(final_args: dict[str, Any]) -> Any:
         with dispatch_lock:
             if state.dispatched:
                 raise RuntimeError("Hermes tool execution callback invoked more than once")
+            decision = decided.get("decision")
+            if decision is not None and not decision.allowed:
+                raise RuntimeError("Hermes's authorization refused this tool call; return its result instead of "
+                                   "running the call")
+            if decision is not None:
+                if final_args not in (decision.args, decided["requested"]):
+                    raise RuntimeError("the tool call's arguments changed after authorize_tool_call(); only the "
+                                       "authorized arguments may run")
+                final_args = decision.args
             state.dispatched = True
             state.blocked = False
             state.args = final_args
@@ -839,22 +793,27 @@ def _run_agent_tool_execution_middleware(
             request_args,
             lambda next_args: _authorized_dispatch(next_args if isinstance(next_args, dict) else request_args),
             original_args=function_args,
+            authorize=_authorize,
             **tool_hook_ids(agent, effective_task_id, tool_call_id),
         )
 
-    state.result, _relay_args = relay_tools.execute(
-        function_name,
-        function_args,
-        _hermes_pipeline,
-        session_id=str(getattr(agent, "session_id", "") or ""),
-        tool_call_id=tool_call_id or None,
-        metadata={
-            "task_id": effective_task_id or "",
-            "turn_id": getattr(agent, "_current_turn_id", "") or "",
-            "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
-            "tool_call_id": tool_call_id or "",
-        },
-    )
+    body_token = BODY_DECISION.set(None)    # a tool-body approval lives for this one call only
+    try:
+        state.result, _relay_args = relay_tools.execute(
+            function_name,
+            function_args,
+            _hermes_pipeline,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            tool_call_id=tool_call_id or None,
+            metadata={
+                "task_id": effective_task_id or "",
+                "turn_id": getattr(agent, "_current_turn_id", "") or "",
+                "api_request_id": getattr(agent, "_current_api_request_id", "") or "",
+                "tool_call_id": tool_call_id or "",
+            },
+        )
+    finally:
+        BODY_DECISION.reset(body_token)
     return state
 
 
@@ -1033,9 +992,9 @@ def _safe_callback(callback, label: str, *args, **kwargs) -> None:
         logging.debug("%s callback error: %s", label, callback_error)
 
 
-def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -> None:
-    """Run user-visible and checkpoint preflight on final tool arguments."""
-    function_name, function_args, effective_task_id, tool_call_id = ref.name, ref.args, ref.task_id, ref.call_id
+def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None, *, local_checkpoint: bool = True) -> None:
+    """Run user-visible and (unless ``local_checkpoint`` is False) checkpoint preflight on final tool arguments."""
+    function_name, function_args, tool_call_id = ref.name, ref.args, ref.call_id
     display_args = _redact_tool_args_for_display(function_name, function_args) or function_args
     if _tool_progress_enabled(agent):
         prefix = f"Tool {display_index}" if display_index is not None else "Tool"
@@ -1057,7 +1016,13 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         else:
             _safe_callback(agent.tool_progress_callback, "Tool progress", "tool.started", function_name, preview, display_args)
     _safe_callback(agent.tool_start_callback, "Tool start", tool_call_id, function_name, display_args)
+    if local_checkpoint:
+        _checkpoint_before_execution(agent, ref)
 
+
+def _checkpoint_before_execution(agent, ref: _ToolCallRef) -> None:
+    """Take this host's file checkpoint before a call that writes here (write_file, patch, destructive terminal)."""
+    function_name, function_args, effective_task_id = ref.name, ref.args, ref.task_id
     if not agent._checkpoint_mgr.enabled:
         return
     with contextlib.suppress(Exception):
@@ -1409,7 +1374,13 @@ class _ConcurrentBatch:
             logger.error("_invoke_tool raised for %s: %s", ref.name, tool_error, exc_info=True)
         duration = time.time() - start
         if not blocked and not dispatched:
+            # A middleware returned without next_call: the executor owns this call's terminal hook and its
+            # transform (the dispatch, which fires the transform itself, never ran).
             ref.emit_post(agent, result, duration_ms=int(duration * 1000))
+            result = apply_transform_tool_result(
+                agent, function_name=ref.name, function_args=ref.args, result=result,
+                effective_task_id=ref.task_id, tool_call_id=ref.call_id, duration_ms=int(duration * 1000),
+            )
         is_error, _ = _detect_tool_failure(ref.name, result)
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", ref.name, duration, str(result)[:200])
@@ -1946,7 +1917,10 @@ def _execute_tool_calls_sequential(agent, assistant_message, messages: list, eff
             tool_start_time=tool_start_time,
         )
         if not _publish_sequential_result(agent, messages, ref, managed, tool_duration=tool_duration, index=i,
-                                          budget=_tool_budget, transform_applied=dispatch.transform_applied):
+                                          budget=_tool_budget,
+                                          # a middleware that returned without next_call: the dispatch never ran,
+                                          # so its transform did not fire either
+                                          transform_applied=dispatch.transform_applied and getattr(managed, "dispatched", True)):
             return
 
         if agent._interrupt_requested and i < len(tool_calls):

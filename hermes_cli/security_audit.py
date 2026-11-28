@@ -134,9 +134,19 @@ def _discover_plugins(hermes_home: Path) -> list[Component]:
 # Recognised pinned refs: ``npx [-y|--yes] [@scope/]pkg@1.2.3`` and ``uvx [--with] pkg==1.2.3``.
 # Unversioned names map to "latest" at runtime and aren't a stable audit subject.
 _NPX_PKG = re.compile(r"^(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)@([A-Za-z0-9._+-]+)$")
-_UVX_PKG = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9._+!-]+)$")
+_UVX_PKG = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]+\])?==([A-Za-z0-9._+!-]+)$")  # pkg[extra]==1.2.3
 # launcher basename -> (package-ref regex, OSV ecosystem)
 _MCP_LAUNCHERS = {"npx": (_NPX_PKG, "npm"), "uvx": (_UVX_PKG, "PyPI")}
+
+
+def _uvx_from_target(args: list[str]) -> Optional[str]:
+    """Return the explicit ``uvx --from <spec>`` / ``--from=<spec>`` install target, if any."""
+    for index, token in enumerate(args):
+        if token == "--from" and index + 1 < len(args):
+            return args[index + 1]
+        if token.startswith("--from="):
+            return token[len("--from="):]
+    return None
 
 
 def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> Optional[Component]:
@@ -145,8 +155,18 @@ def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> O
     """
     cmd = (command or "").strip().lower()
     launcher = next((k for k in _MCP_LAUNCHERS if cmd.endswith(k)), None)  # any prefix path
-    # Skip flag tokens; the first non-flag token must be a pinned ref or we stay silent.
-    ref = next((token for token in args if not token.startswith("-")), None)
+    # uvx --from names the install target; otherwise the first non-flag token must be a pinned ref.
+    ref = _uvx_from_target(args) if launcher == "uvx" else None
+    if ref is None:
+        # uvx value-taking flags (--python 3.12, --with x) must not be mistaken for the ref.
+        takes_value = {"--python", "--with"} if launcher == "uvx" else set()
+        skip_next = False
+        for token in args:
+            if skip_next or token.startswith("-"):
+                skip_next = token in takes_value
+                continue
+            ref = token
+            break
     if launcher is None or ref is None:
         return None
     pattern, ecosystem = _MCP_LAUNCHERS[launcher]

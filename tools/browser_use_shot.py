@@ -107,6 +107,32 @@ def make_new_tab(new_tab: Callable[..., Any], cdp: Callable[..., Any],
     return new_tab_in_front
 
 
+# Helpers that send real input events. Chrome delivers key events only to a page that has focus, and a
+# tab that is never activated (every tab on a watched browser) has none: fill_input() then returns
+# normally and leaves the field empty. Focus emulation gives the attached page focus without raising it.
+_INPUT_HELPERS = ("click_at_xy", "type_text", "fill_input", "press_key")
+
+
+def _emulate_focus(cdp: Callable[..., Any]) -> None:
+    try:
+        cdp("Emulation.setFocusEmulationEnabled", enabled=True)
+    # Lightpanda and some remotes lack the method; the input still goes out as before.
+    except (RuntimeError, OSError) as e:
+        _log.debug("Emulation.setFocusEmulationEnabled unavailable: %s", e)
+
+
+def make_focused_input(fn: Callable[..., Any], cdp: Callable[..., Any]) -> Callable[..., Any]:
+    """``fn`` with focus emulation on the attached page first. Per call: the emulation is per CDP
+    session, and ``switch_tab``/``new_tab`` attach a new one. Every backend: even on cloud, a tab
+    reached through ``switch_tab`` is not activated."""
+    def focused_input(*args, **kwargs):
+        _emulate_focus(cdp)
+        return fn(*args, **kwargs)
+    focused_input.__name__ = getattr(fn, "__name__", "focused_input")
+    focused_input.__doc__ = fn.__doc__
+    return focused_input
+
+
 def _is_harness_helper(fn: Any) -> bool:
     """True for the harness's own helper; a same-named function from the agent's workspace
     ``agent_helpers.py`` (loaded into the helpers module at import) is the agent's choice."""
@@ -145,6 +171,10 @@ def install(helpers: Any, activate: str = ACTIVATE_NEVER) -> None:
                                                              activate_hidden=check)
     if activate != ACTIVATE_NEVER and _is_harness_helper(helpers.new_tab):
         helpers.new_tab = make_new_tab(helpers.new_tab, helpers.cdp, activate=check)
+    for name in _INPUT_HELPERS:  # tabs left in the background still need focus to receive keys
+        fn = getattr(helpers, name, None)
+        if fn is not None and _is_harness_helper(fn):
+            setattr(helpers, name, make_focused_input(fn, helpers.cdp))
 
 
 _HARNESS_MODULE_ARGS = ["-m", "browser_harness.run"]

@@ -50,6 +50,12 @@ _FAKE_TRANSPORT = textwrap.dedent("""\
             return {"targetId": "T2"}
         if method == "Target.attachToTarget":
             return {"sessionId": "S2"}
+        if method == "Emulation.setFocusEmulationEnabled":
+            if os.environ.get("FAKE_NO_EMULATION") == "1":
+                raise RuntimeError("'Emulation.setFocusEmulationEnabled' wasn't found")
+            return {}
+        if method == "Input.insertText":
+            return {}
         if method == "Page.captureScreenshot":
             if params.get("format") == "png" and state["hidden"]:
                 raise h._IPCResponseTimeout(f"{method} timed out after {_response_timeout:g}s")
@@ -171,3 +177,24 @@ def test_autospawn_route_activates_only_when_the_harness_actually_reached_cloud(
     assert result.get("success") is True, result.get("stderr") or result
     activations = [c["targetId"] for c in calls if c["method"] == "Target.activateTarget"]
     assert activations == (["T1", "T2"] if daemon_kind == "cloud" else []), calls
+
+
+@pytest.mark.parametrize("cloud", [False, True], ids=["local", "cloud"])
+def test_typing_emulates_focus_so_a_background_tab_receives_the_keys(run_exec, cloud):
+    # Chrome drops key events for a tab without focus; on a watched browser the agent's tab never gets
+    # it (it is created in the background and never activated), so fill_input() left fields empty.
+    result, _, calls = run_exec(True, cloud=cloud, code="type_text('hallo'); type_text('welt'); print('OK')")
+
+    assert result.get("success") is True, result.get("stderr") or result
+    methods = [c["method"] for c in calls]
+    assert methods == ["Emulation.setFocusEmulationEnabled", "Input.insertText"] * 2, calls
+    assert calls[0]["enabled"] is True
+    assert "Target.activateTarget" not in methods  # focus without raising the tab
+
+
+def test_typing_still_works_where_focus_emulation_is_missing(run_exec, monkeypatch):
+    monkeypatch.setenv("FAKE_NO_EMULATION", "1")  # Lightpanda, some remote providers
+    result, _, calls = run_exec(True, code="type_text('hallo'); print('OK')")
+
+    assert result.get("success") is True, result.get("stderr") or result
+    assert [c["method"] for c in calls] == ["Emulation.setFocusEmulationEnabled", "Input.insertText"], calls

@@ -588,6 +588,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
 
     return () => ipcRenderer.removeListener('hermes:close-preview-requested', listener)
   },
+  onPreviewGuestNewWindow: callback => {
+    const listener = (_event, request) => callback(request)
+    ipcRenderer.on('hermes:preview-guest-new-window', listener)
+
+    return () => ipcRenderer.removeListener('hermes:preview-guest-new-window', listener)
+  },
   onPreviewNav: callback => {
     const listener = (_event, command) => callback(command)
     ipcRenderer.on('hermes:preview-nav', listener)

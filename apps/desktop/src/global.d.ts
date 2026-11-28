@@ -683,6 +683,15 @@ declare global {
         } | null
       ) => void
       onClosePreviewRequested?: (callback: () => void) => () => void
+      /** A preview page opened a new tab (electron/preview-guest-new-window.ts). */
+      onPreviewGuestNewWindow?: (
+        callback: (request: {
+          background: boolean
+          guestId: number
+          post?: { body: Uint8Array; contentType: string }
+          url: string
+        }) => void
+      ) => () => void
       onPreviewNav?: (callback: (command: 'back' | 'forward' | 'reload') => void) => () => void
       onOpenFolderRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void

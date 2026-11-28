@@ -83,10 +83,11 @@ percent-escapes (`electron/oauth-partition.ts`).
 ## Guest content never opens anything by itself
 
 Artifact iframes and the preview `<webview>` never drive the OS browser on their own
-(GHSA-9f4c-93c8-jc8g): `setWindowOpenHandler` denies everything, the webview has no `allowpopups`,
-and a guest `target="_blank"` link reaches `hermes:openExternal` only through the
-`persist:hermes-preview` guest preload's trusted-click bridge, `http:`/`https:` only. Widening the
-partition key, the trusted-click gate or the scheme set reopens the advisory.
+(GHSA-9f4c-93c8-jc8g): `setWindowOpenHandler` denies everything. A preview guest's new tab
+(`_blank` link or form POST, `window.open`) becomes a new preview tab in the same chat through
+`electron/preview-guest-new-window.ts`: always `deny`, preview-family guests only, `http:`/`https:`
+only, rate-limited, never `hermes:openExternal`. Widening the guest set, the scheme set or the
+`deny` reopens the advisory (see ENGINEERING.md).
 
 ## Compatibility without carrying the past forever
 

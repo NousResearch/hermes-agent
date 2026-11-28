@@ -1056,13 +1056,19 @@ describe('PreviewPane console state', () => {
   })
 })
 
-describe('PreviewPane guest external handoff', () => {
-  // #112941: a guest page's `_blank` anchor (Streamlit's "Ask Google" button)
-  // reaches the OS browser only through the audited `hermes:openExternal` IPC.
+describe('PreviewPane guest new tab', () => {
+  // A preview page's new tab (`_blank` link or form POST, `window.open`) opens
+  // as another preview tab of the same chat, never in the OS browser
+  // (electron/preview-guest-new-window.ts forwards it; the pane opens it).
+  type NewWindowRequest = { background: boolean; guestId: number; post?: { body: Uint8Array; contentType: string }; url: string }
   const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
   const initialHermesDesktop = desktopWindow.hermesDesktop
+  const GUEST_ID = 11
 
   afterEach(() => {
+    cleanup()
+    closeRightRail()
+
     if (initialHermesDesktop) {
       desktopWindow.hermesDesktop = initialHermesDesktop
     } else {
@@ -1070,51 +1076,98 @@ describe('PreviewPane guest external handoff', () => {
     }
   })
 
-  async function renderWebview() {
+  async function renderTab(url: string, existingTabId?: string) {
     const openExternal = vi.fn(async () => undefined)
-    desktopWindow.hermesDesktop = { openExternal } as unknown as Window['hermesDesktop']
+    const listeners: Array<(request: NewWindowRequest) => void> = []
+
+    desktopWindow.hermesDesktop = {
+      onPreviewGuestNewWindow: (callback: (request: NewWindowRequest) => void) => {
+        listeners.push(callback)
+
+        return () => listeners.splice(listeners.indexOf(callback), 1)
+      },
+      openExternal
+    } as unknown as Window['hermesDesktop']
+
+    if (!existingTabId) {
+      openPreview({ kind: 'url', label: url, source: url, url })
+    }
+
+    const tab = existingTabId
+      ? $previewTabs.get().find(item => item.id === existingTabId)!
+      : $previewTabs.get().find(item => item.target.kind === 'url')!
 
     let rendered!: ReturnType<typeof render>
 
     await act(async () => {
-      rendered = render(
-        <PreviewPane
-          target={{
-            kind: 'url',
-            label: 'Preview',
-            source: 'http://localhost:8501',
-            url: 'http://localhost:8501'
-          }}
-        />
-      )
+      rendered = render(<PreviewPane tabId={tab.id} target={tab.target} />)
     })
 
-    return { openExternal, webview: rendered.container.querySelector('webview') as HTMLElement }
+    const webview = rendered.container.querySelector('webview') as HTMLElement & {
+      getWebContentsId?: () => number
+      loadURL?: (...args: unknown[]) => Promise<void>
+    }
+
+    webview.getWebContentsId = () => GUEST_ID
+
+    const fire = (request: Partial<NewWindowRequest> & { url: string }) =>
+      act(() => listeners.forEach(listener => listener({ background: false, guestId: GUEST_ID, ...request })))
+
+    return { fire, openExternal, tab, webview }
   }
 
-  function guestMessage(webview: HTMLElement, url: string, channel = 'preview-open-external') {
-    act(() => {
-      webview.dispatchEvent(Object.assign(new Event('ipc-message'), { args: [url], channel }))
-    })
-  }
+  it('lets the guest ask for popups, which main always denies and forwards', async () => {
+    const { webview } = await renderTab('http://app.example.test/index.html')
 
-  it('opens an admitted guest anchor URL through the audited OS-browser channel', async () => {
-    const { openExternal, webview } = await renderWebview()
-
-    guestMessage(webview, 'https://www.google.com/search?q=traceback')
-
-    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://www.google.com/search?q=traceback')
+    expect(webview.hasAttribute('allowpopups')).toBe(true)
   })
 
-  it('never opens non-web schemes or messages from a channel the preload does not own', async () => {
-    const { openExternal, webview } = await renderWebview()
+  it('opens a _blank link as a new preview tab of the same chat, not in the OS browser', async () => {
+    const { fire, openExternal, tab } = await renderTab('http://app.example.test/index.html')
 
-    guestMessage(webview, 'file:///etc/passwd')
-    guestMessage(webview, 'javascript:alert(1)')
-    guestMessage(webview, 'mailto:someone@example.com')
-    guestMessage(webview, 'https://example.com', 'something-else')
+    fire({ url: 'http://app.example.test/page2.html' })
 
+    const tabs = $previewTabs.get()
+    const popup = tabs.find(item => item.target.url === 'http://app.example.test/page2.html')
+
+    expect(tabs).toHaveLength(2)
+    expect(popup?.sessionId).toBe(tab.sessionId)
+    expect($rightRailActiveTabId.get()).toBe(popup?.id)
     expect(openExternal).not.toHaveBeenCalled()
+  })
+
+  it('ignores a request from another guest', async () => {
+    const { fire } = await renderTab('http://app.example.test/index.html')
+
+    fire({ guestId: 99, url: 'http://app.example.test/page2.html' })
+
+    expect($previewTabs.get()).toHaveLength(1)
+  })
+
+  it('replays a _blank form POST once in the new tab', async () => {
+    const opener = await renderTab('http://app.example.test/index.html')
+    const body = new TextEncoder().encode('user=demo-user')
+
+    opener.fire({ post: { body, contentType: 'application/x-www-form-urlencoded' }, url: 'http://app.example.test/login-as' })
+
+    const popupTab = $previewTabs.get().find(item => item.id !== opener.tab.id)!
+
+    expect(popupTab.target.url).toBe('about:blank')
+
+    cleanup()
+    const popup = await renderTab('about:blank', popupTab.id)
+    const loadURL = vi.fn(async () => undefined)
+    popup.webview.loadURL = loadURL
+
+    act(() => {
+      popup.webview.dispatchEvent(new Event('dom-ready'))
+      popup.webview.dispatchEvent(new Event('dom-ready'))
+    })
+
+    expect(loadURL).toHaveBeenCalledExactlyOnceWith('http://app.example.test/login-as', {
+      extraHeaders: 'Content-Type: application/x-www-form-urlencoded\n',
+      postData: [{ bytes: body, type: 'rawData' }]
+    })
   })
 })
 

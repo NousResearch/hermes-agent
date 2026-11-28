@@ -28,7 +28,6 @@ import {
   flushAnnotateStack
 } from '@/lib/preview-annotate'
 import { handoffPreviewAnnotateStack } from '@/lib/preview-annotate/handoff'
-import { admitPreviewExternalUrl, PREVIEW_EXTERNAL_CHANNEL } from '@/lib/preview-external'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -39,11 +38,13 @@ import {
   commitBrowserTabLocation,
   failPreviewServerRestart,
   noteBrowserPage,
+  openPreviewPopupTab,
   popOutBrowserTab,
   type PreviewRenderMode,
   previewTabOwnerProfile,
   type PreviewTarget,
-  setPreviewRenderMode
+  setPreviewRenderMode,
+  takePreviewPopupPost
 } from '@/store/preview'
 import { currentSessionId } from '@/store/preview-ownership'
 import { $selectedStoredSessionId, knownSessionProfile, ownerLookupSessionRows } from '@/store/session'
@@ -1132,24 +1133,48 @@ export function PreviewPane({
     webview.setAttribute('partition', previewPartitionForTab(ownerSessionIdRef.current, tabId))
     webview.setAttribute('src', initialUrl)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
+    // Lets Chromium hand a page's new tab to main's setWindowOpenHandler, which
+    // always denies the popup and forwards it here (preview-guest-new-window.ts).
+    webview.setAttribute('allowpopups', '')
 
-    // The guest preload (main.ts installs it on this partition) forwards a
-    // clicked `_blank` anchor here. Admission is our side of the contract —
-    // http/https only, so a guest page can never reach the local-file
-    // opener — and the open itself goes through the audited
-    // `hermes:openExternal` channel, never a popup side effect.
-    const onGuestExternal = (event: Event) => {
-      const detail = event as Event & { args?: unknown[]; channel?: string }
+    // A page in THIS tab opened a new tab: open it as a Browser tab beside this
+    // one (same chat, profile and cookie jar). The request names the guest by
+    // webContents id, so only the pane hosting that guest acts on it.
+    const offGuestNewWindow = window.hermesDesktop?.onPreviewGuestNewWindow?.(request => {
+      let guestId: number | undefined
 
-      if (detail.channel !== PREVIEW_EXTERNAL_CHANNEL) {
+      try {
+        guestId = webview.getWebContentsId?.()
+      } catch {
         return
       }
 
-      const url = String(detail.args?.[0] ?? '')
-
-      if (admitPreviewExternalUrl(url)) {
-        void window.hermesDesktop?.openExternal?.(url)
+      if (!tabId || guestId !== request.guestId) {
+        return
       }
+
+      openPreviewPopupTab(tabId, request.url, { background: request.background, post: request.post })
+    })
+
+    // A popup tab opened by a form POST starts on about:blank and replays the
+    // POST once its guest is ready (`openPreviewPopupTab`).
+    const popupPost = tabId ? takePreviewPopupPost(tabId) : undefined
+
+    const onFirstReady = () => {
+      webview.removeEventListener('dom-ready', onFirstReady)
+
+      if (popupPost) {
+        void webview
+          .loadURL?.(popupPost.url, {
+            extraHeaders: `Content-Type: ${popupPost.contentType}\n`,
+            postData: [{ bytes: popupPost.body, type: 'rawData' }]
+          })
+          ?.catch(() => undefined)
+      }
+    }
+
+    if (popupPost) {
+      webview.addEventListener('dom-ready', onFirstReady)
     }
 
     const onConsole = (event: Event) => {
@@ -1352,7 +1377,6 @@ export function PreviewPane({
     }
 
     webview.addEventListener('console-message', onConsole)
-    webview.addEventListener('ipc-message', onGuestExternal)
     webview.addEventListener('context-menu', onGuestContextMenu)
     webview.addEventListener('devtools-closed', onDevToolsClosed)
     webview.addEventListener('devtools-opened', onDevToolsOpened)
@@ -1384,7 +1408,8 @@ export function PreviewPane({
       }
 
       webview.removeEventListener('console-message', onConsole)
-      webview.removeEventListener('ipc-message', onGuestExternal)
+      offGuestNewWindow?.()
+      webview.removeEventListener('dom-ready', onFirstReady)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
       webview.removeEventListener('devtools-opened', onDevToolsOpened)

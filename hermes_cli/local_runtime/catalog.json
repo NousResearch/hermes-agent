@@ -15,6 +15,15 @@
               "size_bytes": 16464440224
             }
           ]
+        },
+        {
+          "quant": "UD-Q3_K_XL",
+          "files": [
+            {
+              "path": "Qwen3.8-27B-UD-Q3_K_XL.gguf",
+              "size_bytes": 13146393504
+            }
+          ]
         }
       ],
       "n_ctx_train": 262144,
@@ -28,7 +37,7 @@
         "local": "mmproj-Qwen3.8-27B-BF16.gguf"
       },
       "mtp": true,
-      "mtp_draft_depth": 2,
+      "mtp_draft_depth": 4,
       "sampling": {
         "chat-template-kwargs": "{\"reasoning_effort\":\"medium\"}",
         "temp": "1.0",
@@ -243,6 +252,35 @@
       },
       "quality": 85,
       "decode_fraction": 0.1
+    },
+    {
+      "id": "ornith-1.5-35b-a3b",
+      "display_name": "Ornith 1.5 35B-A3B",
+      "description": "Qwen3.8-family 35B MoE with an integrated MTP head; measured top of the agent suite on the 36 GB Mac (35/36) at 145 code / 112 prose tok/s with depth-4 drafting",
+      "repo": "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+      "variants": [
+        {
+          "quant": "Q4_K_M",
+          "files": [
+            {
+              "path": "Ornith-1.5-35B-Q4_K_M.gguf",
+              "size_bytes": 21713463040
+            }
+          ],
+          "validated": true
+        }
+      ],
+      "n_ctx_train": 262144,
+      "full_layers": 10,
+      "recurrent_layers": 30,
+      "per_layer_f16": 2048,
+      "moe": true,
+      "mtp": true,
+      "mtp_draft_depth": 4,
+      "n_vocab": 248320,
+      "quality": 85,
+      "decode_fraction": 0.15,
+      "recommend": true
     }
   ]
 }

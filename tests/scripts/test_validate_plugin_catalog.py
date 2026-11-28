@@ -337,6 +337,26 @@ def test_directory_mode_validates_all_entries_and_removed(tmp_path):
     assert combined.count("ERROR") == combined.count("bad-one.yaml: ERROR")
 
 
+def test_two_entries_with_the_same_name_fail(tmp_path):
+    # The catalog resolves a name to one repo and pin; two files naming it would install
+    # whichever one a lookup happens to pick (#160208).
+    write_entry(tmp_path, VALID_ENTRY, filename="a-first.yaml")
+    write_entry(
+        tmp_path,
+        {**VALID_ENTRY, "repo": "https://github.com/example/second", "sha": "b" * 40},
+        filename="b-second.yaml",
+    )
+    result = run_validator("--json", str(tmp_path))
+    report = json.loads(result.stdout)
+    assert result.returncode == 1
+    by_file = {Path(f["path"]).name: f for f in report["files"]}
+    assert by_file["a-first.yaml"]["ok"]
+    assert not by_file["b-second.yaml"]["ok"]
+    assert any(
+        "example-plugin" in err and "a-first.yaml" in err for err in by_file["b-second.yaml"]["errors"]
+    ), by_file["b-second.yaml"]["errors"]
+
+
 def test_directory_mode_all_valid_exits_zero(tmp_path):
     write_entry(tmp_path, VALID_ENTRY)
     (tmp_path / "removed.yaml").write_text(

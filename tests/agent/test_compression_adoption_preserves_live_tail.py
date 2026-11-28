@@ -43,7 +43,7 @@ from tests.gateway.fixtures.storage_handles import close_storage_handles, storag
 def _build_agent_with_db(db, session_id: str):
     """Build an AIAgent wired to ``db`` and pinned to ``session_id``.
 
-    Mirrors the helper in ``test_rotation_flush_persisted_boundary_68196.py``:
+    Mirrors the helper in ``test_rotation_flush_persisted_boundary.py``:
     stub the compressor so it returns deterministic output without an LLM
     call, and pin ``compression_in_place=False`` so the legacy rotation path
     (which owns the "grew before lease" adoption) is exercised.

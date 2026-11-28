@@ -53,6 +53,12 @@ and push notification configs (inline or via
 memory — and the reply is returned over A2A. Completed tasks stay queryable
 via `tasks/get`.
 
+Under a multiplexed gateway every served profile with the platform enabled
+shares one port: the first to connect binds it at the root, and the others are
+mounted on the same listener at `/p/<profile>/` (each with its own session and
+its own tokens; `listeners.py` holds the process-wide registry). A profile with
+its own `A2A_PORT` still binds that port alone.
+
 ## Security
 
 - **No token ⇒ localhost only.** The server binds `127.0.0.1` and refuses to

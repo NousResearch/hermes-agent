@@ -515,7 +515,7 @@ class TestThreadContext(unittest.TestCase):
     def test_reply_uses_re_prefix(self):
         """Reply subject should have Re: prefix."""
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {
+        adapter._thread_context[("user@test.com", "T1")] = {
             "subject": "Project question",
             "message_id": "<original@test.com>",
         }
@@ -524,7 +524,7 @@ class TestThreadContext(unittest.TestCase):
             mock_server = MagicMock()
             mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Here is the answer.", None)
+            adapter._send_email("user@test.com", "Here is the answer.", None, thread_id="T1")
 
             # Check the sent message
             send_call = mock_server.send_message.call_args[0][0]
@@ -588,7 +588,7 @@ class TestSendMethods(unittest.TestCase):
         import asyncio
         import tempfile
         adapter = self._make_adapter()
-        adapter._thread_context["user@test.com"] = {"subject": "Old", "message_id": "<cached@test.com>"}
+        adapter._thread_context[("user@test.com", None)] = {"subject": "Old", "message_id": "<cached@test.com>"}
         with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
             f.write(b"doc")
             tmp_path = f.name

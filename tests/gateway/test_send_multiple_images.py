@@ -413,6 +413,9 @@ class TestEmailMultiImage:
         a._smtp_host = "smtp.example.com"
         a._smtp_port = 587
         a._thread_context = {}
+        a._thrid_failures = {}
+        a._has_gmail_ext = True
+        a._logged_no_gmail_ext = False
         return a
 
     def test_local_files_attached_in_single_email(self, adapter, tmp_path):
@@ -431,9 +434,12 @@ class TestEmailMultiImage:
             _run(adapter.send_multiple_images("user@example.com", images))
 
         mock_send.assert_called_once()
-        to_addr, body, file_paths = mock_send.call_args.args
+        to_addr, body, file_paths, thread_id = mock_send.call_args.args
         assert to_addr == "user@example.com"
         assert len(file_paths) == 3
         assert "alt 0" in body
+        # No metadata passed, so no thread is named — the SMTP layer falls back
+        # to this correspondent's most recent thread.
+        assert thread_id is None
 
 

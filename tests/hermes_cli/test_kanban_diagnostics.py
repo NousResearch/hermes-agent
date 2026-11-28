@@ -86,7 +86,8 @@ def test_running_with_open_parents_fires_only_while_running():
     """A running card whose parent is not terminal is flagged; the same graph
     on a ready/todo card (the gate is holding it) and a done parent are not."""
     graph = {"parents": [{"id": "t_parent", "title": "p", "status": "todo"}], "children": []}
-    diags = kd.compute_task_diagnostics(_task(status="running", started_at=100), [], [], graph=graph)
+    # Freshly started, so the run is not also flagged for missing liveness.
+    diags = kd.compute_task_diagnostics(_task(status="running", started_at=int(time.time())), [], [], graph=graph)
     assert [d.kind for d in diags] == ["running_with_open_parents"]
     assert diags[0].data["open_parents"] == [{"id": "t_parent", "status": "todo"}]
     assert "hermes kanban unlink t_parent t_demo00" in diags[0].actions[0].payload["command"]
@@ -195,6 +196,193 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+# ---------------------------------------------------------------------------
+# truthful running liveness
+# ---------------------------------------------------------------------------
+
+
+def test_running_diagnostic_rejects_stale_heartbeat_and_foreign_pid(monkeypatch):
+    """A running row is not live merely because its stale PID now exists.
+
+    This models the two production failures safely: an orphaned child process
+    survives after its worker exits, and a recycled PID belongs to a stranger.
+    The diagnostic must surface both stale heartbeat and mismatched identity.
+    """
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: False)
+    task = _task(
+        status="running",
+        claim_lock=f"{kb._host_prefix()}123",
+        worker_pid=4242,
+        worker_started_at="old-boot|10",
+        started_at=now - 2 * 3600,
+        last_heartbeat_at=now - 3601,
+    )
+
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    liveness = [d for d in diags if d.kind == "running_liveness_stale"]
+
+    assert len(liveness) == 1
+    assert liveness[0].severity == "error"
+    assert liveness[0].data["heartbeat_stale"] is True
+    assert liveness[0].data["worker_identity_matches"] is False
+    assert "heartbeat" in liveness[0].detail.lower()
+    assert "identity" in liveness[0].detail.lower()
+
+
+def test_running_liveness_reports_unavailable_heartbeat_without_zero_age(monkeypatch):
+    """A dead local worker with no timestamp must not imply a fabricated 0s age."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: False)
+    task = _task(
+        status="running",
+        claim_lock=f"{kb._host_prefix()}123",
+        worker_pid=4242,
+        worker_started_at="old-boot|10",
+        started_at=None,
+        last_heartbeat_at=None,
+    )
+
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    liveness = [d for d in diags if d.kind == "running_liveness_stale"]
+
+    assert len(liveness) == 1
+    assert "heartbeat timestamp unavailable" in liveness[0].detail.lower()
+    assert "for 0s" not in liveness[0].detail.lower()
+    assert liveness[0].data["heartbeat_age_seconds"] is None
+
+
+def test_running_liveness_never_reports_runtime_as_heartbeat_age():
+    """A record that never heartbeated is stale by runtime, not by heartbeat age.
+
+    The time since ``started_at`` must surface as its own field and wording so
+    a dashboard cannot read a runtime as the age of a heartbeat that never
+    happened (the dispatcher keeps the two apart the same way).
+    """
+    now = 100_000
+    task = _task(
+        status="running",
+        claim_lock="other-host:123",
+        worker_pid=4242,
+        started_at=now - 2 * 3600,
+        last_heartbeat_at=None,
+    )
+
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    liveness = [d for d in diags if d.kind == "running_liveness_stale"]
+
+    assert len(liveness) == 1
+    data = liveness[0].data
+    assert data["heartbeat_age_seconds"] is None
+    assert data["running_age_seconds"] == now - task["started_at"]
+    assert data["heartbeat_stale"] is True
+    detail = liveness[0].detail.lower()
+    assert "no fresh heartbeat for" not in detail
+    assert f"no heartbeat recorded; running for {data['running_age_seconds']}s" in detail
+
+
+def _live_running_task(now, **overrides):
+    task = _task(
+        status="running",
+        claim_lock=f"{kb._host_prefix()}123",
+        worker_pid=4242,
+        worker_started_at="boot|10",
+        started_at=now - 2 * 3600,
+        last_heartbeat_at=now - 60,
+    )
+    task.update(overrides)
+    return task
+
+
+def _liveness(task, now):
+    diags = kd.compute_task_diagnostics(task, [], [], now=now)
+    return [d for d in diags if d.kind == "running_liveness_stale"]
+
+
+def test_running_liveness_silent_for_fresh_heartbeat_and_matching_identity(monkeypatch):
+    """The core contract: a live record (fresh heartbeat, PID matches its spawn
+    fingerprint) is not flagged."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: True)
+    assert _liveness(_live_running_task(now), now) == []
+
+
+def test_running_liveness_heartbeat_threshold_boundary(monkeypatch):
+    """One second under the limit is silent; at the limit it fires (``>=``)."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: True)
+    limit = kd._RUNNING_LIVENESS_HEARTBEAT_GAP_SECONDS
+    assert _liveness(_live_running_task(now, last_heartbeat_at=now - limit + 1), now) == []
+    assert len(_liveness(_live_running_task(now, last_heartbeat_at=now - limit), now)) == 1
+
+
+def test_running_liveness_reads_iso_timestamps_like_the_dispatcher(monkeypatch):
+    """Older rows store ISO-8601 text. A fresh ISO heartbeat must keep the rule
+    silent; a stale one must still fire with its real age."""
+    from datetime import UTC, datetime
+
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 1_800_000_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: True)
+
+    def iso(age):
+        return datetime.fromtimestamp(now - age, tz=UTC).isoformat()
+
+    assert _liveness(_live_running_task(now, last_heartbeat_at=iso(60)), now) == []
+    stale = _liveness(_live_running_task(now, last_heartbeat_at=iso(2 * 3600)), now)
+    assert len(stale) == 1
+    assert stale[0].data["heartbeat_age_seconds"] == 2 * 3600
+
+
+def test_running_liveness_ages_the_current_run_not_the_first_claim(monkeypatch):
+    """``tasks.started_at`` keeps the first claim's time across retries and
+    reclaim clears the heartbeat. A retried task whose current run started 60s
+    ago has not had time to heartbeat and must not be flagged."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: True)
+    task = _live_running_task(
+        now, current_run_id=9, started_at=now - 5 * 3600, last_heartbeat_at=None)
+    runs = [{"id": 8, "started_at": now - 5 * 3600}, {"id": 9, "started_at": now - 60}]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    assert not [d for d in diags if d.kind == "running_liveness_stale"]
+
+
+def test_running_liveness_ignores_heartbeat_left_over_from_an_earlier_run(monkeypatch):
+    """A block/unblock/claim cycle can carry the previous run's old heartbeat
+    onto a fresh run; the fresh run is not stale yet."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: True)
+    task = _live_running_task(
+        now, current_run_id=9, started_at=now - 5 * 3600, last_heartbeat_at=now - 4 * 3600)
+    runs = [{"id": 9, "started_at": now - 120}]
+    diags = kd.compute_task_diagnostics(task, [], runs, now=now)
+    assert not [d for d in diags if d.kind == "running_liveness_stale"]
+
+
+def test_running_liveness_fresh_run_pid_mismatch_has_no_heartbeat_noise(monkeypatch):
+    """A young run whose PID identity is wrong reports the PID problem only."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    now = 100_000
+    monkeypatch.setattr(kbd, "_worker_alive", lambda pid, fingerprint: False)
+    task = _live_running_task(now, started_at=now - 30, last_heartbeat_at=None)
+    found = _liveness(task, now)
+    assert len(found) == 1
+    assert "spawn identity" in found[0].detail
+    assert "heartbeat timestamp unavailable" not in found[0].detail
 
 
 # ---------------------------------------------------------------------------

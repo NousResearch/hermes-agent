@@ -516,6 +516,13 @@ def _parse_search_output(result, output_mode: str, limit: int, offset: int,
     )
 
 
+def _path_order_key(path: str) -> list[str]:
+    """``rg --sort=path`` order: entries compared one path component at a time, so ``a/b``
+    sorts before ``a-c`` (a plain string sort puts ``-`` before ``/``). A backslash is a
+    separator only on Windows; on POSIX it is a legal filename character."""
+    return (path.replace("\\", "/") if os.name == "nt" else path).split("/")
+
+
 def _posix_roots(roots: list[str]) -> bool:
     """Darwin-only: every root is POSIX-shaped (no drive letter / backslash)."""
     return sys.platform == "darwin" and all(
@@ -1071,7 +1078,7 @@ class SearchMixin:
         ]
 
     def _search_directories_with_find(
-        self, pattern: str, path: str, fetch_limit: int
+        self, pattern: str, path: str, fetch_limit: int, by_path: bool = False
     ) -> tuple[list[str], Optional[str]]:
         """Return matching descendant directories using find, if available.
 
@@ -1121,7 +1128,8 @@ class SearchMixin:
             if self._root_under_hidden_dir(path):
                 dirs = self._filter_hidden_descendants(dirs, Path(path))
             dirs = self._filter_gitignored_paths(dirs, path)
-        return self._sort_paths_by_mtime(dirs)[:fetch_limit], limit_reason
+        ordered = sorted(dirs, key=_path_order_key) if by_path else self._sort_paths_by_mtime(dirs)
+        return ordered[:fetch_limit], limit_reason
 
     def _search_files(self, pattern: str, path: str | list[str], limit: int, offset: int,
                       order: str = "discovery") -> SearchResult:
@@ -1265,6 +1273,9 @@ class SearchMixin:
                 return SearchResult(error=capability_error)
         rg = self._quote_executable(rg_executable)
         sort_arg = " --sortr=modified" if order == "modified" else ""
+        if not sort_arg and not any(self._is_broad_local_search_root(root) for root in roots):
+            # Same paging fix as content search: one path order, so offset pages never overlap.
+            sort_arg = " --sort=path"
         root_args = " ".join(self._escape_native_tool_arg(root) for root in command_roots)
         cd_prefix = f"cd {self._escape_shell_arg(scoped_common)} && " if scoped_common else ""
         # ``--`` terminates options so a dash-prefixed root is never parsed as a flag.
@@ -1316,11 +1327,16 @@ class SearchMixin:
         # as a coherent page. Only the single-root path supplements (a multi-root
         # walk is already the merged view across roots).
         if limit_reason != "search_timeout" and isinstance(path, str) and self._has_command("find"):
-            dirs, directory_limit_reason = self._search_directories_with_find(glob_pattern, path, fetch_limit)
+            by_path = sort_arg == " --sort=path"
+            dirs, directory_limit_reason = self._search_directories_with_find(
+                glob_pattern, path, fetch_limit, by_path=by_path)
             if dirs:
                 existing = set(all_files)
-                merged_entries = self._sort_paths_by_mtime(
-                    all_files + [d for d in dirs if d not in existing])
+                combined = all_files + [d for d in dirs if d not in existing]
+                # Path-ordered paging must merge in rg's own order, or each offset slices a
+                # different mtime ordering of a differently-bounded list.
+                merged_entries = (sorted(combined, key=_path_order_key) if by_path
+                                  else self._sort_paths_by_mtime(combined))
                 # Under exact modified order rg is authoritative for files;
                 # the merged view keeps the newest-first contract globally.
                 all_files = merged_entries
@@ -1390,6 +1406,13 @@ class SearchMixin:
         if not rg_executable:
             return SearchResult(error="Content search requires ripgrep (rg).")
         cmd_parts = [self._quote_executable(rg_executable), "--line-number", "--no-heading", "--with-filename"]
+        # rg's parallel walk emits files in a different order every run, so the ``| head``
+        # window behind ``offset`` paging held a different set each call: page 2 repeated or
+        # skipped page-1 hits. --sort=path makes every page a slice of one list (same fix as
+        # Claude Code 2.1.327). It costs walk parallelism, which only hurts at $HOME/filesystem
+        # root scale (first page 0.03s -> 5s measured), so those roots keep discovery order.
+        if not self._is_broad_local_search_root(path):
+            cmd_parts.append("--sort=path")
         # Giant-single-line containment (cline#13525): a match inside a multi-MB
         # single-line dump makes rg emit the ENTIRE line (``head -n`` counts lines).
         # --max-columns bounds each printed line at the rg layer; --max-columns-preview

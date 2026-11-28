@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import tomllib
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 import pm
 from plugins.platforms.google_chat import oauth
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_stale_google_transitives_are_reported_missing(monkeypatch):
@@ -75,3 +81,34 @@ def test_ensure_deps_requests_every_extra_before_reporting_a_restart(monkeypatch
     with pytest.raises(pm.InstallError, match="google installed"):
         adapter.ensure_google_chat_deps()
     assert requested == ["google", "google-chat"]
+
+
+def test_probe_pins_match_the_pins_pyproject_declares():
+    """Each probe pin must equal the pin its declared extra carries in pyproject.
+
+    ``_REQUIRED_PACKAGES`` doubles as the staleness probe, so an exact ``==`` pin that no
+    longer matches what the resolver installs keeps ``_missing_required_packages()``
+    non-empty forever: ``install_deps()`` reinstalls the version pyproject asks for, the
+    re-check still reports the old pin, and ``_ensure_deps()`` exits. Users saw that as
+    "Couldn't generate the OAuth URL" on a healthy install — a lockstep drift, not a
+    broken interpreter or client secret.
+    """
+    declared = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "optional-dependencies"
+    ]
+    declared_pins = {
+        canonicalize_name(requirement.name): str(requirement.specifier)
+        for extra in oauth._DEPENDENCY_EXTRAS
+        for spec in declared.get(extra, [])
+        if (requirement := Requirement(spec)).specifier
+    }
+
+    drift = {}
+    for spec in oauth._REQUIRED_PACKAGES:
+        requirement = Requirement(spec)
+        name = canonicalize_name(requirement.name)
+        if declared_pins.get(name) != str(requirement.specifier):
+            drift[name] = {"probe": str(requirement.specifier), "pyproject": declared_pins.get(name)}
+
+    assert not drift, f"probe pins disagree with the {oauth._DEPENDENCY_EXTRAS} extras: {drift}"
+

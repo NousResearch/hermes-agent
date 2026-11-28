@@ -1,0 +1,36 @@
+name: portal-engine
+repo: https://github.com/bazziba-it/hermes-plugin-portal-engine
+sha: 17d2c9c656a8b42d4de1baf6adda4837a4e01f48
+description: >-
+  Interactive "portal" engine for Hermes: OpenCV + MediaPipe real-time hand tracking
+  (up to 4 hands) with glowing-hand, portal-ring, pass-through and particle effects,
+  camera-to-screen calibration (auto / manual / checkerboard), and a video output bridge
+  (Syphon on macOS, Spout on Windows, NDI cross-platform, virtual camera on Linux,
+  shared-memory fallback) so MadMapper, Resolume, TouchDesigner, vMix or OBS can consume
+  the "PortalEngine" stream. 8 agent tools + on_session_end cleanup hook + bundled skill.
+  Disclosure — requires a local camera and opens a local OpenCV window; all processing is
+  on-device; no network calls, no shell commands, no stored credentials. Optional pip
+  packages (mediapipe, opencv-python, numpy, ndi-python, spout-gl, pyvirtualcam) are NOT
+  auto-installed: the plugin loads without them and returns clear JSON errors with the
+  install command. Requires Python 3.8-3.12 (MediaPipe wheel ceiling, declared via
+  python_runtime in plugin.yaml). Optional projector for projection mapping.
+maintainer: bazziba-it
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - portal_start
+    - portal_stop
+    - portal_calibrate
+    - portal_status
+    - portal_list_cameras
+    - portal_syphon_start
+    - portal_syphon_stop
+    - portal_syphon_status
+  provides_hooks:
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

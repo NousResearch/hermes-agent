@@ -1525,6 +1525,20 @@ code {
   -moz-tab-size: 2;
 }
 
+/* Code shows exactly the characters that were written. The bundled JetBrains
+   Mono turns `!=`, `->`, `=>`, `<=`, `===` into single ligature glyphs through
+   its contextual alternates, which browsers enable by default, so a command or
+   diff read in chat no longer matched what a copy pastes or the terminal pane
+   shows. `none` turns off contextual alternates as well as ligatures. */
+pre,
+code,
+kbd,
+samp,
+.font-mono,
+.cm-editor {
+  font-variant-ligatures: none;
+}
+
 /* Arc-style multicolor action surface (static, not animated). Reusable on any
    Button via className. Unlayered so it beats Tailwind's bg- and text- variant
    utilities. */

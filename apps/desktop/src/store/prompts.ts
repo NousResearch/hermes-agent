@@ -543,12 +543,21 @@ export async function answerApproval(
       APPROVAL_RESPOND_REQUEST_TIMEOUT_MS
     )
   } catch (error) {
+    if (isRequestTimeoutError(error) && !request.requestId) {
+      // The answer may have landed; a stale legacy prompt must not be resubmitted
+      // against a newer FIFO entry. Retire it (and only it: an identified prompt that arrived
+      // meanwhile keeps its server route), then restore the server's pending state.
+      clearApprovalRequest(request.sessionId, undefined, item => !item.requestId)
+      void replayPendingApproval(gateway, request.sessionId).catch(() => undefined)
+      throw error
+    }
+
     if (!isRequestTimeoutError(error)) {
       throw error
     }
 
     // The deadline fired while the approval may still be pending server-side
-    // (WS stall behind a long LLM stream). Resolve is idempotent: re-send once.
+    // (WS stall behind a long LLM stream). Resolve by request_id is idempotent: re-send once.
     await requestForOwnedSession(
       request.sessionId,
       ambientRequestFor(gateway),

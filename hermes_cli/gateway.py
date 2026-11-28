@@ -4594,6 +4594,33 @@ _WATCHDOG_EXIT_REASONS = {
 }
 
 
+def _disabled_prior_run_errors(state: dict) -> set[str]:
+    """Only explicit opt-outs with a recorded different writer identity are historical."""
+    owner = (state.get("pid"), state.get("start_time"))
+    if any(value is None for value in owner):
+        return set()
+    historical = {
+        name for name, data in (state.get("platforms") or {}).items()
+        if isinstance(name, str) and ":" not in name and data.get("state") == "fatal"
+        and data.get("writer_pid") is not None and data.get("writer_start_time") is not None
+        and (data["writer_pid"], data["writer_start_time"]) != owner
+    }
+    if not historical:
+        return set()
+    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_cli.config_effective import load_user_config_effective
+    from ruamel.yaml.error import YAMLError
+    try:
+        config = load_user_config_effective(get_hermes_home() / "config.yaml")
+    except (ConfigBackendUnavailable, OSError, ValueError, YAMLError):
+        return set()
+    platforms = config.get("platforms") if isinstance(config, dict) else None
+    if not isinstance(platforms, dict):
+        return set()
+    return {name for name in historical if isinstance(platforms.get(name), dict)
+            and platforms[name].get("enabled") is False}
+
+
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
@@ -4608,10 +4635,11 @@ def _runtime_health_lines() -> list[str]:
 
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
+    disabled_history = _disabled_prior_run_errors(state)
     lines = [
         f"⚠ {platform}: {pdata.get('error_message') or 'unknown error'}"
         for platform, pdata in (state.get("platforms", {}) or {}).items()
-        if pdata.get("state") == "fatal"
+        if pdata.get("state") == "fatal" and platform not in disabled_history
     ]
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past

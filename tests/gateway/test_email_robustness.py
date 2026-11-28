@@ -69,6 +69,25 @@ class TestImapResponseGuard(unittest.TestCase):
         results = self._fetch_with([("OK", [None])])
         self.assertEqual(results, [])
 
+    def test_replies_ahead_of_the_requested_uid_are_ignored(self):
+        """A flag update or another message's reply arriving first must not hide, or stand in for, ours."""
+        adapter = _make_adapter()
+        noise = [b"3 (FLAGS (\\Seen))", (b"4 (UID 8 BODY[HEADER] {9}", _raw_email(sender="other@test.com")), b")"]
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1"])
+            if command == "fetch":
+                item = b"BODY[HEADER.FIELDS (FROM)]<0>" if "BODY.PEEK" in args[1] else b"RFC822"
+                return ("OK", noise + [(b"1 (UID 1 " + item + b" {9}", _raw_email()), b")"])
+            return ("OK", [b""])
+
+        mock_imap = MagicMock()
+        mock_imap.uid.side_effect = uid_handler
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages(lambda c: c["sender_addr"] == "user@test.com")
+        self.assertEqual([r["sender_addr"] for r in results], ["user@test.com"])
+
 
 
 

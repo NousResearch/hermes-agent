@@ -1,0 +1,26 @@
+name: membrane
+title: Hermes Membrane
+repo: https://github.com/noblebrown-69/hermes-membrane
+sha: e108d5139d2d39afaf4f419ec8479488dfca3698
+description: "One shared memory for all your Hermes agents, with a membrane in between. Cloud assistants drop curated notes into a folder; a fail-closed gate retains only the safe ones in one shared Hindsight bank that every profile recalls, and a filtered read-only digest flows back out. Nothing echoes. Includes a dashboard tab with status and metrics. Disclosure — Membrane reads note files from a user-chosen folder and writes processed/rejected copies, a digest and state files there; it makes HTTP calls only to the user-configured Hindsight API (default http://127.0.0.1:8888) to read banks, create the configured shared bank if missing and retain notes into it, never deleting memories or writing to any other bank; it reads each profile's Hindsight config read-only to check recall wiring and never edits it; an optional API key comes from Hermes secrets or MEMBRANE_HINDSIGHT_API_KEY; no model calls, no telemetry, no python_dependencies; scheduled syncs run only if the user installs the example systemd timer or cron entry."
+maintainer: noblebrown-69
+tier: community
+category: memory
+version: "0.1.1"
+requires_hermes: ">=0.23.0"
+image: "https://raw.githubusercontent.com/noblebrown-69/hermes-membrane/e108d5139d2d39afaf4f419ec8479488dfca3698/assets/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/noblebrown-69/hermes-membrane/e108d5139d2d39afaf4f419ec8479488dfca3698/assets/screenshot-dashboard.png"
+  - "https://raw.githubusercontent.com/noblebrown-69/hermes-membrane/e108d5139d2d39afaf4f419ec8479488dfca3698/assets/architecture.png"
+docs_url: "https://github.com/noblebrown-69/hermes-membrane/blob/e108d5139d2d39afaf4f419ec8479488dfca3698/README.md"
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - membrane_ingest
+    - membrane_export_digest
+    - membrane_status
+    - membrane_check_hindsight
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

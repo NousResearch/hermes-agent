@@ -620,7 +620,8 @@ async def _call_tool_racing_stdio_death(server, server_name: str, tool_name: str
     # A progress callback makes the SDK send ``_meta.progressToken``, the spec's opt-in for
     # ``notifications/progress``; without one the server must stay silent.
     extra = {"progress_callback": progress_callback} if progress_callback is not None else {}
-    _call_coro = server.session.call_tool(tool_name, arguments=args, **extra)
+    from tools.mcp_tool_tasks import call_tool as _call_tool_resolving_tasks
+    _call_coro = _call_tool_resolving_tasks(server.session, tool_name, args, **extra)
     _watch_children = getattr(server, "_watch_stdio_children", None)
     if not (inspect.iscoroutinefunction(_watch_children) and asyncio.iscoroutine(_call_coro)):
         # Stubbed sessions return a non-awaitable, or there is no child-watcher to race: plain await.

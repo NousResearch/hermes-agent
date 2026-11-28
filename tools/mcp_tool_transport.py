@@ -193,6 +193,10 @@ class MCPServerTransportMixin:
             from mcp.types import Implementation
             from hermes_cli.version_info import get_version_info
             kwargs["client_info"] = Implementation(name="hermes-agent", version=get_version_info().base_version)
+        from tools import mcp_tool_tasks
+        if mcp_tool_tasks.tasks_enabled(getattr(self, "_config", None)) and _core._client_session_accepts("result_claims"):
+            # Modern sessions only (the SDK drops the ad on legacy wires): long tools answer with a task handle.
+            kwargs.update(mcp_tool_tasks.session_kwargs())
         return kwargs
 
     async def _negotiate_session(self, session, connect_timeout: float):

@@ -618,6 +618,29 @@ These utility tools are now capability-aware:
 
 So a server that exposes callable tools but no resources/prompts will not get those extra wrappers.
 
+## Long-running tools (MCP Tasks)
+
+Hermes supports the [Tasks extension](https://modelcontextprotocol.io/extensions/tasks/overview)
+(`io.modelcontextprotocol/tasks`) on servers that speak the 2026-07-28 protocol or later. A server
+running a long job (a CI pipeline, a batch export) can then answer a tool call with a task handle
+instead of holding the connection open. Hermes polls `tasks/get` at the interval the server suggests,
+and the agent gets the finished result like any other tool result. A task that fails or is cancelled
+comes back as a tool error. If Hermes stops waiting (the tool timeout, or you interrupt the turn), it
+sends `tasks/cancel` to the server.
+
+The tool's normal timeout still applies to the whole wait. Raise `timeout` for that server if its jobs
+run longer. A task that asks for input mid-run (`input_required`) is cancelled with an explanatory
+error, because Hermes does not answer `tasks/update` yet.
+
+Older servers never see the extension. To turn it off for one server:
+
+```yaml
+mcp_servers:
+  ci:
+    url: https://ci.example.com/mcp
+    tasks: false
+```
+
 ## Per-server filtering
 
 You can control which tools each MCP server contributes to Hermes, allowing fine-grained management of your tool namespace.

@@ -243,7 +243,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{quote(str(media_file))}", "")],
-        metadata={"thread_id": "topic-1"},
+        metadata={"thread_id": "topic-1", "notify": True},
     )
 
 
@@ -293,7 +293,7 @@ async def test_queued_followup_delivery_reuses_routing_metadata_for_media(
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
         images=[(f"file://{quote(str(media_file))}", "")],
-        metadata=routing_metadata,
+        metadata={**routing_metadata, "notify": True},
     )
 
 

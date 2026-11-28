@@ -113,3 +113,28 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     assert str(media_file) in unquote(images_kwargs["images"][0][0])
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("supplied_metadata", [False, True])
+async def test_post_stream_voice_is_notify_worthy(tmp_path, monkeypatch, supplied_metadata):
+    """A voice-only streamed final must notify in Telegram's important mode (#144897)."""
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "reply.ogg")
+    adapter = _adapter()
+    event = _event()
+    event.source.platform = Platform.TELEGRAM
+    metadata = {"thread_id": "topic", "hermes_profile": "secondary"}
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner(metadata),
+        f"[[audio_as_voice]]\nMEDIA:{media_file}",
+        event,
+        adapter,
+        thread_metadata=metadata if supplied_metadata else None,
+    )
+
+    adapter.send_voice.assert_awaited_once_with(
+        chat_id=event.source.chat_id,
+        audio_path=str(media_file),
+        metadata={**metadata, "notify": True},
+        is_voice=True,
+    )
+    assert metadata == {"thread_id": "topic", "hermes_profile": "secondary"}

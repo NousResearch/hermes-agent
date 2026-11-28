@@ -356,7 +356,7 @@ def get_compatible_custom_providers(
             continue
         provider_key = _norm(entry, "provider_key")
         name = _norm(entry, "name")
-        base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
+        base_url = normalize_route_base_url(entry.get("base_url"))
         pair = (name, base_url, _norm(entry, "model"))
         if provider_key and provider_key in seen_provider_keys:
             continue

@@ -10,6 +10,7 @@ import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
+import { $timestampHourCycle } from '@/lib/time'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import { $sidebarRowMeta } from '@/store/layout'
@@ -294,10 +295,36 @@ describe('SidebarSessionRow', () => {
 describe('SidebarSessionRow keyboard stops', () => {
   const rowMeta = $sidebarRowMeta.get()
   const pullRequests = $pullRequestsByBranch.get()
+  const timestampHourCycle = $timestampHourCycle.get()
 
   afterEach(() => {
     $sidebarRowMeta.set(rowMeta)
     $pullRequestsByBranch.set(pullRequests)
+    $timestampHourCycle.set(timestampHourCycle)
+  })
+
+  it('updates a mounted timestamp when the configured hour cycle changes', () => {
+    $sidebarRowMeta.set(['updated'])
+    $timestampHourCycle.set('h12')
+
+    const timestamp = new Date()
+
+    timestamp.setHours(13, 5, 0, 0)
+
+    const { container } = renderRow(
+      makeSession({ started_at: Math.floor(timestamp.getTime() / 1000), title: 'Clock session' })
+    )
+
+    const time = container.querySelector('time')!
+
+    expect(time.getAttribute('aria-label')).toContain('1:05 PM')
+
+    act(() => {
+      $timestampHourCycle.set('h23')
+    })
+
+    expect(time.getAttribute('aria-label')).toContain('13:05')
+    expect(time.getAttribute('aria-label')).not.toContain('PM')
   })
 
   it.each([false, true])('keeps timestamp metadata out of keyboard focus (card=%s)', card => {

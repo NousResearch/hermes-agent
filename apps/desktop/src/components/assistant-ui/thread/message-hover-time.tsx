@@ -4,7 +4,7 @@ import type { FC } from 'react'
 
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { DAY, fmtFullDateTime, relativeTime } from '@/lib/time'
+import { $timestampHourCycle, DAY, formatFullDateTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
@@ -28,7 +28,8 @@ const useMessageTime = (): number | undefined =>
  *  names the day, and an hour-rounded "2 days ago" would contradict a
  *  calendar "Yesterday". */
 const HoverTimeDetail: FC<{ ms: number }> = ({ ms }) => {
-  const full = fmtFullDateTime.format(new Date(ms))
+  const hourCycle = useStore($timestampHourCycle)
+  const full = formatFullDateTime(new Date(ms), hourCycle)
 
   return <span className="tabular-nums">{Date.now() - ms < DAY ? `${relativeTime(ms)} · ${full}` : full}</span>
 }
@@ -45,6 +46,7 @@ const clockOnly = (time: string) => time
 export const MessageHoverTime: FC<{ className?: string }> = ({ className }) => {
   const { t } = useI18n()
   const timelineStamps = useStore($displayTimestamps)
+  const hourCycle = useStore($timestampHourCycle)
   const seconds = useMessageTime()
 
   if (timelineStamps || seconds === undefined) {
@@ -62,7 +64,7 @@ export const MessageHoverTime: FC<{ className?: string }> = ({ className }) => {
         )}
         dateTime={date.toISOString()}
       >
-        {formatMessageTimestamp(date, { today: clockOnly, yesterday: t.assistant.thread.yesterday })}
+        {formatMessageTimestamp(date, { today: clockOnly, yesterday: t.assistant.thread.yesterday }, hourCycle)}
       </time>
     </Tip>
   )

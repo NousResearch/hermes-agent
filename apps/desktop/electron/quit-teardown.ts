@@ -89,7 +89,14 @@ export function createQuitTeardownCoordinator(requestFinalQuit: () => void): Qui
 
       void Promise.allSettled(executions.map(task => task.promise)).then(() => {
         finished = true
-        requestFinalQuit()
+        // Never from this microtask. Teardown with nothing to wait for (a
+        // backend still booting has no process to stop) settles before the
+        // before-quit emit returns to Electron, and a nested app.quit() made
+        // there is overwritten by the outer quit's "prevented" verdict
+        // (Browser::Quit assigns is_quitting_ after the listeners return): the
+        // windows close, the quit is forgotten and a SIGTERM leaves the
+        // process running. A macrotask runs once Electron has handled it.
+        setImmediate(requestFinalQuit)
       })
 
       return true

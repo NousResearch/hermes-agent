@@ -606,7 +606,7 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
     """Task Scheduler XML with safe long-running defaults. ``launcher_path`` is the console-less
     ``.vbs`` run via ``wscript.exe`` (see ``_build_gateway_vbs_script`` for why not cmd.exe).
 
-    See #45599.
+    Priority 4 keeps CPU, I/O and memory normal (5/6 lower memory); see #45599.
     """
     user_principal = f"\n      <UserId>{escape(user)}</UserId>" if user else ""
     return f"""<?xml version="1.0" encoding="UTF-16"?>
@@ -643,7 +643,7 @@ def _build_scheduled_task_xml(task_name: str, launcher_path: Path, user: str | N
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>7</Priority>
+    <Priority>4</Priority>
     <RestartOnFailure>
       <Interval>{_TASK_RESTART_INTERVAL}</Interval>
       <Count>{_TASK_RESTART_COUNT}</Count>
@@ -1528,11 +1528,11 @@ def _task_xml_leaf_values(xml: str) -> dict[str, str] | None:
     return values
 
 
-# Allowlist of template leaves whose absence/mismatch on the live task means it predates the current
-# template (#113670). Never a full-leaf compare: schtasks exports <UserId> as a SID while the template
-# writes DOMAIN\user, so equality would flag every healthy registration.
+# Compare launch/resource policy (#113670); <UserId> exports as a SID, not DOMAIN\user.
+# Missing Priority defaults to background 7 and also needs repair.
 _TASK_DRIFT_LEAVES = {
     "Task/Settings/RestartOnFailure/Interval": "RestartOnFailure",
+    "Task/Settings/Priority": "Priority",
     "Task/Triggers/LogonTrigger/Delay": "LogonTrigger Delay",
     "Task/Actions/Exec/Arguments": "launcher arguments",
 }
@@ -1585,8 +1585,9 @@ def _print_scheduled_task_drift(task_name: str) -> None:
 def reconcile_scheduled_task(task_name: str) -> bool:
     """Re-register the task from the current template when it drifts (#113670) — the Windows sibling
     of ``gateway.py::refresh_systemd_unit_if_needed``. Template hardening (``RestartOnFailure``, logon
-    ``Delay``) otherwise only ever reaches fresh installs. False when aligned/unqueryable or when
-    ``schtasks`` refused (typically Access Denied — the elevating ``hermes gateway install`` is the fallback)."""
+    ``Delay``, normal resource priority) otherwise only ever reaches fresh installs. False when
+    aligned/unqueryable or when ``schtasks`` refused (typically Access Denied — the elevating
+    ``hermes gateway install`` is the fallback)."""
     drift = scheduled_task_drift(task_name)
     if not drift:
         return False

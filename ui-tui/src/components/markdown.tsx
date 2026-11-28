@@ -176,7 +176,7 @@ const renderLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
 
   return (
     <Link key={k} url={target}>
-      <Text color={t.color.accent} underline>
+      <Text color={t.color.markdownLink} underline>
         {sanitizeTerminalText(authoredLabel(label) ?? urlAsText(target))}
       </Text>
     </Link>
@@ -402,7 +402,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
       <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
         {normalizedRows.map((row, ri) => (
           <Fragment key={ri}>
-            <Text bold={ri === 0} color={ri === 0 ? t.color.accent : undefined} wrap="truncate-end">
+            <Text bold={ri === 0} color={ri === 0 ? t.color.markdownHeading : undefined} wrap="truncate-end">
               {buildRowString(row)}
             </Text>
             {ri === 0 && normalizedRows.length > 1 ? (
@@ -477,7 +477,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
     if (normalizedRows.length <= 1) {
       return (
         <Box flexDirection="column" key={k} paddingLeft={TABLE_PADDING_LEFT}>
-          <Text bold color={t.color.accent} wrap="wrap-trim">
+          <Text bold color={t.color.markdownHeading} wrap="wrap-trim">
             {normalizedRows[0]!.map(h => stripInlineMarkup(h)).join(' · ')}
           </Text>
         </Box>
@@ -503,7 +503,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
 
               return (
                 <Text key={ci} wrap="wrap-trim">
-                  <Text bold color={t.color.accent}>
+                  <Text bold color={t.color.markdownHeading}>
                     {label}:
                   </Text>{' '}
                   {stripInlineMarkup(cell)}
@@ -522,7 +522,7 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
       {allEntries.map((entry, i) => (
         <Text
           bold={entry.kind === 'header'}
-          color={entry.kind === 'header' ? t.color.accent : entry.kind === 'separator' ? t.color.muted : undefined}
+          color={entry.kind === 'header' ? t.color.markdownHeading : entry.kind === 'separator' ? t.color.muted : undefined}
           dimColor={entry.kind === 'separator'}
           key={i}
           wrap="truncate-end"
@@ -575,7 +575,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // are verbatim by definition. Letting MdInline reprocess them
       // would corrupt regex examples and shell snippets.
       parts.push(
-        <Text color={t.color.accent} dimColor key={parts.length}>
+        <Text color={t.color.markdownCode} dimColor key={parts.length}>
           {m[7]}
         </Text>
       )
@@ -639,7 +639,7 @@ function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }
       // preserved verbatim, so unfamiliar commands just look like their
       // raw LaTeX rather than vanishing.
       parts.push(
-        <Text color={t.color.accent} italic key={parts.length}>
+        <Text color={t.color.markdownMath} italic key={parts.length}>
           {renderMath(texToUnicode(m[17] ?? m[18]!))}
         </Text>
       )
@@ -757,7 +757,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
             {'▸ '}
 
             <Link url={/^(?:\/|[a-z]:[\\/])/i.test(media) ? `file://${media}` : media}>
-              <Text color={t.color.accent} underline>
+              <Text color={t.color.markdownLink} underline>
                 {media}
               </Text>
             </Link>
@@ -864,7 +864,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           start('code')
           nodes.push(
             <Box flexDirection="column" key={key} paddingLeft={2}>
-              {inner ? <Text color={t.color.accent}>{renderMath(texToUnicode(inner))}</Text> : null}
+              {inner ? <Text color={t.color.markdownMath}>{renderMath(texToUnicode(inner))}</Text> : null}
             </Box>
           )
           i++
@@ -911,7 +911,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {block.map((l, j) => (
-              <Text color={t.color.accent} key={j}>
+              <Text color={t.color.markdownMath} key={j}>
                 {renderMath(texToUnicode(l))}
               </Text>
             ))}
@@ -927,7 +927,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       if (heading) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
+          <Text bold color={t.color.markdownHeading} key={key} wrap="wrap-trim">
             <MdInline t={t} text={heading} />
           </Text>
         )
@@ -939,7 +939,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       if (i + 1 < lines.length && SETEXT_RE.test(lines[i + 1]!)) {
         start('heading')
         nodes.push(
-          <Text bold color={t.color.accent} key={key} wrap="wrap-trim">
+          <Text bold color={t.color.markdownHeading} key={key} wrap="wrap-trim">
             <MdInline t={t} text={line.trim()} />
           </Text>
         )

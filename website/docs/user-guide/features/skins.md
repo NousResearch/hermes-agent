@@ -80,6 +80,10 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
 | `completion_menu_meta_current_bg` | Background color for the active completion meta column | `#333355` |
+| `markdown_heading` | Color of markdown headings and table header rows. Lets a title color differ from the rest of the prose. | `ui_accent` |
+| `markdown_code` | Color of inline `code` spans. | `ui_accent` |
+| `markdown_link` | Color of links. | `ui_accent` |
+| `markdown_math` | Color of inline and block math. | `ui_accent` |
 
 ### Spinner (`spinner:`)
 

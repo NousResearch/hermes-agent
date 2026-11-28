@@ -43,12 +43,13 @@ def test_passive_dock_fills_rows_but_keeps_input_live(monkeypatch, columns, rows
                 screen = app.renderer._last_screen
                 dock_height = screen.visible_windows_to_write_positions[editor.window].ypos
                 assert 2 <= dock_height <= 6
+                # The footer sits on the terminal background (no shaded band): the pill's counts
+                # carry the skin's accent colour, row text stays readable.
+                pill = screen.data_buffer[0]
+                accent = app._merged_style.get_attrs_for_style_str(pill[2].style)
+                assert pill[2].char == '☤' and accent.color and not accent.bgcolor
                 for y in range(dock_height):
                     assert screen.data_buffer[y][0].char == ' '
-                    for x in (0, columns // 2, columns - 1):
-                        attrs = app._merged_style.get_attrs_for_style_str(screen.data_buffer[y][x].style)
-                        assert attrs.bgcolor, 'the entire dock row needs a background'
-                        assert attrs.color != attrs.bgcolor
                 painted.clear()
                 pipe.send_text('Follow up while workers run\r')
                 await asyncio.wait_for(painted.wait(), 3)

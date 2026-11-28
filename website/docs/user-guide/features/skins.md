@@ -71,6 +71,7 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `prompt` | Interactive prompt text color | `#FFF8DC` |
 | `input_rule` | Horizontal rule above the input area | `#CD7F32` |
 | `response_border` | Border around the agent's response box (ANSI escape) | `#FFD700` |
+| `user_message_bg` | Background of the full-width band that echoes your submitted message in the classic CLI. When unset, a neutral surface matching the terminal's light/dark polarity, tinted with `ui_accent`. | derived |
 | `session_label` | Session label color | `#DAA520` |
 | `session_border` | Session ID dim border color | `#8B8682` |
 | `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
@@ -112,7 +113,7 @@ Text strings used throughout the CLI interface.
 | Key | Type | Description | Default |
 |-----|------|-------------|---------|
 | `tool_prefix` | string | Character prefixed to tool output lines in the CLI | `┊` |
-| `tool_emojis` | dict | Per-tool emoji overrides for spinners and progress (`{tool_name: emoji}`) | `{}` |
+| `tool_emojis` | dict | Per-tool emoji overrides for spinners, progress and CLI tool rows (`{tool_name: emoji}`) | `{}` |
 | `banner_logo` | string | Rich-markup ASCII art logo (replaces the default HERMES_AGENT banner) | `""` |
 | `banner_hero` | string | Rich-markup hero art (replaces the default caduceus art) | `""` |
 | `customCSS` | string | Raw CSS injected into the desktop app and web dashboard while the skin is active (GUI surfaces only; ignored by the CLI/TUI). Capped at 32 KiB. | `""` |

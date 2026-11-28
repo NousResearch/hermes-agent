@@ -179,6 +179,8 @@ Signal messages render with **native formatting** instead of literal markdown ch
 
 **Reactions.** The agent can react to messages via the standard reaction API; reactions surface in Signal as emoji reactions on the referenced message rather than as extra text.
 
+**Approving by reaction.** When Hermes asks to approve a dangerous command, react to the approval prompt with 👍 (or ✅) to approve once, or 👎 (or ❌) to deny — the same as typing `/approve` or `/deny`. Only reactions on a prompt that is still pending count; other emoji and reactions on other messages are ignored. For `session`/`always` approvals, type `/approve session` or `/approve always`.
+
 None of this requires additional config — it ships on by default in recent signal-cli builds. If your `signal-cli` version is too old, Hermes falls back to plaintext delivery and logs a one-time warning.
 
 ### Long Messages

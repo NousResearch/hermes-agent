@@ -4,6 +4,9 @@ export const enNotifications = {
   intro: 'OS notifications (not in-app toasts). Per device.',
   enableAll: 'Enable notifications',
   enableAllDesc: 'Off silences every notification below.',
+  dockBounce: 'Bounce Dock icon',
+  dockBounceDesc:
+    'Bounce the Dock icon (flash the taskbar on Windows/Linux) when a notification arrives while Hermes is in the background. Off by default: notifications and the Dock badge still show.',
   focusedHint: 'Completion alerts only fire while Hermes is in the background.',
   kinds: {
     approval: {

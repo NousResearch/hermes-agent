@@ -4,6 +4,9 @@ export const frNotifications = {
   intro: "Notifications système (pas les toasts de l'application). Par appareil.",
   enableAll: 'Activer les notifications',
   enableAllDesc: 'Désactivé coupe toutes les notifications ci-dessous.',
+  dockBounce: 'Faire rebondir l’icône du Dock',
+  dockBounceDesc:
+    'Fait rebondir l’icône du Dock (Windows/Linux : clignotement de la barre des tâches) quand une notification arrive alors que Hermes est en arrière-plan. Désactivé par défaut : les notifications et le badge du Dock restent affichés.',
   focusedHint: 'Les alertes de fin ne se déclenchent que quand Hermes est en arrière-plan.',
   kinds: {
     approval: {

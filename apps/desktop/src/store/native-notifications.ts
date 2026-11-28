@@ -44,12 +44,17 @@ const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval', 'input'])
 export interface NativeNotificationPrefs {
   enabled: boolean
   kinds: Record<NativeNotificationKind, boolean>
+  /** Bounce the Dock icon (flash the taskbar) until the window is focused.
+   *  Off by default: a bouncing Dock icon is the one attention cue macOS gives
+   *  the user no way to mute, so it stays opt-in. */
+  dockBounce: boolean
 }
 
 const STORAGE_KEY = 'hermes:native-notifications'
 
 const DEFAULT_PREFS: NativeNotificationPrefs = {
   enabled: true,
+  dockBounce: false,
   kinds: {
     approval: true,
     backgroundDone: true,
@@ -82,6 +87,7 @@ function readPrefs(): NativeNotificationPrefs {
 
     return {
       enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULT_PREFS.enabled,
+      dockBounce: typeof parsed.dockBounce === 'boolean' ? parsed.dockBounce : DEFAULT_PREFS.dockBounce,
       kinds
     }
   } catch {
@@ -99,6 +105,11 @@ function writePrefs(next: NativeNotificationPrefs) {
 export function setNativeNotifyEnabled(enabled: boolean) {
   recordFeatureToggle('native_notifications', $nativeNotifyPrefs.get().enabled, enabled)
   writePrefs({ ...$nativeNotifyPrefs.get(), enabled })
+}
+
+export function setNativeDockBounce(dockBounce: boolean) {
+  recordFeatureToggle('dock_bounce', $nativeNotifyPrefs.get().dockBounce, dockBounce)
+  writePrefs({ ...$nativeNotifyPrefs.get(), dockBounce })
 }
 
 export function setNativeNotifyKind(kind: NativeNotificationKind, on: boolean) {
@@ -299,11 +310,15 @@ export function dispatchNativeNotification(input: NativeNotificationInput): bool
 
   const namedKey = input.sessionId ? (input.namedTitleKey ?? NAMED_TITLE_KEYS[input.kind]) : undefined
   const title = namedKey && input.sessionId ? withSessionLabel(namedKey, input.sessionId) : input.title
+  // Attention is a separate preference from "send notifications": main bounces the
+  // Dock icon (flashFrame) only when this flag rides the payload.
+  const bounce = $nativeNotifyPrefs.get().dockBounce
 
   void window.hermesDesktop?.notify({
     actions: input.actions,
     activate: input.activate,
     body: input.body,
+    bounce,
     focusSessionId: input.sessionId ? (storedSessionIdForRuntimeId(input.sessionId) ?? undefined) : undefined,
     icon: input.icon,
     kind: input.kind,

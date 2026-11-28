@@ -4,6 +4,9 @@ export const esNotifications = {
   intro: 'Notificaciones del sistema operativo (no avisos dentro de la app). Por dispositivo.',
   enableAll: 'Activar notificaciones',
   enableAllDesc: 'Desactivado silencia todas las notificaciones siguientes.',
+  dockBounce: 'Hacer rebotar el icono del Dock',
+  dockBounceDesc:
+    'Hace rebotar el icono del Dock (Windows/Linux: parpadeo de la barra de tareas) cuando llega una notificación con Hermes en segundo plano. Desactivado por defecto: los avisos y la insignia del Dock se siguen mostrando.',
   focusedHint: 'Los avisos de finalización solo se activan cuando Hermes está en segundo plano.',
   kinds: {
     approval: {

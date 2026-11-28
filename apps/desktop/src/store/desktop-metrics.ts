@@ -312,6 +312,7 @@ export type DesktopFeatureToggle =
   | 'backdrop'
   | 'bot_activity_toasts'
   | 'composer_popout_gestures'
+  | 'dock_bounce'
   | 'intro_splash'
   | 'native_notifications'
   | 'notification_kind'

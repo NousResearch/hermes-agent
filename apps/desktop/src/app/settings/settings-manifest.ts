@@ -211,6 +211,14 @@ export const SETTINGS_MANIFEST = {
         } satisfies SettingDefinition
       ])
     ),
+    dockBounce: {
+      subpage: 'alerts',
+      keywords: ['notifications', 'dock', 'bounce', 'bounce icon', 'taskbar', 'flash', 'attention'],
+      copy: t => ({
+        label: t.settings.notifications.dockBounce,
+        description: t.settings.notifications.dockBounceDesc
+      })
+    },
     browserPermission: {
       subpage: 'alerts',
       keywords: ['notifications', 'browser', 'permission', 'allow', 'tab', 'flash'],

@@ -147,15 +147,15 @@ it('flashes an unfocused source window until it regains focus, and leaves a focu
 
   const event = { sender: source.webContents } as unknown as IpcMainInvokeEvent
 
-  await notify(event, { kind: 'turnDone', sessionId: 'a', title: 'Hermes finished' })
-  await notify(event, { kind: 'turnDone', sessionId: 'b', title: 'Hermes finished' })
+  await notify(event, { bounce: true, kind: 'turnDone', sessionId: 'a', title: 'Hermes finished' })
+  await notify(event, { bounce: true, kind: 'turnDone', sessionId: 'b', title: 'Hermes finished' })
   expect(source.flashFrame.mock.calls).toEqual([[true]])
 
   source.emit('focus')
   expect(source.flashFrame.mock.calls).toEqual([[true], [false]])
 
   source.isFocused.mockReturnValue(true)
-  await notify(event, { kind: 'turnDone', sessionId: 'c', title: 'Hermes finished' })
+  await notify(event, { bounce: true, kind: 'turnDone', sessionId: 'c', title: 'Hermes finished' })
   expect(source.flashFrame).toHaveBeenCalledTimes(2)
 })
 
@@ -173,4 +173,25 @@ it.each([
     | undefined
 
   expect(answer?.()).toBe(expected)
+})
+
+// macOS has no system-level mute for a bouncing Dock icon (`flashFrame` is
+// `requestUserAttention:` there), so attention is opt-in: a notification with
+// no `bounce` flag must never touch the Dock.
+it('leaves the Dock icon alone when the renderer did not ask for attention', async () => {
+  const source = windowStub(false)
+  host.fromWebContents.mockReturnValue(source)
+  registerNativeNotifications({ getMainWindow: () => null, focusWindow: vi.fn(), platform: 'darwin' })
+
+  const notify = host.handle.mock.calls[0][1] as (
+    event: IpcMainInvokeEvent,
+    payload: HermesNotification
+  ) => Promise<boolean>
+
+  const event = { sender: source.webContents } as unknown as IpcMainInvokeEvent
+
+  await notify(event, { kind: 'turnDone', sessionId: 'a', title: 'Hermes finished' })
+  await notify(event, { bounce: false, kind: 'input', sessionId: 'b', title: 'Hermes needs an answer' })
+
+  expect(source.flashFrame).not.toHaveBeenCalled()
 })

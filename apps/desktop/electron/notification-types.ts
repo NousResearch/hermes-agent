@@ -2,6 +2,9 @@ export interface HermesNotification {
   title?: string
   body?: string
   silent?: boolean
+  /** Bounce the Dock icon (flash the taskbar) until the window is focused.
+   *  Opt-in: the renderer's "Bounce Dock icon" preference drives it. */
+  bounce?: boolean
   kind?: string
   sessionId?: string
   /** Durable click target captured before runtime bindings can be recycled. */

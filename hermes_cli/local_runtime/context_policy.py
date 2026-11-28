@@ -150,13 +150,15 @@ def plan_launch(profile: ModelProfile, budget: HardwareBudget, *, mtp_capable: b
         initial[stacked] = decision
         if isinstance(decision, WindowDecision) and requested_window:
             target = min(requested_window, profile.n_ctx_train or requested_window)
-            if target > decision.window and physics_check(
+            if target > 0 and target != decision.window and physics_check(
                     posture, budget, target, overhead_bytes=overhead) is None:
                 need = footprint_bytes(posture, target, overhead_bytes=overhead)
+                reason = (f"window cap ({target // 1024}K)" if target < decision.window
+                          else f"grown window restored ({target // 1024}K)")
                 decision = WindowDecision(
                     window=target, spill_bytes=max(0, need - budget.usable_vram_bytes),
                     kv_on_gpu=ctx_bytes(posture, target) + overhead <= budget.usable_vram_bytes,
-                    reasons=[f"grown window restored ({target // 1024}K)"])
+                    reasons=[reason])
         return LaunchPlan(decision, stacked, overhead, posture)
 
     lean = candidate(False)

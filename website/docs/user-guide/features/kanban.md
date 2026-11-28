@@ -985,6 +985,8 @@ hermes kanban runs <id> [--json]                       # attempt history (one ro
 hermes kanban assignees [--json]                       # profiles on disk + per-assignee task counts
 hermes kanban dispatch [--dry-run] [--max N]           # one-shot pass
         [--failure-limit N] [--json]
+hermes kanban cap [N] [--json]                         # show or set kanban.max_in_progress
+                                                       #   (applies on the next dispatcher tick)
 hermes kanban daemon --force                           # DEPRECATED — standalone dispatcher (use `hermes gateway start` instead)
         [--failure-limit N] [--pidfile PATH] [-v]
 hermes kanban stats [--json]                           # per-status + per-assignee counts
@@ -1010,8 +1012,9 @@ All commands are also available as a slash command in the interactive CLI and in
 
 | Config key | Default | What it does |
 |------------|---------|--------------|
-| `kanban.max_in_progress` | unset (unlimited) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Invalid or below-1 values log a warning and behave as unlimited. |
-| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
+| `kanban.max_spawn` | unset (no per-board cap) | Caps how many tasks may run at once on one board — the tasks already running there plus the spawns the current tick would add. It is a concurrency limit, not a per-tick budget, and other boards are unaffected (the host-wide `max_in_progress` still applies). Unset means no per-board cap. Invalid or below-1 values log a warning and behave as unset — `max_spawn: 0` does not pause dispatch; use `hermes pause` or `kanban.dispatch_in_gateway: false` to stop new work. Live like the other caps: an edit applies on the next dispatcher tick, and lowering it never touches running workers. |
+| `kanban.max_in_progress` | unset (memory-derived) | Caps the number of simultaneously running tasks. When the board already has N running, the dispatcher skips spawning more — useful for slow workers (local LLMs, resource-constrained hosts) so they finish what they have before more pile up and time out. Unset derives a default from system memory (`MemTotal / 512 MiB`, clamped 2–8; no cap where memory is unreadable). Invalid or below-1 values log a warning and behave as unset. The cap is live: an edit (or `hermes kanban cap N`) applies on the next dispatcher tick, and lowering it never touches running workers — they finish and the dispatcher stops spawning until the running count is under the cap. |
+| `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. Live like `max_in_progress`: an edit applies on the next dispatcher tick. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
 | `kanban.default_workdir` | unset | Board-level default working directory applied to new tasks when neither `--workspace` nor the task itself overrides it. Per-task `workspace:` still wins. |
@@ -1022,6 +1025,26 @@ kanban:
   auto_promote_children: false
   default_workdir: ~/work/active-project
 ```
+
+The concurrency caps — `kanban.max_in_progress`, `kanban.max_in_progress_per_profile` and
+`kanban.max_spawn` — are re-read on every dispatcher tick. Changing one takes effect within one
+`kanban.dispatch_interval_seconds` (60s by default) **without restarting the gateway**, which
+matters because a restart interrupts every in-flight worker. A changed cap logs one line naming the
+old and new value, e.g. `kanban dispatcher: max_in_progress 12 -> 20 (live; next tick, no restart)`;
+an unchanged tick logs nothing. Lowering a cap never stops a running worker: they finish, and the
+dispatcher simply stops spawning until the running count is back under the cap.
+
+Boot and the per-tick re-read parse a cap identically for all three keys: an integer of 1 or more is
+the cap, and unset, below 1, or a non-integer supplies no cap from that key (for
+`max_in_progress`, which falls back to its memory-derived default, that means the default). A boot
+value therefore cannot change meaning on the first live apply, and `max_spawn: 0` is not a pause
+switch — it behaves as unset. To stop dispatch, use `hermes pause` or set
+`kanban.dispatch_in_gateway: false`.
+
+`hermes kanban cap` prints the configured value, the effective cap and its provenance (config,
+memory-derived default, or unlimited); `hermes kanban cap N` writes `kanban.max_in_progress` through
+the normal config writer (comments and unrelated keys preserved). A worker process may not call the
+verb — it moves a host-wide setting.
 
 ### Scheduled task starts (`scheduled_at`)
 

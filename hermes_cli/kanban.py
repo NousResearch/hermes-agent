@@ -212,6 +212,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
+    "cap",  # a spawned worker must not move the host-wide concurrency cap
 })
 
 _DELEGATED_CHILD_DENIED_BOARD_ACTIONS: frozenset[str] = frozenset({
@@ -1338,6 +1339,49 @@ def _cmd_decompose(args: argparse.Namespace) -> int:
                              ("task_id", "ok", "reason", "fanout", "child_ids", "new_title"), _decompose_ok_line)
 
 
+def _cmd_cap(args: argparse.Namespace) -> int:
+    """Print or set ``kanban.max_in_progress``; the dispatcher applies it next tick.
+
+    The write goes through ``hermes_cli.config.set_config_value`` (comment-
+    preserving, atomic) and lands in the CALLING home's config.yaml — run it
+    under the same HERMES_HOME/profile the gateway was launched with if they
+    differ.
+    """
+    from hermes_cli.config import get_config_path, load_config, set_config_value
+
+    new = getattr(args, "cap", None)
+    if new is not None:
+        if new < 1:
+            return _err("kanban cap: N must be >= 1 (run `hermes kanban cap` to read the cap)", 2)
+        set_config_value("kanban.max_in_progress", str(new))
+
+    explicit = kbd.configured_max_in_progress()
+    effective = kbd.resolve_max_in_progress(explicit)
+    kcfg = (load_config() or {}).get("kanban")
+    interval = float((kcfg if isinstance(kcfg, dict) else {}).get("dispatch_interval_seconds", 60) or 60)
+    source = ("config" if explicit is not None
+              else "memory-derived" if effective is not None else "unlimited")
+    payload = {
+        "configured": explicit,
+        "effective": effective,
+        "source": source,
+        "config_path": str(get_config_path()),
+        "dispatch_interval_seconds": interval,
+    }
+    if getattr(args, "json", False):
+        _print_json(payload)
+        return 0
+    configured_txt = (f"{explicit}  (configured in {get_config_path()})"
+                      if explicit is not None else "unset")
+    print(f"kanban.max_in_progress: {configured_txt}")
+    print(f"effective cap:          {effective if effective is not None else 'unlimited'}"
+          + ("  (memory-derived: MemTotal / 512 MiB, clamped 2..8)"
+             if explicit is None and effective is not None else ""))
+    print(f"applies:                next dispatcher tick, <= {interval:g}s "
+          f"(kanban.dispatch_interval_seconds); no restart")
+    return 0
+
+
 _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
@@ -1352,6 +1396,7 @@ _HANDLERS = {
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "cap": _cmd_cap,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,

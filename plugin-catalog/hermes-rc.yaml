@@ -1,0 +1,31 @@
+name: hermes-rc
+repo: https://github.com/dork40/hermes-rc
+sha: bad3e4e1f6eb73acf3960fdc37a1f7cbeffd886a
+subdir: plugin/hermes-rc
+description: >-
+  /rc remote control, like Claude's: type /rc and scan the QR code with the open-source
+  Tether Android app to continue the session live from your phone. You get streamed replies,
+  tool calls, approval and clarify cards, file and image uploads, media previews, Stop, and
+  slash commands. The phone is one more viewer of the same gateway session as the TUI and
+  Desktop. Disclosure: /rc starts a long-running background bridge (rc_bridge.py) that
+  listens on TCP 8787 on all interfaces (TLS, self-signed cert pinned by the phone, pairing
+  token required) and on 127.0.0.1:8788. It attaches to the local gateway as a normal client
+  through hermes_cli.gateway_client, so a paired phone can drive sessions like a local
+  viewer. Phone uploads are written to ~/Downloads/Tether. A paired phone can download files
+  under the home folder (dot-folders other than .hermes/.cache excluded) and /tmp, up to
+  400 MB, to preview media. The pairing token and TLS key are stored in ~/.config/hermes-rc.
+  Shell commands: qrencode, tailscale ip, systemctl --user, and on Hyprland hyprctl plus
+  kitty (QR popup). No third-party network services, no telemetry. It never answers
+  approvals itself; it only relays the user's choice.
+maintainer: dork40
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/dork40/hermes-rc#readme
+version: "0.2.0"
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: [on_session_prompt, post_llm_call]
+  provides_middleware: []
+  requires_env: []

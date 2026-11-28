@@ -82,13 +82,13 @@ def _pin_matched_entries(store: MemoryStore, payload: dict[str, Any]) -> Optiona
 
 
 def _gate_or_stage(store: MemoryStore, summary: str, detail: str, payload: dict[str, Any]) -> Optional[str]:
-    """JSON tool-result string when the write must NOT proceed (blocked or staged
+    """JSON tool-result string when the write must NOT proceed (staged
     for approval), None to proceed. Fails open if the gate module can't load."""
     try:
         from tools import write_approval as wa
     except Exception:
         return None
-    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+    decision = wa.evaluate_gate(wa.MEMORY)
     if decision.allow:
         return None
     if decision.blocked:
@@ -118,7 +118,7 @@ _STORE_ACTIONS = {
                                                 "(rest of the entry is kept)"))}
 
 
-def _batch_op_line(op: dict[str, Any]) -> str:
+def format_batch_op_line(op: dict[str, Any]) -> str:
     op = op or {}
     act, content, old = op.get("action", "?"), op.get("content") or op.get("new_text") or "", op.get("old_text", "")
     if act == "remove":
@@ -134,7 +134,7 @@ def _apply_write_gate(store: MemoryStore, action: str, target: str, content: Opt
     label = "user profile" if target == "user" else "memory"
     if operations is not None:
         return _gate_or_stage(store, f"apply {len(operations)} op(s) to {label}",
-                              "\n".join(_batch_op_line(op) for op in operations),
+                              "\n".join(format_batch_op_line(op) for op in operations),
                               {"action": "batch", "target": target, "operations": operations})
     return _gate_or_stage(store, *_STORE_ACTIONS[action][1](label, content, old_text),
                           {"action": action, "target": target, "content": content, "old_text": old_text})
@@ -193,8 +193,8 @@ def _background_delete_gate(store, action, operations, target="memory", content=
                {"action": action, "target": target, "content": content, "old_text": old_text})
     if not destructive_ops(payload):
         return None
-    detail = ("; ".join(_batch_op_line(op) for op in operations) if operations is not None
-              else _batch_op_line({"action": action, "content": content, "old_text": old_text}))
+    detail = ("; ".join(format_batch_op_line(op) for op in operations) if operations is not None
+              else format_batch_op_line({"action": action, "content": content, "old_text": old_text}))
     try:
         if (unmatched := _pin_matched_entries(store, payload)) is not None:
             return unmatched

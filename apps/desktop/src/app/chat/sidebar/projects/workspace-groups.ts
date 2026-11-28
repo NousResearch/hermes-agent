@@ -492,17 +492,33 @@ export function liveSessionProjectId(
 }
 
 /** The lane a row files under: Home when the backend filed it there or it is
- *  detached (cwd-less), else its live project. */
+ *  detached (cwd-less), else its live project.
+ *
+ *  `treeProjectIds` (the loaded tree's node ids) covers a row the owner map
+ *  never names: the tree reads a recency window, so an aged row (a pin, most
+ *  often) arrives unowned and the cwd-only walk names its cwd as an auto project.
+ *  When no tree node carries that id the walk invented it (the bare home dir,
+ *  #139909), and the backend's Home takes what no tier placed (#159024). A row
+ *  with a git root keeps its repo. Empty or absent: fail open, walk as before. */
 export function sessionBucketId(
   session: SessionInfo,
   explicitProjects: ProjectInfo[],
-  owners: ReadonlyMap<string, string> = NO_OWNERS
+  owners: ReadonlyMap<string, string> = NO_OWNERS,
+  treeProjectIds?: ReadonlySet<string>
 ): null | string {
   if (ownerOf(owners, session) === NO_PROJECT_ID) {
     return NO_PROJECT_ID
   }
 
-  return liveSessionProjectId(session, explicitProjects, owners) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+  const projectId = liveSessionProjectId(session, explicitProjects, owners)
+
+  if (projectId === null) {
+    return isDetachedSession(session) ? NO_PROJECT_ID : null
+  }
+
+  const invented = Boolean(treeProjectIds?.size) && !treeProjectIds?.has(projectId) && !session.git_repo_root?.trim()
+
+  return invented ? NO_PROJECT_ID : projectId
 }
 
 /**
@@ -515,13 +531,14 @@ export function sessionMatchesProjectFilter(
   session: SessionInfo,
   filter: readonly string[],
   explicitProjects: ProjectInfo[],
-  owners: ReadonlyMap<string, string> = NO_OWNERS
+  owners: ReadonlyMap<string, string> = NO_OWNERS,
+  treeProjectIds?: ReadonlySet<string>
 ): boolean {
   if (!filter.length) {
     return true
   }
 
-  const id = sessionBucketId(session, explicitProjects, owners)
+  const id = sessionBucketId(session, explicitProjects, owners, treeProjectIds)
 
   return id !== null && filter.includes(id)
 }

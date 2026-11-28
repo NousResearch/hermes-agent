@@ -288,6 +288,70 @@ describe('ChatSidebar pinned empty state under filters', () => {
   })
 })
 
+// #159024: the project tree reads a recency window, so an aged pin reaches the
+// sidebar with no tree owner. Its bare home-dir cwd is the row the backend files
+// in Home (#139909); a Home filter must keep it in Pinned with its siblings.
+describe('ChatSidebar pinned rows under a Home project filter', () => {
+  const pin = (id: string, title: string, cwd: string, profile: string) =>
+    makeSessionInfo({ cwd, id, last_active: 2, message_count: 3, pinned: true, profile, started_at: 1, title })
+
+  const ownedHome = pin('owned-home', 'Owned Home pin', '/Users/me', 'default')
+  const agedHome = pin('aged-home', 'Aged Home pin', '/Users/me', 'work')
+  const inProject = pin('in-project', 'Project pin', '/repos/app', 'work')
+
+  beforeEach(() => {
+    $profiles.set([
+      { name: 'default', is_default: true },
+      { name: 'work', is_default: false }
+    ] as typeof $profiles.value)
+    setShowAllProfiles(true)
+    $projectTree.set([
+      {
+        id: '__no_project__',
+        isNoProject: true,
+        label: 'Home',
+        path: null,
+        repos: [],
+        sessionCount: 1,
+        sessionIds: ['owned-home']
+      },
+      {
+        id: '/repos/app',
+        isAuto: true,
+        label: 'app',
+        path: '/repos/app',
+        repos: [],
+        sessionCount: 1,
+        sessionIds: ['in-project']
+      }
+    ])
+    $sessions.set([ownedHome, agedHome, inProject])
+    $pinnedSessionIds.set(['owned-home', 'aged-home', 'in-project'])
+    $sessionsLoading.set(false)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $sidebarProjectFilter.set([])
+    $pinnedSessionIds.set([])
+    $projectTree.set([])
+    $sessions.set([])
+    $sessionsLoading.set(true)
+    setShowAllProfiles(false)
+    $profiles.set([])
+  })
+
+  it('keeps a Home pin the tree window never reached, and still narrows project pins', () => {
+    $sidebarProjectFilter.set(['__no_project__'])
+
+    renderSidebar('/', 'chat')
+
+    expect(screen.getByText('Owned Home pin')).toBeTruthy()
+    expect(screen.getByText('Aged Home pin')).toBeTruthy()
+    expect(screen.queryByText('Project pin')).toBeNull()
+  })
+})
+
 // Entering a project is a scope switch: the conversation main is showing keeps
 // its workspace, so Files/Review and the composer's Git context can't drift to
 // the project while the transcript stays on the old chat (#72772).

@@ -203,6 +203,31 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> dict[str, Any]:
     }
 
 
+def _secret_env_warning(plugin_id: str, skey: str, spec: Mapping) -> list[str]:
+    """Warn about a `secret` setting only through its ``env:`` variable.
+
+    A ``secret`` entry carries the ``.env`` variable name; its value never lands
+    in ``plugins.entries.<id>.settings`` (that is the documented contract), so
+    "required but not set" is a false positive for every such field. Check the
+    declared variable instead, and stay silent when the scope cannot be resolved
+    (multiplexing without a profile scope) rather than cry wolf.
+    """
+    env_name = str(spec.get("env") or "").strip()
+    if not env_name:
+        return []
+    try:
+        from agent.secret_scope import get_secret
+
+        if (get_secret(env_name, "") or "").strip():
+            return []
+    except Exception:  # unscoped/multiplexed read: unknowable, never a false alarm
+        return []
+    return [
+        f"plugins.entries.{plugin_id}.settings.{skey} is a secret read from the "
+        f"{env_name} environment variable, which is empty or unset"
+    ]
+
+
 def validate_config_schema(plugin_id: str, schema: Mapping, settings: Mapping) -> list[str]:
     """Return actionable warning strings for settings vs config_schema mismatches (never raises).
 
@@ -216,11 +241,15 @@ def validate_config_schema(plugin_id: str, schema: Mapping, settings: Mapping) -
             continue
         if skey not in settings:
             if spec.get("required") and "default" not in spec:
-                warnings.append(
-                    f"plugins.entries.{plugin_id}.settings.{skey} is required "
-                    "by the plugin's config_schema but is not set"
-                )
+                if str(spec.get("type") or "").lower() == "secret":
+                    warnings.extend(_secret_env_warning(plugin_id, skey, spec))
+                else:
+                    warnings.append(
+                        f"plugins.entries.{plugin_id}.settings.{skey} is required "
+                        "by the plugin's config_schema but is not set"
+                    )
             continue
+
         stype = spec.get("type")
         expected = _CONFIG_SCHEMA_TYPES.get(str(stype).lower()) if stype else None
         if expected is None:

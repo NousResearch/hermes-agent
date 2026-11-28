@@ -26,6 +26,8 @@ import time
 from collections import OrderedDict
 from typing import Any
 
+from session_rules.turns import _VIDEO_PART_TYPES
+
 # fingerprint -> (pins, text tokens, image count). Order is recency: a hit moves its entry to the end, and an
 # OrderedDict evicts from the front in O(1) where a plain dict rescans its deleted slots on every eviction.
 _MSG_TOKENS_CACHE: OrderedDict[Any, tuple[list, int, int]] = OrderedDict()
@@ -127,3 +129,51 @@ def forget_message_token_memo(messages: Any, *, keep: Any = None) -> int:
         for key in stale:
             _retained_bytes -= _entry_bytes(_MSG_TOKENS_CACHE.pop(key))
     return len(stale)
+
+
+def _video_b64_payload_len(part: dict[str, Any]) -> int:
+    """Character length of the base64 payload inside a video part, minus any data: prefix."""
+    candidates = [part.get("data")]
+    for key in ("video_url", "input_video", "video"):
+        obj = part.get(key)
+        candidates.append(obj.get("url") if isinstance(obj, dict) else (obj if isinstance(obj, str) else None))
+    for val in candidates:
+        if isinstance(val, str) and val:
+            if val.startswith("data:"):
+                _, sep, rest = val.partition(",")
+                if sep:
+                    return len(rest)
+            if val.startswith(("http://", "https://")):
+                return 0
+            return len(val)
+    return 0
+
+
+def estimate_video_media_tokens(msg: Any) -> int:
+    """Conservative non-EMA token estimate for native video parts.
+
+    Kept separate from ``_count_image_tokens`` so video token deltas never poison
+    ``image_token_costs.json`` EMA calibration.
+    """
+    if not isinstance(msg, dict):
+        return 0
+    # Mirror ``_wire_message_shadow``: a non-empty string ``api_content`` sidecar on a user/assistant
+    # row replaces ``content`` on the wire, so media in ``content`` never reaches the provider.
+    sidecar = msg.get("api_content")
+    if isinstance(sidecar, str) and bool(sidecar) and msg.get("role") in ("user", "assistant"):
+        return 0
+    part_lists: list[list[Any]] = []
+    content = msg.get("content")
+    if isinstance(content, list):
+        part_lists.append(content)
+    elif isinstance(content, dict) and content.get("_multimodal") and isinstance(content.get("content"), list):
+        part_lists.append(content["content"])
+    if isinstance(msg.get("output"), list):
+        part_lists.append(msg["output"])
+    total = 0
+    for parts in part_lists:
+        for p in parts:
+            if isinstance(p, dict) and p.get("type") in _VIDEO_PART_TYPES:
+                raw_bytes = (_video_b64_payload_len(p) * 3) // 4
+                total += min(32_000, max(1_500, raw_bytes // 512))
+    return total

@@ -13,10 +13,12 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 import logging
 import os
+import stat
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, NamedTuple, Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
+from urllib.request import url2pathname
 import httpx
 from hermes_dir_acl import make_user_dir
 
@@ -41,7 +43,9 @@ from tools.vision_tools_history_budget import (
     native_turn_duplicate as _native_turn_duplicate,
     record_embed as _record_embed,
     release_embed as _release_embed,
+    release_embed_key as _release_embed_key,
     repeat_refusal as _repeat_refusal,
+    reserve_embed as _reserve_embed,
     resolve_repeat_cap as _resolve_repeat_cap,
     resolve_embed_target_bytes as _resolve_embed_target_bytes,
 )
@@ -548,8 +552,8 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in _TOOL_RESULT_MEDIA_PROVIDERS:
         return True
     if p in _GEMINI_PROVIDERS:
-        m = model.strip().lower() if isinstance(model, str) else ""
-        return any(tag in m for tag in ("gemini-3", "gemini-pro-3", "gemini-flash-3"))
+        from agent.gemini_model_family import gemini_supports_multimodal_tool_responses
+        return gemini_supports_multimodal_tool_responses(model)
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
@@ -589,6 +593,27 @@ def _should_use_native_vision_fast_path() -> bool:
         return _native_tool_result_images(_read_main_provider(), _read_main_model(), load_config())
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
+        return False
+
+
+def _native_tool_result_video(provider: str, model: str, cfg: Optional[dict[str, Any]]) -> bool:
+    """Gate for native video tool-result delivery: fail fast on non-video-capable routes before
+    consulting catalog/config capability resolution."""
+    from agent.image_routing import decide_video_input_mode, supports_video_in_tool_results
+    return (
+        supports_video_in_tool_results(provider, model, cfg)
+        and decide_video_input_mode(provider, model, cfg) == "native"
+    )
+
+
+def _should_use_native_video_fast_path() -> bool:
+    """:func:`_native_tool_result_video` for the active main model; lookup errors → False."""
+    try:
+        from agent.auxiliary_client import _read_main_provider, _read_main_model
+        from hermes_cli.config import load_config
+        return _native_tool_result_video(_read_main_provider(), _read_main_model(), load_config())
+    except (ImportError, KeyError, TypeError, ValueError, OSError, RuntimeError, AttributeError) as exc:
+        logger.debug("Native video fast-path check failed: %s", exc)
         return False
 
 
@@ -931,7 +956,7 @@ async def vision_analyze_tool(
     return await _run_analysis("image", image_url, user_prompt, model, stage)
 
 
-def check_video_requirements() -> bool:
+def _has_aux_vision_client() -> bool:
     """True when ``call_llm(task="vision")`` could resolve a client.
 
     Mirrors its fallback chain: explicit ``auxiliary.vision.provider``, then auto (main
@@ -949,13 +974,17 @@ def check_video_requirements() -> bool:
         )
 
 
+def check_video_requirements() -> bool:
+    """Video gate (``video_analyze``): an aux vision client OR the native video fast path (#47149 parity)."""
+    return _should_use_native_video_fast_path() or _has_aux_vision_client()
+
+
 def check_vision_requirements() -> bool:
     """Image gate (``vision_analyze``): an aux vision client OR the native fast
     path. The handler attaches pixels straight to a vision-capable main model, so a main model on a
     provider the aux resolver does not know (OAuth, local vLLM) must not hide a working tool (#47149).
-    ``video_analyze`` keeps the aux-only gate — its handler has no native path.
     """
-    return _should_use_native_vision_fast_path() or check_video_requirements()
+    return _should_use_native_vision_fast_path() or _has_aux_vision_client()
 
 
 from tools.registry import registry, tool_error
@@ -1044,19 +1073,188 @@ registry.register(
 
 
 # --- video_analyze --------------------------------------------------------
-# Extension → MIME. avi/mkv fall back to mp4.
+# Extension → MIME.
 _VIDEO_MIME_TYPES = {
     ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
     ".webm": "video/webm",
     ".mov": "video/mov",
-    ".avi": "video/mp4",
-    ".mkv": "video/mp4",
+    ".avi": "video/avi",
+    ".mkv": "video/x-matroska",
     ".mpeg": "video/mpeg",
     ".mpg": "video/mpeg",
 }
 
-_MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap
+_MAX_VIDEO_BASE64_BYTES = 50 * 1024 * 1024  # 50 MB hard cap (one-shot aux path)
+_MAX_NATIVE_VIDEO_BASE64_BYTES = 20 * 1024 * 1024  # 20 MB cap for multi-turn history embeds
 _VIDEO_SIZE_WARN_BYTES = 20 * 1024 * 1024
+_HTML_OR_TEXT_PREFIXES = (b"<!doctype", b"<html", b"<head", b"<body", b"<?xml", b"{", b"[")
+_ISO_BMFF_ATOMS = (b"ftyp", b"moov", b"mdat", b"wide", b"free")
+_VIDEO_MAGIC_PREFIXES = (
+    b"\x1a\x45\xdf\xa3",                  # WebM / Matroska (MKV)
+    b"\x00\x00\x01\xba",                  # MPEG-PS
+    b"\x00\x00\x01\xb3",                  # MPEG-1/2
+    b"FLV\x01",                           # FLV
+    b"OggS",                              # Ogg
+    b"\x30\x26\xb2\x75\x8e\x66\xcf\x11",  # WMV / ASF
+)
+
+
+def _has_video_container_magic(head: bytes) -> bool:
+    if len(head) >= 12 and head[4:8] in _ISO_BMFF_ATOMS:
+        return True
+    if head.startswith(_VIDEO_MAGIC_PREFIXES):
+        return True
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"AVI ":
+        return True
+    return len(head) >= 189 and head[0] == 0x47 and head[188] == 0x47
+
+
+def _parse_file_uri(raw: str) -> str:
+    """Convert a ``file://`` URI (including percent-encoding, ``localhost``, Windows drive paths) to a local path."""
+    if not raw.lower().startswith("file://"):
+        return raw
+    parsed = urlparse(raw)
+    path = url2pathname(unquote(parsed.path))
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        return f"//{parsed.netloc}{path}"
+    return path
+
+
+def _validate_video_header_bytes(
+    head: bytes, size: int, *, strict_container: bool = False,
+) -> Optional[str]:
+    if size == 0 or (strict_container and size < 12):
+        return f"Video file is empty or truncated ({size} bytes)."
+    if head.lstrip()[:32].lower().startswith(_HTML_OR_TEXT_PREFIXES):
+        return (
+            "The video source returned an HTML/text webpage rather than a direct video file. "
+            "Provide a direct video file URL (.mp4/.webm/.mov) or a local file path "
+            "(public YouTube URLs are supported directly on native Gemini 3+ routes)."
+        )
+    if strict_container and not _has_video_container_magic(head):
+        return (
+            "Video file does not have a recognized video container header "
+            "(expected MP4/MOV/WebM/MKV/AVI/MPEG/FLV/Ogg/WMV). Refusing to embed corrupted or non-video data."
+        )
+    return None
+
+
+def _open_regular_video_nofollow(resolved: Path) -> tuple[Optional[int], Optional[os.stat_result], Optional[str]]:
+    """Open *resolved* as a regular file without following symlinks or blocking on FIFOs."""
+    has_nofollow = hasattr(os, "O_NOFOLLOW")
+    lst = None
+    if not has_nofollow:
+        try:
+            lst = os.lstat(str(resolved))
+        except OSError as exc:
+            return None, None, f"Could not stat video file: {exc}"
+        if stat.S_ISLNK(lst.st_mode) or not stat.S_ISREG(lst.st_mode):
+            return None, None, "Video source is not a regular file."
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(str(resolved), flags)
+    except OSError as exc:
+        return None, None, f"Could not open video file: {exc}"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            os.close(fd)
+            return None, None, "Video source is not a regular file."
+        if lst is not None and (
+            (lst.st_ino and st.st_ino != lst.st_ino) or (lst.st_dev and st.st_dev != lst.st_dev)
+        ):
+            os.close(fd)
+            return None, None, "Video source changed concurrently during open."
+        return fd, st, None
+    except OSError as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None, None, f"Could not read video file: {exc}"
+
+
+def _read_and_encode_video_bounded(
+    video_path: Path,
+    mime_type: str,
+    *,
+    max_raw_bytes: int,
+    max_base64_bytes: int,
+    strict_container: bool = False,
+    check_file_safety: bool = True,
+) -> tuple[int, Optional[str], Optional[str]]:
+    """TOCTOU-safe single-fd bounded read, magic-byte validation, and base64 data-URL encoding.
+
+    Resolves the path, enforces ``raise_if_read_blocked`` on the canonical path, opens once with
+    ``O_NOFOLLOW`` + ``O_NONBLOCK`` (rejecting concurrent symlink swaps and FIFOs), checks ``fstat``
+    regular-file + byte cap, reads at most ``max_raw_bytes + 1`` bytes, validates magic bytes on the
+    in-memory buffer, and encodes from that same validated buffer. Returns ``(size_bytes, data_url_or_none, error_or_none)``.
+    """
+    raw_path_str = str(video_path)
+    if "\x00" in raw_path_str:
+        return 0, None, "Invalid video source: path contains null byte."
+    if check_file_safety:
+        from agent.file_safety import get_nt_namespace_error, raise_if_read_blocked
+        if nt_err := get_nt_namespace_error(raw_path_str, verb="Read"):
+            return 0, None, nt_err
+    try:
+        resolved = video_path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return 0, None, f"Could not resolve video file: {exc}"
+    if check_file_safety:
+        try:
+            raise_if_read_blocked(str(resolved))
+        except (PermissionError, ValueError) as exc:
+            return 0, None, str(exc)
+    fd, st, open_err = _open_regular_video_nofollow(resolved)
+    if fd is None or st is None:
+        return 0, None, open_err or "Could not open video file."
+    try:
+        if st.st_size > max_raw_bytes:
+            return st.st_size, None, (
+                f"Video too large for API: file is {st.st_size / (1024 * 1024):.1f} MB "
+                f"(base64 limit {max_base64_bytes / (1024 * 1024):.0f} MB). "
+                "Compress or trim the video and retry."
+            )
+        chunks: list[bytes] = []
+        total = 0
+        limit = max_raw_bytes + 1
+        with os.fdopen(fd, "rb") as fh:
+            fd = -1  # owned by fh now
+            while total < limit:
+                chunk = fh.read(min(1024 * 1024, limit - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+    except OSError as exc:
+        return 0, None, f"Could not read video file: {exc}"
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if total > max_raw_bytes:
+        return total, None, (
+            f"Video too large for API: file exceeds {max_raw_bytes / (1024 * 1024):.1f} MB "
+            f"(base64 limit {max_base64_bytes / (1024 * 1024):.0f} MB). "
+            "Compress or trim the video and retry."
+        )
+    raw = b"".join(chunks)
+    if err := _validate_video_header_bytes(raw[:512], len(raw), strict_container=strict_container):
+        return len(raw), None, err
+    data_url = f"data:{mime_type};base64,{base64.b64encode(raw).decode('ascii')}"
+    if len(data_url) > max_base64_bytes:
+        return len(raw), None, (
+            f"Video too large for API: base64 payload is {len(data_url) / (1024 * 1024):.1f} MB "
+            f"(limit {max_base64_bytes / (1024 * 1024):.0f} MB). "
+            "Compress or trim the video and retry."
+        )
+    return len(raw), data_url, None
 
 
 def _detect_video_mime_type(video_path: Path) -> Optional[str]:
@@ -1073,7 +1271,9 @@ def _video_to_base64_data_url(video_path: Path, mime_type: Optional[str] = None)
     return f"data:{mime};base64,{base64.b64encode(video_path.read_bytes()).decode('ascii')}"
 
 
-async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths: list) -> Path:
+async def _materialize_video(
+    video_url: str, task_id: Optional[str], temp_paths: list, *, max_bytes: int = _MAX_VIDEO_BASE64_BYTES,
+) -> Path:
     """Local video path for a terminal-backend path, local file, or HTTP(S) URL. Only files created
     here are appended to ``temp_paths`` — never user-provided paths. Terminal-backend reads use the
     shared media resolver with ``permitted=("video",)`` — the exact pipeline vision_analyze uses
@@ -1085,12 +1285,20 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
     from tools.hosted_tool_policy import host_feature_enabled
     if not host_feature_enabled("media_processing"):
         raise ValueError("Video processing is not available to a hosted agent.")  # it would cache here
-    source = video_url.removeprefix("file://")
-    local_path = Path(os.path.expanduser(source))
-    lowered = (video_url or "").strip().lower()
+    video_url = (video_url or "").strip()
+    if "\x00" in video_url:
+        raise ValueError("Invalid video source: path contains null byte.")
+    lowered = video_url.lower()
+    if lowered.startswith("data:"):
+        raise ValueError(
+            "Inline data: URLs are not supported as video_url inputs; "
+            "provide a local file path, a direct HTTP/HTTPS video URL, or a public YouTube URL."
+        )
+    source = _parse_file_uri(video_url)
     path_like = bool(lowered) and not lowered.startswith(("http://", "https://", "data:"))
     if not _is_local_terminal_backend() and path_like:
-        logger.info("Reading video source via terminal backend: %s", video_url)
+        logger.info("Reading video source via terminal backend")
+        logger.debug("Reading video source via terminal backend: %s", video_url)
         suffix = Path(source).suffix.lower()
         if suffix not in _VIDEO_MIME_TYPES:
             raise ValueError(_unsupported_video_format(suffix))
@@ -1101,16 +1309,20 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
             raise ValueError(f"Could not read video from terminal backend: {exc}") from exc
         temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
         path = temp_dir / f"terminal_video_{uuid.uuid4()}{suffix}"
-        _write_private_bytes(path, resolved.data)
         temp_paths.append(path)
+        await asyncio.to_thread(_write_private_bytes, path, resolved.data)
         return path
     if path_like:
-        local_path = Path(await asyncio.to_thread(local_source_spelling, str(local_path)))
-    if local_path.is_file():
+        # Check NT-namespace / read-blocked paths BEFORE touching the filesystem (prevents
+        # Windows \\?\UNC\... SMB authentication leaks via exists()/is_file()).
         from agent.file_safety import raise_if_read_blocked
-        raise_if_read_blocked(str(local_path))
-        logger.info("Using local video file: %s", video_url)
-        return local_path
+        raise_if_read_blocked(source)
+        local_path = Path(await asyncio.to_thread(lambda s: local_source_spelling(os.path.expanduser(s)), source))
+        if await asyncio.to_thread(local_path.is_file):
+            raise_if_read_blocked(str(local_path))
+            logger.info("Using local video file")
+            logger.debug("Using local video file: %s", video_url)
+            return local_path
     if await _validate_image_url_async(video_url):
         blocked = check_website_access(video_url)
         if blocked:
@@ -1121,12 +1333,14 @@ async def _materialize_video(video_url: str, task_id: Optional[str], temp_paths:
         # chmod-ing an arbitrary caller's parent to 0700 would be a
         # destructive side effect on a path Hermes does not own.
         temp_dir = _secure_cache_dir("cache/video", "temp_video_files")
-        path = temp_dir / f"temp_video_{uuid.uuid4()}.mp4"
+        url_suffix = Path(urlparse(video_url).path).suffix.lower()
+        dl_suffix = url_suffix if url_suffix in _VIDEO_MIME_TYPES else ".mp4"
+        path = temp_dir / f"temp_video_{uuid.uuid4()}{dl_suffix}"
         temp_paths.append(path)
         # Video downloads retry every failure class (legacy behavior).
         await _download_media(
             video_url, path, 3, media_label="Video", accept="video/*,*/*;q=0.8",
-            max_bytes=_MAX_VIDEO_BASE64_BYTES, timeout=60.0, retry_all=True)
+            max_bytes=max_bytes, timeout=60.0, retry_all=True)
         return path
     raise ValueError("Invalid video source. Provide an HTTP/HTTPS URL or a valid local file path.")
 
@@ -1136,20 +1350,25 @@ async def video_analyze_tool(
     """Analyze a video via multimodal LLM. Returns JSON {success, analysis}."""
     async def stage(prompt: str, debug_call_data: dict, temp_paths: list) -> tuple:
         temp_video_path = await _materialize_video(video_url, task_id, temp_paths)
-        video_size_bytes = temp_video_path.stat().st_size
-        video_size_mb = video_size_bytes / (1024 * 1024)
-        logger.info("Video ready (%.1f MB)", video_size_mb)
         detected_mime = _detect_video_mime_type(temp_video_path)
         if not detected_mime:
             raise ValueError(_unsupported_video_format(temp_video_path.suffix))
+        max_raw_bytes = ((_MAX_VIDEO_BASE64_BYTES - 64) * 3) // 4
+        video_size_bytes, video_data_url, err = await _run_encode_on_cpu_executor(
+            _read_and_encode_video_bounded,
+            temp_video_path,
+            detected_mime,
+            max_raw_bytes=max_raw_bytes,
+            max_base64_bytes=_MAX_VIDEO_BASE64_BYTES,
+            strict_container=False,
+            check_file_safety=temp_video_path not in temp_paths,
+        )
+        if err or not video_data_url:
+            raise ValueError(err or "Could not encode video file.")
+        video_size_mb = video_size_bytes / (1024 * 1024)
+        logger.info("Video ready (%.1f MB)", video_size_mb)
         if video_size_bytes > _VIDEO_SIZE_WARN_BYTES:
             logger.warning("Video is %.1f MB — may be slow or rejected", video_size_mb)
-        video_data_url = _video_to_base64_data_url(temp_video_path, mime_type=detected_mime)
-        if len(video_data_url) > _MAX_VIDEO_BASE64_BYTES:
-            raise ValueError(
-                f"Video too large for API: base64 payload is {len(video_data_url) / (1024 * 1024):.1f} MB "
-                f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-                f"Compress or trim the video and retry.")
         debug_call_data["video_size_bytes"] = video_size_bytes
         messages = _media_messages(prompt, "video_url", video_data_url)
         call_kwargs = _aux_call_kwargs(messages, model, 180.0, min_timeout=180.0)
@@ -1184,14 +1403,135 @@ VIDEO_ANALYZE_SCHEMA = {
 }
 
 
-def _handle_video_analyze(args: dict[str, Any], **kw: Any) -> Awaitable[str]:
+def _build_native_video_tool_result(
+    video_url: str,
+    question: str,
+    video_payload_url: str,
+    *,
+    video_size_bytes: int = 0,
+    native_youtube: bool = False,
+) -> dict[str, Any]:
+    """Multimodal tool-result envelope carrying inline video or a YouTube URL for video-capable main models."""
+    text_part = (
+        "YouTube video attached into your context natively — you can watch and hear it directly. "
+        "Use your built-in multimodal video understanding to answer the user."
+        if native_youtube
+        else (
+            "Video loaded into your context — you can see and hear it natively now. "
+            "Use your built-in multimodal video understanding to answer the user."
+        )
+    )
+    if isinstance(question, str) and question.strip():
+        text_part += f"\n\nQuestion: {question.strip()}"
+    summary = (
+        f"YouTube video attached natively for the main model ({video_payload_url}). Answer using built-in video understanding."
+        if native_youtube
+        else (
+            f"Video attached natively for the main model ({video_size_bytes / (1024 * 1024):.1f} MB). "
+            "Answer using built-in video understanding."
+        )
+    )
+    meta: dict[str, Any] = {"video_url": video_url[:200], "native_video": True}
+    if native_youtube:
+        meta["native_youtube"] = True
+    else:
+        meta["size_bytes"] = video_size_bytes
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": text_part},
+            {"type": "video_url", "video_url": {"url": video_payload_url}},
+        ],
+        "text_summary": summary,
+        "meta": meta,
+    }
+
+
+async def _video_analyze_native(
+    video_url: str, question: str, task_id: Optional[str] = None,
+) -> Any:
+    """Fast path for video-capable native Gemini main models: returns a ``_multimodal`` envelope dict."""
+    if not isinstance(video_url, str) or not video_url.strip():
+        return tool_error("video_url is required", success=False)
+    if "\x00" in video_url:
+        return tool_error("Invalid video source: path contains null byte.", success=False)
+    stripped_url = video_url.strip()
+    if not stripped_url.lower().startswith(("http://", "https://", "data:")):
+        from agent.file_safety import get_nt_namespace_error
+        if nt_err := get_nt_namespace_error(_parse_file_uri(stripped_url), verb="Read"):
+            return tool_error(nt_err, success=False)
+    refusal, reserved_key = _reserve_embed(video_url, tool_name="video_analyze", media_label="video")
+    if refusal is not None:
+        return refusal
+    temp_paths: list[Path] = []
+    embedded = False
+    try:
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("media_processing"):
+            return tool_error("Video processing is not available to a hosted agent.", success=False)
+        from agent.gemini_urls import normalize_youtube_url
+        if yt_url := normalize_youtube_url(video_url):
+            blocked = check_website_access(video_url) or check_website_access(yt_url)
+            if blocked:
+                return tool_error(blocked["message"], success=False)
+            logger.info("video_analyze: native YouTube fast path")
+            logger.debug("video_analyze: native YouTube target=%s", yt_url)
+            embedded = True
+            if reserved_key is None:
+                _record_embed(video_url)
+            return _build_native_video_tool_result(
+                video_url=video_url, question=question, video_payload_url=yt_url, native_youtube=True)
+
+        from tools.interrupt import is_interrupted
+        if is_interrupted():
+            return tool_error("Interrupted", success=False)
+        max_raw_bytes = max(((_MAX_NATIVE_VIDEO_BASE64_BYTES - 64) * 3) // 4, 0)
+        temp_video_path = await _materialize_video(video_url, task_id, temp_paths, max_bytes=max_raw_bytes)
+        detected_mime = _detect_video_mime_type(temp_video_path)
+        if not detected_mime:
+            return tool_error(_unsupported_video_format(temp_video_path.suffix), success=False)
+        video_size_bytes, video_data_url, err = await _run_encode_on_cpu_executor(
+            _read_and_encode_video_bounded,
+            temp_video_path,
+            detected_mime,
+            max_raw_bytes=max_raw_bytes,
+            max_base64_bytes=_MAX_NATIVE_VIDEO_BASE64_BYTES,
+            strict_container=True,
+            check_file_safety=temp_video_path not in temp_paths,
+        )
+        if err or not video_data_url:
+            logger.warning("video_analyze: native video rejected (%s)", err)
+            return tool_error(err or "Native video encoding failed.", success=False)
+        video_size_mb = video_size_bytes / (1024 * 1024)
+        logger.info("video_analyze: native inline video ready (%.1f MB, %s)", video_size_mb, detected_mime)
+        embedded = True
+        if reserved_key is None:
+            _record_embed(video_url)
+        return _build_native_video_tool_result(
+            video_url=video_url, question=question, video_payload_url=video_data_url,
+            video_size_bytes=video_size_bytes)
+    except (OSError, ValueError, PermissionError, httpx.HTTPError) as exc:
+        logger.warning("Native video fast path failed: %s", exc)
+        return tool_error(f"Native video failed: {exc}", success=False)
+    finally:
+        if reserved_key is not None and not embedded:
+            _release_embed_key(reserved_key)
+        for path in temp_paths:
+            _unlink_quietly(path)
+
+
+async def _handle_video_analyze(args: dict[str, Any], **kw: Any) -> Any:
     video_url, question = args.get("video_url", ""), args.get("question", "")
+    task_id = kw.get("task_id")
+    if await asyncio.to_thread(_should_use_native_video_fast_path):
+        logger.info("video_analyze: native fast path")
+        return await _video_analyze_native(video_url, question, task_id=task_id)
     full_prompt = (
         "Fully describe and explain everything happening in this video, "
         "including visual content, motion, audio cues, text overlays, and scene "
         f"transitions. Then answer the following question:\n\n{question}")
     model = _configured_aux_model(("video", "vision"), ("AUXILIARY_VIDEO_MODEL", "AUXILIARY_VISION_MODEL"))
-    return video_analyze_tool(video_url, full_prompt, model, task_id=kw.get("task_id"))
+    return await video_analyze_tool(video_url, full_prompt, model, task_id=task_id)
 
 
 registry.register(

@@ -258,12 +258,12 @@ DEFAULT_CONFIG = {
         # instead of hanging forever. Env HERMES_LOCAL_STREAM_STALE_TIMEOUT overrides.
         "local_stream_stale_timeout": 900,
         "stream_max_lifetime": 0,  # opt-in whole-stream cap in s, 0 = off (agent/stream_max_lifetime.py)
-        # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
-        # when the model reports supports_vision=True AND auxiliary.vision.provider is not
-        # explicitly set, else text; "native" = always attach (non-vision models error at the
-        # provider or get a last-chance text fallback); "text" = always pre-analyze with
-        # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
+        # How inbound images ("image_input_mode": auto|native|text) and video_analyze
+        # ("video_input_mode": auto|native|auxiliary, alias "text") reach the main model.
+        # In "auto", native runs when the model+route support it and no explicit aux backend
+        # is configured; see website/docs/user-guide/features/vision.md.
         "image_input_mode": "auto",
+        "video_input_mode": "auto",
         "disabled_toolsets": [],
         # Model name (any reasonable spelling) -> effort level; overrides agent.reasoning_effort
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).

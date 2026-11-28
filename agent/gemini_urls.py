@@ -78,3 +78,24 @@ def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
     generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
     unknown proxies get the legacy ``parameters`` subset."""
     return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
+
+
+_YOUTUBE_VIDEO_ID_RE = re.compile(
+    r"^https?://(?:(?:www|m|music)\.)?"
+    r"(?:youtube\.com/(?:watch\?(?:[^#\s]*&)?v=([A-Za-z0-9_-]{11})(?:[&#].*)?|"
+    r"(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?)|"
+    r"youtube-nocookie\.com/embed/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?|"
+    r"youtu\.be/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?)$",
+    re.IGNORECASE,
+)
+
+
+def normalize_youtube_url(url: str) -> Optional[str]:
+    """Canonical ``https://www.youtube.com/watch?v=<id>`` for a YouTube video URL; None otherwise."""
+    if not isinstance(url, str):
+        return None
+    match = _YOUTUBE_VIDEO_ID_RE.match(url.strip())
+    if not match:
+        return None
+    video_id = next((g for g in match.groups() if g), "")
+    return f"https://www.youtube.com/watch?v={video_id}" if video_id else None

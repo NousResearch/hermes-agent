@@ -18,6 +18,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import uuid
 from types import SimpleNamespace
 from typing import Any, Iterator, Optional
@@ -50,6 +51,21 @@ SINGLE_REQUEST_OUTPUT_CAP = 65_536
 _THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 _TOOL_CHOICES = {"auto": "auto", "required": "any", "none": "none"}
 _IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif", "image/gif", "image/bmp", "image/tiff"}
+_VIDEO_MIME_TYPES = frozenset({
+    "video/mp4", "video/webm", "video/mov", "video/quicktime", "video/mpeg",
+    "video/x-flv", "video/mpg", "video/wmv", "video/3gpp", "video/avi",
+    "video/x-msvideo", "video/x-matroska",
+})
+_VIDEO_PART_TYPES = frozenset({"video_url", "input_video"})
+_STRICT_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+_YOUTUBE_VIDEO_ID_RE = re.compile(
+    r"^https?://(?:(?:www|m|music)\.)?"
+    r"(?:youtube\.com/(?:watch\?(?:[^#\s]*&)?v=([A-Za-z0-9_-]{11})(?:[&#].*)?|"
+    r"(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?)|"
+    r"youtube-nocookie\.com/embed/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?|"
+    r"youtu\.be/([A-Za-z0-9_-]{11})/?(?:[?#&].*)?)$",
+    re.IGNORECASE,
+)
 # Interaction.status -> OpenAI finish_reason (requires_continuation is consumed by the hop loop).
 _STATUS_FINISH = {
     "completed": "stop", "requires_action": "stop", "incomplete": "length", "budget_exceeded": "length",
@@ -78,10 +94,13 @@ _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404
 
 # ── OpenAI messages -> Interactions steps ────────────────────────────────────
 def _image_content(item: dict[str, Any]) -> Optional[dict[str, Any]]:
-    """``image`` content for an ``image_url`` item carrying a ``data:`` URL; None otherwise (remote URLs
+    """``image`` content for an ``image_url``/``input_image`` item carrying a ``data:`` URL; None otherwise (remote URLs
     are dropped, as on the generateContent path)."""
-    url = (item.get("image_url") or {}).get("url") or ""
-    if item.get("type") != "image_url" or not isinstance(url, str) or not url.startswith("data:"):
+    if item.get("type") not in ("image_url", "input_image"):
+        return None
+    raw = item.get("image_url")
+    url = (raw.get("url") if isinstance(raw, dict) else raw) or item.get("url") or ""
+    if not isinstance(url, str) or not url.startswith("data:"):
         return None
     try:
         header, encoded = url.split(",", 1)
@@ -90,6 +109,45 @@ def _image_content(item: dict[str, Any]) -> Optional[dict[str, Any]]:
     except (ValueError, IndexError):  # malformed data URL (binascii.Error is a ValueError)
         return None
     return {"type": "image", "mime_type": mime, "data": data} if mime in _IMAGE_MIME_TYPES else None
+
+
+def _normalize_youtube_url(url: str) -> Optional[str]:
+    if not isinstance(url, str):
+        return None
+    match = _YOUTUBE_VIDEO_ID_RE.match(url.strip())
+    if not match:
+        return None
+    video_id = next((g for g in match.groups() if g), "")
+    return f"https://www.youtube.com/watch?v={video_id}" if video_id else None
+
+
+def _video_content(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """``video`` content for a ``video_url``/``input_video`` item carrying a ``data:`` URL or YouTube URL."""
+    part_type = item.get("type")
+    if part_type not in _VIDEO_PART_TYPES:
+        return None
+    payload = item.get(part_type)
+    url = (payload.get("url") if isinstance(payload, dict) else payload) or item.get("url") or ""
+    if not isinstance(url, str):
+        return None
+    if yt_url := _normalize_youtube_url(url):
+        return {"type": "video", "uri": yt_url}
+    if not url.startswith("data:"):
+        return None
+    header, sep, encoded = url.partition(",")
+    if not sep or ";base64" not in header.lower():
+        return None
+    mime = header[5:].split(";", 1)[0].strip().lower()
+    if mime not in _VIDEO_MIME_TYPES:
+        return None
+    cleaned = "".join(encoded.split()) if ("\n" in encoded or "\r" in encoded or " " in encoded) else encoded
+    if not cleaned or len(cleaned) % 4 != 0 or not _STRICT_BASE64_RE.fullmatch(cleaned):
+        return None
+    return {"type": "video", "mime_type": mime, "data": cleaned}
+
+
+def _media_content(item: dict[str, Any]) -> Optional[dict[str, Any]]:
+    return _image_content(item) or _video_content(item)
 
 
 def _content_blocks(content: Any) -> list[dict[str, Any]]:
@@ -101,8 +159,8 @@ def _content_blocks(content: Any) -> list[dict[str, Any]]:
         text = _text_of(item)
         if text:
             blocks.append({"type": "text", "text": text})
-        elif isinstance(item, dict) and (image := _image_content(item)):
-            blocks.append(image)
+        elif isinstance(item, dict) and (media := _media_content(item)):
+            blocks.append(media)
     return blocks
 
 
@@ -123,9 +181,9 @@ def _function_result(message: dict[str, Any], names: dict[str, str]) -> dict[str
         parsed = json.loads(text) if text.strip().startswith(("{", "[")) else None
     except json.JSONDecodeError:
         parsed = None
-    images = [b for b in _content_blocks(raw) if b["type"] == "image"] if isinstance(raw, list) else []
-    if images:
-        result: Any = [*([{"type": "text", "text": text}] if text else []), *images]
+    media_blocks = [b for b in _content_blocks(raw) if b["type"] in ("image", "video")] if isinstance(raw, list) else []
+    if media_blocks:
+        result: Any = [*([{"type": "text", "text": text}] if text else []), *media_blocks]
     elif isinstance(parsed, dict) and not _looks_like_json_schema(parsed):
         # Same rule as generateContent: a result that is itself a JSON Schema ($ref pointers) goes as text.
         result = parsed

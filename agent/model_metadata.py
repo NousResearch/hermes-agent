@@ -31,9 +31,9 @@ from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS, unpriced_replay_fields, without_persistence_fields
 from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque_replay_items
 from agent.model_metadata_token_memo import (  # _MSG_TOKENS_CACHE: tests and benches read it here
-    _MSG_TOKENS_CACHE, MemoPins, lookup_message_tokens, remember_message_tokens,
+    _MSG_TOKENS_CACHE, MemoPins, estimate_video_media_tokens, lookup_message_tokens, remember_message_tokens,
 )
-from session_rules.turns import _IMAGE_PART_TYPES
+from session_rules.turns import _IMAGE_PART_TYPES, _VIDEO_PART_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -2483,7 +2483,7 @@ def _count_image_tokens(msg: dict[str, Any], cost_per_image: int) -> int:
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
     if isinstance(content, dict) and content.get("_multimodal"):
-        count += _count_parts(content.get("content"), {"image", "image_url"})
+        count += _count_parts(content.get("content"), _IMAGE_PART_TYPES)
     # Responses ``function_call_output`` items carry converted tool-result
     # parts under ``output`` (the converter moves chat ``content`` there).
     count += _count_parts(msg.get("output"), _IMAGE_PART_TYPES)
@@ -2518,7 +2518,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
         elif k == "content" and isinstance(v, list):
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                if isinstance(part, dict) and (part.get("type") in _IMAGE_PART_TYPES or part.get("type") in _VIDEO_PART_TYPES)
                 else part
                 for part in v
             ]
@@ -2530,7 +2530,7 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
             # priced by the flat per-image model, never as text.
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                if isinstance(part, dict) and (part.get("type") in _IMAGE_PART_TYPES or part.get("type") in _VIDEO_PART_TYPES)
                 else part
                 for part in v
             ]
@@ -2544,8 +2544,8 @@ def _wire_message_shadow(msg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _estimate_message_tokens_without_images(msg: dict[str, Any]) -> int:
-    """Token estimate for a message shadow with image payloads stripped."""
-    return estimate_tokens_rough(str(_wire_message_shadow(msg) if isinstance(msg, dict) else msg))
+    """Token estimate for a message shadow with image payloads stripped (plus non-EMA video estimate)."""
+    return estimate_tokens_rough(str(_wire_message_shadow(msg) if isinstance(msg, dict) else msg)) + estimate_video_media_tokens(msg)
 
 
 def estimate_request_tokens_rough(

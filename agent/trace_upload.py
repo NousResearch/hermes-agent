@@ -71,6 +71,8 @@ def _part_to_block(part: Any, redact: bool) -> dict[str, Any]:
         return _text_block(part.get("text", ""), redact)
     if part.get("type") in ("image_url", "image"):
         return {"type": "text", "text": "[image omitted]"}  # the viewer renders text turns; no base64
+    if part.get("type") in ("video_url", "input_video", "video"):
+        return {"type": "text", "text": "[video omitted]"}
     return _text_block(json.dumps(part), redact)
 
 
@@ -130,9 +132,14 @@ def _assistant_message(msg: dict[str, Any], model: str, redact: bool) -> dict[st
 
 def _tool_result_message(msg: dict[str, Any], model: str, redact: bool) -> dict[str, Any]:
     content = msg.get("content")
+    normalized = (
+        _redact(content, redact)
+        if isinstance(content, str)
+        else _content_to_blocks(content, redact)
+    )
     return {"role": "user", "content": [{
         "type": "tool_result", "tool_use_id": msg.get("tool_call_id") or msg.get("tool_name") or "tool",
-        "content": _redact(content if isinstance(content, str) else json.dumps(content), redact),
+        "content": normalized,
     }]}
 
 

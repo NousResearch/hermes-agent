@@ -272,7 +272,7 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
     # Orphaned TaskCache entries print localized one-field diagnostics among the rows (#142140). Only a
     # well-formed row can name our task, so skipping the rest can only fall through to the unmanaged path.
     if any(len(row) == 3 and row[0].lstrip("\\") == name for row in rows):
-        from hermes_cli.gateway_runtime_service_identity import verify_windows_task
+        from hermes_cli.gateway_runtime_service_identity import LogonOnlyTask, verify_windows_task
         unverified = "service_identity_unverified"
         definition = query(unverified, "schtasks.exe", "/Query", "/TN", name, "/XML")
         accounts = list(csv.reader(io.StringIO(query(unverified, "whoami.exe", "/USER", "/FO", "CSV", "/NH"))))
@@ -280,7 +280,14 @@ def _windows(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_identity_unverified", detail=(
                 f"whoami.exe /USER printed {len(accounts)} row(s) of {[len(row) for row in accounts]} field(s), "
                 "expected one account and SID"))
-        _verify_binding(verify_windows_task, definition, home, *accounts[0])
+        try:
+            _verify_binding(verify_windows_task, definition, home, *accounts[0], task_name=name)
+        except LogonOnlyTask:
+            # The registration installers made before the wscript launcher still runs this home's .cmd
+            # wrapper, with a logon trigger and no restart policy. Running it would open a console
+            # window, so it is left for the next logon like a Startup-folder entry (below). Re-registering
+            # it is `hermes gateway start` / `install`, never client startup.
+            return None
         return ExistingService("windows", ("schtasks.exe", "/Run", "/TN", name))
     # A Startup-folder entry (the fallback when Scheduled Task install was declined/blocked) is login
     # persistence only, with no start verb or identity to verify. Starting a stopped owner is the

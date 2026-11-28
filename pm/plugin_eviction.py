@@ -192,43 +192,49 @@ class PluginEviction:
 
     def __init__(self, entries: list[Entry], reasons: dict[Path, str], rejoined: list[Entry] = (), *,
                  tried: dict[Path, str] | None = None, configs=None):
-        from hermes_yaml import roundtrip_yaml
         from pm.publication import selection_snapshot
 
         # The snapshot the update decided from: a user edit since then refuses publication.
         self.configs = selection_snapshot() if configs is None else configs
-        tried = tried or {}
+        self.tried = tried = tried or {}
         by_home: dict[Path, list[tuple[str, Path, str | None]]] = {}
         for plugins_dir, name, plugin_dir in entries:
             if plugin_dir.resolve() in reasons:
                 by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, reasons[plugin_dir.resolve()]))
         for plugins_dir, name, plugin_dir in rejoined:
             by_home.setdefault(plugins_dir.parent, []).append((name, plugin_dir, None))
-        self.edits: list[tuple[Path, bytes | None, bytes]] = []
-        for home, changes in by_home.items():
-            path = home / "config.yaml"
-            previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
-            yaml = roundtrip_yaml()
-            config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
-            # read_home_selection already proved plugins is a mapping and the lists are lists.
-            plugins = config.get("plugins")
-            if plugins is None:
-                plugins = config["plugins"] = {}
-            for name, plugin_dir, reason in changes:
-                if reason is None:
-                    _rejoin(plugins, name, plugin_dir)
-                else:
-                    _disable(plugins, name, plugin_dir, reason, tried.get(plugin_dir.resolve()))
-            _prune_record(plugins)
-            output = io.StringIO()
-            yaml.dump(config, output)
-            self.edits.append((path, previous, output.getvalue().encode("utf-8")))
+        self.changes = by_home
+        self.edits: list[tuple[Path, bytes | None, bytes]] = [self._render(home) for home in by_home]
+
+    def _render(self, home: Path) -> tuple[Path, bytes | None, bytes]:
+        """*home*'s config.yaml as it is now, with this update's edits to its ``plugins`` section."""
+        from hermes_yaml import roundtrip_yaml
+
+        path = home / "config.yaml"
+        previous = read_bytes_or_none(path)  # config-reader: ok — pm publication: byte-level compare-and-swap rewrite of the local file
+        yaml = roundtrip_yaml()
+        config = (yaml.load(previous.decode("utf-8-sig")) if previous else None) or {}
+        # read_home_selection already proved plugins is a mapping and the lists are lists.
+        plugins = config.get("plugins")
+        if plugins is None:
+            plugins = config["plugins"] = {}
+        for name, plugin_dir, reason in self.changes[home]:
+            if reason is None:
+                _rejoin(plugins, name, plugin_dir)
+            else:
+                _disable(plugins, name, plugin_dir, reason, self.tried.get(plugin_dir.resolve()))
+        _prune_record(plugins)
+        output = io.StringIO()
+        yaml.dump(config, output)
+        return path, previous, output.getvalue().encode("utf-8")
 
     def publish(self, project: Path) -> None:
-        from pm.publication import selection_snapshot
+        from pm.publication import SelectionChanged, selection_snapshot
 
         if selection_snapshot() != self.configs:
-            raise ValueError("plugin configuration changed while preparing publication; retry")
+            raise SelectionChanged("plugin configuration changed while preparing publication; retry")
+        # Keys outside the plugin selection may have moved since: re-applied to the bytes as they are.
+        self.edits = [self._render(home) for home in self.changes]
         row = {"configs": [{"config": str(path),
                             "previous": base64.b64encode(previous).decode() if previous is not None else None,
                             "config_after": hashlib.sha256(proposed).hexdigest()}
@@ -299,7 +305,8 @@ class _EvictingUpdate:
     def __init__(self, package, facts, fact: dict, selection: dict, *, base: list[str], explicit: bool, configs,
                  entries: list[Entry], recorded: dict[Entry, dict], reasons: dict[Path, str],
                  waiting: dict[Path, str]):
-        from pm.workspace import _is_member_candidate
+        from pm.plugin_declarations import read_python_declaration
+        from pm.workspace import select_workspace_members
 
         self.package, self.facts, self.fact, self.selection = package, facts, fact, selection
         self.explicit, self.configs, self.entries, self.reasons = explicit, configs, entries, reasons
@@ -311,30 +318,59 @@ class _EvictingUpdate:
         def fits(plugin_dir: Path) -> bool:
             return plugin_dir.resolve() not in reasons and plugin_dir.resolve() not in waiting
 
-        self.kept = list(dict.fromkeys(plugin_dir for _plugins_dir, _name, plugin_dir in entries
-                                       if fits(plugin_dir) and _is_member_candidate(plugin_dir)))
+        # Keep every fitting package-declaring plugin through retries so core-satisfied
+        # constraints stay in any shared solve triggered by a retried plugin.
+        self.kept = list(dict.fromkeys(
+            plugin_dir for _plugins_dir, _name, plugin_dir in entries
+            if fits(plugin_dir) and read_python_declaration(plugin_dir).installs_packages
+        ))
+
+        def _needs_trial(plugin_dir: Path) -> bool:
+            if not read_python_declaration(plugin_dir).installs_packages:
+                return False
+            return bool(select_workspace_members([*self.kept, plugin_dir]))
+
         # A plugin with nothing to build rejoins on its static verdict; one with dependencies is
         # due only when core's inputs, its own or the enabled plugins beside it changed since the
         # attempt that failed.
-        self.joined = [entry for entry in recorded if fits(entry[2]) and not _is_member_candidate(entry[2])]
+        self.joined = [entry for entry in recorded if fits(entry[2]) and not _needs_trial(entry[2])]
+        self._static_joined_packages = list(dict.fromkeys(
+            entry[2] for entry in self.joined if read_python_declaration(entry[2]).installs_packages
+        ))
+        baseline = list(dict.fromkeys([*self.kept, *self._static_joined_packages]))
         # Those whose last failure was no verdict on the plugin (a download failure, a static
         # misfit since fixed) go first: they fitted beside the rest before.
         self.due = sorted((entry for entry, record in recorded.items()
-                           if fits(entry[2]) and _is_member_candidate(entry[2])
-                           and record.get("tried") != self.fingerprint(entry[2], self.kept)),
+                           if fits(entry[2]) and _needs_trial(entry[2])
+                           and record.get("tried") != self.fingerprint(entry[2], baseline)),
                           key=lambda entry: "tried" in recorded[entry])
+
+    def _effective_members(self, candidates: list[Path]) -> list[Path]:
+        from pm.workspace import select_workspace_members
+
+        return select_workspace_members(list(dict.fromkeys(candidates)))
+
+    def _base_is_current(self) -> bool:
+        from pm.install import _runtime_state_matches, _target_selection
+
+        _, stamp, _ = _target_selection(self.package, self.fact, inputs={"plugin_dirs": []},
+                                        repair=False, **self.selection)
+        return _runtime_state_matches(self.fact, stamp)
 
     def fingerprint(self, plugin_dir: Path, beside: list[Path]) -> str:
         """What a retry of *plugin_dir* would build: core, the plugin and the enabled plugins."""
-        return self.package.expected_stamp(self.base, plugin_dirs=[*beside, plugin_dir])
+        return self.package.expected_stamp(self.base, plugin_dirs=list(dict.fromkeys([*beside, plugin_dir])))
 
-    def commit(self, members: list[Path]) -> None:
+    def commit(self, candidates: list[Path]) -> None:
         from pm import receipt
         from pm.install import _commit_selection, _runtime_state_matches, _target_selection
 
-        members = list(dict.fromkeys(members))
-        # Fingerprinted against the members this update leaves enabled: the next update compares there.
-        self.tried = {member.resolve(): self.fingerprint(member, members) for member in self.verdicts}
+        surviving = list(dict.fromkeys(candidates))
+        members = self._effective_members(surviving)
+        # Fingerprinted against the package-declaring plugins this update leaves enabled (not the
+        # collapsed workspace list), so the next update compares against the same baseline and
+        # still retries if a core-satisfied enabled plugin's constraints change.
+        self.tried = {member.resolve(): self.fingerprint(member, surviving) for member in self.verdicts}
         enabled, stamp, inputs = _target_selection(self.package, self.fact, inputs={"plugin_dirs": members},
                                                    repair=False, **self.selection)
         receipt.record_feature_list(enabled)
@@ -348,22 +384,26 @@ class _EvictingUpdate:
 
     def run(self) -> None:
         due = [entry[2] for entry in self.due]
+        baseline = list(dict.fromkeys([*self.kept, *self._static_joined_packages]))
         if due:
             try:
                 self.joined += self.due
-                self.commit([*self.kept, *due])
+                self.commit([*baseline, *due])
                 return
             except InstallError:
                 self.joined = self.joined[:-len(self.due)]
         try:
             if not due:
-                self.commit(self.kept)
+                self.commit(baseline)
                 return
-            self.package.apply(self.base, explicit=self.explicit, plugin_dirs=self.kept, skip_invalid_secondary=True)
+            base_members = self._effective_members(baseline)
+            if base_members or not self._base_is_current():
+                self.package.apply(self.base, explicit=self.explicit, plugin_dirs=base_members,
+                                   skip_invalid_secondary=True)
         except InstallError as failure:
             self.evict_enabled(failure)
             return
-        fitting = list(self.kept)
+        fitting = list(baseline)
         for entry in self.due:
             if self.try_member(fitting, entry[2]):
                 self.joined.append(entry)
@@ -372,7 +412,11 @@ class _EvictingUpdate:
     def try_member(self, fitting: list[Path], member: Path) -> bool:
         """Add *member* to *fitting* when it builds on top; else record why. Only a verdict on the
         plugin is fingerprinted: a fetch failure is the moment, so the next update retries it."""
-        verdict = _trial(self.package, self.base, self.explicit, [*fitting, member])
+        members = self._effective_members([*fitting, member])
+        if not members:
+            fitting.append(member)
+            return True
+        verdict = _trial(self.package, self.base, self.explicit, members)
         if verdict is None:
             fitting.append(member)
             return True
@@ -384,7 +428,7 @@ class _EvictingUpdate:
     def evict_enabled(self, failure: InstallError) -> None:
         """Core alone must build; then each enabled member that breaks the build is disabled.
         Nothing rejoins in such an update: a retried plugin must never take an enabled one's place."""
-        if not self.kept:
+        if not self._effective_members(self.kept):
             raise failure
         try:
             self.package.apply(self.base, explicit=self.explicit, plugin_dirs=[], skip_invalid_secondary=True)
@@ -394,7 +438,7 @@ class _EvictingUpdate:
         fitting: list[Path] = []
         for member in self.kept:
             self.try_member(fitting, member)
-        self.commit(fitting)
+        self.commit(list(dict.fromkeys([*fitting, *self._static_joined_packages])))
 
 
 _RETRY = "a later update retries it"

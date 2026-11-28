@@ -1,0 +1,17 @@
+name: mistral-acp
+repo: https://github.com/Thorballer/hermes-mistral-acp
+sha: 7f1ea0e66db7d7d7fa393b03e0e286aa1783a92c
+title: Mistral Vibe (ACP)
+description: "Use the local Mistral Vibe ACP process for streamed model replies and Hermes-owned tools. Requires a separately installed, signed-in Vibe 2.24.5. Vibe handles its own sign-in and sends inference requests to Mistral; subscription billing is not guaranteed. Disclosure — unofficial, not affiliated with Mistral. Runs your separately installed Mistral Vibe 2.24.5 (from its uv tool directory) as a local ACP subprocess, with a launcher that patches Vibe's runtime inside that process only (session model selection on; its agent loop, tools, MCP servers, connectors and telemetry off), and Vibe's own sign-in sends your prompts, tool schemas and tool results to Mistral; the plugin reads no credential files. The Vibe process receives Hermes's standard ACP environment, including other LLM provider keys (MISTRAL_API_KEY is removed), and up to four Vibe processes stay warm for five minutes after use. Vibe subscription coverage of this use is not guaranteed and may bill as pay-as-you-go."
+maintainer: Thorballer
+tier: community
+category: models
+requires_hermes: ">=0.23.4"
+docs_url: https://github.com/Thorballer/hermes-mistral-acp#readme
+version: "1.0.0"
+platforms: [macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

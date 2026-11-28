@@ -233,7 +233,12 @@ jobs:
 
   bundle-inputs:
     name: Validate pinned bundle transitions
-    # Bundled legs need dispatch-only manifests.
+    # Only the bundled legs read this plan, so source-only runs skip it; an explicit
+    # bundled route still runs it, so bundle-plan.mjs fails fast on a missing manifest.
+    if: >-
+      inputs.windows-bundle-manifest != ''
+      || inputs.macos-bundle-manifest != ''
+      || contains(fromJSON('["bundled", "windows-bundled", "macos-bundled"]'), inputs.route)
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 10
     outputs:

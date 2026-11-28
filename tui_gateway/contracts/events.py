@@ -300,6 +300,8 @@ class MessageCompletePayload(Payload):
     error_surface: ErrorSurface | None = None
     partial: bool | None = None
     persisted_turn: PersistedTurn | None = None
+    #: An interrupted turn its interrupter will continue (``session.interrupt`` ``resume``): not stopped for good.
+    paused: bool | None = None
 
 
 event("message.complete", MessageCompletePayload, doc="The turn ended: final text, usage and outcome.")
@@ -380,6 +382,23 @@ class ReviewSummaryPayload(Payload):
 
 
 event("review.summary", ReviewSummaryPayload, doc="Background review of the last turn finished.")
+
+
+class PluginCardDirectivePayload(Payload):
+    name: str
+    attrs: dict[str, str] = Field(default_factory=dict)
+
+
+class PluginCardPayload(Payload):
+    """``gateway.session_completion_notes`` after a plugin card's note row committed."""
+
+    plugin_id: str
+    card_id: str
+    text: str
+    directive: PluginCardDirectivePayload | None = None
+
+
+event("plugin.card", PluginCardPayload, doc="A plugin posted a card into the session (a note, no model turn).")
 
 
 class AgentPrintPayload(Payload):

@@ -35,7 +35,7 @@ def _write(home: Path, config: str) -> None:
 
 @pytest.mark.parametrize(("block", "key"), [
     ("webapp:\n  enabled: true\n  port: 70000\n", "webapp.port"),
-    ("webapp:\n  enabled: true\n  host: 192.168.1.20\n", "webapp.host"),
+    ("webapp:\n  enabled: true\n  host: hermes.example.net\n", "webapp.host"),
     ("webapp:\n  enabled: 'yes'\n", "webapp.enabled"),
 ])
 def test_the_launcher_prints_why_a_malformed_webapp_block_keeps_it_off(home, capsys, block, key):

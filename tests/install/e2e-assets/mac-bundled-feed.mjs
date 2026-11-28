@@ -79,7 +79,7 @@ export async function materializeFeed({ outDir, zipPath, version, tag, arch, rel
   if (!zipName.endsWith('.zip')) {
     throw new Error(`feed: expected a .zip artifact, got ${zipName}`)
   }
-  const channel = tag.includes('+canary.') ? 'canary' : 'stable'
+  const channel = tag.startsWith('canary.') ? 'canary' : 'stable'
   const sha512 = await sha512Base64(zipPath)
   const text = buildMacFeedText({ version, tag, zipName, sha512, size: zipStat.size, releaseDate })
 

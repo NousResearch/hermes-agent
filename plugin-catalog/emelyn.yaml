@@ -1,0 +1,18 @@
+name: emelyn
+title: Emelyn
+repo: https://github.com/taherchhabra/emelyn-cursor-plugin
+sha: abbcc5edb1d3542fada4014ea63401444dd46d0d
+version: "1.1.0"
+description: "Plan, draft, check, approve, schedule and publish social media posts and read their analytics through Emelyn's hosted MCP server (Streamable HTTP at https://www.emelyn.ai/mcp, OAuth sign-in, no keys in config): Instagram, LinkedIn, Facebook, TikTok, X, YouTube and Google Business Profile, across every Emelyn workspace the user belongs to, with the workspace Brand and content plan, channel health, listening schedules and media generation. Bundles the emelyn workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Emelyn's hosted server (www.emelyn.ai) and acts on the user's Emelyn account with their own workspace role; the tool set is served by that server at runtime and is not covered by the pinned sha. Approved, scheduled and published posts go out to the user's connected social accounts; delete_post, delete_publication, disconnect_channel and delete_channel remove records, delete_channel permanently; update_brand and update_content_plan replace whole workspace records; schedule tools create and run agent tasks on Emelyn's servers; and generate_media spends Emelyn credits. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: Emelyn
+tier: community
+category: tools
+docs_url: https://github.com/taherchhabra/emelyn-cursor-plugin#install-in-hermes-agent
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

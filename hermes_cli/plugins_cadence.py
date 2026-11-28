@@ -92,9 +92,9 @@ def cached_git_updates(install_metadata: dict) -> dict[str, str]:
 
 def _markers_dir() -> Path:
     """The markers dir, created on demand — WRITE paths only."""
-    d = _marker_path().parent
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    from hermes_constants import mkdir_under_hermes_home
+
+    return mkdir_under_hermes_home(_marker_path().parent)
 
 
 def check_interval_hours(config_get: Callable | None = None) -> float:

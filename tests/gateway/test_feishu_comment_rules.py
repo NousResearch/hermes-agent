@@ -185,3 +185,22 @@ class TestRulesFollowActiveProfile(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import pytest
+
+
+@pytest.mark.parametrize("move", ("delete", "rename"))
+def test_pairing_add_refuses_a_deleted_or_renamed_profile_home(tmp_path, monkeypatch, move):
+    """An approval on a dead profile is refused, not reported saved, and the home stays gone (#155595 U3)."""
+    import hermes_constants
+    from plugins.platforms.feishu import feishu_comment_rules as rules
+    from tests.fixtures.dead_profile_home import dead_named_home
+
+    home = dead_named_home(tmp_path, move)
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(rules, "get_hermes_home", lambda: home)
+    rules._pairing_cache.invalidate()
+    with pytest.raises(FileNotFoundError, match="Named profile home does not exist"):
+        rules.pairing_add("ou_dead")
+    assert not home.exists()

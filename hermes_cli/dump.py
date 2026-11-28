@@ -10,6 +10,7 @@ from pathlib import Path
 from hermes_cli.config import get_hermes_home, get_env_path, get_project_root, load_config
 from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
+from hermes_platform.resolver.git import inspect_git
 from agent.skill_utils import is_excluded_skill_path
 from datetime import UTC
 
@@ -43,6 +44,8 @@ def _dotenv_key_names() -> set[str]:
 
 def _git_output(project_root: Path, *args: str) -> str:
     """Stripped stdout of ``git <args>`` run in *project_root*, or '' on any failure."""
+    if not inspect_git(cwd=project_root).usable:
+        return ""
     try:
         result = subprocess.run(["git", *args], capture_output=True, text=True, encoding='utf-8', errors='replace',
                                 timeout=5, cwd=str(project_root), check=False)

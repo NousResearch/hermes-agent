@@ -20,7 +20,9 @@ from .shared_metrics_prepared_compaction import (
     PREPARED_COMPACTION_DIMENSIONS, PREPARED_COMPACTION_MARK, PREPARED_COMPACTION_METRIC,
     PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
 )
+from .shared_metrics_group_chats import GROUP_CHAT_SNAPSHOT_FIELDS
 from .shared_metrics_busy import BUSY_ARRIVAL_DISPOSITIONS, BUSY_ARRIVAL_METRIC, BUSY_PEAK_FIELD, BUSY_WAIT_BUCKETS
+from .shared_metrics_desktop_frames import DESKTOP_LONG_FRAME_ROW_BUCKETS, DESKTOP_LONG_FRAMES_METRIC
 
 SCHEMA_KEY = "hermes.metrics.schema_version"
 # A random per-emit token (no payload) on rows whose producer waits to learn they were SAVED: facts
@@ -356,6 +358,8 @@ RAM_BUCKETS = frozenset({
 })
 GPU_CLASSES = frozenset({"amd", "apple_silicon", "intel", "none", "nvidia", "unknown"})
 YES_NO = frozenset({"no", "yes"})
+# Who hosts the install, from HERMES_HOSTING (set by the hosting platform); anything else is self-hosted.
+HOSTINGS = frozenset({"nous_cloud", "self_hosted"})
 _INSTALL_V4_SNAPSHOT_DIMENSIONS = {
     "behind_bucket": BEHIND_BUCKETS, "gpu_class": GPU_CLASSES, "local_model_provider_used": YES_NO,
     "ram_bucket": RAM_BUCKETS, "release_channel": RELEASE_CHANNELS, "version_age_bucket": VERSION_AGE_BUCKETS,
@@ -725,8 +729,7 @@ DESKTOP_ONBOARDING_EVENTS = frozenset({"abandoned", "completed", "reached"})
 DESKTOP_MODE_USE_MARK = DESKTOP_MODE_USE_METRIC = "hermes.desktop.mode_use"
 DESKTOP_MODES = frozenset({"bots", "sessions"})
 DESKTOP_ACTIVE_MINUTES_BUCKETS = frozenset({"0", "lt_5m", "5m_to_30m", "30m_to_2h", "2h_to_6h", "gte_6h"})
-_DESKTOP_ACTIVE_THRESHOLDS = ((300_000, "lt_5m"), (1_800_000, "5m_to_30m"), (7_200_000, "30m_to_2h"),
-                              (21_600_000, "2h_to_6h"))
+_DESKTOP_ACTIVE_THRESHOLDS = ((300_000, "lt_5m"), (1_800_000, "5m_to_30m"), (7_200_000, "30m_to_2h"), (21_600_000, "2h_to_6h"))
 
 
 def desktop_active_minutes_bucket(active_ms: Any) -> str:
@@ -914,6 +917,7 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
         "plugin_count_bucket": SIZE_BUCKETS, "profile_count_bucket": SIZE_BUCKETS,
         "skill_count_bucket": SIZE_BUCKETS, "terminal_backend": TERMINAL_BACKENDS,
         **_INSTALL_V4_SNAPSHOT_DIMENSIONS, **PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS,
+        **dict.fromkeys(GROUP_CHAT_SNAPSHOT_FIELDS, SIZE_BUCKETS), "hosting": HOSTINGS,
     },
     SESSION_METRIC: {
         "active_duration_bucket": SESSION_DURATION_BUCKETS, "entrypoint": TASK_ENTRYPOINTS,
@@ -1034,10 +1038,8 @@ _COUNTER_DIMENSION_VALUES: dict[str, dict[str, frozenset[str]]] = {
     DESKTOP_FEATURE_USE_METRIC: {"area": DESKTOP_FEATURE_AREAS},
     DESKTOP_FRICTION_METRIC: {"detail": DESKTOP_FRICTION_DETAIL_VALUES, "kind": DESKTOP_FRICTION_KINDS},
     DESKTOP_ONBOARDING_METRIC: {"event": DESKTOP_ONBOARDING_EVENTS, "step": DESKTOP_ONBOARDING_STEPS},
-    DESKTOP_MODE_USE_METRIC: {
-        "active_minutes_bucket": DESKTOP_ACTIVE_MINUTES_BUCKETS, "bot_count_bucket": SIZE_BUCKETS,
-        "messages_sent_bucket": SIZE_BUCKETS, "mode": DESKTOP_MODES,
-    },
+    DESKTOP_MODE_USE_METRIC: {"active_minutes_bucket": DESKTOP_ACTIVE_MINUTES_BUCKETS, "bot_count_bucket": SIZE_BUCKETS, "messages_sent_bucket": SIZE_BUCKETS, "mode": DESKTOP_MODES},
+    DESKTOP_LONG_FRAMES_METRIC: {"frame_bucket": DESKTOP_LONG_FRAME_ROW_BUCKETS, "visible_minutes_bucket": DESKTOP_ACTIVE_MINUTES_BUCKETS},
     DESKTOP_ACTION_USE_METRIC: {"action": DESKTOP_ACTION_IDS, "count_bucket": SIZE_BUCKETS, "via": DESKTOP_ACTION_VIAS},
     DESKTOP_DISLIKE_METRIC: {
         "direction": DESKTOP_DISLIKE_DIRECTIONS, "signal": DESKTOP_DISLIKE_SIGNALS, "target": DESKTOP_DISLIKE_TARGET_VALUES,
@@ -1156,6 +1158,11 @@ _LEGACY_METRIC_FIELDS: dict[str, tuple[frozenset[str], ...]] = {
         _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(PREPARED_COMPACTION_SNAPSHOT_DIMENSIONS),
     ),
 }
+# The group chat counts and hosting arrived together: every earlier shape lacks both, and an unreadable
+# room store leaves out only the group chat counts.
+_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] = (*(s - {*GROUP_CHAT_SNAPSHOT_FIELDS, "hosting"} for s in (
+    *_LEGACY_METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC], _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC])),
+    _METRIC_FIELDS[INSTALL_SNAPSHOT_METRIC] - set(GROUP_CHAT_SNAPSHOT_FIELDS))
 # ---- v5 engagement ----
 _LEGACY_METRIC_FIELDS[SESSION_METRIC] = (_METRIC_FIELDS[SESSION_METRIC] - set(SESSION_VOLUME_DIMENSIONS),)
 # ---- end v5 engagement ----
@@ -1169,7 +1176,7 @@ _LEGACY_METRIC_FIELDS[UPDATE_RUN_METRIC] = (_METRIC_FIELDS[UPDATE_RUN_METRIC] - 
 _LEGACY_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] = (_METRIC_FIELDS[ENGAGEMENT_DAY_METRIC] - {BUSY_PEAK_FIELD},)  # busy-wait
 COUNTER_METRICS = frozenset(_METRIC_FIELDS) - {LEGACY_MODEL_CALL_METRIC}
 # Counters whose value is a summed quantity rather than an event count.
-SUM_METRICS = frozenset({MODEL_TOKENS_METRIC})
+SUM_METRICS = frozenset({MODEL_TOKENS_METRIC, DESKTOP_LONG_FRAMES_METRIC})  # long frames: the day's frame count
 _SKILL_MARK_METRICS = {
     SKILL_LIFECYCLE_MARK: SKILL_LIFECYCLE_METRIC, SKILL_LOAD_MARK: SKILL_LOAD_METRIC,
 }
@@ -1293,6 +1300,8 @@ def _event_shape_matches(event: Any, **expected: Any) -> bool:
 def _bounded_dimensions(metric_name: str, data: Any) -> dict[str, str] | None:
     """Project ``data`` onto the metric's closed field set, or None when it does not fit."""
     expected_fields = _METRIC_FIELDS[metric_name]
+    if metric_name == INSTALL_SNAPSHOT_METRIC and isinstance(data, dict) and not set(data) & set(GROUP_CHAT_SNAPSHOT_FIELDS):
+        expected_fields -= set(GROUP_CHAT_SNAPSHOT_FIELDS)  # an unreadable room store leaves out only these
     if not isinstance(data, dict) or set(data) != expected_fields:
         return None
     dimensions = {field: data.get(field) for field in sorted(expected_fields)}
@@ -1956,32 +1965,6 @@ _SIZE_THRESHOLDS = (
 def size_bucket(count: int) -> str:
     """Bucket a non-negative install-scale count."""
     return _bucket(max(0, int(count)), _SIZE_THRESHOLDS, "gte_251")
-
-
-def install_snapshot_fields(
-    *, memory_provider: Any, mcp_servers: int, plugins: int, skills: int, cron_jobs: int,
-    profiles: int, messaging_platforms: int, install_age_bucket: str, main_provider: Any,
-    terminal_backend: Any, display_language: Any,
-) -> dict[str, str]:
-    """Bounded daily configuration snapshot: counts, closed enums and public names only."""
-    from .shared_metrics_catalog import display_language_metric_name, provider_metric_name
-
-    provider = _norm(memory_provider)
-    backend = _norm(terminal_backend) or "local"
-    return {
-        "cron_job_count_bucket": size_bucket(cron_jobs),
-        "display_language": display_language_metric_name(display_language),
-        "install_age_bucket": install_age_bucket if install_age_bucket in INSTALL_AGE_BUCKETS else "unknown",
-        "main_provider": provider_metric_name(main_provider) if main_provider else "none",
-        "mcp_server_count_bucket": size_bucket(mcp_servers),
-        "memory_provider": "builtin" if not provider
-        else provider if provider in MEMORY_PROVIDERS else "plugin",
-        "messaging_platform_count_bucket": size_bucket(messaging_platforms),
-        "plugin_count_bucket": size_bucket(plugins),
-        "profile_count_bucket": size_bucket(profiles),
-        "skill_count_bucket": size_bucket(skills),
-        "terminal_backend": backend if backend in TERMINAL_BACKENDS else "other",
-    }
 
 
 def _metric_identifier(value: Any, *, max_length: int) -> str:

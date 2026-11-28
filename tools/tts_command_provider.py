@@ -198,10 +198,14 @@ def run_command_provider(
     """Run a command-provider shell command with process-tree idle cleanup.
     ``timeout`` is an IDLE timeout, reset whenever the command emits output — a slow-but-alive
     provider survives, a silently stalled one is killed. Child env is scrubbed of Hermes secrets
-    while propagating delegated-child lineage markers."""
+    while propagating delegated-child lineage markers.
+    Never for a profile a plugin runs elsewhere: that backend writes the config.yaml naming *command*."""
     from agent.delegation_context import delegated_child_subprocess_env
+    from hermes_cli.profiles_run_elsewhere import run_elsewhere_refusal
     from tools.env_passthrough import resolve_passthrough_value
     from tools.environments.local import hermes_subprocess_env
+    if (refused := run_elsewhere_refusal()) is not None:
+        raise RuntimeError(refused)
     scrubbed = hermes_subprocess_env(inherit_credentials=False)
     for key in env_passthrough or []:
         # Under the multiplexer os.environ is the LAUNCH profile's .env: resolve through the served

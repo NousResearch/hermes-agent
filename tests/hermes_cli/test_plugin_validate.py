@@ -95,7 +95,7 @@ def test_config_schema_admits_every_type_the_loader_and_renderer_accept(tmp_path
     pass admission — the catalog validator rejecting a documented type blocks pins of plugins that
     declare a secret setting."""
     from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
-    from hermes_cli.plugins_settings import _FIELD_TYPES
+    from hermes_cli.plugins_settings.fields import _FIELD_TYPES
 
     assert set(_FIELD_TYPES) == set(_CONFIG_SCHEMA_TYPES)
     schema = {f"k_{t}": {"type": t} for t in _FIELD_TYPES}
@@ -258,6 +258,39 @@ class TestCapabilityProbe:
         )
         report = validate_plugin_dir(d)
         assert report.ok, report.failures
+
+
+class TestExclusiveProviderProbe:
+    """Computer-use and cron-scheduler plugins register through their family's collector, not
+    PluginContext; the probe must accept that registrar and still refuse a misspelt one."""
+
+    @pytest.mark.parametrize("base,registrar", [
+        ("from tools.computer_use.backend import ComputerUseProvider as Base\n"
+         "class Provider(Base):\n"
+         "    name = 'fixture'\n"
+         "    def create_backend(self, *, permission_mode):\n"
+         "        raise NotImplementedError\n", "register_computer_use_provider"),
+        ("class Provider:\n    name = 'fixture'\n", "register_cron_scheduler"),
+    ])
+    def test_family_registrar_passes(self, tmp_path, base, registrar):
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "kind": "exclusive"},
+            init_py=base + f"def register(ctx):\n    ctx.{registrar}(Provider())\n",
+        )
+        report = validate_plugin_dir(d)
+        assert report.ok, report.failures
+        assert ("capability probe", True, "register() ran in isolation") in report.checks
+
+    def test_unknown_context_method_still_fails(self, tmp_path):
+        d = _make_plugin(
+            tmp_path,
+            manifest={**BASE_MANIFEST, "kind": "exclusive"},
+            init_py="def register(ctx):\n    ctx.register_computer_use_providre(object())\n",
+        )
+        report = validate_plugin_dir(d)
+        assert not report.ok
+        assert any("register() raised:" in f and "register_computer_use_providre" in f for f in report.failures)
 
 
 class TestModelProviderKind:

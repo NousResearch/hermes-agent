@@ -63,7 +63,8 @@ _VERIFY_TIMEOUT = 15
 from hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
 
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-_UNIT_RE = re.compile(r"^hermes-(serve|dashboard)(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
+# The unit family is structural; a profile suffix is a profile id, judged by the one owner.
+_UNIT_FAMILY_RE = re.compile(r"hermes-(?:serve|dashboard)(?:-(.+))?\.service")
 _SERVE_UNIT_PATTERNS = ("hermes-serve*", "hermes-dashboard*")
 _SCOPE_LABELS = ("user", "system")
 _UNIT_RESTART_TIMEOUT = 60
@@ -279,6 +280,12 @@ def _systemctl_scopes() -> list[tuple[str, list[str]]]:
     return [("user", [systemctl, "--user"]), ("system", [systemctl])]
 
 
+def _is_serve_unit(name: str) -> bool:
+    """``hermes-serve.service`` / ``hermes-dashboard.service``, bare or ``-<profile id>``."""
+    match = _UNIT_FAMILY_RE.fullmatch(name)
+    return match is not None and (match[1] is None or _PROFILE_ID_RE.fullmatch(match[1]) is not None)
+
+
 def _listed_serve_units(scope: list[str], *, run: Callable[..., Any]) -> list[str]:
     """Serve/dashboard units systemd knows about in one scope, validated by name."""
     units: list[str] = []
@@ -294,7 +301,7 @@ def _listed_serve_units(scope: list[str], *, run: Callable[..., Any]) -> list[st
         # `hermes-server.service`): require the exact base unit or the profile family.
         for line in (getattr(result, "stdout", "") or "").splitlines():
             parts = line.split()
-            if parts and _UNIT_RE.fullmatch(parts[0]) and parts[0] not in units:
+            if parts and _is_serve_unit(parts[0]) and parts[0] not in units:
                 units.append(parts[0])
     return units
 
@@ -464,7 +471,7 @@ def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
             # Only shapes systemd can produce for this family (a skip is a name filter, never a command
             # argument). An unrecognized scope DROPS the entry rather than raising: a dropped skip costs at
             # most one extra restart-and-verify; honouring an unreadable one could suppress recovery.
-            if (scope_label and scope_label not in _SCOPE_LABELS) or not _UNIT_RE.fullmatch(f"{base}.service"):
+            if (scope_label and scope_label not in _SCOPE_LABELS) or not _is_serve_unit(f"{base}.service"):
                 continue
             skip_units.append(f"{scope_label}/{base}" if scope_label else base)
     return profiles, supervisors, recover_serve, skip_units

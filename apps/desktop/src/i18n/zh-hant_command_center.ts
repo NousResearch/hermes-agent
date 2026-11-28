@@ -144,6 +144,20 @@ export const zhHantCommandCenter = {
   },
 
   messaging: {
+    catalog: {
+      sectionTitle: '可安裝',
+      badges: { official: '官方', verified: '已驗證' },
+      notInstalled: '未安裝',
+      intro: (name: string) => `${name} 是 Hermes 目錄中的外掛。安裝後即啟用，接著可在此填寫憑證。`,
+      disclosure: '揭露：',
+      install: '安裝',
+      installing: '正在安裝…',
+      installed: (name: string) => `已安裝 ${name}`,
+      installedDetail: '填寫憑證以完成連線。',
+      installFailed: (name: string) => `無法安裝 ${name}`,
+      lazyOff: '外掛自動安裝已關閉（security.allow_lazy_installs），因此 Hermes 不會在此安裝。',
+      runCommand: '在終端機中安裝：',
+    },
     search: '搜尋訊息平台…',
     statusFilter: {
       all: '全部',
@@ -370,6 +384,8 @@ export const zhHantCommandCenter = {
     remoteOverride: {
       menuItem: '連線至遠端主機…',
       badge: (host: string) => `執行於 ${host}`,
+      runHere: '在這部電腦上執行…',
+      sandboxed: '已沙箱化',
       title: (profile: string) => `將 ${profile} 連線至遠端主機`,
       description: '此設定檔中的工作階段將在你指定的遠端 Hermes 上執行，而不是這台電腦。',
       urlLabel: '遠端位址',

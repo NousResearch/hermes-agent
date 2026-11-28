@@ -1,2 +1,2 @@
 kvnloo
-# #154578 AppImage install tests (cherry-picked)
+# PR #159834 cron discovery salvage (bare noreply form)

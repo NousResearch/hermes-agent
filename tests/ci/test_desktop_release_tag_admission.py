@@ -311,3 +311,13 @@ def test_downloadable_native_builds_refuse_to_ship_unsigned(tmp_path: Path):
         assert run(**{name: "x" for name in names}).returncode == 0
         partial = run(**{name: "x" for name in names if name != "AZURE_CLIENT_ID"})
         assert partial.returncode != 0 and "AZURE_CLIENT_ID" in partial.stdout
+
+
+def test_retired_direct_tag_publishing_jobs_are_removed():
+    """Direct release-tag dispatches are rejected by validate; no retired direct-tag
+    publisher or summary job may remain wired in desktop-bundled-release.yml."""
+    jobs = _workflow()["jobs"]
+    for retired in ("publish-win32-updater", "publish-darwin-updater", "publish-canary",
+                    "builds-pending", "builds-table"):
+        assert retired not in jobs, retired
+    assert "canary-table-selected" not in jobs["validate"]["outputs"]

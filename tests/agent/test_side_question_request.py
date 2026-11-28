@@ -489,6 +489,35 @@ def test_timeout_counts_the_fork_build(provider, issued, monkeypatch):
     assert len(provider.requests) == sent
 
 
+@pytest.mark.parametrize('fails', [False, True], ids=['success', 'error'])
+def test_text_only_fork_origin_is_bound_for_auxiliary_hooks(provider, issued, monkeypatch, fails):
+    from agent import auxiliary_hooks
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    ctx = PluginContext(PluginManifest(name='next-prompt'), PluginManager())
+    monkeypatch.setattr(ctx, '_granted_in_own_home', lambda capability: capability == 'llm.side_question')
+    parent = _make_parent()
+    _run_parent_turn(parent, provider, tool_round=False)
+    start = auxiliary_hooks.start_aux_call_hooks
+    finish = auxiliary_hooks.finish_aux_call_hooks
+    observed = []
+
+    def read_start(**kwargs):
+        observed.append(('start', ctx.fork_origin()))
+        return start(**kwargs)
+
+    def read_finish(*args, **kwargs):
+        observed.append(('finish', ctx.fork_origin()))
+        return finish(*args, **kwargs)
+
+    monkeypatch.setattr(auxiliary_hooks, 'start_aux_call_hooks', read_start)
+    monkeypatch.setattr(auxiliary_hooks, 'finish_aux_call_hooks', read_finish)
+    provider.replies.append(RuntimeError('upstream 500') if fails else _response('ok', usage=_usage()))
+    assert ctx.side_question(issued[-1], SIDE_PROMPT) == (None if fails else 'ok')
+    assert ctx.fork_origin() == ''
+    assert observed == [('start', 'side_question'), ('finish', 'side_question')]
+
+
 def test_provider_error_returns_none_without_fallback(provider, issued):
     parent = _make_parent(fallback_model={"provider": "openrouter", "model": "fallback/model"})
     _run_parent_turn(parent, provider, tool_round=False)

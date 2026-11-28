@@ -128,11 +128,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/boot_bootstrap.py",
-    "symbol": "_git_binary",
-    "kind": "bare_which"
-  },
-  {
     "path": "hermes_cli/cli_session_mixin.py",
     "symbol": "CLISessionMixin._clear_terminal_on_exit",
     "kind": "bare_which"
@@ -205,11 +200,6 @@
   {
     "path": "hermes_cli/gateway_windows.py",
     "symbol": "_exec_schtasks",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/git_credentials.py",
-    "symbol": "_credential_fill",
     "kind": "bare_which"
   },
   {
@@ -290,11 +280,6 @@
   {
     "path": "hermes_cli/main_tui_launch.py",
     "symbol": "_make_tui_argv",
-    "kind": "bare_which"
-  },
-  {
-    "path": "hermes_cli/main_tui_launch.py",
-    "symbol": "_restore_tui_workspace",
     "kind": "bare_which"
   },
   {
@@ -445,21 +430,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "agent/checkpoints/manager.py",
-    "symbol": "_init_store",
-    "kind": "bare_which"
-  },
-  {
-    "path": "agent/checkpoints/manager.py",
-    "symbol": "_run_git",
-    "kind": "bare_which"
-  },
-  {
-    "path": "agent/checkpoints/manager_profile_rename.py",
-    "symbol": "migrate_profile_checkpoint_projects",
-    "kind": "bare_which"
-  },
-  {
     "path": "tools/computer_use/cua_backend_daemon.py",
     "symbol": "_validate_cua_driver_app_signature",
     "kind": "bare_which"
@@ -597,11 +567,6 @@
   {
     "path": "tools/voice_mode.py",
     "symbol": "_wsl_powershell_tts_available",
-    "kind": "bare_which"
-  },
-  {
-    "path": "tools/working_diff.py",
-    "symbol": "_run",
     "kind": "bare_which"
   },
   {

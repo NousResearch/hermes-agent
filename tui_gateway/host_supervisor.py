@@ -21,6 +21,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home
 from hermes_cli._startup_fast import project_root_str
+from hermes_platform.resolver.git import inspect_git
 from tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,8 @@ def _check_output(argv: list[str], **kwargs: Any) -> str:
 
 def _build_sha() -> str:
     """HEAD sha or ``"unknown"``; shared with ``compute_host`` so the hello handshake agrees."""
+    if not inspect_git(cwd=_repo_root()).usable:
+        return "unknown"
     return _check_output(["git", "rev-parse", "HEAD"], cwd=str(_repo_root())) or "unknown"
 
 

@@ -77,4 +77,16 @@ describe('statusBarGatewayHealth', () => {
 
     expect(pill.detail).toBe(copy.messagingDegraded('workhorse:whatsapp'))
   })
+
+  it("names the active profile's planned sandbox state instead of offline", () => {
+    const pill = statusBarGatewayHealth({
+      connectionState: 'closed',
+      copy,
+      inferenceStatus: null,
+      transition: 'Restarting the sandbox to add outside…'
+    })
+
+    expect(pill.detail).toBe('Restarting the sandbox to add outside…')
+    expect(statusBarGatewayHealth({ connectionState: 'closed', copy, inferenceStatus: null }).detail).toBe(copy.offline)
+  })
 })

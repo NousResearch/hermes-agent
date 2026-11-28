@@ -1,7 +1,8 @@
 """Resolver protocols and the results of the two non-passive tiers.
 
 `locate` reads file metadata only. `inspect` may open files and call OS APIs in-process.
-`probe` is fresh, never cached, and the only tier that may open a socket or spawn.
+`probe` is fresh, never cached, and the only tier that may open a socket or spawn. The one
+exception is `git.py`'s bounded, cached `xcode-select -p` (see `hermes_platform/AGENTS.md`).
 """
 
 from __future__ import annotations

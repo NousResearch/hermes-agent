@@ -360,7 +360,7 @@ def _split_cwd_marker(output: str, marker: str) -> tuple[str | None, str] | None
     first = output.rfind(marker, search_start, last)
     if first == -1 or first == last:
         return None
-    cwd_path = output[first + len(marker) : last].strip() or None
+    cwd_path = output[first + len(marker) : last] or None  # verbatim: a directory name may end in a space
     line_start = output.rfind("\n", 0, first)
     if line_start == -1:
         line_start = first

@@ -253,8 +253,9 @@ class PluginLedgerMixin:
         return manifest_key(plugin) if isinstance(plugin, PluginManifest) else str(plugin)
 
     def unload(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
-        """Unload registrations while excluding discovery/deferred loading."""
-        with self._discovery_lock, _plugin_home_scope(self.home_path):
+        """Unload registrations while excluding discovery/deferred loading. Unloading stops plugin work, so it still
+        runs once no profile name leads to the directory (``owner_home`` refuses then), under the directory."""
+        with self._discovery_lock, _plugin_home_scope(self._name_leading_here() or self.home_path):
             return self._unload_scoped(plugin)
 
     def _unload_scoped(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:

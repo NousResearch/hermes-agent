@@ -39,6 +39,7 @@ import { useT } from '../i18n/useT.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { markProgramResumeUserQuit } from '../lib/programResume.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -117,7 +118,10 @@ function useDie(gw: GatewayClient, exit: () => void) {
     [exit, exitClose, gw]
   )
 
-  const die = useCallback(() => dieWithCode(0, 'app.die'), [dieWithCode])
+  const die = useCallback(() => {
+    markProgramResumeUserQuit()
+    dieWithCode(0, 'app.die')
+  }, [dieWithCode])
 
   return { die, dieWithCode, exitClose }
 }

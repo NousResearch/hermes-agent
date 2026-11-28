@@ -771,7 +771,7 @@ def _cron_job_action(args: list[str], usage: str, action: str, run) -> str:
     from cron.jobs import AmbiguousJobReference
     try:
         job = run(args[0])
-    except AmbiguousJobReference as exc:
+    except (AmbiguousJobReference, ValueError) as exc:
         raise ConsoleCommandError(str(exc)) from exc
     if not job:
         raise ConsoleCommandError(f"Job not found: {args[0]}")
@@ -802,8 +802,21 @@ def _cron_resume(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 
 def _cron_run(_engine: HermesConsoleEngine, args: list[str]) -> str:
-    from cron.jobs import trigger_job
-    return _cron_job_action(args, "cron run <job>", "Triggered", trigger_job)
+    from cron.constants import NOT_RUNNABLE_ERROR
+    from cron.jobs import (
+        _jobs_lock, is_job_runnable, is_terminal_job, load_jobs, resolve_job_ref, trigger_job)
+
+    def trigger_runnable_job(ref: str) -> dict | None:
+        # Locked so a concurrent pause is not lost; gate on the STORED record like the claim does
+        # (normalising shows a saved enabled+state=paused record as scheduled).
+        with _jobs_lock():
+            job = resolve_job_ref(ref)
+            stored = job and next((j for j in load_jobs() if j.get("id") == job["id"]), job)
+            if stored and not is_terminal_job(job) and not is_job_runnable(stored):
+                raise ConsoleCommandError(NOT_RUNNABLE_ERROR)
+            return trigger_job(ref)
+
+    return _cron_job_action(args, "cron run <job>", "Triggered", trigger_runnable_job)
 
 
 # (path, usage, summary, handler, confirmation prompt) — a non-empty prompt marks it mutating.

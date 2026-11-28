@@ -44,7 +44,8 @@ def multiplexed(tmp_path, monkeypatch):
 async def _boot_with_beta_parked(runner, beta, monkeypatch):
     """Boot's API start with beta's startup Bot recovery failing once: beta is parked."""
     from gateway import session_bot
-    from gateway.run_runtime import parked_profile_map, start_gateway_runtime_api
+    from gateway.run_runtime import parked_profile_map
+    from gateway.run_runtime_listener import start_gateway_runtime_api
     real, failed = session_bot.recover_bot_deliveries, []
 
     async def recover_once_failing(authority):

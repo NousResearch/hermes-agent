@@ -3,7 +3,7 @@
 Modules: ``replay`` (which requests replay, with which output cap, through which client), ``economics``
 (a keep-alive's cost against the rewrite it prevents), ``edge`` (the cache-edge gates: compact or offload),
 ``warmer`` (``PromptCacheWarmer``: keep-alives, budget, first-miss stop, ``claim_edge``; the agent-facing
-seams). This facade is the surface; code imports topic modules directly inside the package.
+seams), ``in_flight`` (the window a request still awaiting its reply keeps warm). This facade is the surface; code imports topic modules directly inside the package.
 
 When a chat's cache is about to expire the controller makes ONE decision, in this order:
 
@@ -15,10 +15,11 @@ When a chat's cache is about to expire the controller makes ONE decision, in thi
    one-shots, /bg, /btw, the API server) warm only while a tool runs. The first keep-alive that misses
    (comes back mostly written, not read) ends warming for the rest of the session on that route, and
    step 2 or 3 is decided right then.
-2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is at least
-   :data:`MIN_COMPACT_WINDOW_SECONDS` (a 1h or 30m tier, never a 5m one), its context is at least half
-   of the compaction threshold, and it grew since its last compaction; at most one compaction per
-   idle stretch. The summary is a fresh auxiliary request, so whether the old prefix is still warm
+2. COMPACT: once the budget is spent, an idle human chat compacts IF its window is proven or
+   declared (any tier: on 5m that is once its keep-alives stop covering the pause), its context is at
+   least half of the compaction threshold, and it grew since its last compaction; at most one
+   compaction per idle stretch. An ``auto`` chat still on 5m moves to 1h on the next message: its
+   5m entry is gone by then. The summary is a fresh auxiliary request, so whether the old prefix is still warm
    does not change its cost and is not checked. Nothing is sent after it until the next user message.
    The surface that owns the chat (TUI ticker, gateway watcher: the CLI's turns run in the gateway) polls
    ``PromptCacheWarmer.claim_edge`` and runs the action it returns through the normal pipeline. A
@@ -52,7 +53,6 @@ from agent.prompt_cache_lifecycle.economics import (
 from agent.prompt_cache_lifecycle.edge import (
     CHECK_INTERVAL_SECONDS,
     COMPACT_CONTEXT_FRACTION,
-    MIN_COMPACT_WINDOW_SECONDS,
     TRIGGER,
     EdgeDecision,
     human_paced,
@@ -80,6 +80,7 @@ from agent.prompt_cache_lifecycle.warmer import (
     prompt_cache_warming_disabled,
     reset_prompt_cache_session,
     session_totals_lock,
+    start_in_flight_prompt_cache_warming,
     start_prompt_cache_warming,
 )
 
@@ -87,7 +88,6 @@ __all__ = [
     "CHECK_INTERVAL_SECONDS",
     "COMPACT_CONTEXT_FRACTION",
     "MIN_CACHEABLE_PREFIX_TOKENS",
-    "MIN_COMPACT_WINDOW_SECONDS",
     "TRIGGER",
     "WARMABLE_API_MODES",
     "WARMING_DISABLED",
@@ -113,5 +113,6 @@ __all__ = [
     "replay_output_cap",
     "reset_prompt_cache_session",
     "session_totals_lock",
+    "start_in_flight_prompt_cache_warming",
     "start_prompt_cache_warming",
 ]

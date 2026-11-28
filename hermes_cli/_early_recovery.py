@@ -1399,8 +1399,14 @@ def recover_if_needed(project_root: Path | None = None, argv: list[str] | None =
     args = command_argv(sys.argv[1:] if argv is None else argv)
     if not explicit and args[:1] == ["pm"]:
         return False  # PM's command boundary owns the explicit repair.
-    from pm.environments import install_state_dir
+    from pm.environments import install_state_dir, named_install_state_dir, refuse_dependency_change
 
+    if named_install_state_dir() is not None:
+        # The install's markers are for a process of the install. This one could only build into the
+        # folder its launcher named, then clear or count against a marker it did not act on.
+        if explicit:
+            refuse_dependency_change()
+        return False
     missing_marker = install_state_dir(root) / ".repair-incomplete"
     marker_paths = (root / ".update-incomplete", root / ".lazy-refresh-incomplete", missing_marker)
     markers = [path for path in marker_paths if path.is_file()]

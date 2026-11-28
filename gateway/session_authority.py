@@ -86,6 +86,9 @@ class LiveSession:
     # (principal, effort) of a ``/reasoning`` command that arrived while a turn ran: applied in memory at
     # once, committed to the policy at the next boundary (gateway/session_setting_commands.py).
     pending_reasoning: tuple | None = None
+    # Folder a ``desktop_project`` tool call moved this chat to mid-turn: committed as its ``workspace``
+    # mutation at the next boundary (gateway/local_desktop_ui.py, session_mutation_policy.py).
+    pending_workspace: str | None = None
     # The background-review guard of a cold ``/refine`` (gateway/session_refine.py): its side agent is
     # per call, so the run token lives here; a second /refine joins it and the next turn cancels it.
     review: SimpleNamespace = field(default_factory=SimpleNamespace)
@@ -104,6 +107,7 @@ class LiveSession:
     retire_timer: object = None
     # Last-viewer detaches between losing their subscriber and recording the close (``detach``).
     detaching: int = 0
+    viewer_revision: int = 0  # an attach invalidates startup's prepared close, even after a live handoff
     # Set while a plugin's turn waits for the session's background work (run_plugin_injection
     # ``admission_turn_scope``): a person's input queued behind it sets it and ends that wait.
     background_wait: threading.Event | None = None
@@ -392,6 +396,7 @@ class SessionAuthority:
             subscription = next((key for key, member in live.subscribers.items()
                                  if member == actor), None) or uuid.uuid4().hex
             live.subscribers[subscription] = actor
+            live.viewer_revision += 1
             self.pending_closes.pop(ref.session_id, None)
             from gateway.session_viewer_close import cancel_orphan_close
             cancel_orphan_close(self, ref.session_id)
@@ -426,6 +431,8 @@ class SessionAuthority:
         for subscription, member in list(live.subscribers.items()):
             if self.events.get(member.transport_id) is transport:
                 del live.subscribers[subscription]
+        from gateway.session_presence import detached
+        detached(self, transport, session_id)
 
     async def detach(self, actor, subscription_id, *, end_reason=None, orphaned=False):
         for session_id, live in self.sessions.items():
@@ -436,6 +443,8 @@ class SessionAuthority:
                 transport = self.events.get(actor.transport_id)
                 if transport is not None:
                     live.event_stream.fanout.detach(transport)
+                    from gateway.session_presence import detached
+                    detached(self, transport, session_id)
                 if not live.subscribers:
                     from gateway.session_local_mcp import release_editor_mcp
                     live.detaching += 1  # unwatched off the loop, its close not yet pending: not retirable
@@ -535,9 +544,9 @@ class SessionAuthority:
             if waiter is not None and not waiter.done():
                 waiter.set_exception(AuthorityRefusal(reason))
 
-    async def admit_automation(self, adapter, event, identity, replaces=None, fold=None):
+    async def admit_automation(self, adapter, event, identity, replaces=None, fold=None, *, replay=None):
         from gateway.session_automation import admit_automation
-        return await admit_automation(self, adapter, event, identity, replaces, fold)
+        return await admit_automation(self, adapter, event, identity, replaces, fold, replay=replay)
 
     async def admit_native(self, event):
         """Await current connector policy, then commit before ACK or scheduling execution."""
@@ -748,7 +757,8 @@ class SessionAuthority:
         self._require_admission_open(queue_only=queue_only)
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
                 'text', 'attachments', 'finite', 'unattended', 'surface', 'voice_context', 'interrupted',
-                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch'}
+                'voice_turn', 'display_kind', 'title_preview', 'turn_author', 'api_text', 'model_override', 'clarify_batch',
+                'client'}
                 or not isinstance(request.payload['text'], str)):
             raise AuthorityRefusal('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -1096,12 +1106,16 @@ class SessionAuthority:
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
+            from gateway.session_prompt_hooks import control_opened
+            control_opened(self, session_id, live.controls, data['request_id'])
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         live = self.sessions[session_id]
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
             live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s)
+            from gateway.session_prompt_hooks import control_opened
+            control_opened(self, session_id, live.controls, entry.clarify_id)
 
     async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval"):
         capability = {"approval": "session:approve", "clarify": "session:respond"}.get(kind)
@@ -1136,6 +1150,8 @@ class SessionAuthority:
                 from gateway.session_deferred_pick import apply_deferred_pick
                 from gateway.session_setting_commands import apply_pending_reasoning
                 await apply_pending_reasoning(self, ref, live)
+                from gateway.session_mutation_policy import apply_pending_workspace
+                await apply_pending_workspace(self, ref, live)
                 await apply_deferred_pick(self, ref, live)
             if first is not None and live.source.platform == Platform.LOCAL:
                 from gateway.session_local_recovery import restore_local_session
@@ -1544,10 +1560,9 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     await asyncio.to_thread(release_superseded_bot_chat_at_boot, persistence, runner.session_store)
     authority = SessionAuthority(runner, profile_id=profile_id, instance_id=instance_id, epoch=epoch,
                                  persistence=persistence)
-    # A receipt's compression catch-up (#140060) writes: it commits off the loop too, before the
-    # authority is published, so the recovery below only reads.
-    from gateway.session_local_adoption import adopt_local_compressions
-    await adopt_local_compressions(authority)
+    # Prepare while private; publish and register in one loop step, with no intervening await.
+    from gateway.session_local_startup import recover_local_sessions_async
+    await recover_local_sessions_async(authority, initial=True)
     if register:
         runner.session_authority = authority
     from gateway.session_cron import bind_owner
@@ -1562,6 +1577,4 @@ async def initialize_session_authority(runner, *, profile_id, instance_id, persi
     epochs[store_key] = epoch
     from gateway.session_detached import watch_routes
     watch_routes(runner, store)
-    from gateway.session_local_recovery import recover_local_sessions
-    recover_local_sessions(authority)
     return authority

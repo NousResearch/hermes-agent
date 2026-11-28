@@ -81,3 +81,17 @@ def test_cwd_fallback_notice_survives_a_tiny_output_limit(tmp_path, monkeypatch,
     assert result.get("hermes_timed_out", False) is timed_out, result
     assert result["cwd_fallback"] == {"requested": str(doomed), "used": str(tmp_path.resolve())}, result
     assert env._cwd_fallback_marker not in result["output"]
+
+
+def test_a_fallback_into_a_directory_whose_name_ends_in_a_space_stays_there(tmp_path):
+    """The markers carry the path verbatim: a stripped ``.../parent `` was a different, missing directory."""
+    parent = tmp_path / "parent "
+    (parent / "gone").mkdir(parents=True)
+    env = _BashSandbox(cwd=str(parent / "gone"), timeout=30)
+    shutil.rmtree(parent / "gone")
+
+    first = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
+    assert first["cwd_fallback"]["used"] == str(parent.resolve())
+    assert env.cwd == str(parent.resolve())
+    again = env.execute("pwd", timeout=30, allow_cwd_fallback=True)
+    assert again.get("cwd_fallback") is None and again["output"].rstrip("\n") == str(parent.resolve())

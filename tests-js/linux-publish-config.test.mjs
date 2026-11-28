@@ -15,7 +15,7 @@ const linuxPublish = (env) => JSON.parse(execFileSync(process.execPath, ['-e',
 
 it.each([
   ['v0.28.0', 'stable'],
-  ['v0.29.0+canary.20260906T000000Z', 'canary']
+  ['canary.20260906T000000Z-v0.29.0', 'canary']
 ])('the AppImage of %s bakes the %s feed the client reads', (tag, channel) => {
   const baked = linuxPublish({ HERMES_DESKTOP_VARIANT: 'bundled', HERMES_PAYLOAD_TAG: tag })
   expect(baked).toEqual([{ provider: 'generic', url: `https://updates.example/releases/linux/${channel}/`, channel }])

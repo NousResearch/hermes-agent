@@ -17,13 +17,16 @@ Usage is billed to the session as ``plugin_fork:<plugin id>``; each loop request
 
 from __future__ import annotations
 
-import contextvars
 import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
+
+# Retain the old private import used by the gateway context-isolation test.
+from agent.turn_facade import _FORK_ORIGIN as _TURN_ORIGIN
+from agent.turn_facade import bind_detached_fork_origin
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +35,6 @@ DEFAULT_MAX_ITERATIONS = 8
 MAX_ITERATIONS = 16  # the background review's own cap
 MAX_PROMPT_CHARS = 8192
 MAX_TIMEOUT_SECONDS = 1800.0
-
-_TURN_ORIGIN: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("hermes_turn_origin", default=None)
 
 # The one place a core tool is marked fork-safe. A plugin fork holds only the requesting plugin's
 # own tools plus these; every other tool (another plugin's, any MCP tool, any unmarked core tool)
@@ -64,7 +65,8 @@ def fork_tool_allowlist(own_tools: Iterable[Any], *agents: Any) -> frozenset[str
 
 def current_turn_origin() -> Optional[str]:
     """``"plugin_fork:<plugin id>"`` while a plugin session fork runs on this context, else None."""
-    return _TURN_ORIGIN.get()
+    origin = _TURN_ORIGIN.get()
+    return origin if origin.startswith(f"{PLUGIN_FORK_TASK}:") else None
 
 
 class PluginForkHandle:
@@ -481,7 +483,12 @@ def _outcome(job: _ForkJob, fork: Any, result: Any, timed_out: threading.Event) 
 
 
 def _run_job(job: _ForkJob) -> None:
-    """Worker body, in the captured turn context (profile + secret scope)."""
+    """Run and tear down the fork under one binding in the captured turn context."""
+    with bind_detached_fork_origin(job.origin):
+        _run_bound_job(job)
+
+
+def _run_bound_job(job: _ForkJob) -> None:
     from agent.background_review import (
         _bg_review_auto_deny, _digest_history, _interrupt_background_review, _review_input_token_budget,
         _set_thread_approval_callback, build_cache_parity_fork, finish_background_review_run, release_cache_parity_fork,
@@ -497,7 +504,6 @@ def _run_job(job: _ForkJob) -> None:
     fork = result = timer = None
     outcome, actions, usage = "error", (), {}
     timed_out = threading.Event()
-    origin_token = _TURN_ORIGIN.set(job.origin)
     _set_thread_approval_callback(_bg_review_auto_deny)
     try:
         if parent is None:
@@ -562,7 +568,6 @@ def _run_job(job: _ForkJob) -> None:
         finish_background_review_run(parent, job.run)
         with _lock:
             _unregister_locked(parent, job)
-        _TURN_ORIGIN.reset(origin_token)
         _set_thread_approval_callback(None)
         text = (result or {}).get("final_response") if isinstance(result, dict) else None
         job.handle._settle(outcome, (text or "").strip() or None, actions)

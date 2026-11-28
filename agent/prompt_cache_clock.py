@@ -560,11 +560,24 @@ def request_write_tier(api_kwargs: Any, usage: Any, *, provider: str, base_url: 
     """:func:`declared_write_tier` for a request sent outside the loop (a keep-alive or priming write),
     read from its own payload: its reply may not be folded into the clock (the context moved on), but
     its writes still went to the tier it asked for."""
+    return _payload_tier(api_kwargs, int(getattr(usage, "cache_write_tokens", 0) or 0), provider=provider,
+                         base_url=base_url, api_mode=api_mode, model=model)
+
+
+def requested_cache_tier(api_kwargs: Any, *, provider: str, base_url: str, api_mode: str,
+                         model: str) -> Optional[str]:
+    """The tier a request's writes go to once it is sent, before its reply says anything: what its payload
+    asks, under the route's rule and ceiling (the request in flight, kept warm while its reply generates)."""
+    return _payload_tier(api_kwargs, 1, provider=provider, base_url=base_url, api_mode=api_mode, model=model)
+
+
+def _payload_tier(api_kwargs: Any, write_tokens: int, *, provider: str, base_url: str, api_mode: str,
+                  model: str) -> Optional[str]:
     attempt = attempt_facts(api_kwargs) or {}
     route_class = classify_route(provider=provider, base_url=base_url, api_mode=api_mode, model=model,
                                  has_markers=attempt.get("marker_ttl") is not None, retention=attempt.get("retention"))
     requested = attempt.get("marker_ttl") or attempt.get("openai_ttl")
-    return _declared_tier(route_class, requested, int(getattr(usage, "cache_write_tokens", 0) or 0), provider, base_url)
+    return _declared_tier(route_class, requested, write_tokens, provider, base_url)
 
 
 def _declared_tier(route_class: str, requested_ttl: Optional[str], write_tokens: int, provider: str,
@@ -811,12 +824,16 @@ def prompt_cache_is_cold(agent: Any, *, now: float | None = None) -> bool:
 
     Only a proven or declared window prunes. An assumed one includes the window the clock rebuilds for a
     pre-clock session from TODAY's TTL and route: a session cached for 1h (or on another route) then
-    reads cold while still warm. The /context line keeps showing that estimate.
+    reads cold while still warm. The /context line keeps showing that estimate. A keep-alive still
+    waiting for its reply has renewed the same prefix, so it answers False too.
 
     A route switch (``/model``, a fallback, any change of provider, endpoint or model since the last
     response) is cold too: the new route has never seen this prefix, so the first request there writes
     it whole and an offload before it breaks nothing."""
-    window = cache_window(agent)
+    from agent.prompt_cache_lifecycle.warmer import cache_touch_snapshot
+
+    window, in_flight = cache_touch_snapshot(agent)  # a keep-alive awaiting its reply renewed the entry
     if window is not None and window.reason == "route_changed":
         return True
-    return window is not None and window.confidence in (PROVEN, DECLARED) and cache_certainly_cold(window, now=now)
+    return (in_flight is None and window is not None and window.confidence in (PROVEN, DECLARED)
+            and cache_certainly_cold(window, now=now))

@@ -431,7 +431,7 @@ def static_model_provider_conflict(model_name: str, provider: Optional[str], *, 
 
     requested = (model_name or "").strip()
     normalized = _m.normalize_provider(provider)
-    catalog = list(_m._PROVIDER_MODELS.get(normalized, ()))
+    catalog = list(_m.static_catalog(normalized))
     if not requested or not catalog or normalized == "moa" or normalized in _m._AGGREGATOR_PROVIDERS:
         return None
     if _m._model_in_provider_catalog(requested.lower(), _m._provider_keys(normalized)):

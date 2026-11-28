@@ -50,7 +50,7 @@ def test_host_admission_does_not_leak_or_come_from_http_input(tmp_path):
     (api / "plugin_api.py").write_text(_API, encoding="utf-8")
     home = tmp_path / "home"
     home.mkdir()
-    host = PluginHost(SimpleNamespace(home_path=home, _plugins={}))
+    host = PluginHost(SimpleNamespace(home_path=home, owner_home=home, _plugins={}))
     args = ("guard-probe", str(api), "plugin_api.py", "PUT", "/config", "authenticated=true",
             [("X-Hosted-Http-Authenticated", "true")], b'{"authenticated":true}')
     try:

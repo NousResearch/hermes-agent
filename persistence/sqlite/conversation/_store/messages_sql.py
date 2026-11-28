@@ -13,6 +13,7 @@ from persistence.sqlite._schema_ddl import _sql_json_extract
 from persistence.sqlite.conversation._store.rules import (
     _sanitize_surrogates, coerce_epoch,
 )
+from persistence.sqlite.conversation._store.sql_common import _placeholders
 
 
 logger = logging.getLogger("hermes_state")  # caplog tests pin the origin module's name
@@ -50,6 +51,19 @@ _DELETE_COMPRESSION_LOCK_SQL = "DELETE FROM compression_locks WHERE session_id =
 
 
 _DISPLAY_ACTIVE_CLAUSE = " AND (active = 1 OR compacted = 1)"
+
+
+def _lineage_rows_sql(columns: str, session_ids, row_filter: str = "") -> str:
+    """``SELECT <columns>`` of the rows of *session_ids* (one ``?`` each) that match *row_filter* (``""`` or
+    ``" AND ..."``), in id order, without sorting the rows.
+
+    ``session_id IN (a, b) ORDER BY id`` has no index in that order, so SQLite copies every selected column
+    of every segment into a temp b-tree, which spills to TMPDIR once it outgrows the page cache: about 170 MB
+    written for each 120-row Desktop transcript page of a 15-segment lineage. Selecting the ids first (an
+    index read) and fetching the rows by rowid returns the same rows in the same order, because the id list
+    is itself a b-tree that hands the rowids back in ascending order."""
+    return (f"SELECT {columns} FROM messages WHERE id IN (SELECT id FROM messages "
+            f"WHERE session_id IN ({_placeholders(session_ids)}){row_filter}) ORDER BY id")
 
 
 DISPLAY_VISIBLE_SQL = (

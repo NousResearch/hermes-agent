@@ -664,7 +664,7 @@ hermes kanban create "audit auth flow" \
 
 **From the dashboard**, type the skills comma-separated into the **skills** field of the create-task dialog.
 
-The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must match skills that are actually installed on the assignee's profile (run `hermes skills list` to see what's available); there's no runtime install.
+The dispatcher emits one `--skills <name>` flag per skill listed, so the worker spawns with all of them loaded on top of the auto-injected kanban guidance. The skill names must be installed on the **assignee's own profile** (run `hermes skills list` to see what's available); there is no runtime install. `kanban_create` (and `hermes kanban create`) refuses a card whose skill the assignee profile cannot resolve, naming the skill and the profile, so a typo or a skill that only lives in another profile's tree never becomes a card that dies at every dispatch. If every requested skill is missing at boot (a card created before that check, or a skill removed later), the run fails with `kanban_skills_unavailable: <skills> missing on profile '<assignee>'` in the run's error — not an opaque transport message.
 
 ### Per-task model override
 

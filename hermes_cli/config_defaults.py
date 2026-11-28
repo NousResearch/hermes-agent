@@ -1148,6 +1148,10 @@ DEFAULT_CONFIG = {
         "streaming": False,  # live partial text while speaking (openai/xai/elevenlabs); failure = file path
         # Pre-upload ffmpeg silence trim (local whisper uses VAD); failure = raw upload.
         "cloud_trim_silence": True,
+        # Opt-in ffmpeg gain normalization before ANY backend: compress the crest factor, then
+        # level to -16 LUFS. Phone voice notes whose speech sits 30-40 dB below a handling click
+        # make Whisper hallucinate an outro; default off so nothing changes for existing users.
+        "normalize_input": False,
         "cloud_trim_threshold_db": -40,  # quieter than this counts as silence
         "cloud_trim_keep_ms": 300,  # how much of each pause survives (natural pacing)
         "local": {

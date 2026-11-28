@@ -28,8 +28,8 @@ from tools.transcription_common import (
     DEFAULT_STT_MODEL, LOCAL_STT_COMMAND_ENV, LOCAL_STT_LANGUAGE_ENV,
     normalize_xai_stt_model, _error_result, _get_stt_section, _ok_result)
 from tools.transcription_audio import (
-    _convert_caf_to_wav, _prepare_audio_for_transcription, _trim_silence_for_cloud_stt,
-    _validate_audio_file, _validate_audio_source_file)
+    _convert_caf_to_wav, _normalize_stt_input, _prepare_audio_for_transcription,
+    _trim_silence_for_cloud_stt, _validate_audio_file, _validate_audio_source_file)
 from tools.transcription_chunking import exceeds_upload_limit, transcribe_oversized, upload_limit
 from tools.transcription_local import (
     _get_idle_unload_seconds, _has_local_command, _join_confident_segments,
@@ -583,12 +583,21 @@ def transcribe_audio(
     prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
     if prep_error or prepared_path is None:
         return prep_error or _error_result("Audio preprocessing did not produce a file for transcription.")
+    norm_dir = None
     try:
+        # Opt-in (``stt.normalize_input``): compress the crest factor and level the speech
+        # BEFORE any backend runs - and before the cloud silence trim, which otherwise cuts
+        # quiet speech that sits below its -40 dB threshold.
+        normalized_path, norm_dir = _normalize_stt_input(prepared_path, _load_stt_config())
+        if normalized_path:
+            prepared_path = normalized_path
         return (_validate_audio_file(prepared_path, enforce_size_limit=False)
                 or _transcribe_prepared_audio(prepared_path, model, source))
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
+        if norm_dir:
+            shutil.rmtree(norm_dir, ignore_errors=True)
 
 
 def transcribe_audio_local_fallback(file_path: str, model: Optional[str] = None) -> dict[str, Any]:

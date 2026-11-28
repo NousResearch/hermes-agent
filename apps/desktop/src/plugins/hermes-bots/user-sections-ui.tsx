@@ -249,6 +249,32 @@ export function useEscapeCancelsBotDrag(): void {
   }, [dragging])
 }
 
+/** True from the tick AFTER a drag starts until it ends. As `dragstart`
+ *  returns, Chromium checks that the dragged row is still under the pointer and
+ *  cancels the drag when it is not, and a store write in that handler has
+ *  rendered by then. So what a drag adds to the list (a bucket's drag-only drop
+ *  targets) waits for this instead of `$draggingBot`: drawn in that same tick,
+ *  above the row, it would push the row away and end the drag it is drawn for. */
+export function useBotDragUnderway(): boolean {
+  const dragging = useValue($draggingBot)
+  const [underway, setUnderway] = useState(false)
+
+  useEffect(() => {
+    if (!dragging) {
+      return
+    }
+
+    const timer = window.setTimeout(() => setUnderway(true), 0)
+
+    return () => {
+      window.clearTimeout(timer)
+      setUnderway(false)
+    }
+  }, [dragging])
+
+  return Boolean(dragging) && underway
+}
+
 interface SectionDropZoneProps {
   children: ReactNode
   /** Whether the dragged bot is already filed here — then the zone is not a

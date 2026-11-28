@@ -208,6 +208,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._redacted_prefix = ""   # settled, redacted head of _accumulated (see redact_settled)
         self._settled_for = ""       # the _accumulated _redacted_prefix was computed for
         self._last_sent_text = ""    # skip redundant edits
+        self._edit_last_pushed_len = 0  # _accumulated length already pushed on the edit path
         self._fallback_final_send = False
         self._fallback_prefix = ""
         # Fallback sends only the missing tail after a partial overflow delivery.
@@ -824,12 +825,14 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             should_edit = self._should_push_draft()
         else:
             elapsed = time.monotonic() - self._last_edit_time
-            # buffer_threshold is a codepoint debounce heuristic, not a
-            # platform-limit check (_len_fn is for overflow).  It must not
+            unflushed = max(0, len(self._accumulated) - self._edit_last_pushed_len)
+            # buffer_threshold is a codepoint debounce heuristic measuring
+            # unflushed characters since the last push, not total segment length
+            # or a platform-limit check (_len_fn is for overflow).  It must not
             # override an active flood backoff: while a refusal is being
             # waited out, only the (server-requested) interval may fire an edit.
             should_edit = bool((elapsed >= self._current_edit_interval and self._accumulated)
-                               or (len(self._accumulated) >= self.cfg.buffer_threshold
+                               or (unflushed >= self.cfg.buffer_threshold
                                    and not self._flood_strikes))
         # Defer mid-stream edits while the buffer could still resolve to a silence
         # marker ("NO"→"NO_REPLY"), or a reply's last line could still become a trailing one
@@ -898,6 +901,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
         self._message_id = None
         self._message_created_ts = None
         self._last_sent_text = ""
+        self._edit_last_pushed_len = 0
         self._last_edit_time = time.monotonic()
         if len(chunks) > 1 and self._turn_reset():
             return False  # a head was sent: run() abandons the dead turn instead of the tail
@@ -969,6 +973,7 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             self._accumulated = self._accumulated[split_at:].lstrip("\n")
             self._message_id = None
             self._last_sent_text = ""
+            self._edit_last_pushed_len = 0
             self._turn_split_delivery = True
         return sent
 
@@ -996,6 +1001,10 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             display_text, finalize=tick.got_done or tick.got_segment_break,
             is_turn_final=tick.got_done, redacted=True)
         self._last_edit_time = time.monotonic()
+        if tick.update_visible:
+            visible = display_text.replace(self.cfg.cursor, "") if self.cfg.cursor else display_text
+            if self._already_sent or self._message_id is not None or not visible.strip():
+                self._edit_last_pushed_len = len(self._accumulated)
         # Lines stay in _tool_progress_lines for the next compose.
         self._tool_progress_active = False
 

@@ -113,6 +113,8 @@ class SSHEnvironment(BaseEnvironment):
         # cwd may be a raw terminal.cwd naming a directory on the machine running Hermes; coercion is
         # idempotent, so callers that already coerced are unaffected.
         super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
+        # Retain the SSH session between turns when shell persistence is enabled.
+        self._session_scoped = persistent and not probe_only
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
         self.control_dir, self._owns_control_dir = _open_control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path

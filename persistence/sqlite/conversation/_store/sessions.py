@@ -409,14 +409,27 @@ def _insert_session_row(
     ``db_path`` in tests, ad-hoc copies) derive nothing and keep NULL — never guess.
     """
     from persistence.sqlite.conversation._store.worker_lifecycle import insert_session_row_in_transaction
+    from persistence.core.errors import AuthorityRefusal
+    from persistence.sqlite.conversation._store.retirement import retired_in
     params = dict(session_id=session_id, source=source, model=model, model_config=model_config,
                   system_prompt=system_prompt, user_id=user_id, session_key=session_key,
                   chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
                   parent_session_id=parent_session_id, cwd=cwd, profile_name=profile_name,
                   git_repo_root=git_repo_root, origin_json=origin_json, display_name=display_name,
                   transport_profile=transport_profile)
-    holder._execute_write(lambda conn: insert_session_row_in_transaction(holder, conn, **params),
-                        patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
+
+    def _write(conn):
+        # Only a string id can carry the retired marker; a non-string id keeps reaching the
+        # binding's own native refusal below (the store never stringifies what it is handed).
+        if isinstance(session_id, str) and retired_in(conn, session_id):
+            # The id was deleted on purpose; the retired marker is the deletion fence and this
+            # upsert must not sweep a row back in beside it (#129439). Callers that adopt a
+            # stranded draft only reach here for a key that was never retired, and the fenced
+            # deletes publish the marker in the same transaction they delete in.
+            raise AuthorityRefusal("not_found")
+        insert_session_row_in_transaction(holder, conn, **params)
+
+    holder._execute_write(_write, patience_s=holder._TRANSCRIPT_WRITE_PATIENCE_S)
 
 
 def create_session(holder: StoreHolder, session_id: str, source: str, **kwargs) -> str:

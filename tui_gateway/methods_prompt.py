@@ -830,6 +830,8 @@ def _lock_in_submit_turn(
         session.pop("_notif_turn_claim", None)  # a stale dispatcher claim never releases this turn
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
+        # A turn is starting: any queue-sparing grace an earlier detached wait spent is settled, not carried.
+        _reset_ws_orphan_queued_budget(session)
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
         _start_inflight_turn(session, text, display_kind=display_kind)

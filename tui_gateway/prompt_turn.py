@@ -439,16 +439,25 @@ def _dispatch_followup_turn(rid, sid: str, session: dict, prompt: Any, what: str
         _notif_release_claim(session, claim)
 
 
+def _requeue_leftover_steer(session: dict, result: Any) -> None:
+    """Queue a /steer the finished turn never consumed (``result["pending_steer"]``), once per result.
+    Caller holds ``session["history_lock"]``. ``pending_steer`` stays on the result for its other readers."""
+    if not isinstance(result, dict) or result.get("_pending_steer_requeued"):
+        return
+    steer = result.get("pending_steer")
+    if isinstance(steer, str) and steer.strip():
+        _enqueue_prompt(session, steer, session.get("transport"))
+        result["_pending_steer_requeued"] = True
+
+
 def _run_post_turn_followups(
     rid, sid: str, session: dict, result: Any, goal_followup: str | None) -> None:
     """Chain whatever should run after ``running`` was released.  Order: a mid-turn user
     prompt wins over every auto follow-up (drain it, skip the rest); a leftover /steer is
     requeued first so it isn't dropped; then goal continuation, then completion
     notifications.  Each nested submit re-checks ``running`` under the lock."""
-    steer = result.get("pending_steer") if isinstance(result, dict) else None
-    if isinstance(steer, str) and steer.strip():
-        with session["history_lock"]:
-            _enqueue_prompt(session, steer, session.get("transport"))
+    with session["history_lock"]:
+        _requeue_leftover_steer(session, result)  # no-op when the turn's release already requeued it
     if _drain_queued_prompt(rid, sid, session):
         return
     if goal_followup:
@@ -1237,8 +1246,13 @@ def _run_prompt_submit(
                 # A stale interim closure must not fire during a later turn.
                 st.agent.interim_assistant_callback = None
                 with session["history_lock"]:
+                    # A steer the turn never consumed becomes a queued prompt BEFORE ``running`` is released,
+                    # so the WS orphan reaper (which spares a detached idle session only while it holds a
+                    # queued prompt) cannot pop the session in the post-turn housekeeping window and drop it.
+                    _requeue_leftover_steer(session, st.result)
                     session["running"] = False
                     session["last_active"] = time.time()
+                    session.pop("_queued_prompt_stale_logged", None)  # a later stuck queue is logged again
                     session.pop("_turn_user_input", None)  # per turn: never leaks into the next one
                     if not st.error_retained:
                         _clear_inflight_turn(session)

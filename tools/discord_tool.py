@@ -376,9 +376,11 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
 
 def _create_thread(
     token: str, channel_id: str, name: str, message_id: Optional[str] = None,
-    auto_archive_duration: int = 1440, **_kwargs: Any) -> str:
+    auto_archive_duration: Optional[int] = None, **_kwargs: Any) -> str:
     """Create a thread — anchored to ``message_id`` when given, else standalone public."""
     _validate_snowflake(channel_id, "channel_id")
+    if auto_archive_duration is None:
+        auto_archive_duration = _load_thread_auto_archive_duration_config()
     if message_id:
         _validate_snowflake(message_id, "message_id")
     body: dict[str, Any] = {"name": name, "auto_archive_duration": auto_archive_duration}
@@ -475,6 +477,30 @@ def _load_allowed_actions_config() -> Optional[list[str]]:
     return [n for n in names if n in _ACTIONS]
 
 
+def _load_thread_auto_archive_duration_config() -> int:
+    """``discord.thread_auto_archive_duration`` (env ``DISCORD_THREAD_AUTO_ARCHIVE_DURATION``) in
+    minutes, for a thread created without an explicit duration; 1440 when unset or invalid."""
+    raw = None
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config().get("discord") or {}).get("thread_auto_archive_duration")
+    except Exception as exc:
+        logger.debug("discord: could not load config (%s); using the env/default thread duration.", exc,
+                     exc_info=True)
+    if raw is None or raw == "":
+        raw = get_secret("DISCORD_THREAD_AUTO_ARCHIVE_DURATION", "") or ""
+    if raw == "":
+        return 1440
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = None
+    if value not in _SCHEMA_PROPERTIES["auto_archive_duration"]["enum"]:
+        logger.warning("discord.thread_auto_archive_duration: invalid value %r; using 1440.", raw)
+        return 1440
+    return value
+
+
 def _available_actions(caps: dict[str, Any], allowlist: Optional[list[str]]) -> list[str]:
     """Visible actions from intents + config allowlist, in :data:`_ACTIONS` order."""
     members_ok = caps.get("has_members_intent", True)
@@ -517,7 +543,7 @@ _SCHEMA_PROPERTIES: dict[str, Any] = {
     "auto_archive_duration": {
         "type": "integer",
         "enum": [60, 1440, 4320, 10080],
-        "description": "Thread archive duration in minutes (create_thread, default 1440).",
+        "description": "Thread archive duration in minutes (create_thread, default from config, else 1440).",
     },
 }
 
@@ -607,7 +633,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": None}
 
 
 def _run_discord_action(action: str, valid_actions: dict[str, Any], tool_label: str, **params: Any) -> str:

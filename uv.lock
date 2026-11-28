@@ -2683,7 +2683,7 @@ requires-dist = [
     { name = "kittentts", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'kittentts') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'kittentts') or (sys_platform != 'android' and sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'kittentts')", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.7.5" },
     { name = "markdown", marker = "python_full_version >= '3.14'", specifier = "==3.11.2" },
-    { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.1" },
+    { name = "mautrix", extras = ["encryption"], marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.21.2" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==2.3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = "==2.3.0" },
     { name = "microsoft-teams-apps", marker = "extra == 'teams'", specifier = "==2.1.1" },
@@ -3530,16 +3530,16 @@ wheels = [
 
 [[package]]
 name = "mautrix"
-version = "0.21.1"
+version = "0.21.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "attrs" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8e/51/08e0a30262928b58a3ff4cb8b8cabd43c6b5738dead3468840ec4bdbc20b/mautrix-0.21.1.tar.gz", hash = "sha256:2cad21fcff32bd549192091f9b7b58c01980a7b46f827eef8f34e62d92762b67", size = 254995, upload-time = "2026-07-05T20:33:12.16Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f2/06/377e81ea7de50bb13895fa1f2f5c1b7e7ef31d23aff350ceb2efe5574e0b/mautrix-0.21.2.tar.gz", hash = "sha256:72f3c807b04bf90ab9e595b03f4f67e1265721619215facb9b364e05731fe828", size = 255179, upload-time = "2026-11-20T11:34:51.364Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ea/a0/b6a97878fba55003065f389b08856de63a84c7f3b6bb378dcc71b60ed740/mautrix-0.21.1-py3-none-any.whl", hash = "sha256:7685b998eae26f6c5b3a0e010e6dd2d838364009dd7d6319dac804988f4b6823", size = 334424, upload-time = "2026-07-05T20:33:10.298Z" },
+    { url = "https://files.pythonhosted.org/packages/33/b3/1ca4307ac5b59d1db2b59735eed3df040e510ab526ca53c704d801d1277b/mautrix-0.21.2-py3-none-any.whl", hash = "sha256:ef8897bf0c6b35792c539eb893866b77056c641a83b416c3095fbd4030c35cd8", size = 334475, upload-time = "2026-11-20T11:34:49.929Z" },
 ]
 
 [package.optional-dependencies]

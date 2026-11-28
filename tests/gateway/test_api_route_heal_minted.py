@@ -61,7 +61,9 @@ async def test_the_next_admitted_turn_reopens_a_finalized_api_row(tmp_path, monk
     from tests.gateway.test_session_authority_cancel_settlement import REF, _authority, _submit
 
     db, authority = _authority(tmp_path, monkeypatch, platform=Platform.API_SERVER)
-    monkeypatch.setattr(session_api_turn, 'check_api_turn', lambda authority, ref, payload: None)
+    async def check_api_turn_async(authority, ref, payload):
+        return None
+    monkeypatch.setattr(session_api_turn, 'check_api_turn_async', check_api_turn_async)
     ended = []
 
     async def execute(authority, ref, row):

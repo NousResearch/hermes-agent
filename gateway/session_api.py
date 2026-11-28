@@ -1,5 +1,6 @@
 """Server-only binding of API transcript identities to the existing TurnRunner."""
 import asyncio
+from functools import partial
 import hashlib
 import logging
 
@@ -116,9 +117,9 @@ def run_steps(steps):
             result, error = None, exc
 
 
-async def run_steps_off_loop(authority, steps, *, orphaned=None):
-    """Drive a write-step generator on the owner loop, each yielded SQLite write in a worker thread
-    in admission order (``tracked_write(ordered=True)``): a held writer must not freeze every session.
+async def run_steps_off_loop(authority, steps, *, orphaned=None, ordered=True):
+    """Drive storage steps on the owner loop, with each yielded operation in a worker thread.
+    API admission drives are serialized and use ``tracked_write(ordered=True)`` to preserve FIFO.
     The whole drive is one tracked, shielded task, so a cancelled caller cannot separate a commit
     from the steps after it; ``orphaned(result)`` then runs when the drive completes."""
     from gateway.session_runtime_workers import track_mutation, tracked_write
@@ -131,7 +132,7 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
             except StopIteration as done:
                 return done.value
             try:
-                result, error = await tracked_write(authority, write, ordered=True), None
+                result, error = await tracked_write(authority, write, ordered=ordered), None
             except Exception as exc:  # health: allow BLE001 -- not swallowed: thrown back into the steps, which re-raise it
                 result, error = None, exc
     async def serialized():
@@ -142,7 +143,7 @@ async def run_steps_off_loop(authority, steps, *, orphaned=None):
             lock = authority._api_admissions = asyncio.Lock()
         async with lock:
             return await drive()
-    task = track_mutation(authority, serialized())
+    task = track_mutation(authority, serialized() if ordered else drive())
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -224,7 +225,7 @@ def bind_api_steps(authority, session_id, *, hosted_dispatch=None, declared_key=
         persistence.bindings.bind_api(epoch=authority.epoch, binding=binding, gate=authority.gate_refusal(),
                                       walked_from=walked_from)
     yield write
-    return restore_api_session(authority, session_id)
+    return (yield from restore_api_steps(authority, session_id))
 
 
 def _heal_replacement(persistence, caller, holder):
@@ -261,8 +262,58 @@ def api_storage_source(store, session_id, fallback):
 
 
 def restore_api_session(authority, session_id):
+    """Restore inline for synchronous callers; async API doors drive the same steps off-loop."""
+    return run_steps(restore_api_steps(authority, session_id))
+
+
+def restore_api_steps(authority, session_id):
+    """Install the locked route on a worker, then mount its live session on the owner loop."""
+    from gateway.session_authorities import require_serving
     from gateway.session_authority import LiveSession
-    persistence = authority_persistence(authority)
+    from gateway.session_history_mount import is_history_mount
+
+    restores = authority.api_restores
+    pending = restores.setdefault(session_id, set())
+    token = object()
+    pending.add(token)
+    try:
+        entry = yield partial(_restore_api_route, authority, session_id)
+        require_serving(authority)
+        if restores.get(session_id) is not pending:
+            # Deletion finished on the loop while the route restore was suspended.
+            raise AuthorityRefusal('not_found')
+        live = authority.sessions.get(session_id)
+        if live is None:
+            authority.sessions[session_id] = LiveSession(entry.origin, entry.session_key)
+        elif is_history_mount(live):
+            # Promote the read-only view in place, retaining its subscriptions and event stream.
+            live.source, live.route = entry.origin, entry.session_key
+        return SessionRef(authority.profile_id, session_id)
+    finally:
+        pending.remove(token)
+        if not pending and restores.get(session_id) is pending:
+            del restores[session_id]
+
+
+def _restore_api_route(authority, session_id):
+    store = authority.runner.session_store
+    with store._lock:
+        # Read the binding after taking the same lock that removes retired routes. A restore
+        # that waits behind deletion must not reinsert the route from an earlier receipt.
+        persistence = authority_persistence(authority)
+        entry = _checked_api_entry(authority, persistence, session_id)
+        ref = SessionRef(authority.profile_id, session_id)
+        target = entry.session_id = authority.physical_target(ref)
+        store._ensure_loaded_locked()
+        current = store._entries.get(entry.session_key)
+        if current is not None and current.session_id not in persistence.lineage.lineage(session_id):
+            if not _heal_replacement(persistence, session_id, current.session_id):
+                raise AuthorityRefusal('admission_conflict')
+        store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
+    return entry
+
+
+def _checked_api_entry(authority, persistence, session_id):
     receipt = persistence.bindings.api_binding(session_id)
     if receipt is None:
         raise AuthorityRefusal('not_found')
@@ -285,22 +336,4 @@ def restore_api_session(authority, session_id):
         expected = room_session_id(identity, receipt.room_generation)
         if expected != session_id or row.title != 'Group: ' + identity[1] or not row.hidden:
             raise AuthorityRefusal('admission_conflict')
-    store = authority.runner.session_store
-    target = authority.physical_target(SessionRef(authority.profile_id, session_id))
-    entry.session_id = target
-    with store._lock:
-        store._ensure_loaded_locked()
-        current = store._entries.get(entry.session_key)
-        if current is not None and current.session_id not in persistence.lineage.lineage(session_id):
-            if not _heal_replacement(persistence, session_id, current.session_id):
-                raise AuthorityRefusal('admission_conflict')
-        store._entries[entry.session_key] = current if current is not None and current.session_id == target else entry
-    from gateway.session_history_mount import is_history_mount
-    live = authority.sessions.get(session_id)
-    if live is None:
-        authority.sessions[session_id] = LiveSession(source, entry.session_key)
-    elif is_history_mount(live):
-        # A read-only view opened while the row had no binding becomes the bound conversation in place,
-        # so its viewers keep their subscriptions and event stream.
-        live.source, live.route = source, entry.session_key
-    return SessionRef(authority.profile_id, session_id)
+    return entry

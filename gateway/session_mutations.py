@@ -448,6 +448,7 @@ def retire_live_sessions(authority, session_ids, *, require_fence=False):
         allow_for_session((authority.profile_id, sid))
         # So do the password managers it unlocked: this path never reaches the viewer-close settle.
         release_unlocks(sid)
+        authority.api_restores.pop(sid, None)
         candidate = authority.sessions.pop(sid, None)
         if candidate is None and sid in getattr(authority, 'retired_routes', ()):
             # A conversation retirement let go: its cached agent, and what the local adapter keeps for it.

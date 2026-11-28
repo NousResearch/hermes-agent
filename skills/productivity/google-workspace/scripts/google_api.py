@@ -10,7 +10,7 @@ Usage:
   python google_api.py gmail get MESSAGE_ID
   python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
   python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py calendar list [--start DATETIME] [--end DATETIME] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
@@ -24,6 +24,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -83,7 +84,10 @@ def _stored_token_scopes() -> list[str]:
 def _gws_binary() -> str | None:
     override = os.getenv("HERMES_GWS_BIN")
     if override:
-        return override
+        resolved = shutil.which(override)
+        if not resolved:
+            print(f"WARNING: HERMES_GWS_BIN={override!r} is not executable; using Python client.", file=sys.stderr)
+        return resolved
     return shutil.which("gws")
 
 
@@ -138,22 +142,31 @@ def _headers_dict(msg: dict) -> dict[str, str]:
     }
 
 
+def _b64decode_text(data: str) -> str:
+    # Gmail returns unpadded base64url.
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4)).decode("utf-8", errors="replace")
+
+
+def _find_part(part: dict, mime: str) -> str:
+    """Depth-first search for the first non-attachment part of ``mime``."""
+    if (
+        part.get("mimeType") == mime
+        and part.get("body", {}).get("data")
+        and not part.get("filename")
+    ):
+        return _b64decode_text(part["body"]["data"])
+    for sub in part.get("parts") or []:
+        found = _find_part(sub, mime)
+        if found:
+            return found
+    return ""
+
+
 def _extract_message_body(msg: dict) -> str:
-    body = ""
     payload = msg.get("payload", {})
-    if payload.get("body", {}).get("data"):
-        body = base64.urlsafe_b64decode(payload["body"]["data"]).decode("utf-8", errors="replace")
-    elif payload.get("parts"):
-        for part in payload["parts"]:
-            if part.get("mimeType") == "text/plain" and part.get("body", {}).get("data"):
-                body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                break
-        if not body:
-            for part in payload["parts"]:
-                if part.get("mimeType") == "text/html" and part.get("body", {}).get("data"):
-                    body = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8", errors="replace")
-                    break
-    return body
+    if not payload.get("parts") and payload.get("body", {}).get("data"):
+        return _b64decode_text(payload["body"]["data"])
+    return _find_part(payload, "text/plain") or _find_part(payload, "text/html")
 
 
 def _extract_body_text(body: dict) -> str:
@@ -419,6 +432,40 @@ def gmail_send(args):
 
 
 
+REPLY_METADATA_HEADERS = ["From", "To", "Reply-To", "Subject", "Message-ID", "References"]
+
+
+def _build_reply_message(original: dict, args) -> MIMEText:
+    """Build an RFC 5322 reply to ``original`` (Gmail metadata response)."""
+    headers = _headers_dict(original)
+
+    subject = headers.get("subject", "")
+    if not re.match(r"\s*re\s*:", subject, re.IGNORECASE):
+        subject = f"Re: {subject}"
+
+    # Replying to our own sent message continues to its recipients;
+    # otherwise honour Reply-To (mailing lists, no-reply relays) before From.
+    if "SENT" in original.get("labelIds", []):
+        to = headers.get("to", "")
+    else:
+        to = headers.get("reply-to") or headers.get("from", "")
+    if not to:
+        print("ERROR: original message has no usable recipient (From/Reply-To/To).", file=sys.stderr)
+        sys.exit(1)
+
+    message = MIMEText(args.body, "plain", "utf-8")
+    message["To"] = to
+    message["Subject"] = subject
+    if args.from_header:
+        message["From"] = args.from_header
+    if headers.get("message-id"):
+        message["In-Reply-To"] = headers["message-id"]
+        message["References"] = " ".join(
+            x for x in (headers.get("references", ""), headers["message-id"]) if x
+        )
+    return message
+
+
 def gmail_reply(args):
     if _gws_binary():
         original = _run_gws(
@@ -427,23 +474,10 @@ def gmail_reply(args):
                 "userId": "me",
                 "id": args.message_id,
                 "format": "metadata",
-                "metadataHeaders": ["From", "Subject", "Message-ID"],
+                "metadataHeaders": REPLY_METADATA_HEADERS,
             },
         )
-        headers = _headers_dict(original)
-
-        subject = headers.get("subject", "")
-        if not subject.startswith("Re:"):
-            subject = f"Re: {subject}"
-
-        message = MIMEText(args.body)
-        message["To"] = headers.get("from", "")
-        message["Subject"] = subject
-        if args.from_header:
-            message["From"] = args.from_header
-        if headers.get("message-id"):
-            message["In-Reply-To"] = headers["message-id"]
-            message["References"] = headers["message-id"]
+        message = _build_reply_message(original, args)
 
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         result = _run_gws(
@@ -457,22 +491,9 @@ def gmail_reply(args):
     service = build_service("gmail", "v1")
     original = service.users().messages().get(
         userId="me", id=args.message_id, format="metadata",
-        metadataHeaders=["From", "Subject", "Message-ID"],
+        metadataHeaders=REPLY_METADATA_HEADERS,
     ).execute()
-    headers = _headers_dict(original)
-
-    subject = headers.get("subject", "")
-    if not subject.startswith("Re:"):
-        subject = f"Re: {subject}"
-
-    message = MIMEText(args.body)
-    message["To"] = headers.get("from", "")
-    message["Subject"] = subject
-    if args.from_header:
-        message["From"] = args.from_header
-    if headers.get("message-id"):
-        message["In-Reply-To"] = headers["message-id"]
-        message["References"] = headers["message-id"]
+    message = _build_reply_message(original, args)
 
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
     body = {"raw": raw, "threadId": original["threadId"]}
@@ -499,9 +520,9 @@ def gmail_labels(args):
 def gmail_modify(args):
     body = {}
     if args.add_labels:
-        body["addLabelIds"] = args.add_labels.split(",")
+        body["addLabelIds"] = [x.strip() for x in args.add_labels.split(",") if x.strip()]
     if args.remove_labels:
-        body["removeLabelIds"] = args.remove_labels.split(",")
+        body["removeLabelIds"] = [x.strip() for x in args.remove_labels.split(",") if x.strip()]
 
     if _gws_binary():
         result = _run_gws(
@@ -631,7 +652,11 @@ def calendar_delete(args):
 
 
 def drive_search(args):
-    query = args.query if args.raw_query else f"fullText contains '{args.query}'"
+    if args.raw_query:
+        query = args.query
+    else:
+        escaped = args.query.replace("\\", "\\\\").replace("'", "\\'")
+        query = f"fullText contains '{escaped}' and trashed = false"
     if _gws_binary():
         results = _run_gws(
             ["drive", "files", "list"],
@@ -721,7 +746,11 @@ def drive_download(args):
         "application/vnd.google-apps.drawing": ("image/png", ".png"),
     }
 
-    out_path = Path(args.output).expanduser() if args.output else Path.cwd() / name
+    # Drive names are untrusted: never let them escape the working directory.
+    safe_name = Path(str(name).replace("\\", "/")).name.strip()
+    if safe_name in ("", ".", ".."):
+        safe_name = args.file_id
+    out_path = Path(args.output).expanduser() if args.output else Path.cwd() / safe_name
 
     if mime in native_export_map:
         export_mime = args.export_mime or native_export_map[mime][0]
@@ -733,7 +762,13 @@ def drive_download(args):
         request = service.files().get_media(fileId=args.file_id)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fh = io.FileIO(str(out_path), "wb")
+    # Without --output the Drive-supplied name must not overwrite local files
+    # or follow an existing symlink outside the working directory.
+    try:
+        fh = io.FileIO(str(out_path), "wb" if args.output else "xb")
+    except FileExistsError:
+        print(f"ERROR: {out_path} already exists; pass --output to overwrite.", file=sys.stderr)
+        sys.exit(1)
     downloader = MediaIoBaseDownload(fh, request)
     done = False
     while not done:
@@ -1102,7 +1137,14 @@ def docs_append(args):
             end_index = ei
     insert_index = max(end_index - 1, 1)
 
-    text = args.text if args.text.endswith("\n") else args.text + "\n"
+    # insert_index sits before the body's final newline: prefix a newline so the
+    # text starts a new paragraph instead of merging into the last one.
+    text = args.text.rstrip("\n")
+    if not text:
+        print("ERROR: --text is empty.", file=sys.stderr)
+        sys.exit(1)
+    if end_index > 2:  # non-empty document
+        text = "\n" + text
     _docs_insert_text(args.doc_id, text, index=insert_index, tab_id=tab_id)
 
     result = {

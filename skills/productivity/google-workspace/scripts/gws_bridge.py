@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 # Ensure sibling modules (_hermes_home) are importable when run standalone.
@@ -47,13 +47,6 @@ def refresh_token(token_data: dict) -> dict:
         "client_id": token_data["client_id"],
         "client_secret": token_data["client_secret"],
         "refresh_token": token_data["refresh_token"],
-        # The refresh token goes in BOTH the body and the ``x-nous-refresh-token`` header. Portal's token
-        # endpoint requires ``refresh_token`` in the body (its request schema rejects a header-only request
-        # as ``invalid_request``), and additionally reconciles the header against the body — sending both
-        # lets Portal keep the value out of body-access-logs while still satisfying the schema. The header
-        # name must match Portal's ``REFRESH_TOKEN_HEADER`` exactly (``x-nous-refresh- token``); any other
-        # name is silently ignored. (Verified against the NAS #293 preview deploy: header-only → 400
-        # invalid_request; body → accepted.)
         "grant_type": "refresh_token",
     }).encode()
 
@@ -87,14 +80,24 @@ def get_valid_token() -> str:
         print("ERROR: No Google token found. Run setup.py --auth-url first.", file=sys.stderr)
         sys.exit(1)
 
-    token_data = json.loads(token_path.read_text(encoding="utf-8"))
+    try:
+        token_data = json.loads(token_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"ERROR: {token_path} is corrupt ({e}). Re-run setup.py.", file=sys.stderr)
+        sys.exit(1)
 
+    needs_refresh = not token_data.get("token")
     expiry = token_data.get("expiry", "")
     if expiry:
         exp_dt = datetime.fromisoformat(expiry)
-        now = datetime.now(UTC)
-        if now >= exp_dt:
-            token_data = refresh_token(token_data)
+        if exp_dt.tzinfo is None:  # google-auth writes naive UTC expiries
+            exp_dt = exp_dt.replace(tzinfo=UTC)
+        # 60 s margin so the token does not expire mid-call.
+        needs_refresh = needs_refresh or datetime.now(UTC) >= exp_dt - timedelta(seconds=60)
+    else:
+        needs_refresh = True
+    if needs_refresh:
+        token_data = refresh_token(token_data)
 
     return token_data["token"]
 
@@ -109,7 +112,11 @@ def main():
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
 
-    result = subprocess.run(["gws"] + sys.argv[1:], env=env, check=False)
+    try:
+        result = subprocess.run(["gws"] + sys.argv[1:], env=env, check=False)
+    except FileNotFoundError:
+        print("ERROR: gws not installed (https://github.com/googleworkspace/cli).", file=sys.stderr)
+        sys.exit(127)
     sys.exit(result.returncode)
 
 

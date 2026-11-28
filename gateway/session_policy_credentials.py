@@ -208,12 +208,27 @@ def _field(path):
     return '.'.join(str(part) for part in path if part is not None)
 
 
+def _same_home(stored, mine):
+    """Whether the home a reference names is *mine*: the same string, or another spelling of the same
+    directory on this host (a moved home left behind as a symlink to the new one, a symlinked profiles
+    dir). Each secret is still checked against this home's config.yaml by fingerprint afterwards."""
+    if stored == mine:
+        return True
+    if not isinstance(stored, str) or not stored or not isinstance(mine, str) or not mine:
+        return False
+    from pathlib import Path
+    from hermes_constants import hermes_home_key
+    if not Path(stored).expanduser().is_absolute() or not Path(mine).expanduser().is_absolute():
+        return False  # a bare name (a test owner id) is never another spelling of a path
+    return hermes_home_key(stored) == hermes_home_key(mine)
+
+
 def _check_scope(authority, source, policy, home, skip):
     """Refuse, by name, a reference from another home or profile, or a secret whose endpoint the policy
     moved without re-binding it. A change to anything else in the policy (model name, reasoning, toolsets,
     an unrelated provider or MCP server, a policy field a later release added) is not a credential change."""
     for name, mine in (('home', str(home)), ('profile', authority.profile_id)):
-        if source[name] != mine:
+        if not _same_home(source[name], mine):
             raise AuthorityRefusal('launch_credentials_unavailable', field=name,
                                    detail=f'the frozen config credentials belong to another {name}')
     if 'bound' not in source:

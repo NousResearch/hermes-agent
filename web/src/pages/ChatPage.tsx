@@ -71,6 +71,7 @@ import { computeKeyboardInset, keyboardRevealScrollDelta } from "@/lib/keyboard-
 import {
   resolvePtyKeyboardShortcut,
   sendPtyShortcutSequence,
+  typeMacOptionPunctuation,
 } from "@/lib/pty-keyboard-shortcuts";
 import {
   isViewportPinnedToBottom,
@@ -601,8 +602,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return true;
     });
 
-    const isMac =
-      typeof navigator !== "undefined" && /Mac/i.test(navigator.platform);
+    const isMac = /Mac/i.test(globalThis.navigator?.platform ?? "");
 
     // ── Image paste / drop ───────────────────────────────────────────────
     // The Chat tab is an xterm mirror of a TUI inside the gateway. Server-side
@@ -657,9 +657,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Tab/Shift+Tab escape the terminal (WCAG 2.1.2); xterm stores one
-      // key handler per Terminal, so a second registration overwrites this one.
-      if (ev.key === "Tab") return false;
+      // Tab/Shift+Tab escape the terminal (WCAG 2.1.2; xterm keeps ONE key handler
+      // per Terminal); Option-composed punctuation is typed, not sent as Meta.
+      if (ev.key === "Tab" || typeMacOptionPunctuation(term, ev, isMac)) return false;
 
       // Copy: Cmd+C on macOS, Ctrl+C or Ctrl+Shift+C elsewhere. Copy only
       // when xterm has a selection; without one Ctrl+C still reaches the TUI

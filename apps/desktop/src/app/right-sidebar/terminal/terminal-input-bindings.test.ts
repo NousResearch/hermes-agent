@@ -63,3 +63,34 @@ it('keeps a plain Alt chord Hermes ran off the PTY and leaves shared Ctrl keys a
   expect(passToPty(cancelled)).toBe(true)
   dispose()
 })
+
+it('types the punctuation a macOS layout composes with Option and keeps every other Option chord as Meta', () => {
+  const platform = vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel')
+  const attachCustomKeyEventHandler = vi.fn()
+  const input = vi.fn()
+  const markActivity = vi.fn()
+  const term = { attachCustomKeyEventHandler, getSelection: () => '', input } as unknown as Terminal
+  const dispose = bindTerminalClipboard(term, document.createElement('div'), markActivity, vi.fn(), () => true)
+  const passToPty = attachCustomKeyEventHandler.mock.calls[0]![0] as (event: KeyboardEvent) => boolean
+  const option = (key: string, code: string) => new KeyboardEvent('keydown', { altKey: true, cancelable: true, code, key })
+
+  // German layout: Option+L is `@`, Option+7 is `|`, Option+5 is `[`.
+  for (const [key, code] of [['@', 'KeyL'], ['|', 'Digit7'], ['[', 'Digit5']] as const) {
+    const event = option(key, code)
+    expect(passToPty(event)).toBe(false)
+    expect(event.defaultPrevented).toBe(true)
+    expect(input).toHaveBeenLastCalledWith(key, true)
+  }
+
+  expect(markActivity).toHaveBeenCalledTimes(3)
+
+  // US layout: Option+B (`∫`), a dead key, and a base-letter echo stay with xterm's Meta mode.
+  input.mockClear()
+  expect(passToPty(option('∫', 'KeyB'))).toBe(true)
+  expect(passToPty(option('Dead', 'KeyE'))).toBe(true)
+  expect(passToPty(option('b', 'KeyB'))).toBe(true)
+  expect(input).not.toHaveBeenCalled()
+
+  dispose()
+  platform.mockRestore()
+})

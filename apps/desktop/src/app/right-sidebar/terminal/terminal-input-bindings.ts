@@ -1,3 +1,4 @@
+import { macOptionComposedText } from '@hermes/shared'
 import type { Terminal } from '@xterm/xterm'
 
 import { writeClipboardText } from '@/lib/clipboard'
@@ -90,6 +91,18 @@ export function bindTerminalClipboard(
     // also reach the shell as its Meta key (ESC t, ESC [). Ctrl chords stay
     // shared, as natively: Ctrl+D is still EOF and Ctrl+B a tmux prefix.
     if (keybindHandled(event) && event.altKey && !event.ctrlKey && !event.metaKey) {
+      return false
+    }
+
+    // Meta mode would send ESC + key for an Option chord that types a layout's
+    // punctuation (German Option+L = `@`); type the character instead.
+    const composed = macOptionComposedText(event, isMacPlatform())
+
+    if (composed) {
+      event.preventDefault()
+      markActivity()
+      term.input(composed, true)
+
       return false
     }
 

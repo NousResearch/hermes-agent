@@ -501,6 +501,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `lazy` | bool | If `true`, register the server's tools from the schema cache at startup and only start/connect it on the first tool call (default `false`). Needs one prior live connect to fill the cache. |
 | `idle_timeout_seconds` | number | Recycle a stdio server after this many seconds without a tool call (`0` = never, default). The server restarts transparently on the next tool call. |
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
+| `memory_max_mb` | number | On Linux systemd gateways, cap the transient `systemd-run --user --scope` cgroup isolating this stdio server at the given integer MiB (minimum `64`, clamped by any finite enclosing slice/container `memory.max`; `0` or omitted uses the default worker bound). Also accepted under `lifecycle:`. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
 | `events` | bool | If `true`, register the experimental MCP events tools for this server (default `false`). See [MCP Events](#mcp-events-experimental) |
@@ -531,6 +532,7 @@ mcp_servers:
     args: ["-y", "@playwright/mcp@latest", "--headless"]
     idle_timeout_seconds: 900     # recycle after 15 min without a tool call
     max_lifetime_seconds: 86400   # and at least once a day regardless
+    memory_max_mb: 1024           # cap its Linux systemd scope at 1 GiB
 ```
 
 ### Minimal HTTP example

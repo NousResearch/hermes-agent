@@ -4,8 +4,10 @@ error-text sanitising, numeric/bool coercion, timeouts and jitter. No origin sta
 import logging
 import math
 import os
+from pathlib import Path
 import random
 import re
+from collections.abc import Mapping
 from typing import Any, Optional
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -195,3 +197,132 @@ def _get_lifecycle_seconds(config: dict, key: str) -> Optional[float]:
         logger.warning("MCP config %s must be positive; ignoring %r", key, raw)
         return None
     return seconds or None
+
+
+_MIN_MCP_MEMORY_MAX_MB = 64
+_MCP_UNIT_NAME_MAX_CHARS = 40
+_MCP_UNIT_BAD_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def _get_lifecycle_memory_max_mb(config: dict) -> Optional[int]:
+    """Optional per-server ``memory_max_mb`` from top-level or nested ``lifecycle`` config.
+
+    ``0`` or omitted returns ``None`` (use the host-safe default bound); values below
+    ``_MIN_MCP_MEMORY_MAX_MB`` (64 MiB), booleans, or non-numbers log a warning and are ignored.
+    """
+    raw = config.get("memory_max_mb")
+    if raw is None and isinstance(config.get("lifecycle"), dict):
+        raw = config["lifecycle"].get("memory_max_mb")
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        logger.warning("MCP config memory_max_mb must be an integer number of MiB; ignoring %r", raw)
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logger.warning("MCP config memory_max_mb must be an integer number of MiB; ignoring %r", raw)
+        return None
+    if not math.isfinite(value) or not value.is_integer():
+        logger.warning("MCP config memory_max_mb must be an integer number of MiB; ignoring %r", raw)
+        return None
+    if value == 0:
+        return None
+    if value < _MIN_MCP_MEMORY_MAX_MB:
+        logger.warning(
+            "MCP config memory_max_mb must be at least %d MiB; ignoring %r",
+            _MIN_MCP_MEMORY_MAX_MB, raw,
+        )
+        return None
+    return int(value)
+
+
+def _ancestor_cgroup_memory_max_bytes(
+    cgroup_text: Optional[str], cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> Optional[int]:
+    """Smallest finite cgroup-v2 ``memory.max`` across ancestors that also enclose a
+    ``systemd-run --user --scope`` unit (the root cgroup plus ``user.slice``/``user@*.service``/
+    ``app.slice``), ignoring sibling ``.service``/``.scope`` leaves like ``hermes-gateway.service``."""
+    if not cgroup_text:
+        return None
+    rel = None
+    for line in cgroup_text.splitlines():
+        if line.startswith("0::"):
+            rel = line.partition("::")[2].strip().strip("/")
+            break
+    if rel is None:
+        return None
+    dirs = [cgroup_root]
+    parts = [part for part in rel.split("/") if part]
+    if parts and parts[0] == "user.slice":
+        cur = cgroup_root / parts[0]
+        dirs.append(cur)
+        if len(parts) >= 2 and parts[1].startswith("user-") and parts[1].endswith(".slice"):
+            cur = cur / parts[1]
+            dirs.append(cur)
+            if len(parts) >= 3 and parts[2].startswith("user@") and parts[2].endswith(".service"):
+                cur = cur / parts[2]
+                dirs.append(cur)
+                if len(parts) >= 4 and parts[3] == "app.slice":
+                    dirs.append(cur / parts[3])
+    min_bytes = _MIN_MCP_MEMORY_MAX_MB * 1024 * 1024
+    limits: list[int] = []
+    for directory in dirs:
+        try:
+            raw = (directory / "memory.max").read_text(encoding="utf-8-sig").strip()
+        except OSError:
+            continue
+        if raw.isdigit():
+            val = int(raw)
+            if val >= min_bytes:
+                limits.append(val)
+    return min(limits) if limits else None
+
+
+def resolve_mcp_memory_max_bytes(
+    explicit_memory_max_mb: Optional[int], enclosing_cgroup_max_bytes: Optional[int],
+) -> Optional[int]:
+    """Byte ceiling for an MCP server's systemd scope, or ``None`` for the default worker bound.
+
+    An explicit ``memory_max_mb`` can tighten below 4 GiB on small VMs or widen on large hosts,
+    still clamped by any finite ``memory.max`` on an enclosing slice/container cgroup.
+    """
+    if explicit_memory_max_mb is None:
+        return None
+    requested = explicit_memory_max_mb * 1024 * 1024
+    if enclosing_cgroup_max_bytes is not None:
+        return min(requested, enclosing_cgroup_max_bytes)
+    return requested
+
+
+def _sanitize_mcp_unit_component(server_name: str) -> str:
+    """Safe, bounded systemd unit-name token derived from *server_name*."""
+    cleaned = _MCP_UNIT_BAD_CHARS.sub("-", str(server_name or "")).strip("-")
+    cleaned = cleaned[:_MCP_UNIT_NAME_MAX_CHARS].rstrip("-")
+    return cleaned or "server"
+
+
+def should_isolate_mcp_stdio_in_scope(
+    *,
+    is_linux: bool,
+    environ: Mapping[str, str],
+    is_supervised_gateway: bool,
+) -> bool:
+    """Whether a stdio MCP child should be placed in its own transient systemd scope (#159117).
+
+    Isolates on Linux under systemd (``INVOCATION_ID`` present) whenever this process is the
+    supervised gateway or belongs to a supervised gateway tree (``_HERMES_GATEWAY=1`` or
+    ``HERMES_SUPERVISED_CHILD`` — covering ``agent.managed_worker`` and cron/Kanban workers,
+    since ``systemd-run --user --scope`` creates a flat sibling ``hermes-mcp-*.scope`` under
+    ``app.slice`` so a runaway MCP child cannot OOM-kill the gateway or the worker).
+    Interactive ``hermes chat`` sessions in desktop terminals carry neither gateway marker and
+    are left untouched.
+    """
+    if not is_linux or environ.get("INVOCATION_ID", "").strip() == "":
+        return False
+    if is_supervised_gateway:
+        return True
+    return (
+        environ.get("_HERMES_GATEWAY") == "1"
+        or environ.get("HERMES_SUPERVISED_CHILD", "").strip() != ""
+    )

@@ -97,15 +97,10 @@ WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
 
 # --- systemd cgroup isolation for gateway-spawned local executors ------------------
-# Under a systemd gateway with MemoryMax, local background commands inherit the gateway's
-# cgroup, so a memory-heavy executor can get the ENTIRE gateway killed by systemd-oomd;
-# ``systemd-run --user --scope`` gives the worker its own transient cgroup. Usability is
-# probed and cached for a bounded TTL (binary present but user D-Bus absent in system services/containers).
-# A memory-heavy executor (Codex, tests, Node) can push the whole cgroup past MemoryMax and trigger
-# systemd-oomd to kill the ENTIRE gateway — taking down the messaging control plane and silently losing the
-# active turn. We probe whether ``systemd-run --user --scope`` is actually usable (the binary can
-# exist on the PATH while the user D-Bus session is unavailable — common for system services and
-# containers), and cache the verdict for a bounded TTL. See #70716.
+# Under a systemd gateway with MemoryMax, local background commands and stdio MCP servers
+# inherit the gateway's cgroup unless isolated; ``systemd-run --user --scope`` gives each
+# child its own transient cgroup. Usability is probed and cached for a bounded TTL (binary
+# present on PATH while the user D-Bus session is absent in system services/containers; #70716).
 _SYSTEMD_SCOPE_AVAILABLE: Optional[bool] = None
 _SYSTEMD_SCOPE_PROBE_LOCK = threading.Lock()
 _SYSTEMD_SCOPE_PROBED_AT = 0.0
@@ -148,13 +143,9 @@ def _worker_memory_max_bytes() -> int:
         for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
             if line.startswith("0::"):
                 relative = line.partition("::")[2].lstrip("/")
-                raw_limit = (
-                    Path("/sys/fs/cgroup") / relative / "memory.max"
-                ).read_text(encoding="utf-8-sig").strip()
-                if raw_limit.isdigit():
-                    cgroup_limit = int(raw_limit)
-                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                        candidates.append(cgroup_limit)
+                raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8-sig").strip()
+                if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                    candidates.append(int(raw_limit))
                 break
     except (OSError, ValueError):
         pass
@@ -174,16 +165,19 @@ def _worker_memory_max_bytes() -> int:
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
 
-def _systemd_scope_argv(binary: str, unit_name: str, *argv: str) -> list[str]:
+def _systemd_scope_argv(
+    binary: str, unit_name: str, *argv: str, memory_max_bytes: Optional[int] = None,
+) -> list[str]:
     """``systemd-run --user --scope`` argv shared by the probe and real spawns.
     ``--collect`` self-cleans the scope after exit; ``--unit`` names it for systemctl.
     No ``OOMPolicy=``: transient scopes reject it on systemd <253 (#102486).
     ``--expand-environment=no`` keeps the command byte-identical (#132385)."""
     no_expand = ["--expand-environment=no"] if _SYSTEMD_RUN_NO_EXPAND else []
+    limit_bytes = _worker_memory_max_bytes() if memory_max_bytes is None else memory_max_bytes
     return [
         binary, "--user", "--scope", "--quiet", *no_expand, "--unit", unit_name, "--collect",
         "--property", "MemoryAccounting=yes",
-        "--property", f"MemoryMax={_worker_memory_max_bytes()}",
+        "--property", f"MemoryMax={limit_bytes}",
         "--", *argv,
     ]
 
@@ -325,20 +319,19 @@ def _is_supervised_gateway_process() -> bool:
         return False
 
 
-def _build_systemd_scope_argv(shell_argv: list[str], unit_suffix: str) -> list[str]:
+def _build_systemd_scope_argv(
+    shell_argv: list[str], unit_suffix: str, *,
+    unit_prefix: str = "hermes-worker", memory_max_bytes: Optional[int] = None,
+) -> list[str]:
     """Wrap *shell_argv* in a ``systemd-run --user --scope`` invocation with its own
-    memory accounting, so an OOM in the worker cannot kill the gateway cgroup.
-
-    ``--collect`` makes the transient scope self-clean after exit; ``--unit`` gives it a recognisable name
-    for ``systemctl --user status`` / journalctl. See #70716.
-    """
+    memory accounting, so an OOM in the child cannot kill the gateway cgroup (#70716)."""
     import shutil
 
     binary = shutil.which("systemd-run")
     if binary is None:
-        # Caller should have probed availability; never pass None into Popen anyway.
-        return shell_argv
-    return _systemd_scope_argv(binary, f"hermes-worker-{unit_suffix}", *shell_argv)
+        return shell_argv  # caller probed availability; never pass None into Popen
+    return _systemd_scope_argv(
+        binary, f"{unit_prefix}-{unit_suffix}", *shell_argv, memory_max_bytes=memory_max_bytes)
 
 
 _scope_degraded_warned = False

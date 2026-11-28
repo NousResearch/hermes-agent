@@ -717,9 +717,14 @@ def _fallback_session_info(session: dict) -> dict:
     # so a client can clear a stale label instead of retaining it — the same contract `_lazy_session_info`
     # above already follows.
     cwd = _session_cwd(session)
+    # The chat's own pick (the model_override a resumed record carries), as _resume_live_unpersisted reports:
+    # the profile default here flipped the Desktop picker on session.activate / a reuse-live session.resume
+    # while the agent was still building, until the build's session.info put the chat's model back.
+    model, provider = _live_session_identity(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        **_lazy_info_route(session, {}), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        **_lazy_info_route(session, {"model": model, "provider": provider}),
+        "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 

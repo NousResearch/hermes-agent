@@ -351,3 +351,66 @@ async def test_oneshot_z_writes_no_session_lines_to_stderr_like_main(monkeypatch
     assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True)) == 0
     err = capsys.readouterr().err
     assert "Session: stored-z" in err and "session_id: stored-z" in err
+
+
+@pytest.mark.asyncio
+async def test_relaunch_stages_exact_session_and_refuses_during_an_own_turn(monkeypatch, tmp_path):
+    import sys
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.gateway_client import GatewayClientError
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--safe-mode", "--model", "old", "--resume", "old"])
+    view = GatewayChatView(object(), {"stored_session_id": "sid"})
+    assert await view.command("/relaunch") is False
+    request = view.relaunch_request
+    assert request is not None and request.session_id == "sid"
+    args = request.build_args(resume=True)
+    assert args[-2:] == ["--resume", "sid"] and args.count("--resume") == 1
+    # Bypass mode has no configured default model, so its explicit launch route must survive.
+    assert args[args.index("--model") + 1] == "old"
+    assert "--safe-mode" in args and str(tmp_path) in args
+
+    view.mine["active"] = None
+    with pytest.raises(GatewayClientError, match="no active turn"):
+        await view.command("/relaunch")
+
+
+@pytest.mark.asyncio
+async def test_gateway_client_closes_before_relaunch(monkeypatch, tmp_path):
+    from contextlib import asynccontextmanager
+    from hermes_cli import gateway_chat
+    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_cli.relaunch import SessionRelaunchRequest
+
+    events = []
+
+    class Peer:
+        async def rpc(self, method, **params):
+            if method == "runtime.describe":
+                return {"session_create": {"sources": ["cli"], "parameters": ["request_id", "source"]}}
+            return {"stored_session_id": "sid"}
+
+    @asynccontextmanager
+    async def connected():
+        events.append("connected")
+        try:
+            yield Peer()
+        finally:
+            events.append("closed")
+
+    async def rendered(self, query, *, oneshot):
+        self.relaunch_request = SessionRelaunchRequest("sid", str(tmp_path), ("hermes",))
+        return 7
+
+    def replaced(args, *, preserve_inherited):
+        events.append("relaunch")
+        assert args[-2:] == ["--resume", "sid"]
+        assert preserve_inherited is False
+
+    monkeypatch.setattr(gateway_chat, "connect_gateway", connected)
+    monkeypatch.setattr(GatewayChatView, "run", rendered)
+    from hermes_cli import relaunch as relaunch_module
+    monkeypatch.setattr(relaunch_module, "relaunch", replaced)
+    assert await gateway_chat.run_gateway_chat(argparse.Namespace(query="q", quiet=True)) == 7
+    assert events == ["connected", "closed", "relaunch"]

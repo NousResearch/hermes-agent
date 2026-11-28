@@ -8,8 +8,8 @@ from hermes_cli import relaunch as relaunch_mod
 
 
 class TestResolveHermesBin:
-    def test_prefers_absolute_argv0_when_executable(self, monkeypatch):
-        fake = "/nix/store/abc/bin/hermes"
+    def test_prefers_absolute_argv0_when_executable(self, monkeypatch, tmp_path):
+        fake = str(tmp_path / "hermes")
         monkeypatch.setattr(sys, "argv", [fake])
         monkeypatch.setattr(relaunch_mod.os.path, "isfile", lambda p: p == fake)
         monkeypatch.setattr(relaunch_mod.os, "access", lambda p, mode: p == fake)
@@ -86,6 +86,7 @@ class TestBuildRelaunchArgv:
 
 
 class TestRelaunch:
+    @pytest.mark.platforms("posix")
     def test_calls_execvp(self, monkeypatch):
         calls = []
 

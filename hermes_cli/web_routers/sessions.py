@@ -812,7 +812,7 @@ async def get_session_messages(
         sid = _resolve_session_id(store, session_id)
         if not sid:
             return None
-        sid = store.lineage.resolve_resume_target(sid)
+        sid = _resolve_display_session_id(store, sid)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None
@@ -848,6 +848,25 @@ async def get_session_messages(
             "returned": len(projected_messages)}}
 
 
+def _resolve_display_session_id(store, sid: str) -> str:
+    """Resolve *sid* to the active physical transcript segment, matching ``authority.attach``.
+
+    ``resolve_resume_target`` stops before ``_reset_from`` children; when *sid* is a logical local
+    owner whose ``gateway.local_policy.v1`` receipt already advanced (e.g. compression-exhaustion
+    auto-reset on a canonical Bot Chat), follow ``receipt.current_target`` first so REST pages
+    never serve the dead pre-reset transcript behind the live session.
+    """
+    bindings = getattr(store, "bindings", None)
+    if bindings is not None and hasattr(bindings, "receipt"):
+        try:
+            target = bindings.receipt(sid).current_target
+        except Exception:
+            target = None
+        if target and target != sid and store.sessions.get(target) is not None:
+            return store.lineage.resolve_resume_target(target)
+    return store.lineage.resolve_resume_target(sid)
+
+
 def _timeline_session_id(store, session_id: str, owner: str) -> str:
     # Durable jump addresses are exact ids, never title/prefix guesses. A NULL
     # legacy owner belongs to this profile's store, just like /messages pages.
@@ -857,7 +876,7 @@ def _timeline_session_id(store, session_id: str, owner: str) -> str:
 
     if not owned(session_id):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
-    sid = store.lineage.resolve_resume_target(session_id)
+    sid = _resolve_display_session_id(store, session_id)
     if not owned(sid):
         raise HTTPException(status_code=404, detail=_NOT_FOUND)
     return sid

@@ -288,8 +288,8 @@ class TestSkillManageBatch(unittest.TestCase):
 
         staged = {}
 
-        def fake_stage_write(area, payload, summary=None, origin=None):
-            staged.update(payload=payload, summary=summary)
+        def fake_stage_write(area, payload, summary=None, origin=None, review_trigger=None):
+            staged.update(payload=payload, summary=summary, review_trigger=review_trigger)
             return {"id": "pend_1"}
 
         import tools.write_approval as wa

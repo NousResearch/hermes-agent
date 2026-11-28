@@ -74,17 +74,23 @@ def _pending_files(subsystem: str) -> list:
     return list(d.glob("*.json")) if d.exists() else []
 
 
-def stage_write(subsystem: str, payload: dict[str, Any], *, summary: str, origin: str) -> dict[str, Any]:
+def stage_write(
+    subsystem: str, payload: dict[str, Any], *, summary: str, origin: str,
+    review_trigger: Optional[str] = None,
+) -> dict[str, Any]:
     """Persist a pending write and return its record (``id`` + metadata). ``payload`` is the exact
-    kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``.
+    kwargs to replay the write on approval; ``origin`` is ``foreground`` or ``background_review``;
+    ``review_trigger`` carries the background-review entry trigger (when present) to approval replay.
     Best-effort: on disk failure it logs and still returns a record — the write is lost, which is
     the safe failure for an approval gate (nothing silently committed)."""
     pid = uuid.uuid4().hex[:8]
-    record = {
+    record: dict[str, Any] = {
         "id": pid, "subsystem": subsystem, "action": payload.get("action", ""),
         "summary": (summary or "").strip(), "origin": origin or "foreground",
         "created_at": time.time(), "payload": payload,
     }
+    if review_trigger:
+        record["review_trigger"] = review_trigger
     try:
         atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:  # pragma: no cover - disk failure path

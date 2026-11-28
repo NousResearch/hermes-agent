@@ -806,6 +806,10 @@ class AIAgent(
             from agent.background_review import load_background_review_settings
             enabled, task_cfg = load_background_review_settings()
             if not enabled:
+                logger.debug(
+                    "Background review skipped by the automatic gate "
+                    "(disabled, safe_worker, or finite_turn)"
+                )
                 return
 
         # Structural clone at the single chokepoint: the fork sanitizes in place, and a shallow copy would
@@ -830,7 +834,7 @@ class AIAgent(
 
         ``threading.Thread`` is constructed here so tests patching ``run_agent.threading.Thread`` keep working.
         ``focus`` is /refine steering text; ``task_cfg`` is the pre-loaded config block (None on direct calls).
-        ``explicit`` (/refine) forks under the ``refine_review`` write origin, keeping the full
+        ``explicit`` (/refine) marks the ``background_review`` fork attended, keeping the full
         memory operation set. A deferred review preempted by a live turn is requeued (bounded)
         rather than lost.
         """

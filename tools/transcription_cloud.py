@@ -217,7 +217,9 @@ def _transcribe_mistral(
 
 
 # ---- REST multipart backends (xAI, ElevenLabs) ----------------------------
-def _post_audio_multipart(url: str, headers: dict[str, str], file_path: str, data: dict[str, str]):
+def _post_audio_multipart(url: str, headers: dict[str, str], file_path: str,
+                          data: dict[str, str] | list[tuple[str, str]]):
+    """``data`` may be a list of pairs to repeat a field (``requests`` encodes each pair)."""
     import requests
     with open(file_path, "rb") as audio_file:
         return requests.post(url, headers=headers, files={"file": (Path(file_path).name, audio_file)},
@@ -326,6 +328,41 @@ def _elevenlabs_error_detail(err_body: dict[str, Any]) -> str:
     return str(error_value) if error_value else ""
 
 
+_ELEVENLABS_KEYTERM_MAX_COUNT = 1000
+_ELEVENLABS_KEYTERM_MAX_CHARS = 50
+_ELEVENLABS_KEYTERM_MAX_WORDS = 5
+_ELEVENLABS_KEYTERM_BAD_CHARS = frozenset("<>{}[]\\")
+
+
+def _elevenlabs_keyterms(raw: Any, model_name: str) -> list[str]:
+    """Valid ``stt.elevenlabs.keyterms`` entries; invalid ones are dropped with a warning.
+
+    Limits are Scribe's: 1000 terms, 50 chars, 5 words, no ``<>{}[]\\``. ``scribe_v1`` is skipped.
+    """
+    if not raw:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("stt.elevenlabs.keyterms must be a list of strings; ignoring it")
+        return []
+    if model_name == "scribe_v1":
+        logger.warning("stt.elevenlabs.keyterms is not supported by scribe_v1; ignoring it")
+        return []
+    terms: list[str] = []
+    for item in raw:
+        term = str(item).strip()
+        if not term:
+            continue
+        if (len(term) > _ELEVENLABS_KEYTERM_MAX_CHARS or len(term.split()) > _ELEVENLABS_KEYTERM_MAX_WORDS
+                or _ELEVENLABS_KEYTERM_BAD_CHARS & set(term)):
+            logger.warning("Skipping invalid ElevenLabs keyterm %r", term)
+            continue
+        terms.append(term)
+    if len(terms) > _ELEVENLABS_KEYTERM_MAX_COUNT:
+        logger.warning("Truncating ElevenLabs keyterms to %d", _ELEVENLABS_KEYTERM_MAX_COUNT)
+        terms = terms[:_ELEVENLABS_KEYTERM_MAX_COUNT]
+    return terms
+
+
 def _transcribe_elevenlabs(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
@@ -351,7 +388,10 @@ def _transcribe_elevenlabs(
             "tag_audio_events": str(is_truthy_value(elevenlabs_config.get("tag_audio_events", False))).lower(),
             "diarize": str(is_truthy_value(elevenlabs_config.get("diarize", False))).lower(),
             **({"language_code": language_code} if language_code else {})}
-        return _post_audio_multipart(f"{base_url}/speech-to-text", {"xi-api-key": api_key}, file_path, data)
+        keyterms = _elevenlabs_keyterms(elevenlabs_config.get("keyterms"), model_name)
+        form: dict[str, str] | list[tuple[str, str]] = (
+            [*data.items(), *(("keyterms", term) for term in keyterms)] if keyterms else data)
+        return _post_audio_multipart(f"{base_url}/speech-to-text", {"xi-api-key": api_key}, file_path, form)
 
     def _log(transcript_text: str, _body: dict[str, Any]) -> None:
         logger.info("Transcribed %s via ElevenLabs Scribe (%s, %d chars)",

@@ -1081,6 +1081,32 @@ class TestTranscribeElevenLabs:
         assert call_kwargs["data"]["tag_audio_events"] == "true"
         assert call_kwargs["data"]["diarize"] == "true"
 
+    def _post_with_config(self, monkeypatch, sample_ogg, elevenlabs_config, model="scribe_v2"):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "hi"}
+        with patch("tools.transcription_tools._load_stt_config", return_value={"elevenlabs": elevenlabs_config}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            _transcribe_elevenlabs(sample_ogg, model)
+        return mock_post.call_args.kwargs["data"]
+
+    def test_keyterms_sent_as_repeated_fields(self, monkeypatch, sample_ogg):
+        data = self._post_with_config(
+            monkeypatch, sample_ogg, {"keyterms": ["Calliope", "T3 Code", "bad<term>", "x " * 6]})
+        assert [v for k, v in data if k == "keyterms"] == ["Calliope", "T3 Code"]
+        assert ("model_id", "scribe_v2") in data
+
+    def test_no_keyterms_leaves_form_unchanged(self, monkeypatch, sample_ogg):
+        data = self._post_with_config(monkeypatch, sample_ogg, {})
+        assert data == {"model_id": "scribe_v2", "tag_audio_events": "false", "diarize": "false"}
+
+    def test_keyterms_skipped_for_scribe_v1(self, monkeypatch, sample_ogg):
+        data = self._post_with_config(monkeypatch, sample_ogg, {"keyterms": ["Calliope"]}, model="scribe_v1")
+        assert isinstance(data, dict) and "keyterms" not in data
+
+
 # ============================================================================
 # _get_provider — ElevenLabs
 # ============================================================================

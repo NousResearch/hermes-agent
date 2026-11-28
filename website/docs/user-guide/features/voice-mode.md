@@ -589,6 +589,19 @@ DISCORD_ALLOWED_USERS=...
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 
+### ElevenLabs keyterms
+
+Names and domain terms that Scribe mistranscribes can be passed as vocabulary hints:
+
+```yaml
+stt:
+  provider: "elevenlabs"
+  elevenlabs:
+    keyterms: ["Hermes", "Nous Research"]
+```
+
+Each term is sent as a repeated `keyterms` form field. ElevenLabs allows up to 1000 terms of at most 50 characters and 5 words each, without `<>{}[]\`; Hermes skips invalid terms with a warning. Requests that send keyterms cost 20% more, and `scribe_v1` ignores them.
+
 ### Long recordings and upload limits
 
 Cloud providers cap a single request: OpenAI and Groq accept 25 MB, Mistral 500 MB (60 minutes), xAI 500 MB and ElevenLabs just under 5 GB. Some OpenAI models also have a practical length limit per request: about 7.5 minutes for `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` (their 2,000-token output ceiling) and 10 minutes for `whisper-1` (so each request finishes inside the default 60 s timeout). When a voice note, audio attachment or voice-mode recording is over the active provider's limit, Hermes first re-encodes it to compact 16 kHz mono AAC, which fits most recordings into one request. If it is still too large, Hermes splits it at pauses, transcribes the pieces in order and joins the text. Local providers have no upload limit and are never split. ffmpeg is required for both steps.

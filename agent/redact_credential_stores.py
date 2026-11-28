@@ -56,7 +56,10 @@ _NETRC_LINE_RE = re.compile(
     rf"^([ \t]*{_LINE_NUMBER_GUTTER})((?:machine|default|login|account|port|password)\b[^\r\n]*)", re.MULTILINE,
 )
 _NETRC_KEYWORDS = ("machine", "login", "password", "account", "port")
-_NETRC_TOKEN_RE = re.compile(r'"[^"\r\n]*"?|\S+')
+# ``\`` escapes the next character inside a value: ``open\ sesame`` is one secret, and a quoted
+# value ends at the first *unescaped* ``"``. Lines without a backslash tokenize byte-identically
+# to the escape-blind ``"[^"\r\n]*"?|\S+`` (#157366).
+_NETRC_TOKEN_RE = re.compile(r'"(?:\\.|[^"\\\r\n])*"?|(?:\\.|\S)+')
 _CREDENTIAL_STORE_RES = (
     # Host and port never hold ``=``/``#``; a database or user name may (``app:build#bot``).
     re.compile(rf"(^[ \t]*{_LINE_NUMBER_GUTTER}(?:[^:\s=#]*:){{2}}(?:[^:\s]*:){{2}})(\S[^\r\n]*)", re.MULTILINE),

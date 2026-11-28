@@ -1350,10 +1350,15 @@ class HermesCLI(CLIBacktrackMixin, CLIInitMixin, CLITuiRuntimeMixin, CLIProcessN
             ChatConsole().print(f"[bold red]{_t('cli.skills.skill_load_failed', command=base_cmd)}[/]")
 
     def _expand_slash_prefix(self, cmd_original: str, cmd_lower: str, skill_commands, skill_bundles) -> bool:
-        """Unique-prefix expansion against built-in COMMANDS + skill commands/bundles (agrees with tab-completion)."""
-        from hermes_cli.commands import COMMANDS
+        """Expand typed prefixes against built-ins, aliases, and skills."""
+        from hermes_cli.commands import COMMANDS, COMMAND_ALIASES
         typed_base = cmd_lower.split()[0]
-        all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
+        all_known = (
+            set(COMMANDS)
+            | {f"/{alias}" for alias in COMMAND_ALIASES}
+            | set(skill_commands)
+            | set(skill_bundles)
+        )
         matches = [c for c in all_known if c.startswith(typed_base)]
         if len(matches) > 1:
             if typed_base in matches:

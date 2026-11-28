@@ -108,6 +108,28 @@ def test_an_update_serves_new_sessions_whole_while_old_clients_stay_on_their_ver
     assert before.create_client().version == "v1"
 
 
+@pytest.mark.parametrize("isolation", ["in-process", "host"])
+def test_a_rolled_back_release_serves_again_after_its_successor(plugin, isolation):
+    # v1's exact files (bytes and mtimes) come back after v2, e.g. a rollback that preserves timestamps: the
+    # tree's fingerprint is v1's again while v1's package is still loaded, so importing it is a no-op.
+    from providers import get_provider_profile
+
+    (plugin.parent.parent / "config.yaml").write_text(f"plugins:\n  isolation: {isolation}\n", encoding="utf-8")
+    _write(plugin, 1, extra=True)
+    v1 = get_provider_profile("demo-provider")
+    _write(plugin, 2)
+    _forced_sweep()
+    assert get_provider_profile("demo-provider").create_client().version == "v2"
+
+    _write(plugin, 1, extra=True)
+    _forced_sweep()
+
+    assert get_provider_profile("demo-provider") is v1  # v1's registrations, not none and not v2's
+    assert v1.create_client().version == "v1"
+    assert get_provider_profile("demo-alias") is v1 and get_provider_profile("demo-old") is v1
+    assert get_provider_profile("demo-extra") is not None
+
+
 def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     from hermes_cli.plugins_activation import activation_hint, find_activation, plugin_activation_summary
     from providers import get_provider_profile

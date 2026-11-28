@@ -1,6 +1,8 @@
 """Tests for the Discord server introspection and management tool."""
 
 import json
+import logging
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -155,6 +157,21 @@ class TestDiscordRequest:
         assert exc_info.value.status == 502
         assert "response body exceeded 8 bytes" in exc_info.value.body
         mock_resp.read.assert_called_once_with(9)
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_unreadable_error_body_is_logged(self, mock_urlopen_fn, caplog):
+        fp = MagicMock()
+        fp.read.side_effect = ConnectionResetError("connection reset")
+        mock_urlopen_fn.side_effect = urllib.error.HTTPError(
+            "https://discord.com/api/v10/test", 503, "Service Unavailable", {}, fp)
+        caplog.set_level(logging.DEBUG, logger="tools.discord_tool")
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 503
+        assert exc_info.value.body == ""
+        assert "Failed to read Discord error body: connection reset" in caplog.text
 
 
 # ---------------------------------------------------------------------------

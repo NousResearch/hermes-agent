@@ -42,7 +42,7 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     with (
         patch("gateway.shutdown_watchdog.logger.critical") as critical,
         patch(
-            "gateway.shutdown_watchdog.faulthandler.dump_traceback",
+            "gateway.shutdown_watchdog._format_thread_stacks",
             side_effect=stop_during_dump,
         ) as dump,
         patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
@@ -81,7 +81,7 @@ def test_loop_liveness_death_leaves_its_stacks_in_the_dump_file(tmp_path, monkey
     from gateway.shutdown_watchdog import get_shutdown_watchdog_dump_path
     dump = get_shutdown_watchdog_dump_path(tmp_path).read_text(encoding="utf-8-sig")
     assert '"event": "loop_liveness_watchdog_fired"' in dump
-    assert "most recent call first" in dump
+    assert "innermost frame last" in dump
     assert exit_codes == [75]
 
 
@@ -114,7 +114,7 @@ def test_loop_liveness_dump_names_the_monitored_loop_thread(tmp_path, monkeypatc
     assert "test_loop_liveness_dump_names_the_monitored_loop_thread" in dump, (
         "the dump must contain the monitored loop thread's own frame"
     )
-    assert dump.index("monitored gateway loop thread stack") < dump.index("faulthandler dump (all")
+    assert dump.index("monitored gateway loop thread stack") < dump.index("Python thread stacks (innermost")
     assert exit_codes == [75]
 
 
@@ -156,7 +156,7 @@ def test_loop_liveness_dump_identifies_a_loop_on_another_thread(tmp_path, monkey
     header = json.loads(dump.splitlines()[0])
     assert header["monitored_loop_thread_id"] == state["ident"]
     assert header["monitored_loop_thread_name"] == "test-gateway-loop"
-    leading = dump.split("--- faulthandler dump (all threads) ---")[0]
+    leading = dump.split("--- Python thread stacks (innermost frame last) ---")[0]
     assert "--- monitored gateway loop thread stack ---" in leading
     assert "block_loop" in leading, "the frozen loop thread's frame must be in the dump"
     assert state["exit_code"] == 75
@@ -169,9 +169,8 @@ def test_watchdog_dump_without_a_live_loop_thread_keeps_a_usable_dump(tmp_path):
     gone.start()
     gone.join()
 
-    with patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"):
-        _write_watchdog_dump(dump_path, delay_s=1.0, snapshot={"strikes": 3},
-                             event="loop_liveness_watchdog_fired", loop_thread_id=gone.ident)
+    _write_watchdog_dump(dump_path, delay_s=1.0, snapshot={"strikes": 3},
+                         event="loop_liveness_watchdog_fired", loop_thread_id=gone.ident)
 
     dump = dump_path.read_text(encoding="utf-8-sig")
     header = json.loads(dump.splitlines()[0])
@@ -179,12 +178,11 @@ def test_watchdog_dump_without_a_live_loop_thread_keeps_a_usable_dump(tmp_path):
     assert header["monitored_loop_thread_name"] is None
     assert header["snapshot"] == {"strikes": 3}
     assert "(monitored loop thread stack unavailable" in dump
-    assert "--- faulthandler dump (all threads) ---" in dump
+    assert "--- Python thread stacks (innermost frame last) ---" in dump
     assert "--- end dump ---" in dump
 
     # The shutdown watchdog never passes a loop thread: its dump keeps exactly the shape it had.
-    with patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"):
-        _write_watchdog_dump(dump_path, delay_s=2.0, snapshot=None)
+    _write_watchdog_dump(dump_path, delay_s=2.0, snapshot=None)
 
     unmonitored = dump_path.read_text(encoding="utf-8-sig")
     headers = [json.loads(line) for line in unmonitored.splitlines() if line.startswith("{")]
@@ -215,7 +213,7 @@ def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
     with (
         patch("gateway.shutdown_watchdog.logger.critical") as critical,
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
+        patch("gateway.shutdown_watchdog._write_watchdog_dump") as dump,
         patch("gateway.shutdown_watchdog.os._exit", side_effect=exit_codes.append),
     ):
         handle = start_loop_liveness_watchdog(
@@ -253,7 +251,7 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     loop.call_soon_threadsafe.side_effect = hold_scheduled_probe
     with (
         patch("gateway.shutdown_watchdog.logger.critical") as critical,
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback") as dump,
+        patch("gateway.shutdown_watchdog._write_watchdog_dump") as dump,
         patch("gateway.shutdown_watchdog.os._exit") as hard_exit,
     ):
         handle = start_loop_liveness_watchdog(
@@ -419,7 +417,7 @@ def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
         fired.set()
 
     with (
-        patch("gateway.shutdown_watchdog.faulthandler.dump_traceback"),
+        patch("gateway.shutdown_watchdog._write_watchdog_dump"),
         patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit),
     ):
         handle = start_loop_liveness_watchdog(
@@ -844,3 +842,58 @@ def test_shutdown_watchdog_drains_through_the_shared_bounded_drain(monkeypatch):
     watchdog.arm_shutdown_watchdog(0.01, exit_code=7)
     assert done.wait(timeout=5.0)
     assert calls == ["drain:1.0", "mark", "exit:7"]
+
+
+def test_shutdown_watchdog_disarm_during_dump_stands_down(monkeypatch):
+    """A teardown that finishes while the dump is blocked wins: the resumed worker must not
+    release the PID file or runtime lock, stamp the exit, or hard-exit (#160012)."""
+    import gateway.shutdown_watchdog as watchdog
+    from tests.waiting import wait_until
+
+    calls: list[str] = []
+    dump_entered, release_dump = threading.Event(), threading.Event()
+
+    def blocking_dump(*_args, **_kwargs) -> None:
+        dump_entered.set()
+        release_dump.wait(timeout=10.0)
+
+    monkeypatch.setattr(watchdog, "_write_watchdog_dump", blocking_dump)
+    monkeypatch.setattr(watchdog, "_mark_exited_quietly", lambda *a, **k: calls.append("mark"))
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda *a, **k: calls.append("pid"))
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock",
+                        lambda *a, **k: calls.append("lock"))
+    monkeypatch.setattr(watchdog, "_hard_exit", lambda code: calls.append(f"exit:{code}"))
+    done = watchdog.arm_shutdown_watchdog(0.05, exit_code=7)
+    assert dump_entered.wait(timeout=5.0)
+    done.set()
+    release_dump.set()
+    wait_until(
+        lambda: not any(
+            t.is_alive() and t.name in ("gateway-shutdown-watchdog", "gateway-shutdown-forensics")
+            for t in threading.enumerate()),
+        what="shutdown watchdog stood down")
+    assert calls == []
+
+
+def test_shutdown_watchdog_disarm_after_commit_still_exits(monkeypatch):
+    """A disarm that lands after the forensics commit point (here, inside the exit stamp) does
+    not stand the watchdog down: the worker is already stamping an exit (#160012)."""
+    import gateway.shutdown_watchdog as watchdog
+
+    calls: list[str] = []
+    exited = threading.Event()
+    done_ref: dict[str, threading.Event] = {}
+
+    def stamp_and_disarm(*_args, **_kwargs) -> None:
+        calls.append("mark")
+        done_ref["done"].set()
+
+    monkeypatch.setattr(watchdog, "_write_watchdog_dump", lambda *a, **k: None)
+    monkeypatch.setattr(watchdog, "_mark_exited_quietly", stamp_and_disarm)
+    monkeypatch.setattr("gateway.status.remove_pid_file", lambda *a, **k: None)
+    monkeypatch.setattr("gateway.status.release_gateway_runtime_lock", lambda *a, **k: None)
+    monkeypatch.setattr(watchdog, "_hard_exit",
+                        lambda code: (calls.append(f"exit:{code}"), exited.set()))
+    done_ref["done"] = watchdog.arm_shutdown_watchdog(0.05, exit_code=7)
+    assert exited.wait(timeout=5.0)
+    assert calls == ["mark", "exit:7"]

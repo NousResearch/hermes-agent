@@ -1,9 +1,10 @@
-"""The loop-liveness dump keeps the event-loop thread's stack past faulthandler's 100-thread cap.
+"""The loop-liveness dump keeps the event-loop thread's stack past the 100-thread cap.
 
-``faulthandler.dump_traceback(all_threads=True)`` writes at most 100 threads, newest first, so the
-loop thread (started before every worker) is the one it drops in a busy gateway. Both copies of
-the dump (file and stderr, the stderr copy is the only one a journald/launchd host keeps when the
-disk is wedged) must carry the loop thread's own stack ahead of the capped section.
+The all-threads section renders at most ``_STDERR_STACK_THREADS`` threads (the count
+faulthandler's dump stops at), so the loop thread (started before every worker) is the one it
+can drop in a busy gateway. Both copies of the dump (file and stderr, the stderr copy is the
+only one a journald/launchd host keeps when the disk is wedged) must carry the loop thread's
+own stack ahead of the capped section.
 """
 
 from __future__ import annotations
@@ -50,10 +51,7 @@ def _wedge_loop_behind_fillers(tmp_path, monkeypatch, secret=None):
     stderr = io.StringIO()
     with patch("gateway.shutdown_watchdog._hard_exit", side_effect=lambda code: fired.set()), \
             patch("gateway.shutdown_watchdog._mark_exited_quietly"), \
-            patch("gateway.shutdown_watchdog.sys.stderr", stderr), \
-            patch("gateway.shutdown_watchdog.faulthandler.dump_traceback",
-                  side_effect=lambda file=None, all_threads=True: (file or stderr).write(
-                      "Thread 0x1 (most recent call first):\n...\n")):
+            patch("gateway.shutdown_watchdog.sys.stderr", stderr):
         loop_thread.start()
         assert frozen.wait(timeout=5.0), "loop thread never reached its wedged callback"
         for t in fillers:
@@ -75,7 +73,7 @@ def _wedge_loop_behind_fillers(tmp_path, monkeypatch, secret=None):
 
 def test_file_dump_leads_with_the_wedged_loop_thread_past_100_threads(tmp_path, monkeypatch):
     dump, _ = _wedge_loop_behind_fillers(tmp_path, monkeypatch)
-    leading = dump.split("--- faulthandler dump (all threads) ---")[0]
+    leading = dump.split("--- Python thread stacks (innermost frame last) ---")[0]
     assert "wedged_loop_callback_marker" in leading, "loop thread stack missing from the file dump"
     assert "test-gateway-loop" in leading
 
@@ -97,7 +95,7 @@ def test_loop_stack_section_carries_no_frame_locals(tmp_path, monkeypatch):
 
 def test_stderr_stacks_are_capped_and_read_no_source(monkeypatch):
     """Both stack sections open no source file on the kill path; the all-thread one keeps
-    faulthandler's thread cap."""
+    the thread cap faulthandler's dump stops at."""
     import gateway.shutdown_watchdog as watchdog
 
     monkeypatch.setattr(watchdog, "_STDERR_STACK_THREADS", 2)

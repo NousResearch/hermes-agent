@@ -218,6 +218,32 @@ export function HudShell() {
   useReportHudSession()
   useHudGoto(useNavigate())
 
+  // Escape lets go of the HUD without aiming at it. Closing from the pointer
+  // means winning a race with click-through — the window has to be solid under
+  // the cursor at the instant of the click, and a HUD that is sitting idle
+  // click-through (or was just opened under a stationary pointer) can eat the
+  // first press or two. The keyboard has no such race.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) {
+        return
+      }
+
+      // An open popover, menu or dialog owns Escape first: it closes itself,
+      // and dispatching here too would take the whole HUD down with it.
+      if (document.querySelector('[data-radix-popper-content-wrapper], [role="dialog"], [role="menu"]') !== null) {
+        return
+      }
+
+      event.preventDefault()
+      void window.hermesDesktop?.hud?.close?.()
+    }
+
+    window.addEventListener('keydown', onKeyDown, true)
+
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [])
+
   // Which screen EDGE the window is parked against. Parked tight to the top,
   // the composer flips to the window's top edge and the thread grows DOWN
   // (data-hud-edge). Computed here from window.screenY — no IPC: the renderer

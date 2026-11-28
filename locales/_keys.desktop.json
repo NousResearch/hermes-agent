@@ -5477,6 +5477,7 @@
     "updates.applyingBodyBackend",
     "updates.applyingClose",
     "updates.applyingCloseAppInstaller",
+    "updates.applyingStayBackend",
     "updates.availableBody",
     "updates.availableBodyAppInstaller",
     "updates.availableBodyBackend",

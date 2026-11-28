@@ -1302,8 +1302,11 @@ class AIAgent(
     _build_api_kwargs = _forward("agent.chat_completion_helpers", "build_api_kwargs")
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
-        """Record the first guardrail decision that should stop this turn."""
-        if decision.should_halt and self._tool_guardrail_halt_decision is None:
+        """Keep the first stop decision, but never let a block mask a terminal halt."""
+        current = self._tool_guardrail_halt_decision
+        if decision.should_halt and (
+            current is None or (current.action == "block" and decision.action == "halt")
+        ):
             self._tool_guardrail_halt_decision = decision
         if decision.should_halt:
             record_guardrail_decision(self, decision.action, decision.code)

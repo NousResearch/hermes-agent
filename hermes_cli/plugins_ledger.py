@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import weakref
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
@@ -256,6 +257,25 @@ class PluginLedgerMixin:
         """Unload registrations while excluding discovery/deferred loading."""
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             return self._unload_scoped(plugin)
+
+    @contextmanager
+    def unload_native_plugin_on_remove(self, directory: Path):
+        """Unload an installed native plugin after its directory entry is removed."""
+        with self._discovery_lock:
+            # Resolve the parent so profile path aliases match, while keeping the
+            # final component to distinguish a symlink from the plugin it points to.
+            entry = directory.parent.resolve() / directory.name
+            installed = next((
+                loaded for loaded in self._plugins.values()
+                if loaded.manifest.source == "user"
+                and not loaded.manifest.portable
+                and loaded.manifest.path
+                and (path := Path(loaded.manifest.path)).parent.resolve() / path.name == entry
+            ), None)
+            yield
+            if installed is not None:
+                with _plugin_home_scope(self.home_path):
+                    self._unload_scoped(installed)
 
     def _unload_scoped(self, plugin: str | PluginManifest | LoadedPlugin | None = None) -> bool:
         """Unload one plugin (or all when ``plugin=None``, as force rediscovery does). Every ledger registration

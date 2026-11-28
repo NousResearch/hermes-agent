@@ -799,10 +799,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Send the approval request from the agent thread: the adapter's interactive button
         approvals (``send_exec_approval``) when available, else plain text with ``/approve`` steps."""
         from gateway.run import _approval_send_outcome, _interim_metadata, _redact_approval_command
+        from gateway.run_turn_progress import local_viewer_turn
         from gateway.run_turn_runner_approval_settle import register_timeout_notice
         from gateway.run_turn_runner_approval_text import approval_text_prompt
         ctx = self._ctx
         adapter = ctx._status_adapter
+        chat_required = background or not local_viewer_turn(self)
         # Slack's assistant_threads_setStatus disables the compose box, so the user can't type
         # /approve while "is thinking..." shows. Pausing stops _keep_typing re-setting it; resumed
         # in approve/deny.
@@ -826,7 +828,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 )
                 if fut is None:
                     raise RuntimeError("send_exec_approval: loop unavailable")
-                outcome = _approval_send_outcome(fut, timeout=15)
+                outcome = _approval_send_outcome(fut, timeout=15, honor_delivery_uncertainty=True)
                 if outcome == "sent":
                     # Delivery receipt (#138133): an acked card was the one silent outcome. The destination is the
                     # REQUESTED one: an adapter's stale-thread fallback may land it elsewhere (logged there). Never the command text.
@@ -895,7 +897,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             )
             # A receipt that times out (or a lost ack) is AMBIGUOUS, not a failure: the prompt may be
             # on screen, so it stays armed for a typed /approve, exactly like the card path above.
-            outcome = _approval_send_outcome(fut, timeout=15)
+            outcome = _approval_send_outcome(fut, timeout=15, honor_delivery_uncertainty=True)
             if fut is not None:
                 res = _settled_result(fut, outcome)
                 # Text-lane receipt (#138133): a card failure lands here, and a failed fallback was silent too.
@@ -905,13 +907,14 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                            approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
-                register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-            if background and outcome not in ("sent", "ambiguous"):
-                # Nobody else can still show a background child's prompt: undelivered fails it closed.
+                if outcome in ("sent", "ambiguous"):
+                    register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
+            if chat_required and outcome not in ("sent", "ambiguous"):
+                # With no other presenter, a definitive failure leaves nobody able to see the prompt.
                 raise RuntimeError("Approval notification was not delivered")
         except Exception as e:
             logger.error("Failed to send approval request: %s", e)
-            if background:
+            if chat_required:
                 raise
 
     # ── run_sync phases ─────────────────────────────────────────────────────────────────────

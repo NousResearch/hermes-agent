@@ -199,7 +199,7 @@ from plugins.platforms.telegram import telegram_flood_window as _flood_window
 from plugins.platforms.telegram.telegram_media_fetch import (
     cache_replied_media, fetch_telegram_file, local_root, merged_typed_text, record_typed_text)
 from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id, parse_send_target, parse_telegram_message_id
-from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt
+from plugins.platforms.telegram.telegram_resolved_prompt import edit_keeping_prompt, send_approval_card
 from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt, tap_matches_prompt
 from plugins.platforms.telegram.telegram_clarify_multi import handle_multi_token, multi_prompt_extras, resolve_clarify_choice
 from plugins.platforms.telegram.telegram_topic_transfer import TopicTransferFn, apply_root_dm_topic_transfer
@@ -3844,21 +3844,16 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Inline-keyboard approval prompt; buttons call ``resolve_gateway_approval()`` like the
         text ``/approve`` flow."""
-        def build():
-            # Short ids in callback_data map back to session_key; restart-unique (prompt_id_counter).
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = prompt_id_counter()
-            approval_id = next(self._approval_counter)
-            buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
-                       for label, choice, _ in prompt.actions]
-            def on_sent(_msg):
-                self._approval_state[approval_id] = prompt.session_key
-                if prompt.request_id:
-                    self._approval_request_ids[approval_id] = prompt.request_id
-            return prompt.text, InlineKeyboardMarkup(self._rows_of_two(buttons)), on_sent
-        return await self._send_prompt(
-            "send_exec_approval", prompt.chat_id, prompt.metadata, build, parse_mode=ParseMode.HTML,
-            thread_id=self._metadata_thread_id(prompt.metadata), reply_to_mode=self._reply_to_mode)
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not hasattr(self, "_approval_counter"):
+            self._approval_counter = prompt_id_counter()
+        approval_id = next(self._approval_counter)
+        buttons = [InlineKeyboardButton(label, callback_data=f"ea:{choice}:{approval_id}")
+                   for label, choice, _ in prompt.actions]
+        return await send_approval_card(
+            self, prompt, approval_id, InlineKeyboardMarkup(self._rows_of_two(buttons)),
+            parse_mode=ParseMode.HTML, inline_wait_cap=_FLOOD_INLINE_WAIT_CAP_SECS)
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,

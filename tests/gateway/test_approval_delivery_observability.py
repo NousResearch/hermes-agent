@@ -13,6 +13,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -21,8 +22,12 @@ import pytest
 # when the suite runs from a developer worktree — the home-I/O guard is fixture-scoped and only
 # active during a test, so the probe must happen here at collection time.
 import gateway.run as gateway_run
+from gateway.config import Platform, PlatformConfig
 from gateway.run_turn_runner import TurnRunner
 from gateway.platforms.base import SendResult
+from gateway.session import SessionSource
+from gateway.turn_context import TurnContext
+from plugins.platforms.telegram.adapter import TelegramAdapter
 from tools import approval as _approval
 from tools import approval_gateway_wait as wait_mod
 
@@ -141,9 +146,83 @@ def test_text_fallback_send_leaves_a_record(tmp_path, monkeypatch, caplog, text_
     runner._close_native_stream_boundary = lambda _why: None
 
     with caplog.at_level(logging.INFO, logger="gateway.run"):
-        runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
+        if text_ok:
+            runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
+        else:
+            with pytest.raises(RuntimeError, match="Approval notification was not delivered"):
+                runner._approval_notify_sync(dict(APPROVAL, request_id="req-1"))
 
     text = [r for r in caplog.records if r.message.startswith("Exec approval text prompt send")]
     assert len(text) == 1 and text[0].levelno == level
     assert f"success={text_ok}" in text[0].message and "request_id=req-1" in text[0].message
     assert "rm -rf" not in text[0].message
+
+
+@pytest.mark.parametrize(
+    "delivery", ["flood_then_sent", "flood_over_cap", "flood_twice", "both_failed", "card_ack_lost", "text_ack_lost"]
+)
+def test_telegram_approval_settles_by_delivery_outcome(tmp_path, monkeypatch, caplog, delivery):
+    errors = pytest.importorskip("telegram.error")
+
+    (tmp_path / "config.yaml").write_text("display: {}")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
+    # Observe whether the real waiter reaches its polling stage without waiting for its deadline.
+    pending = []
+
+    def stop_waiting(event, session_key, **kwargs):
+        pending.extend(_approval._gateway_queues[session_key])
+        return "interrupted"
+
+    poll = Mock(side_effect=stop_waiting)
+    monkeypatch.setattr(wait_mod, "_poll_event", poll)
+    sleep = AsyncMock()
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", sleep)
+    refused = errors.BadRequest("Chat not found")
+    sent = SimpleNamespace(message_id=42)
+    bot_results = {
+        "flood_then_sent": [errors.RetryAfter(5), sent],
+        "flood_over_cap": [errors.RetryAfter(7), sent],
+        "flood_twice": [errors.RetryAfter(5), errors.RetryAfter(5), sent],
+        "both_failed": [refused, refused],
+        "card_ack_lost": [errors.TimedOut()],
+        "text_ack_lost": [refused, errors.TimedOut()],
+    }
+    bot_send = AsyncMock(side_effect=bot_results[delivery])
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._bot = SimpleNamespace(send_message=bot_send)
+    adapter._rich_send_disabled = True
+    turn = object.__new__(TurnRunner)
+    turn._ctx = TurnContext(
+        _status_adapter_pinned=adapter, _status_chat_id="1", session_key=SESSION,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
+    )
+    monkeypatch.setattr(turn, "_schedule",
+                        lambda coro, _label: SimpleNamespace(result=lambda timeout=None, _r=asyncio.run(coro): _r))
+    monkeypatch.setattr(turn, "_close_native_stream_boundary", lambda _why: None)
+    _clear_queues()
+    decision = wait_mod._await_gateway_decision(SESSION, turn._approval_notify_sync, APPROVAL)
+
+    if delivery == "both_failed":
+        assert decision["notify_failed"] is True
+        poll.assert_not_called()
+    else:
+        assert not decision.get("notify_failed")
+        poll.assert_called_once()
+        assert len(pending) == 1
+    assert not _approval._gateway_queues.get(SESSION)
+    assert bot_send.await_count == len(bot_results[delivery])
+    bot_calls = bot_send.await_args_list
+    assert bot_calls[0].kwargs["reply_markup"]
+    if delivery in ("flood_then_sent", "flood_twice"):
+        sleep.assert_awaited_once_with(5)
+        assert bot_calls[0] == bot_calls[1]
+    else:
+        sleep.assert_not_awaited()
+    if delivery in ("flood_then_sent", "card_ack_lost"):
+        assert list(adapter._approval_state.values()) == [SESSION]
+        assert list(adapter._approval_request_ids.values()) == [pending[0].data["request_id"]]
+    elif len(bot_calls) > 1:
+        assert bot_calls[-1].kwargs.get("reply_markup") is None
+    if delivery == "text_ack_lost":
+        assert "outcome=ambiguous" in caplog.text

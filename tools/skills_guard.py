@@ -23,7 +23,7 @@ from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, rais
 from tools.threat_patterns import FORGET_RULES_RAW_RE, mask_negated_forget
 
 
-SCANNER_VERSION = "skills-guard-v16"
+SCANNER_VERSION = "skills-guard-v17"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {
@@ -419,6 +419,21 @@ THREAT_PATTERNS = [
     (r'!`[^`\s][^`\n]*`',
      "inline_shell_exec", "high", "execution",
      "inline-shell auto-exec snippet (expands via bash -c on skill view/load)"),
+    # Delivery half of an install-then-execute chain: a SKILL.md that tells the agent to
+    # invoke a script shipped in the skill. critical, not high: INSTALL_POLICY allows
+    # caution on agent-created skills, so a high finding here would not block the write.
+    (r'\b(?:powershell(?:\.exe)?|pwsh)\b[^\n]{0,160}?(?:-ExecutionPolicy\s+(?:Bypass|Unrestricted)\b|-(?:enc|encodedcommand)\b)'
+     r'[^\n]{0,160}?(?:-File\s+)?["\']?[^\s"\']+\.ps1\b'
+     r'|\bcmd(?:\.exe)?\s+/c\s+[^\n]{0,120}?["\']?[^\s"\']+\.(?:bat|cmd)\b'
+     r'|\b(?:wscript|cscript)(?:\.exe)?\s+[^\n]{0,120}?["\']?[^\s"\']+\.vbs\b',
+     "bundled_script_exec", "critical", "execution",
+     "instructs the agent to execute a bundled script (shell or policy bypass)"),
+    # The observed payload's data source. A scanned .ps1 that names the profile memory
+    # directory is exfil-shaped even when the copy verb is on another line (regex passes
+    # are per line, so a copy-verb+path rule misses `$src = ...USER.md` then `Copy-Item $src`).
+    (r'(?:memories[/\\])(?:USER|MEMORY)\.md\b',
+     "agent_memory_access", "high", "exfiltration",
+     "references the agent\'s persistent memory/profile file"),
     # ── Path traversal ──
     (r'\.\./\.\./\.\.', "path_traversal_deep", "high", "traversal", "deep relative path traversal (3+ levels up)"),
     (r'\.\./\.\.', "path_traversal", "medium", "traversal", "relative path traversal (2+ levels up)"),
@@ -617,10 +632,13 @@ MAX_FILE_COUNT, MAX_TOTAL_SIZE_KB, MAX_SINGLE_FILE_KB = 50, 5120, 256
 # Text extensions to scan; known binary extensions that should NOT be in a skill; script types allowed +x.
 SCANNABLE_EXTENSIONS = {
     '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb', '.yaml', '.yml', '.json', '.toml',
-    '.cfg', '.ini', '.conf', '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php'}
+    '.cfg', '.ini', '.conf', '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
+    # Windows/JS executable scripts. Without these, scan_file() routes the file to
+    # _unscanned_text_padded_code() and no threat pattern ever runs over the body.
+    '.ps1', '.bat', '.cmd', '.vbs', '.mjs'}
 SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.com', '.msi', '.dmg', '.app', '.deb', '.rpm'}
-_SCRIPT_EXTENSIONS = {'.sh', '.bash', '.py', '.rb', '.pl'}
+_SCRIPT_EXTENSIONS = {'.sh', '.bash', '.py', '.rb', '.pl', '.ps1', '.bat', '.cmd', '.vbs', '.mjs'}
 
 # Zero-width / directional unicode used for text hiding, with the readable name reported in the finding.
 _INVISIBLE_CHAR_NAMES = {
@@ -923,6 +941,14 @@ def scan_skill(skill_path: Path, source: str = "community", *, trust_level: str 
                 findings.extend(scan_file(f, str(f.relative_to(skill_path)), skill=True))
     elif skill_path.is_file():
         findings.extend(scan_file(skill_path, skill_path.name, skill=True))
+    if trust == "agent-created":
+        # Inline-shell snippets run before the LLM sees the skill, so the agent-created
+        # tier's high->caution->allow policy is not enough: escalate to critical/dangerous
+        # or the guard re-arms pre-response code execution through a normal skill write.
+        for finding in findings:
+            if finding.pattern_id == "inline_shell_exec" and finding.severity == "high":
+                finding.severity = "critical"
+                finding.description = f"{finding.description} (critical for agent-created skills)"
     if trust == "community":
         findings = [_community_note(f) for f in findings]
     verdict = _determine_verdict(findings)

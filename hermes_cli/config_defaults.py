@@ -1414,7 +1414,10 @@ DEFAULT_CONFIG = {
         "template_vars": True,
         # Pre-execute !`cmd` snippets in SKILL.md, inlining stdout (dates, git state...). Off:
         # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
+        # Turning this on is necessary but NOT sufficient: the skill must also be named in
+        # inline_shell_allowlist. A bare global flag turned any edited skill into pre-response execution.
         "inline_shell": False,
+        "inline_shell_allowlist": [],  # normalized POSIX category/name paths permitted to expand !`cmd` (default: none)
         "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
         # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
         # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a

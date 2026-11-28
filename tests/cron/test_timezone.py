@@ -84,6 +84,42 @@ class TestGetTimezone:
         _reset_hermes_time_cache()
         os.environ.pop("HERMES_TIMEZONE", None)
 
+    def test_reset_during_resolution_does_not_restore_stale_timezone(self, tmp_path, monkeypatch):
+        """A read that started before a config save must not repopulate the cleared cache."""
+        import threading
+
+        home = tmp_path / "profile"
+        home.mkdir()
+        config = home / "config.yaml"
+        config.write_text("timezone: UTC\n", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+        resolved = threading.Event()
+        resume = threading.Event()
+        observed = []
+        original = hermes_time._resolve_timezone_name
+
+        def paused_resolve():
+            value = original()
+            if threading.current_thread() is worker:
+                resolved.set()
+                assert resume.wait(timeout=10)
+            return value
+
+        monkeypatch.setattr(hermes_time, "_resolve_timezone_name", paused_resolve)
+        worker = threading.Thread(target=lambda: observed.append(hermes_time.get_timezone_name()))
+        worker.start()
+        try:
+            assert resolved.wait(timeout=10)
+            config.write_text("timezone: Asia/Tokyo\n", encoding="utf-8")
+            hermes_time.reset_cache()
+        finally:
+            resume.set()
+            worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert observed == ["Asia/Tokyo"]
+        assert hermes_time.get_timezone_name() == "Asia/Tokyo"
+
 
     def test_cache_isolated_by_active_profile_config(self, tmp_path, monkeypatch):
         """Switching HERMES_HOME must not reuse another profile's timezone."""

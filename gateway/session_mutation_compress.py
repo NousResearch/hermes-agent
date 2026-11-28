@@ -124,7 +124,7 @@ async def prepare_compress(authority, live, payload, prepared):
 def _engine_compress(engine, head, tail, messages, request, memory_context):
     """One forced ``compress()`` on a plugin engine; None when it changed nothing or would grow the
     conversation (the agent path refuses a growing result the same way)."""
-    from agent.conversation_compression import _supported_compression_kwargs
+    from agent.conversation_compression_call import _supported_compression_kwargs
     from agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
     from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
     engine._last_compress_refused_would_grow = False

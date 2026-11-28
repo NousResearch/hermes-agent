@@ -296,7 +296,7 @@ async def test_telegram_background_completion_continues_goal_without_user_nudge(
         else:
             assert sent[-2:] == [
                 ("42", "worker result read"),
-                ("42", "Goal is still active, but Hermes couldn’t queue the next turn."),
+                ("42", "Hermes couldn’t queue the next turn."),
             ]
             assert not any("Continuing toward goal" in reply for _, reply in sent)
             assert manager.state.status == "active"

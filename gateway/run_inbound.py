@@ -1337,7 +1337,7 @@ class GatewayInboundMixin(
             if generation is not None:
                 # Committed as the wake a turn without a drainer queues, never as a plain row: a /goal
                 # pause, clear or new goal while it waits behind a follow-up still stops it, and the
-                # follow-up's judgment sees it waiting. Not admitted: the goal stays active, as there.
+                # follow-up's judgment sees it waiting. Refusal does not turn it into plain input.
                 try:
                     accepted = await self._admit_goal_continuation(source, event.text, pinned, generation)
                 finally:

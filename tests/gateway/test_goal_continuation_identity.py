@@ -2,9 +2,9 @@
 
 A continuation the judge queued for goal A must never start once A is gone: cleared, replaced by
 goal B (with or without a /goal clear first), or set again with the same text, even when the row
-is already committed to the session authority's durable FIFO. It names A by its persistent
-``GoalState.created_at`` (as a heartbeat admission names its ``HeartbeatState``), so a new goal
-with the same text is not mistaken for it, and a criterion added to A (/subgoal) keeps it.
+is already committed to the session authority's durable FIFO. The generation combines the goal's
+persistent ``created_at`` with its resume token. A new goal with the same text or a new resume
+cannot inherit the wake; adding a criterion to A does not change its generation.
 
 A continuation drained from the adapter slot, and the one /goal resume queues, join the FIFO as the
 same identified wake, so they are still checked when they wait behind a follow-up; one whose wake
@@ -539,7 +539,7 @@ async def test_drained_continuation_is_not_run_unidentified_when_its_wake_is_ref
                                what="the route settled")
 
         assert calls == ["work", "meanwhile"], calls
-        assert ("42", "Goal is still active, but Hermes couldn’t queue the next turn.") in sent
+        assert ("42", "Hermes couldn’t queue the next turn.") in sent
     finally:
         db.close()
 
@@ -749,9 +749,12 @@ async def test_pause_then_resume_only_starts_the_new_continuation(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(tmp_path, monkeypatch):
+@pytest.mark.parametrize("clear_during_admission", [False, True])
+async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(
+    tmp_path, monkeypatch, clear_during_admission,
+):
     """No ``goal-continuation`` wake can be admitted for ``/goal resume``: its continuation is not run
-    as a plain row (which no later pause or clear would stop); the user is told, the goal stays."""
+    as a plain row. The refusal reports a queue failure, not the current goal state."""
     from gateway import session_automation
     from hermes_cli import goals
     from tests.waiting import async_wait_until
@@ -764,6 +767,9 @@ async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(tmp_p
         return _reply(f"answered {len(calls)}")
 
     async def refuse_wake(*args, **kwargs):
+        if clear_during_admission:
+            await runner._handle_goal_command(MessageEvent(text="/goal clear", source=source, message_id="2"))
+            assert not goals.GoalManager(sid).is_active()
         return False
 
     monkeypatch.setattr(runner, "_run_agent", respond)
@@ -774,12 +780,11 @@ async def test_goal_resume_whose_wake_is_refused_does_not_run_unidentified(tmp_p
     goals.GoalManager(sid).pause()
     try:
         await adapter.handle_message(MessageEvent(text="/goal resume", source=source, message_id="1"))
-        await async_wait_until(lambda: not adapter._background_tasks
-                               and ("42", "Goal is still active, but Hermes couldn’t queue the next turn.") in sent,
-                               what="the resume was answered")
+        await async_wait_until(lambda: not adapter._background_tasks, what="the resume was answered")
 
         assert [c for c in calls if c.startswith(MARKER)] == [], calls
-        assert goals.GoalManager(sid).is_active()
+        assert goals.GoalManager(sid).is_active() is (not clear_during_admission)
+        assert ("42", "Hermes couldn’t queue the next turn.") in sent
     finally:
         db.close()
 

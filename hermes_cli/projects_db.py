@@ -70,7 +70,11 @@ CREATE TABLE IF NOT EXISTS discovered_repos (
 # stop traversal/path separators, loose enough for kebab-case. Display formatting lives in ``name``.
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9\-_]{0,63}$")
 # Deterministic branch slug: lowercase, separators collapsed, capped.
-_BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
+# Branch slugs keep only characters git accepts ANYWHERE in a ref: no dots.
+# A dot let `branch_name_for` emit refs git refuses — `..` anywhere, a trailing
+# `.`, a `.lock` suffix, or the 40-char cut landing on a dot — and the card then
+# never spawned (issues #136683, #147233).
+_BRANCH_SAFE_RE = re.compile(r"[^a-z0-9_-]+")
 _INITIALIZED_PATHS: set[str] = set()
 # TEXT columns added to `projects` after v1; re-applied idempotently on every open so a legacy DB
 # upgrades in place.

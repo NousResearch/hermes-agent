@@ -201,7 +201,9 @@ def test_a_mixed_batch_reports_each_child_once_and_no_early_failure_for_the_wait
         out = json.loads(delegate_task(tasks=[{"goal": "write the parser"}, {"goal": "slow: write the tests"}],
                                        background=True, parent_agent=parent))
         wait_until(lambda: (_ledger(parent, out["delegation_id"]) or ("running",))[0] != "running", what="the unit")
-    first = _events(out["delegation_id"])
+    # The durable row commits before the in-process event is queued: wait for the event itself.
+    first = []
+    wait_until(lambda: first.extend(_events(out["delegation_id"])) or first, what="the batch completion")
     assert [e.get("task_failure_notice") for e in first] == [None], first  # the batch result only, no early notice
     _deadline(1)
     for _ in range(3):

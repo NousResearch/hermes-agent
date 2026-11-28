@@ -324,6 +324,8 @@ def validate_removed(data: object) -> tuple[list[str], list[str]]:
 
 def validate_file(path: Path) -> tuple[list[str], list[str]]:
     """Validate one YAML file (dispatching on filename). Returns (errors, warnings)."""
+    if path.suffix != ".yaml":
+        return ["catalog entry files must use the .yaml extension"], []
     try:
         reader = YAML(typ="safe")
         reader.version = (1, 1)
@@ -345,6 +347,8 @@ def collect_paths(args: list[str]) -> list[Path]:
         p = Path(arg)
         if p.is_dir():
             paths.extend(sorted(p.glob("*.yaml")))
+            # Runtime and docs load only *.yaml; collect *.yml so validate_file
+            # fails the gate instead of a stray entry passing CI and never loading.
             paths.extend(sorted(p.glob("*.yml")))
         else:
             paths.append(p)

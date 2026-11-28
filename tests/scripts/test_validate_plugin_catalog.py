@@ -14,6 +14,8 @@ from pathlib import Path
 import hermes_yaml as yaml
 import pytest
 
+from hermes_cli.plugin_catalog import load_catalog
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "validate_plugin_catalog.py"
 
@@ -320,6 +322,29 @@ def test_json_output_shape_on_success_with_warning(tmp_path):
 
 
 # ── directory mode ─────────────────────────────────────────────────────
+
+
+def test_directory_with_stray_yml_entry_fails_admission(tmp_path):
+    """Regression for #160206: runtime ignores *.yml, so the directory gate must fail on one."""
+    write_entry(tmp_path, VALID_ENTRY)
+    write_entry(tmp_path, {**VALID_ENTRY, "name": "ignored-plugin"}, "ignored.yml")
+
+    result = run_validator("--json", str(tmp_path))
+    assert [entry.name for entry in load_catalog(tmp_path)] == [VALID_ENTRY["name"]]
+    assert result.returncode == 1, result.stdout + result.stderr
+    rows = {Path(row["path"]).name: row for row in json.loads(result.stdout)["files"]}
+    assert rows[f"{VALID_ENTRY['name']}.yaml"]["ok"] is True
+    assert any(".yaml" in error for error in rows["ignored.yml"]["errors"])
+
+
+def test_explicit_yml_entry_is_rejected(tmp_path):
+    """An explicit path must not bypass the runtime's .yaml-only contract."""
+    path = write_entry(tmp_path, VALID_ENTRY, "entry.yml")
+    result = run_validator("--json", str(path))
+    assert result.returncode == 1, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report["ok"] is False
+    assert any(".yaml" in error for error in report["files"][0]["errors"])
 
 
 def test_directory_mode_validates_all_entries_and_removed(tmp_path):

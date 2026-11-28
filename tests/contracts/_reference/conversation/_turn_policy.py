@@ -20,9 +20,10 @@ def sanitize_context(text: str) -> str:
 
 
 def loaded_view(role: Any, content: Any) -> Any:
-    """Content as a replay load hands it out: user/assistant strings sanitized and stripped (``SessionMessagesMixin._loaded_view_content``)."""
+    """Content as a replay load hands it out: user/assistant strings sanitized, and kept byte-for-byte unless sanitizing rewrote them (``_loaded_view_content``)."""
     if role in {"user", "assistant"} and isinstance(content, str):
-        return sanitize_context(content).strip()
+        sanitized = sanitize_context(content)
+        return sanitized.strip() if sanitized != content else content
     return content
 
 

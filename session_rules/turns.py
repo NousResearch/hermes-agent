@@ -1022,10 +1022,13 @@ _decode_content = decode_content
 
 
 def _loaded_view_content(role: str, content: Any) -> Any:
-    """Content as ``_rows_to_messages`` hands it to callers: user/assistant strings are sanitized and
-    stripped on load, so a reloaded session's messages must be compared to rows through the same lens."""
+    """Content as ``_rows_to_conversation`` hands it to callers: user/assistant strings are sanitized, and
+    kept byte-for-byte unless sanitizing rewrote them. Identity comparisons run through this same lens, so a
+    reloaded row matches the dict it came from — and the usage anchor, which fingerprints the priced
+    messages, survives a resume (an unconditional strip invalidated it for any padded prompt)."""
     if role in {"user", "assistant"} and isinstance(content, str):
-        return sanitize_context(content).strip()
+        sanitized = sanitize_context(content)
+        return sanitized.strip() if sanitized != content else content
     return content
 
 

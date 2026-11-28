@@ -228,6 +228,43 @@ class TestCatalogRanking:
 
         assert search_catalog(catalog, "list", limit=1) == [catalog[0]]
 
+    def test_namespaced_tool_suffix_names_it(self):
+        """A query equal to the part after a ``__`` separator names that tool: it ranks above
+        a longer sibling name and is offered even when BM25 favours other documents."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog([
+            _td("mcp__blender__execute_blender_code_for_cli", "Execute Python code in a background Blender process."),
+            _td("mcp__blender__execute_blender_code", "Execute Python code in the connected Blender instance "
+                "with full access to bpy; assign a dict to result to return data from the run."),
+            _td("billing__get_report_status", "Report status."),
+            _td("billing__list_reports", "List reports."),
+            _td("mcp__nous_support__report", "List or fetch diagnostics bundles uploaded by users of the agent."),
+        ])
+
+        assert search_catalog(catalog, "execute_blender_code", limit=1) == [catalog[1]]
+        assert search_catalog(catalog, "report", limit=1) == [catalog[4]]
+        assert search_catalog(catalog, "nous-support__report", limit=1) == [catalog[4]]
+
+    def test_term_coverage_then_whole_local_name_order_results(self):
+        """A tool matching more distinct query terms ranks first, whatever the scores; among
+        equal coverage, a tool whose whole local name is in the query beats siblings whose
+        shorter descriptions repeat its word (pi#11625/#11632 fixtures)."""
+        from tools.tool_search import build_catalog, search_catalog
+
+        catalog = build_catalog([
+            _td("mcp__peekaboo__app", "Launch, quit, relaunch, focus, hide, or switch applications. Targets an "
+                "application by name, bundle identifier, or process ID, and can wait until it is ready."),
+            _td("mcp__peekaboo__see", "Capture the app window of the peekaboo app and describe the app."),
+            _td("mcp__peekaboo__window", "Move, resize, or close a window of an app."),
+            _td("mcp__peekaboo__image", "Take a screenshot of the screen, an app, or a window."),
+        ])
+
+        assert search_catalog(catalog, "peekaboo app", limit=1) == [catalog[0]]
+        assert search_catalog(catalog, "screenshot window", limit=1) == [catalog[3]]
+        assert search_catalog(catalog, "describe app", limit=1) == [catalog[1]]
+        assert search_catalog(catalog, "window", limit=1) == [catalog[2]]
+
     def test_precomputed_corpus_stats_preserve_results(self, issue_defs):
         from tools.tool_search import build_catalog, search_catalog
         from tools.tool_search_catalog import _corpus_stats

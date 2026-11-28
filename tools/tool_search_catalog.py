@@ -175,7 +175,11 @@ def _required_term_coverage(answerable_term_count: int) -> int:
 
 def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
                    corpus_stats: Optional[_CorpusStats] = None) -> list[CatalogEntry]:
-    """Top-``limit`` catalog entries for ``query`` by BM25 (exact name match ranks first).
+    """Top-``limit`` catalog entries for ``query``, ordered by: a query naming the tool
+    (:func:`_name_match_tier`); then how many distinct query terms the tool matches, so for
+    "screenshot window" a tool describing both beats ``window``, which names one; then whether
+    the tool's whole local name is in the query ("peekaboo app" -> ``mcp__peekaboo__app``, not a
+    sibling whose shorter description mentions "app"); then BM25.
 
     Admission is by the query's rarest token (:func:`_gate_token`), not by ``score > 0``:
     BM25 is additive over the tokens a document shares with the query, so on a large catalog
@@ -191,21 +195,49 @@ def search_catalog(catalog: list[CatalogEntry], query: str, limit: int = 5, *,
     gate = _gate_token(query_tokens, doc_freq, corpus_stats[3])
     answerable = {t for t in query_tokens if doc_freq.get(t, 0) > 0}
     required_terms = _required_term_coverage(len(answerable))
-    exact_name = query.strip().lower()
+    name_query = _normalize_name(query)
 
-    def _admitted(entry: CatalogEntry) -> bool:
-        """Carries the intent word AND enough of the answerable terms (exact name is exempt)."""
-        if entry.name.lower() == exact_name:
+    def _admitted(entry: CatalogEntry, named: int) -> bool:
+        """Carries the intent word AND enough of the answerable terms (a named tool is exempt)."""
+        if named:
             return True
         tokens = set(entry._tokens)
         return gate in tokens and sum(1 for t in answerable if t in tokens) >= required_terms
 
-    scored = [
-        (float("inf") if entry.name.lower() == exact_name
-         else _bm25_score(query_tokens, entry._tokens, *corpus_stats), entry)
-        for entry in catalog if _admitted(entry)]
+    query_terms = set(query_tokens)
+    scored = []
+    for entry in catalog:
+        named = _name_match_tier(name_query, entry.name)
+        if _admitted(entry, named):
+            tokens = set(entry._tokens)
+            covered = len(query_terms & tokens)
+            local_named = int(_local_name_terms(entry.name) <= query_terms)
+            bm25 = _bm25_score(query_tokens, entry._tokens, *corpus_stats)
+            scored.append(((named, covered, local_named, bm25), entry))
     scored.sort(key=lambda x: x[0], reverse=True)
     return [e for _, e in scored[:limit]]
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, with anything outside ``[a-z0-9_]`` as ``_``, so ``dev-radius`` names ``dev_radius``."""
+    return re.sub(r"[^a-z0-9_]", "_", name.strip().lower())
+
+
+def _local_name_terms(name: str) -> set[str]:
+    """Stemmed terms of the name after its last ``__`` separator: the part a model says
+    (``app`` for ``mcp__peekaboo__app``). Empty never matches, so it is ``{""}`` then."""
+    return set(_tokenize(name.rsplit("__", 1)[-1])) or {""}
+
+
+def _name_match_tier(name_query: str, name: str) -> int:
+    """2 when the query is the tool's full name, 1 when it is the part after a ``__`` namespace
+    separator (``report`` and ``nous_support__report`` both name ``mcp__nous_support__report``),
+    else 0. Named tools rank above any BM25 score: length normalization otherwise lets a short
+    description sharing the name's words, or a longer sibling name, outrank the tool asked for."""
+    normalized = _normalize_name(name)
+    if normalized == name_query:
+        return 2
+    return int(bool(name_query) and normalized.endswith(f"__{name_query}"))
 
 
 # Sentence end: ., !, ? followed by whitespace/EOS, not inside e.g./i.e./etc.

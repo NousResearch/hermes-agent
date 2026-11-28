@@ -18,6 +18,19 @@ We value contributions in this order:
 
 ---
 
+## Documentation translations
+
+Documentation has one canonical English source. Before adding or expanding a
+translation, read [the translation policy](docs/TRANSLATIONS.md) and search
+open issues and pull requests for existing locale work.
+
+Prefer the website's Docusaurus i18n tree for full translations instead of
+adding another full root-level Markdown copy. Keep `SECURITY.md` at the
+repository root; translations are helpful but the English policy remains
+authoritative.
+
+---
+
 ## Before You Start: Search First
 
 A quick search before you build saves your time and keeps the PR queue clean — duplicates are common here, so it's worth a minute up front.

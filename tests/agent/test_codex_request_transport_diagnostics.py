@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from openai import APIConnectionError
+from openai import APIConnectionError, BadRequestError
 
 from agent.codex_runtime import _codex_request_failure_details, run_codex_stream
 
@@ -69,7 +69,7 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
     assert "example.invalid" not in message
 
 
-def _zero_event_then_completed_client(seen_inputs: list):
+def _zero_event_then_completed_client(seen_inputs: list, error: Exception | None = None):
     """``responses.create`` that dies before any stream event on the first call and completes on
     the second; records the ``input`` list each physical attempt was given."""
     from tests.agent.test_run_agent_codex_responses import _FakeCreateStream
@@ -84,7 +84,7 @@ def _zero_event_then_completed_client(seen_inputs: list):
     def _create(**kwargs):
         seen_inputs.append(kwargs.get("input") or (kwargs.get("extra_body") or {}).get("input"))
         if len(seen_inputs) == 1:
-            raise httpx.ConnectError("no first byte")
+            raise error if error is not None else httpx.ConnectError("no first byte")
         return _FakeCreateStream(events)
 
     return SimpleNamespace(responses=SimpleNamespace(create=_create))
@@ -141,3 +141,43 @@ def test_zero_event_retry_without_prunable_output_logs_unchanged_resend(monkeypa
     assert response.status == "completed" and seen[0] == seen[1]
     (log,) = [r.message for r in caplog.records if "zero-event" in r.message]
     assert "unchanged" in log and "attempt 1/2" in log and re.search(r"serialized_input_bytes=\d+", log)
+
+
+@pytest.mark.parametrize(
+    ("host", "body", "size", "retry"),
+    [
+        ("chatgpt.com", {"detail": "Bad Request"}, 21_000, True),
+        ("chatgpt.com", {"detail": "Bad Request"}, 100, False),
+        ("chatgpt.com", {"error": {"code": "invalid_encrypted_content"}}, 21_000, False),
+        ("example.invalid", {"detail": "Bad Request"}, 21_000, False),
+    ],
+)
+def test_codex_pre_stream_bad_request_retries_only_with_reduced_input(
+    monkeypatch, tmp_path, host, body, size, retry,
+):
+    from tests.agent.test_run_agent_codex_responses import _build_agent
+    from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    request = httpx.Request("POST", f"https://{host}/backend-api/codex/responses")
+    error = BadRequestError("Bad Request", response=httpx.Response(400, request=request), body=body)
+    agent = _build_agent(monkeypatch)
+    seen = []
+    agent.client = _zero_event_then_completed_client(seen, error)
+    kwargs = _oversized_codex_kwargs(size)
+    kwargs["input"][0]["content"] = "u" * 200_000
+
+    if retry:
+        response = agent._run_codex_stream(kwargs)
+        assert response.status == "completed"
+        assert len(seen) == 2
+        assert seen[1][0:2] == seen[0][0:2]
+        assert seen[1][2]["call_id"] == seen[0][2]["call_id"]
+        assert PERSISTED_OUTPUT_TAG in seen[1][2]["output"]
+        assert kwargs["input"][2]["output"] == "x" * size
+        assert (tmp_path / "cache" / "spillover" / "call_browser.txt").read_text() == "x" * size
+    else:
+        with pytest.raises(BadRequestError):
+            agent._run_codex_stream(kwargs)
+        assert len(seen) == 1

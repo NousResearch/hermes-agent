@@ -421,11 +421,18 @@ class SQLiteSessionMaintenance(SessionPortability):
         # as sweep-owned (SQLite evaluates every SET expression against the pre-update row).
         with translated():
             holder = self._store.holder()
-            return bool(holder._execute_write(
-                lambda conn: _set_lineage_column_in_transaction(
+
+            def _archive(conn) -> bool:
+                # The live-turn / compression guard and the lineage flip share this transaction: checking
+                # before the write and flipping afterwards let a turn that started in between be archived
+                # mid-flight. A guarded row is left for a later sweep once its lease is gone.
+                if _write_guards_reject(holder, conn, session_id):
+                    return False
+                return bool(_set_lineage_column_in_transaction(
                     holder, conn, "archived", session_id, 1,
-                    extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END")
-            ))
+                    extra_set_sql=", auto_archived = CASE WHEN archived = 0 THEN 1 ELSE auto_archived END"))
+
+            return holder._execute_write(_archive)
 
     # ── backend heartbeats ────────────────────────────────────────────────
 

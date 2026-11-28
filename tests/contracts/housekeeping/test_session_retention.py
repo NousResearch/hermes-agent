@@ -212,6 +212,23 @@ def test_run_auto_archive_gates_on_the_interval_and_never_raises(backend, scope_
     assert events == []
 
 
+def test_run_auto_archive_leaves_a_live_turn_alone_and_archives_it_later(backend, scope_a):
+    store = backend.open(scope_a)
+    _seed(store, _payload("s-busy", NOW - 10 * DAY, NOW - 10 * DAY, "done"))
+    # CONTRACT: a session whose conversation holds a live turn lease is not archived mid-flight,
+    # and the guarded row is not counted as archived.
+    assert store.coordination.try_acquire_turn_lease(session_id=SessionId("s-busy"), holder="sweep-test", ttl_seconds=300.0)
+    try:
+        assert session_retention.run_auto_archive(store, idle_days=3) == {"skipped": False, "archived": 0}
+        assert store.maintenance.export_session(SessionId("s-busy")).session.archived == 0
+    finally:
+        store.coordination.release_turn_lease(session_id=SessionId("s-busy"), holder="sweep-test")
+    store.state_meta.set("last_auto_archive", "")
+    # CONTRACT: once the lease is gone the same idle row is archived by the next sweep.
+    assert session_retention.run_auto_archive(store, idle_days=3) == {"skipped": False, "archived": 1}
+    assert store.maintenance.export_session(SessionId("s-busy")).session.archived == 1
+
+
 # ── run_auto_prune_and_vacuum ─────────────────────────────────────────────────
 
 

@@ -452,6 +452,10 @@ class InMemoryMaintenance:
         table = self._rows()
         if session_id not in table:
             return False
+        # Same guard as the SQLite backend: a conversation under a live turn lease (or a live
+        # compression lock) is left for a later sweep instead of being archived mid-flight.
+        if lease_guarded(self._backend, self._scope, session_id):
+            return False
         for sid in self._backend.sessions._lineage_ids(table, session_id):
             if sid in table and not table[sid]["archived"]:
                 table[sid].update(archived=True, auto_archived=True)

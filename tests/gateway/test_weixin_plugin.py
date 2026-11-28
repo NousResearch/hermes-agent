@@ -56,6 +56,77 @@ class TestWeixinFormatting:
         assert " ".join(formatted.split()) == " ".join(content.split())
 
 
+class TestWeixinCopyWrapKeepsRenderedUnitsIntact:
+    """The copy-friendly 120-column wrap must not split what WeChat renders as one unit."""
+
+    def test_a_wide_line_carrying_inline_code_is_left_for_the_client_to_soft_wrap(self):
+        adapter = _make_adapter()
+
+        content = (
+            "刚测出来的结论正好印证你的思路：实测非流式下传 "
+            '`reasoning: {"effort": "medium"}` '
+            "就直接返回了完整的正文，刚才那次超时纯属默认 effort 撞上了单次慢连接，"
+            "反倒是同场对照的另一个模型也一起超时了，所以这不是配置问题。"
+        )
+        assert len(content) > weixin.WEIXIN_COPY_LINE_WIDTH
+
+        formatted = adapter.format_message(content)
+
+        # One line: a \n here is a hard paragraph break in the WeChat bubble, and it
+        # splits the code span, which then renders as literal backticks.
+        assert formatted == content.strip()
+        assert '`reasoning: {"effort": "medium"}`' in formatted
+
+    def test_a_wide_ordered_item_with_many_code_spans_stays_on_one_line(self):
+        adapter = _make_adapter()
+
+        content = (
+            "3. **可选模型列表**：两边 `res` 均为 `gemini-4-hydrogen`、`gemini-4-carbon`（`medium`）、"
+            "`gpt-6-astra`（`medium`）、`gpt-6.1-sol`（`medium`），外加 `com` 组的 `deepseek-flash`（`max`）"
+            "与 `claude-opus-5-5`（`medium`），`3.8-flash` 已双端彻底移除。"
+        )
+        assert len(content) > weixin.WEIXIN_COPY_LINE_WIDTH
+
+        formatted = adapter.format_message(content)
+
+        # Splitting this line makes the client hoist every pill to the front of the
+        # continuation line and leave the surrounding fullwidth punctuation behind.
+        assert formatted == content.strip()
+        assert formatted.count("`") == content.count("`")
+
+    def test_wrapped_prose_does_not_split_a_cjk_number_unit_phrase(self):
+        adapter = _make_adapter()
+
+        content = " ".join(["field=value"] * 9) + " pad pad 约 2 分钟跑完"
+        assert len(content) > weixin.WEIXIN_COPY_LINE_WIDTH
+
+        formatted = adapter.format_message(content)
+        lines = formatted.splitlines()
+
+        assert len(lines) > 1
+        # CJK has no word spaces: the space before 约 separates a phrase boundary,
+        # not two words, so breaking there reads as two paragraphs on the client.
+        assert any("约 2 分钟跑完" in line for line in lines)
+
+
+
+    def test_cjk_prose_with_latin_terms_stays_one_paragraph(self):
+        adapter = _make_adapter()
+        content = (
+            "这段消息是发给手机端用户的：在 Open Compute Project 测试中，我们确认 "
+            "RDMA Verbs API 和 Linux network namespace 的指标可以跨平台对照；"
+            "目前 WeChat iLink AI bubble 会在用户屏幕上自动软换行，任何服务端强制插入的"
+            "换行都会把本来连续的中文段落拆成两个独立的显示区块，"
+            "这意味着读者看起来像是段落结束了，但实际上句子还没有讲完。"
+        )
+        assert len(content) > weixin.WEIXIN_COPY_LINE_WIDTH
+        assert "`" not in content
+
+        # Latin terms are part of the CJK prose, not author paragraph breaks.
+        assert adapter.format_message(content) == content
+
+
+
 class TestWeixinChunking:
 
 

@@ -7,6 +7,7 @@ import os
 import threading
 
 from fastapi import FastAPI
+from agent.codex_preread import start_codex_preread
 from hermes_cli.pty_session import run_reaper
 
 logger = logging.getLogger("hermes_cli.web_server")
@@ -62,6 +63,8 @@ async def standalone_lifespan(app: "FastAPI"):
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
     # the Desktop's 10s ready-probe timed out (GH-73083).
     _warm_gateway_module()
+    # The backend serves every profile's chats, so any profile on the Codex runtime warms its binary.
+    start_codex_preread(multiplex=True)
 
     # Snapshot the checkout revision so lazy-import paths (model picker) can
     # refuse with "restart required" after `hermes update` replaced the code

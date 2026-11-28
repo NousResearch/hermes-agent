@@ -43,6 +43,7 @@ def _delegation(delegation_id: str = "deleg_owner1", **extra) -> dict:
 
 def _registry() -> SimpleNamespace:
     return SimpleNamespace(completion_queue=queue.Queue(), is_completion_consumed=lambda _sid: False,
+                           is_completion_notice_retired=lambda _sid: False,
                            restore_completions=lambda: 0)
 
 

@@ -240,18 +240,23 @@ class TestCompletionConsumed:
         assert registry.is_completion_consumed("proc_wait")
 
 
-    def test_poll_observed_does_not_suppress_gateway_watcher(self, registry):
-        """The gateway/tui watcher gate (is_completion_consumed) must stay False
-        after a read-only poll, so the autonomous delivery turn still fires
-        even though the CLI drain was deduped (#10156)."""
+    def test_bare_poll_stays_read_only_and_acked_poll_retires(self, registry):
+        """An exited bare poll() is a read-only status check: it must not retire the
+        watcher's autonomous turn (#10156, as upstream settled it in f6945b76). The
+        instrument that retires the notice is acknowledge=true (#94455); wait/log
+        consumption semantics are unchanged."""
         s = _make_session(sid="proc_gw", notify_on_complete=True, output="done")
         s.exited = True
         s.exit_code = 0
         registry._finished[s.id] = s
 
         registry.poll("proc_gw")
-        # The gateway watcher gate is untouched, so it still delivers.
         assert not registry.is_completion_consumed("proc_gw")
+        assert not registry.is_completion_notice_retired("proc_gw")
+
+        registry.poll("proc_gw", acknowledge=True)
+        assert registry.is_completion_consumed("proc_gw")
+        assert registry.is_completion_notice_retired("proc_gw")
 
 
     def test_short_id_poll_dedupes_cli_completion_without_consuming_gateway_turn(self, registry):

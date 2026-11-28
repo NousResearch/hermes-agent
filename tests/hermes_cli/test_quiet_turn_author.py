@@ -258,3 +258,107 @@ def test_quiet_requested_completion_wake_never_muted(tmp_path, monkeypatch):
     result = qsq.continue_quiet_notify_completions(
         "s", lambda text: {"final_response": "REQUESTED_REPLY"}, linger_budget=0.0)
     assert result == {"final_response": "REQUESTED_REPLY"}
+
+
+ANSWER_WITH_RECEIPT = "all green\n\n```json\n{\"node_outcome\": \"success\"}\n```"
+
+
+def test_post_answer_clean_completion_dropped_without_wake(monkeypatch):
+    """A lane that already printed its final ```json receipt must not re-emit for a late clean exit.
+
+    The completion is drained (claimed/completed) and dropped: no follow-up turn, and the
+    None return keeps the caller's harvested answer authoritative.
+    """
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_drain(monkeypatch, [({"type": "completion", "session_key": "s", "exit_code": 0,
+                                 "command": "make test"}, "[Background process finished: OK]")])
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: seen.append(text) or {"final_response": text},
+        linger_budget=0.0, final_answer=ANSWER_WITH_RECEIPT)
+    assert seen == []
+    assert result is None
+
+
+def test_post_answer_clean_completion_nonzero_exit_still_wakes(monkeypatch):
+    """The drop is scoped to exit_code 0: a process that died after the answer still wakes."""
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_drain(monkeypatch, [({"type": "completion", "session_key": "s", "exit_code": 1,
+                                 "command": "make test"}, "[Background process failed: exit 1]")])
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: seen.append(text) or {"final_response": text},
+        linger_budget=0.0, final_answer=ANSWER_WITH_RECEIPT)
+    assert seen == ["[Background process failed: exit 1]"]
+    assert result == {"final_response": "[Background process failed: exit 1]"}
+
+
+def test_post_answer_clean_completion_async_delegation_still_wakes(monkeypatch):
+    """Only plain completions are droppable: delegated results and watch matches keep waking."""
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_drain(monkeypatch, [({"type": "async_delegation", "session_key": "s", "exit_code": 0},
+                                "[IMPORTANT: delegated reply from C]"),
+                               ({"type": "watch_match", "session_key": "s", "exit_code": 0},
+                                "[watch: pattern matched]")])
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: seen.append(text) or {"final_response": text},
+        linger_budget=0.0, final_answer=ANSWER_WITH_RECEIPT)
+    assert seen == ["[IMPORTANT: delegated reply from C]", "[watch: pattern matched]"]
+    assert result == {"final_response": "[watch: pattern matched]"}
+
+
+def test_post_answer_clean_completion_gate_off_without_json_answer(monkeypatch, tmp_path):
+    """A plain prose answer carries no receipt: legacy wake (the reply displaces the answer)."""
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_drain(monkeypatch, [({"type": "completion", "session_key": "s", "exit_code": 0},
+                                "[Background process finished: OK]")])
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: seen.append(text) or {"final_response": text},
+        linger_budget=0.0, final_answer="sent, finish your turn")
+    assert seen == ["[Background process finished: OK]"]
+    assert result == {"final_response": "[Background process finished: OK]"}
+
+
+def test_post_answer_clean_completion_mid_answer_json_still_wakes(monkeypatch):
+    """A ```json example quoted mid-prose is not a receipt: only an answer-ENDING block suppresses the wake."""
+    from hermes_cli import quiet_single_query as qsq
+    _quiet_drain(monkeypatch, [({"type": "completion", "session_key": "s", "exit_code": 0},
+                                "[Background process finished: OK]")])
+    seen = []
+    result = qsq.continue_quiet_notify_completions(
+        "s", lambda text: seen.append(text) or {"final_response": text},
+        linger_budget=0.0,
+        final_answer='example payload:\n```json\n{"a": 1}\n```\nthen some closing prose')
+    assert seen == ["[Background process finished: OK]"]
+    assert result == {"final_response": "[Background process finished: OK]"}
+
+
+def test_post_answer_clean_completion_keeps_printed_answer(monkeypatch, capsys):
+    """End to end: the late completion is dropped before stdout flushes, so the receipt stays the answer."""
+    from tools.process_registry import process_registry
+
+    calls = []
+
+    def run_conversation(**kwargs):
+        calls.append(kwargs["user_message"])
+        if len(calls) == 1:
+            process_registry.completion_queue.put({
+                "type": "completion", "session_id": "proc-t", "session_key": "session-B",
+                "command": "make test", "exit_code": 0, "output": "ok",
+            })
+            return {"final_response": ANSWER_WITH_RECEIPT}
+        return {"final_response": "late reply re-emitted"}
+
+    agent = SimpleNamespace(run_conversation=run_conversation, session_id="session-B")
+    try:
+        with pytest.raises(SystemExit) as exc:
+            cli._run_quiet_single_query(
+                SimpleNamespace(agent=agent, conversation_history=[], session_id="session-B"), "go")
+        assert exc.value.code == 0
+        assert len(calls) == 1, "no follow-up turn after the receipt"
+        assert capsys.readouterr().out.strip() == ANSWER_WITH_RECEIPT
+    finally:
+        while not process_registry.completion_queue.empty():
+            process_registry.completion_queue.get_nowait()

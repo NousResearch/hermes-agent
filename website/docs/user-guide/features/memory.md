@@ -232,6 +232,12 @@ The memory system automatically rejects exact duplicate entries. If you try to a
 
 Memory entries are scanned for injection and exfiltration patterns before being accepted, since they're injected into the system prompt. Content matching threat patterns (prompt injection, credential exfiltration, SSH backdoors) or containing invisible Unicode characters is blocked.
 
+Hermes also scans entries when loading memory at session start and after context compression.
+If the scan excludes an entry from the prompt, Hermes reports the file name, excluded-entry count,
+and matched patterns through its warning notifications. The original file stays unchanged.
+Review flagged entries before editing them: entries use `§` delimiters, so a hand-written file
+without delimiters is one entry, and a match can exclude the entire file from the prompt.
+
 ## Session Search
 
 Beyond MEMORY.md and USER.md, the agent can search its past conversations using the `session_search` tool:
